@@ -9,8 +9,8 @@ class Settings(BaseSettings):
 
     # OpenAI
     openai_api_key: str
-    openai_model: str = "gpt-4o"
-    openai_model_mini: str = "gpt-4o-mini"
+    openai_model: str = "gpt-4o-mini"        # OPENAI_MODEL (轻量任务)
+    openai_model_heavy: str = "gpt-4o"       # OPENAI_MODEL_HEAVY (主模型)
 
     # Webhook鉴权
     webhook_user: str = "qc"
@@ -23,8 +23,8 @@ class Settings(BaseSettings):
     qc_project_id: str
 
     # Telegram
-    telegram_bot_token: str
-    telegram_chat_id: str
+    tg_bot_token: str     # TG_BOT_TOKEN
+    tg_chat_id: str       # TG_CHAT_ID
 
     # 运行模式
     authorization_mode: str = "SEMI_AUTO"  # FULL_AUTO | SEMI_AUTO | MANUAL

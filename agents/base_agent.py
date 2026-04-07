@@ -34,7 +34,7 @@ class BaseAgent:
         self.tool_executor = tool_executor    # {tool_name: callable}
         self.max_retries   = max_retries
         self.max_tokens    = max_tokens
-        self.model         = settings.openai_model_mini if use_mini_model else settings.openai_model
+        self.model         = settings.openai_model if use_mini_model else settings.openai_model_heavy
 
     def _convert_tools_to_openai_format(self, tools: list[dict]) -> list[dict]:
         """将 Anthropic 风格的工具定义转换为 OpenAI 格式。"""

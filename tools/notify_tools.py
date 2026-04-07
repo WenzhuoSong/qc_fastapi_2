@@ -14,12 +14,12 @@ def tool_send_telegram(inp: dict) -> dict:
     """
     text       = inp.get("text", "")
     parse_mode = inp.get("parse_mode", "HTML")
-    url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
+    url = f"https://api.telegram.org/bot{settings.tg_bot_token}/sendMessage"
     try:
         resp = httpx.post(
             url,
             json={
-                "chat_id":    settings.telegram_chat_id,
+                "chat_id":    settings.tg_chat_id,
                 "text":       text,
                 "parse_mode": parse_mode,
             },
