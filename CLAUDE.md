@@ -13,9 +13,9 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 # API docs at http://localhost:8000/docs
 
 # Start PostgreSQL (Docker)
-docker run -d --name agentix-pg \
-  -e POSTGRES_DB=agentix \
-  -e POSTGRES_USER=agentix \
+docker run -d --name qc-fastapi-2-pg \
+  -e POSTGRES_DB=qc_fastapi_2 \
+  -e POSTGRES_USER=qc_fastapi_2 \
   -e POSTGRES_PASSWORD=password \
   -p 5432:5432 postgres:16
 
@@ -39,7 +39,7 @@ This is an **agentic trading system** that integrates with QuantConnect using a 
 ### Project Structure
 
 ```
-agentix/
+qc_fastapi_2/
 ├── agents/          # 6 specialized agents
 │   ├── base_agent.py       # BaseAgent with tool calling loop
 │   ├── planner.py          # Static workflow planner
@@ -208,12 +208,31 @@ Risk parameters with defaults:
 
 ### Deployment
 
-Deployed on Railway with:
-- PostgreSQL service (persistent volume)
-- Web service (FastAPI with APScheduler)
-- Environment variables injected from Railway config
+Deployed on Railway with 2 services: PostgreSQL and web service (FastAPI with APScheduler). See `railway.toml` and `Dockerfile`.
 
-`PORT` environment variable is dynamically assigned by Railway.
+**Required Railway environment variables**:
+```
+DATABASE_URL          # auto-injected from Railway PostgreSQL service
+OPENAI_API_KEY
+OPENAI_MODEL=gpt-4o
+OPENAI_MODEL_MINI=gpt-4o-mini
+WEBHOOK_USER=qc
+WEBHOOK_SECRET
+QC_API_URL=https://www.quantconnect.com/api/v2
+QC_USER_ID
+QC_API_TOKEN
+QC_PROJECT_ID
+TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID
+AUTHORIZATION_MODE=SEMI_AUTO
+```
+
+**After deploy**: Set Telegram webhook:
+```bash
+curl "https://api.telegram.org/bot{TOKEN}/setWebhook?url=https://{RAILWAY_DOMAIN}/api/telegram"
+```
+
+`PORT` is dynamically assigned by Railway.
 
 ### Phase 1 Scope (Current)
 
