@@ -102,6 +102,7 @@ async def _process_heartbeat(db: AsyncSession, snapshot_id: int, payload: dict):
             rsi_14             = h.get("rsi_14"),
             atr_pct            = h.get("atr_pct"),
             bb_position        = h.get("bb_position"),
+            hist_vol_20d       = h.get("hist_vol_20d"),
             beta_vs_spy        = h.get("beta_vs_spy"),
             unrealized_pnl_pct = h.get("unrealized_pnl_pct"),
             holding_days       = h.get("holding_days"),

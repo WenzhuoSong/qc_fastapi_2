@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import get_settings
 from db.session import init_db
+from db.seed import seed_system_config
 from api.webhook import router as webhook_router
 from api.command import router as command_router
 from api.status import router as status_router
@@ -24,6 +25,7 @@ async def lifespan(app: FastAPI):
     # 启动
     logger.info("QC FastAPI 2 starting up...")
     await init_db()
+    await seed_system_config()
     start_scheduler()
     logger.info("QC FastAPI 2 ready.")
     yield

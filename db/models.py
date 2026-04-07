@@ -62,6 +62,7 @@ class HoldingsFactor(Base):
     rsi_14         = Column(Numeric(6, 2))
     atr_pct        = Column(Numeric(8, 6))
     bb_position    = Column(Numeric(6, 4))
+    hist_vol_20d   = Column(Numeric(8, 6))
     beta_vs_spy    = Column(Numeric(6, 4))
     unrealized_pnl_pct = Column(Numeric(8, 6))
     holding_days   = Column(Integer)
