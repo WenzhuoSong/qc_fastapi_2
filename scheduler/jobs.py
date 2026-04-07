@@ -70,7 +70,7 @@ def _run_pipeline(trigger: str):
         return
 
     if auth_mode == "SEMI_AUTO":
-        _handle_semi_auto(plan, allocator_out, risk_out, analysis_id)
+        _handle_semi_auto(plan, researcher_out, allocator_out, risk_out, analysis_id)
     elif auth_mode == "FULL_AUTO":
         result = run_executor(plan, allocator_out, risk_out, analysis_id)
         _save_execution(analysis_id, result)
@@ -81,10 +81,11 @@ def _run_pipeline(trigger: str):
 # SEMI_AUTO 确认协议
 # ────────────────────────────────────────
 def _handle_semi_auto(
-    plan:          dict,
-    allocator_out: dict,
-    risk_out:      dict,
-    analysis_id:   int,
+    plan:           dict,
+    researcher_out: dict,
+    allocator_out:  dict,
+    risk_out:       dict,
+    analysis_id:    int,
 ):
     """
     SEMI_AUTO 流程：
@@ -98,19 +99,20 @@ def _handle_semi_auto(
     weights   = chosen.get("target_weights", {})
     actions   = chosen.get("rebalance_actions", [])
     cost      = chosen.get("estimated_cost_pct", 0)
-    regime    = allocator_out.get("_researcher_regime", "N/A")  # passed through
+    regime    = researcher_out.get("market_judgment", {}).get("regime", "N/A")
     token     = risk_out.get("approval_token", "")
     expires_at = datetime.utcnow() + timedelta(minutes=settings.semi_auto_timeout_minutes)
 
     # 保存待处理建议
     asyncio.get_event_loop().run_until_complete(
         _save_pending_proposal({
-            "analysis_id":  analysis_id,
-            "plan":         plan_key,
-            "weights":      weights,
-            "token":        token,
-            "expires_at":   expires_at.isoformat(),
-            "status":       "pending",
+            "analysis_id":       analysis_id,
+            "plan":              plan_key,
+            "weights":           weights,
+            "token":             token,
+            "expires_at":        expires_at.isoformat(),
+            "status":            "pending",
+            "estimated_cost_pct": cost,
         })
     )
 
