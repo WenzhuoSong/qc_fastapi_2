@@ -115,8 +115,10 @@ def _handle_semi_auto(
     )
 
     # 生成调仓卡片
+    up_arrow = "\u25b2"
+    down_arrow = "\u25bc"
     actions_str = "\n".join(
-        f"  {'\u25b2' if a.get('action')=='buy' else '\u25bc'} "
+        f"  {up_arrow if a.get('action')=='buy' else down_arrow} "
         f"{a.get('ticker')} {'+' if a.get('action')=='buy' else ''}"
         f"{a.get('weight_delta', 0):.1%}"
         for a in actions
