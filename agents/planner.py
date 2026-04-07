@@ -12,7 +12,11 @@ import asyncio
 
 def run_planner(trigger_type: str = "scheduled_hourly") -> dict:
     """同步入口，返回 plan 字典。"""
-    config = asyncio.get_event_loop().run_until_complete(_load_config())
+    loop = asyncio.new_event_loop()
+    try:
+        config = loop.run_until_complete(_load_config())
+    finally:
+        loop.close()
 
     circuit     = config.get("circuit_state", {}).get("value", "CLOSED")
     auth_mode   = config.get("authorization_mode", {}).get("value", "SEMI_AUTO")

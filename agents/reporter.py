@@ -12,7 +12,11 @@ logger = logging.getLogger("qc_fastapi_2.reporter")
 
 def run_reporter() -> dict:
     """Phase 1: 直接查库计算主要指标，不经过 LLM。"""
-    stats = asyncio.get_event_loop().run_until_complete(_gather_stats())
+    loop = asyncio.new_event_loop()
+    try:
+        stats = loop.run_until_complete(_gather_stats())
+    finally:
+        loop.close()
     msg   = _format_daily_report(stats)
     result = tool_send_telegram({"text": msg, "parse_mode": "HTML"})
     return {"reported": result.get("sent"), "stats": stats}

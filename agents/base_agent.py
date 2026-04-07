@@ -1,7 +1,9 @@
 # agents/base_agent.py
+import asyncio
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -129,13 +131,17 @@ class BaseAgent:
 
             # 工具调用循环
             if finish_reason == "tool_calls" and message.tool_calls:
-                # 执行工具
+                # 在线程池执行同步工具，避免嵌套事件循环冲突
+                loop = asyncio.get_event_loop()
                 tool_results = []
                 for tool_call in message.tool_calls:
                     func_name = tool_call.function.name
                     func_args = json.loads(tool_call.function.arguments)
 
-                    result = self._call_tool(func_name, func_args)
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        result = await loop.run_in_executor(
+                            pool, self._call_tool, func_name, func_args
+                        )
 
                     tool_results.append({
                         "role": "tool",

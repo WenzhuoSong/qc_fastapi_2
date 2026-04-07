@@ -10,8 +10,13 @@ from db.queries import get_system_config, get_latest_snapshots, get_latest_portf
 
 
 def _run(coro):
-    """Tool 函数是同步的（被 BaseAgent 同步调用），需要这个 wrapper。"""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    """Tool 函数是同步的（被 BaseAgent 同步调用），需要这个 wrapper。
+    每次创建独立事件循环，避免与 BaseAgent 的 asyncio.run() 嵌套冲突。"""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 def tool_read_system_config(_input: dict) -> dict:

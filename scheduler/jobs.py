@@ -19,6 +19,15 @@ logger   = logging.getLogger("qc_fastapi_2.jobs")
 settings = get_settings()
 
 
+def _arun(coro):
+    """在独立事件循环中运行协程，避免跨调用的 loop 状态冲突。"""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 # ────────────────────────────────────────
 # 核心：小时级分析流水线
 # ────────────────────────────────────────
@@ -32,6 +41,16 @@ def job_hourly_analysis():
 
 
 def _run_pipeline(trigger: str):
+    # 检查 trading_paused（REST API /command/pause 设置）
+    async def _check_paused():
+        async with AsyncSessionLocal() as db:
+            cfg = await get_system_config(db, "trading_paused")
+            return cfg.value.get("paused", False) if cfg else False
+
+    if _arun(_check_paused()):
+        logger.info("trading_paused=True — pipeline skipped")
+        return
+
     # 1. PLANNER
     plan = run_planner(trigger_type=trigger)
     logger.info(f"PLANNER done | mode={plan['mode']} | auth={plan['auth_mode']}")
@@ -104,7 +123,7 @@ def _handle_semi_auto(
     expires_at = datetime.utcnow() + timedelta(minutes=settings.semi_auto_timeout_minutes)
 
     # 保存待处理建议
-    asyncio.get_event_loop().run_until_complete(
+    _arun(
         _save_pending_proposal({
             "analysis_id":       analysis_id,
             "plan":              plan_key,
@@ -156,14 +175,14 @@ def _timeout_handler(analysis_id: int):
     - VIX > 30 或预估成本 > 0.3% → 跳过
     - 否则 → 自动执行方案 A
     """
-    pending = asyncio.get_event_loop().run_until_complete(_load_pending_proposal())
+    pending = _arun(_load_pending_proposal())
 
     if not pending or pending.get("status") != "pending":
         return  # 已经被用户处理
 
     # 读取当前市场状态
-    config = asyncio.get_event_loop().run_until_complete(_load_config())
-    latest = asyncio.get_event_loop().run_until_complete(_load_latest_portfolio())
+    config = _arun(_load_config())
+    latest = _arun(_load_latest_portfolio())
 
     vix        = float(config.get("last_vix", {}).get("value", 0) or 0)
     est_cost   = float(pending.get("estimated_cost_pct", 0))
@@ -227,7 +246,7 @@ def handle_telegram_command(text: str, from_chat_id: str) -> str:
 
 
 def _cmd_confirm() -> str:
-    pending = asyncio.get_event_loop().run_until_complete(_load_pending_proposal())
+    pending = _arun(_load_pending_proposal())
     if not pending or pending.get("status") != "pending":
         return "当前没有待确认建议。"
 
@@ -248,7 +267,7 @@ def _cmd_confirm() -> str:
 
 
 def _cmd_skip() -> str:
-    pending = asyncio.get_event_loop().run_until_complete(_load_pending_proposal())
+    pending = _arun(_load_pending_proposal())
     if not pending or pending.get("status") != "pending":
         return "当前没有待确认建议。"
     _mark_proposal_done(pending.get("analysis_id"), "skipped_by_user")
@@ -256,15 +275,15 @@ def _cmd_skip() -> str:
 
 
 def _cmd_pause() -> str:
-    asyncio.get_event_loop().run_until_complete(
+    _arun(
         _save_system_config("authorization_mode", {"value": "MANUAL"}, "user")
     )
     return "⏸️ 已切换到 MANUAL 模式。将不再自动分析。\n/confirm resume 可恢复。"
 
 
 def _cmd_status() -> str:
-    config  = asyncio.get_event_loop().run_until_complete(_load_config())
-    latest  = asyncio.get_event_loop().run_until_complete(_load_latest_portfolio())
+    config  = _arun(_load_config())
+    latest  = _arun(_load_latest_portfolio())
     mode    = config.get("authorization_mode", {}).get("value", "SEMI_AUTO")
     circuit = config.get("circuit_state",      {}).get("value", "CLOSED")
     val     = float(latest.get("total_value", 0)) if latest else 0
@@ -293,7 +312,7 @@ def job_post_market_report():
 
 def job_morning_health_check():
     logger.info("=== Morning Health Check ===")
-    config = asyncio.get_event_loop().run_until_complete(_load_config())
+    config = _arun(_load_config())
     mode   = config.get("authorization_mode", {}).get("value", "SEMI_AUTO")
     circuit = config.get("circuit_state",     {}).get("value", "CLOSED")
     tool_send_telegram({
@@ -371,7 +390,7 @@ def _save_analysis(
             db.add(row)
             await db.commit()
             return row.id
-    return asyncio.get_event_loop().run_until_complete(_())
+    return _arun(_())
 
 
 def _save_execution(analysis_id: int, result: dict):
@@ -384,7 +403,7 @@ def _save_execution(analysis_id: int, result: dict):
                 status          = result.get("execution_status", "unknown"),
             ))
             await db.commit()
-    asyncio.get_event_loop().run_until_complete(_())
+    _arun(_())
 
 
 def _mark_proposal_done(analysis_id: int | None, status: str):
@@ -403,4 +422,4 @@ def _mark_proposal_done(analysis_id: int | None, status: str):
                     .values(execution_status=status)
                 )
                 await db.commit()
-    asyncio.get_event_loop().run_until_complete(_())
+    _arun(_())
