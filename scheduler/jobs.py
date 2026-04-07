@@ -229,6 +229,7 @@ def handle_telegram_command(text: str, from_chat_id: str) -> str:
     """
     # 安全：只接受来自配置的 chat_id
     if from_chat_id != settings.tg_chat_id:
+        logger.warning(f"Unauthorized Telegram access from chat_id={from_chat_id}")
         return ""
 
     cmd = text.strip().lower().split()[0]

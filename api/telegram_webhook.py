@@ -1,8 +1,11 @@
 # api/telegram_webhook.py
+import logging
 from fastapi import APIRouter, Request
 from config import get_settings
 from scheduler.jobs import handle_telegram_command
 from tools.notify_tools import tool_send_telegram
+
+logger = logging.getLogger("qc_fastapi_2.telegram_webhook")
 
 router   = APIRouter()
 settings = get_settings()
@@ -23,7 +26,12 @@ async def telegram_webhook(request: Request):
     if not text or not chat:
         return {"ok": True}
 
-    reply = handle_telegram_command(text, chat)
+    try:
+        reply = handle_telegram_command(text, chat)
+    except Exception as e:
+        logger.error(f"Telegram command handler error: {e}", exc_info=True)
+        reply = "⚠️ 指令处理异常，请重试"
+
     if reply:
         tool_send_telegram({"text": reply})
 

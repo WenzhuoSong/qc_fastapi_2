@@ -1,4 +1,5 @@
 # api/webhook.py
+import hashlib
 import logging
 import gzip
 import json
@@ -38,6 +39,17 @@ async def receive_qc_packet(
         # 解压
         decompressed = gzip.decompress(data)
         payload = json.loads(decompressed)
+
+        # 验证 checksum
+        received_checksum = payload.get("checksum")
+        if received_checksum:
+            payload_for_check = {k: v for k, v in payload.items() if k != "checksum"}
+            expected = hashlib.md5(
+                json.dumps(payload_for_check, sort_keys=True).encode()
+            ).hexdigest()
+            if received_checksum != expected:
+                logger.warning(f"Checksum mismatch: received={received_checksum} expected={expected}")
+                raise HTTPException(status_code=400, detail="Checksum mismatch")
 
         packet_type = payload.get("packet_type", "heartbeat")
         trading_date_str = payload.get("trading_date")

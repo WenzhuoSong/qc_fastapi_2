@@ -106,7 +106,7 @@ def tool_verify_approval_token(inp: dict) -> dict:
                 return {"valid": False, "reason": "already_used"}
             if stored.get("token") != provided:
                 return {"valid": False, "reason": "token_mismatch"}
-            if datetime.utcnow().isoformat() > stored.get("expires_at", ""):
+            if datetime.utcnow().isoformat() > stored.get("expires_at", "1970-01-01T00:00:00"):
                 return {"valid": False, "reason": "expired"}
             # 消耗 token
             from db.queries import upsert_system_config
