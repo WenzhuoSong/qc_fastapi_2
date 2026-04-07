@@ -184,9 +184,10 @@ def _timeout_handler(analysis_id: int):
     config = _arun(_load_config())
     latest = _arun(_load_latest_portfolio())
 
-    vix        = float(config.get("last_vix", {}).get("value", 0) or 0)
-    est_cost   = float(pending.get("estimated_cost_pct", 0))
-    drawdown   = float(latest.get("current_drawdown_pct", 0)) if latest else 0
+    vix          = float(config.get("last_vix", {}).get("value", 0) or 0)
+    est_cost     = float(pending.get("estimated_cost_pct", 0))
+    drawdown     = float(latest.get("current_drawdown_pct", 0)) if latest else 0
+    max_cost_pct = float(config.get("risk_params", {}).get("max_trade_cost_pct", 0.005))
 
     # 保守条件：超时跳过
     if vix > 30:
@@ -194,9 +195,9 @@ def _timeout_handler(analysis_id: int):
         tool_send_telegram({"text": f"⚠️ 建议超时，VIX={vix:.1f}>30，自动跳过"})
         return
 
-    if est_cost > 0.003:
+    if est_cost > max_cost_pct:
         _mark_proposal_done(analysis_id, "skipped_timeout_cost")
-        tool_send_telegram({"text": f"⚠️ 建议超时，成本{est_cost:.2%}>0.3%，自动跳过"})
+        tool_send_telegram({"text": f"⚠️ 建议超时，成本{est_cost:.2%}>{max_cost_pct:.2%}，自动跳过"})
         return
 
     # 正常市况：自动执行
