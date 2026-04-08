@@ -4,7 +4,7 @@ import logging
 import gzip
 import json
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,7 +27,7 @@ def verify_auth(x_webhook_user: str = Header(None), x_webhook_secret: str = Head
 
 @router.post("/webhook/qc")
 async def receive_qc_packet(
-    data: bytes = None,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _auth=Depends(verify_auth)
 ):
@@ -36,7 +36,8 @@ async def receive_qc_packet(
     packet_type: heartbeat | alert | emergency
     """
     try:
-        # 解压
+        # 读取原始 body 并解压
+        data = await request.body()
         decompressed = gzip.decompress(data)
         payload = json.loads(decompressed)
 
