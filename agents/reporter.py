@@ -1,9 +1,8 @@
 # agents/reporter.py
-import asyncio
 import logging
 from datetime import datetime, timedelta
-from sqlalchemy import select, desc, and_
-from db.session import AsyncSessionLocal
+from sqlalchemy import select, desc
+from db.session import run_async_isolated
 from db.models import PortfolioTimeseries, ExecutionLog
 from tools.notify_tools import tool_send_telegram
 
@@ -12,18 +11,14 @@ logger = logging.getLogger("qc_fastapi_2.reporter")
 
 def run_reporter() -> dict:
     """Phase 1: 直接查库计算主要指标，不经过 LLM。"""
-    loop = asyncio.new_event_loop()
-    try:
-        stats = loop.run_until_complete(_gather_stats())
-    finally:
-        loop.close()
-    msg   = _format_daily_report(stats)
+    stats  = run_async_isolated(_gather_stats)
+    msg    = _format_daily_report(stats)
     result = tool_send_telegram({"text": msg, "parse_mode": "HTML"})
     return {"reported": result.get("sent"), "stats": stats}
 
 
-async def _gather_stats() -> dict:
-    async with AsyncSessionLocal() as db:
+async def _gather_stats(session_factory) -> dict:
+    async with session_factory() as db:
         now    = datetime.utcnow()
         today  = now.date()
 

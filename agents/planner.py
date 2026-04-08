@@ -4,19 +4,13 @@ Phase 1 简化版 PLANNER：静态工作流，不生成动态 DAG。
 只负责读取当前状态并决定 mode。
 """
 from datetime import datetime
-from tools.registry import get_tool_executor
-from db.session import AsyncSessionLocal
+from db.session import run_async_isolated
 from db.queries import get_system_config
-import asyncio
 
 
 def run_planner(trigger_type: str = "scheduled_hourly") -> dict:
     """同步入口，返回 plan 字典。"""
-    loop = asyncio.new_event_loop()
-    try:
-        config = loop.run_until_complete(_load_config())
-    finally:
-        loop.close()
+    config = run_async_isolated(_load_config)
 
     circuit     = config.get("circuit_state", {}).get("value", "CLOSED")
     auth_mode   = config.get("authorization_mode", {}).get("value", "SEMI_AUTO")
@@ -46,8 +40,8 @@ def _get_force_constraints(circuit: str) -> dict:
     return {"force_plan": None, "max_position": None, "allow_buy": True}
 
 
-async def _load_config():
-    async with AsyncSessionLocal() as db:
+async def _load_config(session_factory):
+    async with session_factory() as db:
         risk_params = await get_system_config(db, "risk_params")
         circuit = await get_system_config(db, "circuit_state")
         auth_mode = await get_system_config(db, "authorization_mode")

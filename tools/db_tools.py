@@ -1,46 +1,34 @@
 # tools/db_tools.py
-import asyncio
-import json
 import uuid
 from datetime import datetime, timedelta
 
-from db.session import AsyncSessionLocal
-from db.models import AgentAnalysis, SystemConfig
+from db.session import run_async_isolated
+from db.models import AgentAnalysis
 from db.queries import get_system_config, get_latest_snapshots, get_latest_portfolio
 
 
-def _run(coro):
-    """Tool 函数是同步的（被 BaseAgent 同步调用），需要这个 wrapper。
-    每次创建独立事件循环，避免与 BaseAgent 的 asyncio.run() 嵌套冲突。"""
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
-
-
 def tool_read_system_config(_input: dict) -> dict:
-    async def _():
-        async with AsyncSessionLocal() as db:
+    async def _(session_factory):
+        async with session_factory() as db:
             config = await get_system_config(db, "risk_params")
             if not config:
                 return {}
             return config.value
-    return _run(_())
+    return run_async_isolated(_)
 
 
 def tool_read_latest_snapshots(inp: dict) -> list:
     n = inp.get("n", 4)
-    async def _():
-        async with AsyncSessionLocal() as db:
+    async def _(session_factory):
+        async with session_factory() as db:
             rows = await get_latest_snapshots(db, n)
             return [row.raw_payload for row in rows]
-    return _run(_())
+    return run_async_isolated(_)
 
 
 def tool_read_latest_portfolio(_input: dict) -> dict:
-    async def _():
-        async with AsyncSessionLocal() as db:
+    async def _(session_factory):
+        async with session_factory() as db:
             row = await get_latest_portfolio(db)
             if not row:
                 return {}
@@ -52,12 +40,12 @@ def tool_read_latest_portfolio(_input: dict) -> dict:
                 "regime_label":         row.regime_label,
                 "recorded_at":          row.recorded_at.isoformat(),
             }
-    return _run(_())
+    return run_async_isolated(_)
 
 
 def tool_write_decision(inp: dict) -> dict:
-    async def _():
-        async with AsyncSessionLocal() as db:
+    async def _(session_factory):
+        async with session_factory() as db:
             row = AgentAnalysis(
                 analyzed_at       = datetime.utcnow(),
                 trigger_type      = inp.get("trigger_type", "scheduled"),
@@ -73,31 +61,32 @@ def tool_write_decision(inp: dict) -> dict:
             )
             db.add(row)
             await db.commit()
+            await db.refresh(row)
             return {"analysis_id": row.id}
-    return _run(_())
+    return run_async_isolated(_)
 
 
 def tool_write_approval_token(inp: dict) -> dict:
     """Generate + store a one-time approval token (5-min TTL)."""
     token      = str(uuid.uuid4())
     expires_at = (datetime.utcnow() + timedelta(minutes=5)).isoformat()
-    async def _():
-        async with AsyncSessionLocal() as db:
+    async def _(session_factory):
+        async with session_factory() as db:
             from db.queries import upsert_system_config
             await upsert_system_config(
                 db, "last_approval_token",
                 {"token": token, "expires_at": expires_at, "used": False},
                 "risk_mgr",
             )
-    _run(_())
+    run_async_isolated(_)
     return {"approval_token": token, "expires_at": expires_at}
 
 
 def tool_verify_approval_token(inp: dict) -> dict:
     """Verify + consume the approval token."""
     provided = inp.get("token")
-    async def _():
-        async with AsyncSessionLocal() as db:
+    async def _(session_factory):
+        async with session_factory() as db:
             config = await get_system_config(db, "last_approval_token")
             if not config:
                 return {"valid": False, "reason": "no_token"}
@@ -108,9 +97,8 @@ def tool_verify_approval_token(inp: dict) -> dict:
                 return {"valid": False, "reason": "token_mismatch"}
             if datetime.utcnow().isoformat() > stored.get("expires_at", "1970-01-01T00:00:00"):
                 return {"valid": False, "reason": "expired"}
-            # 消耗 token
             from db.queries import upsert_system_config
             stored["used"] = True
             await upsert_system_config(db, "last_approval_token", stored, "executor")
             return {"valid": True}
-    return _run(_())
+    return run_async_isolated(_)
