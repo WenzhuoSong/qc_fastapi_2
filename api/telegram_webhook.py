@@ -27,7 +27,7 @@ async def telegram_webhook(request: Request):
         return {"ok": True}
 
     try:
-        reply = handle_telegram_command(text, chat)
+        reply = await handle_telegram_command(text, chat)
     except Exception as e:
         logger.error(f"Telegram command handler error: {e}", exc_info=True)
         reply = "⚠️ 指令处理异常，请重试"

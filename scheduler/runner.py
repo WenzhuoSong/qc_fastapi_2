@@ -1,8 +1,7 @@
 # scheduler/runner.py
 import logging
-from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
 from scheduler.jobs import (
     job_hourly_analysis,
     job_post_market_report,
@@ -10,7 +9,7 @@ from scheduler.jobs import (
 )
 
 logger    = logging.getLogger("qc_fastapi_2.scheduler")
-_scheduler = BackgroundScheduler(timezone="America/New_York")
+_scheduler = AsyncIOScheduler(timezone="America/New_York")
 
 
 def start_scheduler():

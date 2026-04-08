@@ -19,35 +19,25 @@ logger   = logging.getLogger("qc_fastapi_2.jobs")
 settings = get_settings()
 
 
-def _arun(coro):
-    """在独立事件循环中运行协程，避免跨调用的 loop 状态冲突。"""
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
-
-
 # ────────────────────────────────────────
 # 核心：小时级分析流水线
 # ────────────────────────────────────────
-def job_hourly_analysis():
+async def job_hourly_analysis():
     logger.info("=== Hourly Analysis Pipeline START ===")
     try:
-        _run_pipeline(trigger="scheduled_hourly")
+        await _run_pipeline(trigger="scheduled_hourly")
     except Exception as e:
         logger.error(f"Hourly analysis FAILED: {e}")
-        tool_send_telegram({"text": f"🚨 小时分析异常: {e}"})
+        tool_send_telegram({"text": f"🚨 小时分析异常: {e}", "parse_mode": ""})
 
 
-def _run_pipeline(trigger: str):
-    # 检查 trading_paused（REST API /command/pause 设置）
-    async def _check_paused():
-        async with AsyncSessionLocal() as db:
-            cfg = await get_system_config(db, "trading_paused")
-            return cfg.value.get("paused", False) if cfg else False
+async def _run_pipeline(trigger: str):
+    # 检查 trading_paused
+    async with AsyncSessionLocal() as db:
+        cfg = await get_system_config(db, "trading_paused")
+        paused = cfg.value.get("paused", False) if cfg else False
 
-    if _arun(_check_paused()):
+    if paused:
         logger.info("trading_paused=True — pipeline skipped")
         return
 
@@ -79,9 +69,7 @@ def _run_pipeline(trigger: str):
     logger.info(f"RISK MGR done | approved={approved}")
 
     # 5. 写入 agent_analysis
-    analysis_id = _save_analysis(
-        trigger, plan, researcher_out, allocator_out, risk_out
-    )
+    analysis_id = await _save_analysis(trigger, plan, researcher_out, allocator_out, risk_out)
 
     # 6. SEMI_AUTO / FULL_AUTO 分支
     if not approved:
@@ -89,30 +77,23 @@ def _run_pipeline(trigger: str):
         return
 
     if auth_mode == "SEMI_AUTO":
-        _handle_semi_auto(plan, researcher_out, allocator_out, risk_out, analysis_id)
+        await _handle_semi_auto(plan, researcher_out, allocator_out, risk_out, analysis_id)
     elif auth_mode == "FULL_AUTO":
         result = run_executor(plan, allocator_out, risk_out, analysis_id)
-        _save_execution(analysis_id, result)
+        await _save_execution(analysis_id, result)
         logger.info(f"FULL_AUTO execution: {result['execution_status']}")
 
 
 # ────────────────────────────────────────
 # SEMI_AUTO 确认协议
 # ────────────────────────────────────────
-def _handle_semi_auto(
+async def _handle_semi_auto(
     plan:           dict,
     researcher_out: dict,
     allocator_out:  dict,
     risk_out:       dict,
     analysis_id:    int,
 ):
-    """
-    SEMI_AUTO 流程：
-    1. 推送建议卡片到 Telegram
-    2. 写入 pending_proposal 到 system_config
-    3. 启动判断循环等待用户回复（由 Telegram Bot Handler 处理）
-    4. 超时后根据市场状况判断是否自动执行
-    """
     plan_key  = f"plan_{allocator_out.get('recommended_plan', 'a').lower()}"
     chosen    = allocator_out.get(plan_key, {})
     weights   = chosen.get("target_weights", {})
@@ -122,21 +103,17 @@ def _handle_semi_auto(
     token     = risk_out.get("approval_token", "")
     expires_at = datetime.utcnow() + timedelta(minutes=settings.semi_auto_timeout_minutes)
 
-    # 保存待处理建议
-    _arun(
-        _save_pending_proposal({
-            "analysis_id":       analysis_id,
-            "plan":              plan_key,
-            "weights":           weights,
-            "token":             token,
-            "expires_at":        expires_at.isoformat(),
-            "status":            "pending",
-            "estimated_cost_pct": cost,
-        })
-    )
+    await _save_pending_proposal({
+        "analysis_id":        analysis_id,
+        "plan":               plan_key,
+        "weights":            weights,
+        "token":              token,
+        "expires_at":         expires_at.isoformat(),
+        "status":             "pending",
+        "estimated_cost_pct": cost,
+    })
 
-    # 生成调仓卡片
-    up_arrow = "\u25b2"
+    up_arrow   = "\u25b2"
     down_arrow = "\u25bc"
     actions_str = "\n".join(
         f"  {up_arrow if a.get('action')=='buy' else down_arrow} "
@@ -158,54 +135,43 @@ def _handle_semi_auto(
     )
     tool_send_telegram({"text": msg})
 
-    # 起一个后台线程等待超时后处理
-    import threading
-    t = threading.Timer(
-        settings.semi_auto_timeout_minutes * 60,
-        _timeout_handler,
-        args=[analysis_id],
-    )
-    t.daemon = True
-    t.start()
+    # 异步超时处理（在主 event loop 中）
+    asyncio.create_task(_timeout_after(settings.semi_auto_timeout_minutes * 60, analysis_id))
 
 
-def _timeout_handler(analysis_id: int):
-    """
-    超时后的处理逻辑：
-    - VIX > 30 或预估成本 > 0.3% → 跳过
-    - 否则 → 自动执行方案 A
-    """
-    pending = _arun(_load_pending_proposal())
+async def _timeout_after(delay_seconds: float, analysis_id: int):
+    await asyncio.sleep(delay_seconds)
+    await _timeout_handler(analysis_id)
+
+
+async def _timeout_handler(analysis_id: int):
+    pending = await _load_pending_proposal()
 
     if not pending or pending.get("status") != "pending":
-        return  # 已经被用户处理
+        return
 
-    # 读取当前市场状态
-    config = _arun(_load_config())
-    latest = _arun(_load_latest_portfolio())
+    config = await _load_config()
+    latest = await _load_latest_portfolio()
 
     vix          = float(config.get("last_vix", {}).get("value", 0) or 0)
     est_cost     = float(pending.get("estimated_cost_pct", 0))
-    drawdown     = float(latest.get("current_drawdown_pct", 0)) if latest else 0
     max_cost_pct = float(config.get("risk_params", {}).get("max_trade_cost_pct", 0.005))
 
-    # 保守条件：超时跳过
     if vix > 30:
-        _mark_proposal_done(analysis_id, "skipped_timeout_vix")
+        await _mark_proposal_done(analysis_id, "skipped_timeout_vix")
         tool_send_telegram({"text": f"⚠️ 建议超时，VIX={vix:.1f}>30，自动跳过"})
         return
 
     if est_cost > max_cost_pct:
-        _mark_proposal_done(analysis_id, "skipped_timeout_cost")
+        await _mark_proposal_done(analysis_id, "skipped_timeout_cost")
         tool_send_telegram({"text": f"⚠️ 建议超时，成本{est_cost:.2%}>{max_cost_pct:.2%}，自动跳过"})
         return
 
-    # 正常市况：自动执行
     weights = pending.get("weights", {})
     token   = pending.get("token", "")
 
-    from tools.qc_tools import tool_send_weight_command
     from tools.db_tools import tool_verify_approval_token
+    from tools.qc_tools import tool_send_weight_command
 
     verify = tool_verify_approval_token({"token": token})
     if not verify.get("valid"):
@@ -214,7 +180,7 @@ def _timeout_handler(analysis_id: int):
 
     result = tool_send_weight_command({"weights": weights})
     if result.get("success"):
-        _mark_proposal_done(analysis_id, "executed_timeout_auto")
+        await _mark_proposal_done(analysis_id, "executed_timeout_auto")
         tool_send_telegram({"text": "⏱️ 超时自动执行成功"})
     else:
         tool_send_telegram({"text": f"❌ 超时自动执行失败: {result.get('error')}"})
@@ -223,12 +189,7 @@ def _timeout_handler(analysis_id: int):
 # ────────────────────────────────────────
 # Telegram Bot Handler（/confirm 、/skip 、/pause）
 # ────────────────────────────────────────
-def handle_telegram_command(text: str, from_chat_id: str) -> str:
-    """
-    由 FastAPI 的 Telegram Webhook 端点调用。
-    返回回复给用户的消息。
-    """
-    # 安全：只接受来自配置的 chat_id
+async def handle_telegram_command(text: str, from_chat_id: str) -> str:
     if from_chat_id != settings.tg_chat_id:
         logger.warning(f"Unauthorized Telegram access from chat_id={from_chat_id}")
         return ""
@@ -236,19 +197,19 @@ def handle_telegram_command(text: str, from_chat_id: str) -> str:
     cmd = text.strip().lower().split()[0]
 
     if cmd == "/confirm":
-        return _cmd_confirm()
+        return await _cmd_confirm()
     elif cmd == "/skip":
-        return _cmd_skip()
+        return await _cmd_skip()
     elif cmd == "/pause":
-        return _cmd_pause()
+        return await _cmd_pause()
     elif cmd == "/status":
-        return _cmd_status()
+        return await _cmd_status()
     else:
         return "未识别的指令。可用：/confirm /skip /pause /status"
 
 
-def _cmd_confirm() -> str:
-    pending = _arun(_load_pending_proposal())
+async def _cmd_confirm() -> str:
+    pending = await _load_pending_proposal()
     if not pending or pending.get("status") != "pending":
         return "当前没有待确认建议。"
 
@@ -263,29 +224,27 @@ def _cmd_confirm() -> str:
 
     result = tool_send_weight_command({"weights": weights})
     if result.get("success"):
-        _mark_proposal_done(pending.get("analysis_id"), "executed_user_confirmed")
+        await _mark_proposal_done(pending.get("analysis_id"), "executed_user_confirmed")
         return "✅ 已确认执行！"
     return f"❌ 执行失败：{result.get('error')}"
 
 
-def _cmd_skip() -> str:
-    pending = _arun(_load_pending_proposal())
+async def _cmd_skip() -> str:
+    pending = await _load_pending_proposal()
     if not pending or pending.get("status") != "pending":
         return "当前没有待确认建议。"
-    _mark_proposal_done(pending.get("analysis_id"), "skipped_by_user")
+    await _mark_proposal_done(pending.get("analysis_id"), "skipped_by_user")
     return "⏭️ 已跳过，本周期不操作。"
 
 
-def _cmd_pause() -> str:
-    _arun(
-        _save_system_config("authorization_mode", {"value": "MANUAL"}, "user")
-    )
+async def _cmd_pause() -> str:
+    await _save_system_config("authorization_mode", {"value": "MANUAL"}, "user")
     return "⏸️ 已切换到 MANUAL 模式。将不再自动分析。\n/confirm resume 可恢复。"
 
 
-def _cmd_status() -> str:
-    config  = _arun(_load_config())
-    latest  = _arun(_load_latest_portfolio())
+async def _cmd_status() -> str:
+    config  = await _load_config()
+    latest  = await _load_latest_portfolio()
     mode    = config.get("authorization_mode", {}).get("value", "SEMI_AUTO")
     circuit = config.get("circuit_state",      {}).get("value", "CLOSED")
     val     = float(latest.get("total_value", 0)) if latest else 0
@@ -302,21 +261,21 @@ def _cmd_status() -> str:
 # ────────────────────────────────────────
 # 其他定时任务
 # ────────────────────────────────────────
-def job_post_market_report():
+async def job_post_market_report():
     logger.info("=== Post Market Report START ===")
     try:
         result = run_reporter()
         logger.info(f"Reporter done | reported={result.get('reported')}")
     except Exception as e:
         logger.error(f"Reporter FAILED: {e}")
-        tool_send_telegram({"text": f"🚨 日报生成异常: {e}"})
+        tool_send_telegram({"text": f"🚨 日报生成异常: {e}", "parse_mode": ""})
 
 
-def job_morning_health_check():
+async def job_morning_health_check():
     logger.info("=== Morning Health Check ===")
-    config = _arun(_load_config())
-    mode   = config.get("authorization_mode", {}).get("value", "SEMI_AUTO")
-    circuit = config.get("circuit_state",     {}).get("value", "CLOSED")
+    config  = await _load_config()
+    mode    = config.get("authorization_mode", {}).get("value", "SEMI_AUTO")
+    circuit = config.get("circuit_state",      {}).get("value", "CLOSED")
     tool_send_telegram({
         "text": (
             f"🧩 系统健康摘要 | {datetime.utcnow().strftime('%Y-%m-%d')}\n"
@@ -343,16 +302,15 @@ async def _load_pending_proposal() -> dict | None:
 
 async def _load_config() -> dict:
     async with AsyncSessionLocal() as db:
-        risk_params = await get_system_config(db, "risk_params")
-        circuit = await get_system_config(db, "circuit_state")
-        auth_mode = await get_system_config(db, "authorization_mode")
-        last_vix = await get_system_config(db, "last_vix")
-
+        risk_params  = await get_system_config(db, "risk_params")
+        circuit      = await get_system_config(db, "circuit_state")
+        auth_mode    = await get_system_config(db, "authorization_mode")
+        last_vix     = await get_system_config(db, "last_vix")
         return {
-            "risk_params": risk_params.value if risk_params else {},
-            "circuit_state": circuit.value if circuit else {"value": "CLOSED"},
-            "authorization_mode": auth_mode.value if auth_mode else {"value": "SEMI_AUTO"},
-            "last_vix": last_vix.value if last_vix else {"value": 0},
+            "risk_params":        risk_params.value  if risk_params  else {},
+            "circuit_state":      circuit.value       if circuit      else {"value": "CLOSED"},
+            "authorization_mode": auth_mode.value     if auth_mode    else {"value": "SEMI_AUTO"},
+            "last_vix":           last_vix.value      if last_vix     else {"value": 0},
         }
 
 
@@ -373,55 +331,50 @@ async def _save_system_config(key: str, value: dict, by: str):
         await upsert_system_config(db, key, value, by)
 
 
-def _save_analysis(
+async def _save_analysis(
     trigger: str, plan: dict,
     researcher: dict, allocator: dict, risk: dict
 ) -> int:
-    async def _():
-        async with AsyncSessionLocal() as db:
-            row = AgentAnalysis(
-                analyzed_at       = datetime.utcnow(),
-                trigger_type      = trigger,
-                planner_output    = plan,
-                researcher_output = researcher,
-                allocator_output  = allocator,
-                risk_output       = risk,
-                risk_approved     = risk.get("approved", False),
-                execution_status  = "pending",
+    async with AsyncSessionLocal() as db:
+        row = AgentAnalysis(
+            analyzed_at       = datetime.utcnow(),
+            trigger_type      = trigger,
+            planner_output    = plan,
+            researcher_output = researcher,
+            allocator_output  = allocator,
+            risk_output       = risk,
+            risk_approved     = risk.get("approved", False),
+            execution_status  = "pending",
+        )
+        db.add(row)
+        await db.commit()
+        await db.refresh(row)
+        return row.id
+
+
+async def _save_execution(analysis_id: int, result: dict):
+    async with AsyncSessionLocal() as db:
+        db.add(ExecutionLog(
+            analysis_id     = analysis_id,
+            command_type    = "weight_adjustment",
+            command_payload = result.get("weights_sent", {}),
+            status          = result.get("execution_status", "unknown"),
+        ))
+        await db.commit()
+
+
+async def _mark_proposal_done(analysis_id: int | None, status: str):
+    async with AsyncSessionLocal() as db:
+        config = await get_system_config(db, "pending_proposal")
+        if config:
+            proposal = config.value
+            proposal["status"] = status
+            await upsert_system_config(db, "pending_proposal", proposal, "scheduler")
+        if analysis_id:
+            from sqlalchemy import update
+            await db.execute(
+                update(AgentAnalysis)
+                .where(AgentAnalysis.id == analysis_id)
+                .values(execution_status=status)
             )
-            db.add(row)
             await db.commit()
-            return row.id
-    return _arun(_())
-
-
-def _save_execution(analysis_id: int, result: dict):
-    async def _():
-        async with AsyncSessionLocal() as db:
-            db.add(ExecutionLog(
-                analysis_id     = analysis_id,
-                command_type    = "weight_adjustment",
-                command_payload = result.get("weights_sent", {}),
-                status          = result.get("execution_status", "unknown"),
-            ))
-            await db.commit()
-    _arun(_())
-
-
-def _mark_proposal_done(analysis_id: int | None, status: str):
-    async def _():
-        async with AsyncSessionLocal() as db:
-            config = await get_system_config(db, "pending_proposal")
-            if config:
-                proposal = config.value
-                proposal["status"] = status
-                await upsert_system_config(db, "pending_proposal", proposal, "scheduler")
-            if analysis_id:
-                from sqlalchemy import update
-                await db.execute(
-                    update(AgentAnalysis)
-                    .where(AgentAnalysis.id == analysis_id)
-                    .values(execution_status=status)
-                )
-                await db.commit()
-    _arun(_())
