@@ -1,5 +1,6 @@
 # db/session.py
 import logging
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from config import get_settings
@@ -32,11 +33,17 @@ class Base(DeclarativeBase):
 
 
 async def init_db():
-    """Create all tables on startup."""
+    """Create all tables on startup, and apply any missing column migrations."""
     from db import models  # noqa: F401 — ensure models are registered with Base
     logger.info("Running init_db, tables known: %s", list(Base.metadata.tables.keys()))
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # 手动补列（create_all 不会修改已存在的表）
+        migrations = [
+            "ALTER TABLE holdings_factors ADD COLUMN IF NOT EXISTS hist_vol_20d NUMERIC(8,6)",
+        ]
+        for sql in migrations:
+            await conn.execute(text(sql))
     logger.info("init_db complete.")
 
 
