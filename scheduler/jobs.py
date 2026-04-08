@@ -32,6 +32,8 @@ async def job_hourly_analysis():
 
 
 async def _run_pipeline(trigger: str):
+    loop = asyncio.get_event_loop()
+
     # 检查 trading_paused
     async with AsyncSessionLocal() as db:
         cfg = await get_system_config(db, "trading_paused")
@@ -41,8 +43,8 @@ async def _run_pipeline(trigger: str):
         logger.info("trading_paused=True — pipeline skipped")
         return
 
-    # 1. PLANNER
-    plan = run_planner(trigger_type=trigger)
+    # 1. PLANNER（sync agent，推到线程池避免嵌套 loop）
+    plan = await loop.run_in_executor(None, lambda: run_planner(trigger_type=trigger))
     logger.info(f"PLANNER done | mode={plan['mode']} | auth={plan['auth_mode']}")
 
     auth_mode = plan["auth_mode"]
@@ -51,20 +53,20 @@ async def _run_pipeline(trigger: str):
         return
 
     # 2. RESEARCHER
-    researcher_out = run_researcher(plan)
+    researcher_out = await loop.run_in_executor(None, lambda: run_researcher(plan))
     logger.info(
         f"RESEARCHER done | regime={researcher_out.get('market_judgment', {}).get('regime')}"
         f" | stance={researcher_out.get('recommended_stance')}"
     )
 
     # 3. ALLOCATOR
-    allocator_out = run_allocator(plan, researcher_out)
+    allocator_out = await loop.run_in_executor(None, lambda: run_allocator(plan, researcher_out))
     logger.info(
         f"ALLOCATOR done | recommended={allocator_out.get('recommended_plan')}"
     )
 
     # 4. RISK MGR
-    risk_out = run_risk_manager(plan, allocator_out)
+    risk_out = await loop.run_in_executor(None, lambda: run_risk_manager(plan, allocator_out))
     approved = risk_out.get("approved", False)
     logger.info(f"RISK MGR done | approved={approved}")
 
@@ -79,7 +81,9 @@ async def _run_pipeline(trigger: str):
     if auth_mode == "SEMI_AUTO":
         await _handle_semi_auto(plan, researcher_out, allocator_out, risk_out, analysis_id)
     elif auth_mode == "FULL_AUTO":
-        result = run_executor(plan, allocator_out, risk_out, analysis_id)
+        result = await loop.run_in_executor(
+            None, lambda: run_executor(plan, allocator_out, risk_out, analysis_id)
+        )
         await _save_execution(analysis_id, result)
         logger.info(f"FULL_AUTO execution: {result['execution_status']}")
 
@@ -263,8 +267,9 @@ async def _cmd_status() -> str:
 # ────────────────────────────────────────
 async def job_post_market_report():
     logger.info("=== Post Market Report START ===")
+    loop = asyncio.get_event_loop()
     try:
-        result = run_reporter()
+        result = await loop.run_in_executor(None, run_reporter)
         logger.info(f"Reporter done | reported={result.get('reported')}")
     except Exception as e:
         logger.error(f"Reporter FAILED: {e}")
