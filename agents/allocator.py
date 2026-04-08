@@ -39,7 +39,7 @@ TOOLS_DEF = [
 OUTPUT_SCHEMA = {"required": ["recommended_plan", "plan_a", "plan_b"]}
 
 
-def run_allocator(plan: dict, researcher_output: dict) -> dict:
+async def run_allocator_async(plan: dict, researcher_output: dict) -> dict:
     agent = BaseAgent(
         name          = "ALLOCATOR",
         system_prompt = SYSTEM_PROMPT,
@@ -47,7 +47,7 @@ def run_allocator(plan: dict, researcher_output: dict) -> dict:
         tool_executor = get_tool_executor(["read_latest_snapshots", "read_system_config"]),
         max_retries   = 1,
     )
-    return agent.run(
+    return await agent.run(
         {
             "plan":              plan,
             "researcher_output": researcher_output,

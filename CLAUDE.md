@@ -57,9 +57,15 @@ qc_fastapi_2/
 │   ├── session.py          # AsyncSession + asyncpg
 │   ├── models.py           # 7 SQLAlchemy models
 │   └── queries.py          # DB helper functions
-├── scheduler/       # APScheduler
-│   ├── runner.py           # Job configuration
-│   └── jobs.py             # Pipeline + SEMI_AUTO logic
+├── services/        # Async orchestration layer
+│   ├── pipeline.py         # run_full_pipeline (6-agent flow)
+│   ├── proposal.py         # SEMI_AUTO proposal + timeout handler
+│   └── telegram_commands.py# /confirm /skip /pause /status
+├── cron/            # Cron entry scripts (standalone processes)
+│   ├── hourly_analysis.py
+│   ├── post_market_report.py
+│   ├── morning_health.py
+│   └── pending_check.py
 ├── tools/           # Tool implementations
 │   ├── registry.py         # Tool whitelist management
 │   ├── db_tools.py         # Database operations
@@ -87,8 +93,11 @@ agent = BaseAgent(
     tool_executor=get_tool_executor(["read_latest_snapshots", "read_system_config"]),
     max_retries=2,
 )
-result = agent.run(input_data, OUTPUT_SCHEMA)
+result = await agent.run(input_data, OUTPUT_SCHEMA)  # BaseAgent is async-only
 ```
+
+All tools, agents, and services are async. Each cron entry script runs a single
+`asyncio.run(main())` in its own process — no in-process scheduler.
 
 ### Database Models
 
@@ -143,15 +152,22 @@ When RISK MGR approves a proposal in SEMI_AUTO mode:
 - `rejected_by_risk` — RISK MGR rejected
 - `skipped_manual_mode` — MANUAL mode active
 
-### Scheduler Jobs
+### Cron Jobs
 
-Defined in `scheduler/jobs.py`, configured in `scheduler/runner.py`:
+Each cron is a standalone Python process (run via `python -m cron.<name>`),
+with its own fresh `asyncio.run()`. Configure schedules as Railway cron services:
 
-| Job | Schedule | Purpose |
-|-----|----------|---------|
-| `job_hourly_analysis` | 10:00-15:00 ET (hourly) | Run full agent pipeline |
-| `job_post_market_report` | 16:35 ET | Generate daily summary |
-| `job_morning_health_check` | 09:00 ET | System status notification |
+| Entry | Schedule (ET) | Purpose |
+|-------|---------------|---------|
+| `python -m cron.hourly_analysis`   | 10:00–15:00 hourly | Full agent pipeline |
+| `python -m cron.post_market_report`| 16:35 | Daily summary |
+| `python -m cron.morning_health`    | 09:00 | Health check notification |
+| `python -m cron.pending_check`     | every 1 min | SEMI_AUTO timeout handler |
+
+The web service (`main.py`) only serves webhooks (`/api/webhook/qc`,
+`/api/telegram`, `/api/status`, `/api/command/*`) — it no longer runs any
+scheduler in-process. This eliminates asyncpg cross-event-loop issues by
+giving every scheduled job a fresh Python process.
 
 ### Configuration (`config.py`)
 
@@ -208,7 +224,7 @@ Risk parameters with defaults:
 
 ### Deployment
 
-Deployed on Railway with 2 services: PostgreSQL and web service (FastAPI with APScheduler). See `railway.toml` and `Dockerfile`.
+Deployed on Railway with multiple services: PostgreSQL, one long-running web service (FastAPI for webhooks), and separate Railway cron services for each entry in `cron/`. See `railway.toml` and `Dockerfile`.
 
 **Required Railway environment variables**:
 ```
@@ -240,7 +256,7 @@ curl "https://api.telegram.org/bot{TOKEN}/setWebhook?url=https://{RAILWAY_DOMAIN
 ✅ Tool-based architecture with BaseAgent
 ✅ SEMI_AUTO authorization with Telegram
 ✅ Risk management with approval tokens
-✅ APScheduler for time-based triggers
+✅ Railway cron services for time-based triggers
 ✅ PostgreSQL with async SQLAlchemy
 ✅ QC webhook + REST API integration
 

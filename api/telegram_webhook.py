@@ -2,7 +2,7 @@
 import logging
 from fastapi import APIRouter, Request
 from config import get_settings
-from scheduler.jobs import handle_telegram_command
+from services.telegram_commands import handle_telegram_command
 from tools.notify_tools import tool_send_telegram
 
 logger = logging.getLogger("qc_fastapi_2.telegram_webhook")
@@ -33,6 +33,6 @@ async def telegram_webhook(request: Request):
         reply = "⚠️ 指令处理异常，请重试"
 
     if reply:
-        tool_send_telegram({"text": reply})
+        await tool_send_telegram({"text": reply})
 
     return {"ok": True}

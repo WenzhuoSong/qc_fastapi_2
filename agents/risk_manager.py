@@ -44,7 +44,7 @@ TOOLS_DEF = [
 OUTPUT_SCHEMA = {"required": ["approved", "quantitative_checks"]}
 
 
-def run_risk_manager(plan: dict, allocator_output: dict) -> dict:
+async def run_risk_manager_async(plan: dict, allocator_output: dict) -> dict:
     agent = BaseAgent(
         name          = "RISK_MGR",
         system_prompt = SYSTEM_PROMPT,
@@ -56,7 +56,7 @@ def run_risk_manager(plan: dict, allocator_output: dict) -> dict:
         ]),
         max_retries   = 0,  # RISK MGR 不重试
     )
-    return agent.run(
+    return await agent.run(
         {
             "plan":             plan,
             "allocator_output": allocator_output,

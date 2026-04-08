@@ -9,11 +9,17 @@ qc_fastapi_2/
 ├── agents/          # 6 specialized agents (Planner, Researcher, Allocator, Risk Manager, Executor, Reporter)
 ├── api/             # FastAPI endpoints (webhook, command, status, telegram)
 ├── db/              # Database models, session, queries
-├── scheduler/       # APScheduler jobs and runner
+├── services/        # Async orchestration (pipeline, proposal, telegram commands)
+├── cron/            # Standalone cron entry scripts (run via `python -m cron.<name>`)
 ├── tools/           # Tool implementations (db, qc, notify)
 ├── config.py        # Pydantic Settings configuration
-└── main.py          # FastAPI application entry point
+└── main.py          # FastAPI application entry point (webhook-only)
 ```
+
+The entire stack is async-only. The web service (`main.py`) only serves
+webhooks; all scheduled work runs as separate Railway cron services, each
+in its own Python process with its own `asyncio.run()`. This eliminates
+asyncpg cross-event-loop issues by giving every job a fresh event loop.
 
 ## Setup
 
@@ -80,11 +86,16 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 - `/pause` - Switch to MANUAL mode
 - `/status` - Check system status
 
-## Scheduler Jobs
+## Cron Jobs
 
-- **Hourly Analysis** - 10:00-15:00 ET (market hours)
-- **Morning Health Check** - 09:00 ET
-- **Post Market Report** - 16:35 ET
+Each entry is a standalone process. Configure as Railway cron services:
+
+| Entry                               | Schedule (ET)       | Purpose                          |
+|-------------------------------------|---------------------|----------------------------------|
+| `python -m cron.hourly_analysis`    | 10:00–15:00 hourly  | Full 6-agent pipeline            |
+| `python -m cron.morning_health`     | 09:00               | Pre-open health notification     |
+| `python -m cron.post_market_report` | 16:35               | Daily report                     |
+| `python -m cron.pending_check`      | every 1 min         | SEMI_AUTO proposal timeout check |
 
 ## Agent Pipeline
 
@@ -101,6 +112,6 @@ PLANNER → RESEARCHER → ALLOCATOR → RISK MGR → EXECUTOR
 ✅ Tool-based architecture with BaseAgent
 ✅ SEMI_AUTO authorization with Telegram integration
 ✅ Risk management checks
-✅ APScheduler for time-based triggers
+✅ Railway cron services for time-based triggers
 ✅ PostgreSQL with async SQLAlchemy
 ✅ QC webhook receiver with gzip decompression

@@ -1,10 +1,8 @@
 # agents/base_agent.py
-import asyncio
 import json
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from openai import AsyncOpenAI
 from config import get_settings
@@ -18,6 +16,8 @@ class BaseAgent:
     """
     所有 Agent 的基类。
     负责：Prompt 加载 / OpenAI API 调用循环 / 工具执行 / 输出验证 / 重试。
+
+    仅异步接口。所有 tool_executor 中的工具必须是 async 可等待的。
     """
 
     def __init__(
@@ -25,15 +25,15 @@ class BaseAgent:
         name: str,
         system_prompt: str,
         tools: list[dict],
-        tool_executor: dict[str, callable],
+        tool_executor: dict[str, Callable[[dict], Awaitable[Any]]],
         max_retries: int = 2,
         max_tokens: int = 4096,
         use_mini_model: bool = False,
     ):
         self.name          = name
         self.system_prompt = system_prompt
-        self.tools         = self._convert_tools_to_openai_format(tools)  # 转换为OpenAI格式
-        self.tool_executor = tool_executor    # {tool_name: callable}
+        self.tools         = self._convert_tools_to_openai_format(tools)
+        self.tool_executor = tool_executor
         self.max_retries   = max_retries
         self.max_tokens    = max_tokens
         self.model         = settings.openai_model if use_mini_model else settings.openai_model_heavy
@@ -45,11 +45,9 @@ class BaseAgent:
 
         openai_tools = []
         for tool in tools:
-            # 如果已经是 OpenAI 格式（有 "type" 和 "function" 键），直接使用
             if "type" in tool and "function" in tool:
                 openai_tools.append(tool)
             else:
-                # 转换 Anthropic 格式到 OpenAI 格式
                 openai_tools.append({
                     "type": "function",
                     "function": {
@@ -63,16 +61,8 @@ class BaseAgent:
                 })
         return openai_tools
 
-    def run(self, input_data: dict, output_schema: dict | None = None) -> dict:
-        """
-        同步运行 Agent，内包含工具调用循环 + 重试。
-        返回解析后的 JSON 字典。
-        """
-        import asyncio
-        return asyncio.run(self.run_async(input_data, output_schema))
-
-    async def run_async(self, input_data: dict, output_schema: dict | None = None) -> dict:
-        """异步运行 Agent"""
+    async def run(self, input_data: dict, output_schema: dict | None = None) -> dict:
+        """异步运行 Agent，内含工具调用循环 + 重试。返回解析后的 JSON 字典。"""
         attempt = 0
         last_error = None
 
@@ -84,9 +74,7 @@ class BaseAgent:
                 return result
             except Exception as e:
                 last_error = str(e)
-                logger.warning(
-                    f"[{self.name}] attempt {attempt} failed: {e}"
-                )
+                logger.warning(f"[{self.name}] attempt {attempt} failed: {e}")
                 attempt += 1
 
         raise RuntimeError(
@@ -103,7 +91,6 @@ class BaseAgent:
         """单次 OpenAI API 调用 + 工具循环。"""
         user_content = json.dumps(input_data, ensure_ascii=False)
 
-        # 重试时附加提示
         if attempt > 0:
             user_content = (
                 f"[RETRY {attempt}] 上次输出错误：{last_error}。"
@@ -117,7 +104,6 @@ class BaseAgent:
         t0 = time.time()
 
         while True:
-            # OpenAI API call
             response = await client.chat.completions.create(
                 model=self.model,
                 messages=messages,
@@ -129,20 +115,12 @@ class BaseAgent:
             message = response.choices[0].message
             finish_reason = response.choices[0].finish_reason
 
-            # 工具调用循环
             if finish_reason == "tool_calls" and message.tool_calls:
-                # 在线程池执行同步工具，避免嵌套事件循环冲突
-                loop = asyncio.get_event_loop()
                 tool_results = []
                 for tool_call in message.tool_calls:
                     func_name = tool_call.function.name
                     func_args = json.loads(tool_call.function.arguments)
-
-                    with ThreadPoolExecutor(max_workers=1) as pool:
-                        result = await loop.run_in_executor(
-                            pool, self._call_tool, func_name, func_args
-                        )
-
+                    result = await self._call_tool(func_name, func_args)
                     tool_results.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
@@ -150,7 +128,6 @@ class BaseAgent:
                         "content": json.dumps(result, ensure_ascii=False),
                     })
 
-                # 添加 assistant 消息和工具结果
                 messages.append({
                     "role": "assistant",
                     "content": message.content,
@@ -169,7 +146,6 @@ class BaseAgent:
                 messages.extend(tool_results)
                 continue
 
-            # 输出完成
             text = message.content or ""
             elapsed = round(time.time() - t0, 2)
             logger.info(
@@ -179,19 +155,16 @@ class BaseAgent:
             )
             return self._parse_json(text)
 
-    def _call_tool(self, tool_name: str, tool_input: dict) -> Any:
+    async def _call_tool(self, tool_name: str, tool_input: dict) -> Any:
         """ToolRegistry 局部执行——拦截未授权工具。"""
         if tool_name not in self.tool_executor:
-            raise ValueError(
-                f"[{self.name}] 调用未授权工具: {tool_name}"
-            )
+            raise ValueError(f"[{self.name}] 调用未授权工具: {tool_name}")
         logger.debug(f"[{self.name}] tool_call: {tool_name}({tool_input})")
-        return self.tool_executor[tool_name](tool_input)
+        return await self.tool_executor[tool_name](tool_input)
 
     def _parse_json(self, text: str) -> dict:
         """JSON 提取——容错 markdown 代码块。"""
         text = text.strip()
-        # 剔掉 ```json ... ```
         if text.startswith("```"):
             lines = text.split("\n")
             text = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])

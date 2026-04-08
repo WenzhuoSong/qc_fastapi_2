@@ -43,7 +43,7 @@ OUTPUT_SCHEMA = {
 }
 
 
-def run_researcher(plan: dict) -> dict:
+async def run_researcher_async(plan: dict) -> dict:
     agent = BaseAgent(
         name          = "RESEARCHER",
         system_prompt = SYSTEM_PROMPT,
@@ -51,7 +51,7 @@ def run_researcher(plan: dict) -> dict:
         tool_executor = get_tool_executor(["read_latest_snapshots", "read_system_config"]),
         max_retries   = 2,
     )
-    return agent.run(
+    return await agent.run(
         {"plan": plan, "task": "分析当前市场状态"},
         OUTPUT_SCHEMA,
     )

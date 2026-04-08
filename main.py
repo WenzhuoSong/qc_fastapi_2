@@ -11,7 +11,6 @@ from api.webhook import router as webhook_router
 from api.command import router as command_router
 from api.status import router as status_router
 from api.telegram_webhook import router as telegram_router
-from scheduler.runner import start_scheduler, stop_scheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,11 +25,8 @@ async def lifespan(app: FastAPI):
     logger.info("QC FastAPI 2 starting up...")
     await init_db()
     await seed_system_config()
-    start_scheduler()
     logger.info("QC FastAPI 2 ready.")
     yield
-    # 关闭
-    stop_scheduler()
     logger.info("QC FastAPI 2 shut down.")
 
 
