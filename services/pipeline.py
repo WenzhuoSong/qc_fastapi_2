@@ -12,7 +12,7 @@ from agents.allocator    import run_allocator_async
 from agents.risk_manager import run_risk_manager_async
 from agents.executor     import run_executor_async
 from db.session          import AsyncSessionLocal
-from db.queries          import get_system_config
+from db.queries          import get_system_config, upsert_system_config
 from db.models           import AgentAnalysis, ExecutionLog
 from tools.notify_tools  import tool_send_telegram
 from services.proposal   import save_pending_proposal
@@ -21,11 +21,55 @@ from config              import get_settings
 logger   = logging.getLogger("qc_fastapi_2.pipeline")
 settings = get_settings()
 
+# --------------- Pipeline TTL Lock ---------------
+PIPELINE_LOCK_KEY = "pipeline_lock"
+PIPELINE_TTL_MINUTES = 55  # 略小于 1 小时 cron 间隔
+
+
+async def _acquire_pipeline_lock() -> bool:
+    """尝试获取 pipeline 锁。返回 True 表示获取成功。"""
+    async with AsyncSessionLocal() as db:
+        lock_cfg = await get_system_config(db, PIPELINE_LOCK_KEY)
+        if lock_cfg:
+            lock = lock_cfg.value
+            expires_at = lock.get("expires_at", "1970-01-01T00:00:00")
+            if datetime.utcnow() < datetime.fromisoformat(expires_at):
+                return False  # 锁未过期，上一个 pipeline 仍在运行
+        expires = (datetime.utcnow() + timedelta(minutes=PIPELINE_TTL_MINUTES)).isoformat()
+        await upsert_system_config(db, PIPELINE_LOCK_KEY, {
+            "locked": True,
+            "started_at": datetime.utcnow().isoformat(),
+            "expires_at": expires,
+        }, "pipeline")
+    return True
+
+
+async def _release_pipeline_lock() -> None:
+    """释放 pipeline 锁。"""
+    async with AsyncSessionLocal() as db:
+        await upsert_system_config(db, PIPELINE_LOCK_KEY, {
+            "locked": False,
+            "released_at": datetime.utcnow().isoformat(),
+            "expires_at": "1970-01-01T00:00:00",
+        }, "pipeline")
+
 
 async def run_full_pipeline(trigger: str = "scheduled_hourly") -> dict:
     """运行完整 6-agent pipeline。"""
     logger.info(f"=== Pipeline START | trigger={trigger} ===")
 
+    # TTL 锁：防止并发 pipeline
+    if not await _acquire_pipeline_lock():
+        logger.warning("Pipeline lock held by another instance — skipped")
+        return {"status": "skipped_concurrent"}
+
+    try:
+        return await _run_pipeline_inner(trigger)
+    finally:
+        await _release_pipeline_lock()
+
+
+async def _run_pipeline_inner(trigger: str) -> dict:
     # 检查 trading_paused
     async with AsyncSessionLocal() as db:
         cfg = await get_system_config(db, "trading_paused")

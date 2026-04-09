@@ -69,9 +69,11 @@ async def tool_write_decision(inp: dict) -> dict:
 
 
 async def tool_write_approval_token(inp: dict) -> dict:
-    """Generate + store a one-time approval token (5-min TTL)."""
+    """Generate + store a one-time approval token (TTL = semi_auto timeout + 5 min buffer)."""
+    from config import get_settings
+    ttl_minutes = get_settings().semi_auto_timeout_minutes + 5
     token      = str(uuid.uuid4())
-    expires_at = (datetime.utcnow() + timedelta(minutes=5)).isoformat()
+    expires_at = (datetime.utcnow() + timedelta(minutes=ttl_minutes)).isoformat()
     async with AsyncSessionLocal() as db:
         await upsert_system_config(
             db, "last_approval_token",

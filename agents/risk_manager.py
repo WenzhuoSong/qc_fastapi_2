@@ -36,7 +36,7 @@ TOOLS_DEF = [
     },
     {
         "name": "write_approval_token",
-        "description": "APPROVED 时生成审批 token（5分钟有效）",
+        "description": "APPROVED 时生成审批 token（有效期 = 超时窗口 + 5分钟）",
         "input_schema": {"type": "object", "properties": {}},
     },
 ]
