@@ -1,4 +1,4 @@
-# QC FastAPI 2 - QC Agentic Trading System
+# QC FastAPI 2 - QC Agentic Trading System 
 
 Phase 1 implementation of the autonomous trading system that integrates with QuantConnect.
 
