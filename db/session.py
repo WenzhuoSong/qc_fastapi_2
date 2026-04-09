@@ -22,6 +22,11 @@ engine = create_async_engine(
     pool_size=10,
     max_overflow=20,
     echo=False,
+    pool_timeout=30,
+    connect_args={
+        "timeout": 10,           # asyncpg 连接超时 10 秒
+        "command_timeout": 30,   # 单条 SQL 超时 30 秒
+    },
 )
 
 AsyncSessionLocal = async_sessionmaker(
@@ -37,13 +42,21 @@ async def init_db():
     """Create all tables on startup, and apply any missing column migrations."""
     from db import models  # noqa: F401 — ensure models are registered with Base
     logger.info("Running init_db, tables known: %s", list(Base.metadata.tables.keys()))
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        migrations = [
-            "ALTER TABLE holdings_factors ADD COLUMN IF NOT EXISTS hist_vol_20d NUMERIC(8,6)",
-        ]
-        for sql in migrations:
-            await conn.execute(text(sql))
+    masked_url = DATABASE_URL[:DATABASE_URL.find("://") + 3] + "***" + DATABASE_URL[DATABASE_URL.rfind("@"):]
+    logger.info("Connecting to: %s", masked_url)
+    try:
+        async with engine.begin() as conn:
+            logger.info("DB connection established, running create_all...")
+            await conn.run_sync(Base.metadata.create_all)
+            logger.info("create_all done, running migrations...")
+            migrations = [
+                "ALTER TABLE holdings_factors ADD COLUMN IF NOT EXISTS hist_vol_20d NUMERIC(8,6)",
+            ]
+            for sql in migrations:
+                await conn.execute(text(sql))
+    except Exception as e:
+        logger.error("init_db FAILED: %s", e)
+        raise
     logger.info("init_db complete.")
 
 
