@@ -48,15 +48,23 @@ async def init_db():
         async with engine.begin() as conn:
             logger.info("DB connection established, running create_all...")
             await conn.run_sync(Base.metadata.create_all)
-            logger.info("create_all done, running migrations...")
-            migrations = [
-                "ALTER TABLE holdings_factors ADD COLUMN IF NOT EXISTS hist_vol_20d NUMERIC(8,6)",
-            ]
-            for sql in migrations:
-                await conn.execute(text(sql))
+            logger.info("create_all done.")
     except Exception as e:
         logger.error("init_db FAILED: %s", e)
         raise
+
+    # 非致命 migration：设 lock_timeout 避免阻塞启动
+    migrations = [
+        "ALTER TABLE holdings_factors ADD COLUMN IF NOT EXISTS hist_vol_20d NUMERIC(8,6)",
+    ]
+    for sql in migrations:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("SET lock_timeout = '3s'"))
+                await conn.execute(text(sql))
+            logger.info("Migration applied: %s", sql[:60])
+        except Exception as e:
+            logger.warning("Migration skipped (non-fatal): %s — %s", sql[:60], e)
     logger.info("init_db complete.")
 
 
