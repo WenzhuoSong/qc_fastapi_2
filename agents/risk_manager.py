@@ -14,11 +14,8 @@ SYSTEM_PROMPT = """你是量化交易系统的首席风控官。
 6. cost_ok: 预估成本 <= max_trade_cost_pct
 
 任何一项 False 就是 REJECTED。
-如果 APPROVED，调用 write_approval_token 生成一次性 token。
-
 回答必须为纯 JSON，包含：
 - approved: bool
-- approval_token: str | null
 - rejection_reasons: []
 - quantitative_checks: {}
 - reviewed_at"""
@@ -34,11 +31,6 @@ TOOLS_DEF = [
         "description": "读取当前持仓状态",
         "input_schema": {"type": "object", "properties": {}},
     },
-    {
-        "name": "write_approval_token",
-        "description": "APPROVED 时生成审批 token（有效期 = 超时窗口 + 5分钟）",
-        "input_schema": {"type": "object", "properties": {}},
-    },
 ]
 
 OUTPUT_SCHEMA = {"required": ["approved", "quantitative_checks"]}
@@ -52,7 +44,6 @@ async def run_risk_manager_async(plan: dict, allocator_output: dict) -> dict:
         tool_executor = get_tool_executor([
             "read_system_config",
             "read_latest_portfolio",
-            "write_approval_token",
         ]),
         max_retries   = 0,  # RISK MGR 不重试
     )

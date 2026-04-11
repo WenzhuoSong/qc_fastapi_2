@@ -15,6 +15,7 @@ from db.session          import AsyncSessionLocal
 from db.queries          import get_system_config, upsert_system_config
 from db.models           import AgentAnalysis, ExecutionLog
 from tools.notify_tools  import tool_send_telegram
+from tools.db_tools      import tool_write_approval_token
 from services.proposal   import save_pending_proposal
 from config              import get_settings
 
@@ -103,10 +104,16 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     approved = risk_out.get("approved", False)
     logger.info(f"RISK MGR done | approved={approved}")
 
-    # 5. 保存 analysis
+    # 5. 确定性生成 approval_token（不依赖 LLM 调用工具）
+    if approved:
+        token_result = await tool_write_approval_token({})
+        risk_out["approval_token"] = token_result["approval_token"]
+        logger.info(f"Approval token generated deterministically")
+
+    # 6. 保存 analysis
     analysis_id = await _save_analysis(trigger, plan, researcher_out, allocator_out, risk_out)
 
-    # 6. 分支执行
+    # 7. 分支执行
     if not approved:
         logger.info("Risk rejected — skipping execution")
         return {"status": "rejected_by_risk", "analysis_id": analysis_id}
