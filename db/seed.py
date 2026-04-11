@@ -19,6 +19,21 @@ _DEFAULTS = {
     },
     "authorization_mode": {"value": "SEMI_AUTO"},
     "circuit_state":      {"value": "CLOSED"},
+
+    # 活跃策略指针
+    "active_strategy": {"value": "momentum_lite_v1"},
+
+    # MomentumLite v1.0 策略参数（与 strategies/momentum_lite.py 的 DEFAULT_PARAMS 一致）
+    "strategy_momentum_lite_v1_params": {
+        "w_mom_20d":       0.30,
+        "w_mom_60d":       0.35,
+        "w_mom_252d":      0.20,
+        "w_rsi":           0.10,
+        "w_atr":           0.05,
+        "zscore_clip":     3.0,
+        "max_holdings":    8,
+        "vol_blend_alpha": 0.70,
+    },
 }
 
 

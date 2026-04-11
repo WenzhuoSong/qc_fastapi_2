@@ -7,8 +7,9 @@ Phase 1 implementation of the autonomous trading system that integrates with Qua
 ```
 qc_fastapi_2/
 ├── agents/          # 6 specialized agents (Planner, Researcher, Allocator, Risk Manager, Executor, Reporter)
+├── strategies/      # Pluggable scoring strategies (registry pattern)
 ├── api/             # FastAPI endpoints (webhook, command, status, telegram)
-├── db/              # Database models, session, queries
+├── db/              # Database models, session, queries, seed
 ├── services/        # Async orchestration (pipeline, proposal, telegram commands)
 ├── cron/            # Standalone cron entry scripts (run via `python -m cron.<name>`)
 ├── tools/           # Tool implementations (db, qc, notify)
@@ -100,17 +101,99 @@ Each entry is a standalone process. Configure as Railway cron services:
 ## Agent Pipeline
 
 ```
-PLANNER → RESEARCHER → ALLOCATOR → RISK MGR → EXECUTOR
-                                              ↓
-                                          Telegram
-                                          (SEMI_AUTO)
+PLANNER → RESEARCHER → ALLOCATOR → RISK MGR → EXECUTOR → REPORTER
+                          ↑                      ↓
+                  strategies/ registry       Telegram
+                  (score + optimize)         (SEMI_AUTO)
 ```
+
+### RESEARCHER
+
+Outputs `market_judgment.regime` as one of six enum values —
+`bull_trend | bull_weak | neutral | bear_weak | bear_trend | high_vol` —
+which directly keys into the ALLOCATOR defense matrix. Any non-enum value
+is treated as `neutral`. `recommended_stance` is constrained to
+`maintain | increase | reduce | defensive`.
+
+### ALLOCATOR
+
+All arithmetic is deterministic Python; the LLM only selects between
+Plan A and Plan B and writes a short reasoning (auto-falls back to a
+rule engine on any LLM failure).
+
+1. Load latest snapshot + current holdings + `risk_params` +
+   `active_strategy` from `system_config`.
+2. Instantiate the active strategy from `strategies/` and call
+   `strategy.score(holdings, context)` → `strategy.optimize(...)` to
+   produce **Plan A** (standard target weights).
+3. Run `defensive_adjust(plan_a, context)` to produce **Plan B**
+   (conservative variant, regime-scaled defense).
+4. Compute `rebalance_actions` and `estimated_cost_pct` for both plans
+   via `compute_rebalance_actions` / `estimate_cost_pct`.
+5. LLM picks A or B with reasoning. Rules decide if LLM fails:
+   defensive/bear_trend/high_vol → B; drawdown ≥ 75% of max → B;
+   plan A cost > `max_trade_cost_pct` → B; else A.
+
+## Strategy Registry
+
+`strategies/__init__.py` holds a registry dict mapping strategy name to
+a `Strategy` subclass. Adding a new scoring strategy is a one-line
+change plus a new class file. The active strategy is stored in
+`system_config.active_strategy` and can be switched at runtime without a
+code deploy.
+
+```
+strategies/
+├── base.py              # Strategy ABC + ScoredTicker dataclass
+├── momentum_lite.py     # MomentumLiteV1 (default)
+├── defensive_adjust.py  # Regime-based defense matrix + rebalance helpers
+└── __init__.py          # STRATEGY_REGISTRY + get_strategy()
+```
+
+**Current default — `MomentumLiteV1`:**
+5-factor composite score on the 17-ETF universe:
+
+```
+0.30 · z(mom_20d) + 0.35 · z(mom_60d) + 0.20 · z(mom_252d)
++ 0.10 · z(100 - rsi_14)    # RSI reversed: overbought penalized
++ 0.05 · z(1 / atr_pct)     # low-vol bonus
+```
+
+Optimization: position count N chosen from
+`direction_bias + confidence`, score-weighted allocation (70%) blended
+with inverse-volatility weights (30%), capped by `max_single_position`,
+floored by `min_cash_pct`, CASH absorbs residual.
+
+**Adding a new strategy:**
+
+1. Create `strategies/my_strategy.py` subclassing `Strategy` with
+   `score()` and `optimize()`.
+2. Register in `STRATEGY_REGISTRY` in `strategies/__init__.py`.
+3. Insert default params as
+   `strategy_<name>_params` in `db/seed.py` (or write directly to
+   `system_config`).
+4. Switch active strategy by updating `system_config.active_strategy`.
+
+## Seeding System Config
+
+On a fresh database, run the seeder to populate default risk params,
+authorization mode, active strategy, and strategy parameters:
+
+```bash
+python -m db.seed
+```
+
+Seeding is idempotent — existing keys are left untouched.
 
 ## Phase 1 Features
 
 ✅ Complete 6-agent pipeline
 ✅ Tool-based architecture with BaseAgent
+✅ Pluggable strategy registry (MomentumLiteV1 default)
+✅ Deterministic ALLOCATOR math (LLM only picks Plan A/B)
+✅ Regime enum enforced end-to-end (RESEARCHER → defense matrix)
 ✅ SEMI_AUTO authorization with Telegram integration
+✅ Deterministic approval-token issuance from pipeline
 ✅ Risk management checks
 ✅ Railway cron services for time-based triggers
 ✅ PostgreSQL with async SQLAlchemy
