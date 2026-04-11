@@ -36,9 +36,14 @@ class Settings(BaseSettings):
     max_sector_concentration: float = 0.60
     rebalance_threshold: float = 0.02
     max_trade_cost_pct: float = 0.005
+    max_hist_vol: float = 0.35
+    max_broad_market: float = 0.40
 
     # SEMI_AUTO 超时（分钟）
     semi_auto_timeout_minutes: int = 20
+
+    # Finnhub 新闻 API
+    finnhub_api_key: str = ""
 
     class Config:
         env_file = ".env"

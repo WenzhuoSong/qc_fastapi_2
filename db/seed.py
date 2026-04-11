@@ -16,6 +16,8 @@ _DEFAULTS = {
         "max_sector_concentration": 0.60,
         "rebalance_threshold":     0.02,
         "max_trade_cost_pct":      0.005,
+        "max_hist_vol":            0.35,
+        "max_broad_market":        0.40,
     },
     "authorization_mode": {"value": "SEMI_AUTO"},
     "circuit_state":      {"value": "CLOSED"},

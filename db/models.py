@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, date
 from sqlalchemy import (
     BigInteger, Boolean, Column, Date, DateTime,
-    Integer, Numeric, String, Text, ForeignKey, func
+    Integer, Numeric, String, Text, ForeignKey, UniqueConstraint, func
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from db.session import Base
@@ -112,3 +112,51 @@ class ExecutionLog(Base):
     qc_response     = Column(JSONB)
     status          = Column(String(20))  # success|failed|timeout
     retry_count     = Column(Integer, default=0)
+
+
+# ─────────────────────────────── News layer ───────────────────────────────
+
+
+class TickerNewsLibrary(Base):
+    """
+    Finnhub 新闻 + LLM 摘要 + 硬风险标记。
+    由 cron/pre_fetch_news.py 每 2h 写入，48h 自动清理。
+    由 market_brief 和 risk_manager.hard_risk_filter 读取。
+    """
+    __tablename__ = "ticker_news_library"
+
+    id            = Column(BigInteger, primary_key=True, autoincrement=True)
+    ticker        = Column(String(10), nullable=False, index=True)
+    url           = Column(Text, nullable=False)
+    headline      = Column(Text, nullable=False)
+    source        = Column(String(100))
+    summary       = Column(Text)               # 原始 Finnhub 摘要
+    llm_summary   = Column(Text)               # gpt-4o-mini 一句话影响摘要
+    sentiment     = Column(String(10))         # positive|negative|neutral
+    relevance     = Column(String(15))         # direct|indirect|not_relevant
+    is_hard_event = Column(Boolean, default=False)
+    hard_risks    = Column(JSONB)              # {risk_type: reason}，scan_hard_risks 输出
+    category      = Column(String(50))
+    related       = Column(JSONB)              # Finnhub related tickers
+    datetime_utc  = Column(BigInteger, index=True)  # Unix 秒，用于 48h TTL 过滤
+    credibility   = Column(Integer)            # 0−100 source 可信度
+    created_at    = Column(DateTime, nullable=False, default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("ticker", "url", name="uq_ticker_news_url"),
+    )
+
+
+class MacroNewsCache(Base):
+    """
+    单行滚动缓存：宏观新闻 + 经济日历 + 拼好的 prose 摘要。
+    由 cron/pre_fetch_news.py 每 2h upsert，始终只保留最新 1 行（key=1）。
+    """
+    __tablename__ = "macro_news_cache"
+
+    id                = Column(Integer, primary_key=True, default=1)
+    as_of             = Column(DateTime, nullable=False, default=func.now())
+    macro_news        = Column(JSONB)          # list[dict] (from fetch_macro_news)
+    economic_calendar = Column(JSONB)          # list[dict] (from fetch_economic_calendar)
+    prose_summary     = Column(Text)           # 预拼的散文，供 market_brief 直接读
+    updated_at        = Column(DateTime, default=func.now(), onupdate=func.now())

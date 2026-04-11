@@ -29,7 +29,38 @@ This is an **agentic trading system** that integrates with QuantConnect using a 
 
 ### Core Design
 
-**Agent Pipeline**: PLANNER → RESEARCHER → ALLOCATOR → RISK MGR → EXECUTOR → REPORTER
+**Two independent crons:**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Cron 1: pre_fetch_news    every 2h @ 09:50/11:50/13:50 ET
+│   Finnhub → MacroNewsCache + TickerNewsLibrary
+│   Independent of main pipeline. Failure → stale cache,
+│   main pipeline still runs.
+└─────────────────────────────────────────────────────────┘
+                   ↓ writes
+              MacroNewsCache / TickerNewsLibrary
+                   ↑ reads
+┌─────────────────────────────────────────────────────────┐
+│ Cron 2: hourly_analysis   hourly @ 10:00–15:00 ET
+│   guard → market_brief → QUANT_BASELINE → RESEARCHER (LLM)
+│   → RISK MGR → save → COMMUNICATOR → branch
+│   (SEMI_AUTO pending / FULL_AUTO execute)
+└─────────────────────────────────────────────────────────┘
+```
+
+**Pipeline stages (Python-LLM-Python 三段接力)**:
+guard_and_config → market_brief → **quant_baseline** (Python 纯数学) →
+**RESEARCHER** (LLM 综合微调) → **RISK MGR** (Python overlays + 6 项检查) →
+save_analysis → COMMUNICATOR → branch
+
+**接力棒传的是 weights**：
+`base_weights` (Stage 2 Python) → `adjusted_weights` (Stage 3 LLM) →
+`target_weights` (Stage 4 Python) → execute。
+
+LLM calls per cycle: **2** (RESEARCHER + COMMUNICATOR). COMMUNICATOR is
+off the correctness path (5s timeout → Python fallback). RESEARCHER has a
+degraded-fallback path that echoes `base_weights` if all retries fail.
 
 **Authorization Modes**:
 - `FULL_AUTO` — Fully autonomous execution
@@ -40,12 +71,11 @@ This is an **agentic trading system** that integrates with QuantConnect using a 
 
 ```
 qc_fastapi_2/
-├── agents/          # 6 specialized agents
-│   ├── base_agent.py       # BaseAgent with tool calling loop
-│   ├── planner.py          # Static workflow planner
-│   ├── researcher.py       # Market regime analyst
-│   ├── allocator.py        # Weight optimizer (Plan A/B)
-│   ├── risk_manager.py     # Risk gatekeeper + approval token
+├── agents/          # Pipeline agents
+│   ├── base_agent.py       # BaseAgent with tool calling loop (legacy helper)
+│   ├── researcher.py       # Stage 3: LLM synthesizer (base_weights → adjusted_weights)
+│   ├── risk_manager.py     # Stage 4: overlays + 6 checks → target_weights + token
+│   ├── communicator.py     # LLM Telegram card + Python fallback
 │   ├── executor.py         # Deterministic execution logic
 │   └── reporter.py         # Daily report generator
 ├── api/             # FastAPI endpoints
@@ -55,14 +85,24 @@ qc_fastapi_2/
 │   └── telegram_webhook.py # Telegram command handler
 ├── db/              # Database layer
 │   ├── session.py          # AsyncSession + asyncpg
-│   ├── models.py           # 7 SQLAlchemy models
+│   ├── models.py           # SQLAlchemy models (incl. news tables)
 │   └── queries.py          # DB helper functions
 ├── services/        # Async orchestration layer
-│   ├── pipeline.py         # run_full_pipeline (6-agent flow)
+│   ├── pipeline.py         # run_full_pipeline
+│   ├── market_brief.py     # Stage 1: snapshot + news → brief dict
+│   ├── quant_baseline.py   # Stage 2: Python scoring → base_weights
+│   ├── transmission.py     # Macro event → sector pattern library (used by risk_mgr)
+│   ├── finnhub_client.py   # Finnhub REST client + credibility
+│   ├── news_summarizer.py  # gpt-4o-mini batch news summarizer
 │   ├── proposal.py         # SEMI_AUTO proposal + timeout handler
 │   └── telegram_commands.py# /confirm /skip /pause /status
+├── strategies/      # Strategy layer
+│   ├── base.py             # Strategy abstract contract
+│   ├── momentum_lite.py    # 5-factor momentum composite
+│   └── defensive_adjust.py # Regime-based overlay helpers
 ├── cron/            # Cron entry scripts (standalone processes)
-│   ├── hourly_analysis.py
+│   ├── pre_fetch_news.py   # Cron 1: Finnhub → DB (every 2h)
+│   ├── hourly_analysis.py  # Cron 2: main pipeline (hourly)
 │   ├── post_market_report.py
 │   ├── morning_health.py
 │   └── pending_check.py
@@ -71,6 +111,7 @@ qc_fastapi_2/
 │   ├── db_tools.py         # Database operations
 │   ├── qc_tools.py         # QC API (weights, liquidate)
 │   └── notify_tools.py     # Telegram notifications
+├── constants.py     # ETF_UNIVERSE + style buckets
 ├── config.py        # Pydantic Settings
 └── main.py          # FastAPI app entry point
 ```
@@ -110,6 +151,8 @@ All tools, agents, and services are async. Each cron entry script runs a single
 | `AlertLog` | QC alert tracking |
 | `AgentAnalysis` | Complete agent pipeline results |
 | `ExecutionLog` | QC command execution history |
+| `TickerNewsLibrary` | Finnhub news + LLM summary + hard_risks (48h rolling) |
+| `MacroNewsCache` | Single-row macro news + economic calendar cache |
 
 All use async SQLAlchemy with asyncpg driver.
 
@@ -159,6 +202,7 @@ with its own fresh `asyncio.run()`. Configure schedules as Railway cron services
 
 | Entry | Schedule (ET) | Purpose |
 |-------|---------------|---------|
+| `python -m cron.pre_fetch_news`    | 09:50, 11:50, 13:50 | Finnhub news → DB (independent) |
 | `python -m cron.hourly_analysis`   | 10:00–15:00 hourly | Full agent pipeline |
 | `python -m cron.post_market_report`| 16:35 | Daily summary |
 | `python -m cron.morning_health`    | 09:00 | Health check notification |
@@ -230,16 +274,17 @@ Deployed on Railway with multiple services: PostgreSQL, one long-running web ser
 ```
 DATABASE_URL          # auto-injected from Railway PostgreSQL service
 OPENAI_API_KEY
-OPENAI_MODEL=gpt-4o
-OPENAI_MODEL_MINI=gpt-4o-mini
+OPENAI_MODEL=gpt-4o-mini        # light tasks (news summarization, communicator)
+OPENAI_MODEL_HEAVY=gpt-4o       # main reasoning (RESEARCHER)
+FINNHUB_API_KEY                 # news/calendar source for pre_fetch_news cron
 WEBHOOK_USER=qc
 WEBHOOK_SECRET
 QC_API_URL=https://www.quantconnect.com/api/v2
 QC_USER_ID
 QC_API_TOKEN
 QC_PROJECT_ID
-TELEGRAM_BOT_TOKEN
-TELEGRAM_CHAT_ID
+TG_BOT_TOKEN
+TG_CHAT_ID
 AUTHORIZATION_MODE=SEMI_AUTO
 ```
 
