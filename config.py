@@ -42,8 +42,9 @@ class Settings(BaseSettings):
     # SEMI_AUTO 超时（分钟）
     semi_auto_timeout_minutes: int = 20
 
-    # Finnhub 新闻 API
+    # 新闻 API
     finnhub_api_key: str = ""
+    alphavantage_api_key: str = ""
 
     class Config:
         env_file = ".env"

@@ -185,6 +185,7 @@ async def _read_ticker_news(
         per_ticker.setdefault(r.ticker, []).append({
             "headline":    r.headline,
             "source":      r.source,
+            "source_api":  r.source_api or "finnhub",
             "llm_summary": r.llm_summary,
             "sentiment":   r.sentiment,
             "relevance":   r.relevance,

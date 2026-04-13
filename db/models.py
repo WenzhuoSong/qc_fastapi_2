@@ -119,8 +119,8 @@ class ExecutionLog(Base):
 
 class TickerNewsLibrary(Base):
     """
-    Finnhub 新闻 + LLM 摘要 + 硬风险标记。
-    由 cron/pre_fetch_news.py 每 2h 写入，48h 自动清理。
+    多源新闻 + LLM 摘要 + 硬风险标记。
+    由 cron/pre_fetch_news.py 每 2h 写入（Finnhub / Alpha Vantage / RSS），48h 自动清理。
     由 market_brief 和 risk_manager.hard_risk_filter 读取。
     """
     __tablename__ = "ticker_news_library"
@@ -130,7 +130,8 @@ class TickerNewsLibrary(Base):
     url           = Column(Text, nullable=False)
     headline      = Column(Text, nullable=False)
     source        = Column(String(100))
-    summary       = Column(Text)               # 原始 Finnhub 摘要
+    source_api    = Column(String(20), default="finnhub")  # finnhub|alphavantage|rss
+    summary       = Column(Text)               # 原始摘要
     llm_summary   = Column(Text)               # gpt-4o-mini 一句话影响摘要
     sentiment     = Column(String(10))         # positive|negative|neutral
     relevance     = Column(String(15))         # direct|indirect|not_relevant
