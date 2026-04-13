@@ -29,6 +29,7 @@ pipeline 挂 → 新闻照常刷新。
 """
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta
 
 from agents.researcher       import run_researcher_async
@@ -42,7 +43,7 @@ from services.market_brief    import build_market_brief
 from services.quant_baseline  import run_quant_baseline_async
 from db.session          import AsyncSessionLocal
 from db.queries          import get_system_config, upsert_system_config
-from db.models           import AgentAnalysis, ExecutionLog
+from db.models           import AgentAnalysis, AgentStepLog, ExecutionLog
 from tools.notify_tools  import tool_send_telegram
 from services.proposal   import save_pending_proposal
 from config              import get_settings
@@ -131,6 +132,37 @@ async def _guard_and_config(trigger: str) -> dict | None:
     }
 
 
+# ─────────────────────────────── Step Log Helper ───────────────────────────────
+
+
+async def _save_step_log(
+    analysis_id: int,
+    stage: str,
+    agent_name: str,
+    input_data: dict | None,
+    output_data: dict | None,
+    duration_ms: int = 0,
+    model: str | None = None,
+    failed: bool = False,
+) -> None:
+    """写一条 agent_step_log 记录。静默失败，不影响 pipeline。"""
+    try:
+        async with AsyncSessionLocal() as db:
+            db.add(AgentStepLog(
+                analysis_id = analysis_id,
+                stage       = stage,
+                agent_name  = agent_name,
+                input_data  = input_data,
+                output_data = output_data,
+                duration_ms = duration_ms,
+                model       = model,
+                failed      = failed,
+            ))
+            await db.commit()
+    except Exception as e:
+        logger.warning(f"Failed to save step log for {stage}: {e}")
+
+
 # ─────────────────────────────── 主入口 ───────────────────────────────
 
 
@@ -149,6 +181,8 @@ async def run_full_pipeline(trigger: str = "scheduled_hourly") -> dict:
 
 
 async def _run_pipeline_inner(trigger: str) -> dict:
+    model_heavy = settings.openai_model_heavy
+
     # Stage 0: guard + config
     pipeline_context = await _guard_and_config(trigger)
     if pipeline_context is None:
@@ -160,8 +194,13 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         f"| strategy={pipeline_context['active_strategy']}"
     )
 
+    # 提前创建 analysis 行，拿到 analysis_id 供 step log 使用
+    analysis_id = await _create_analysis_placeholder(trigger, pipeline_context)
+
     # Stage 1: market_brief (Python)
+    t0 = time.time()
     brief = await build_market_brief(pipeline_context)
+    dur_brief = int((time.time() - t0) * 1000)
     if not brief.get("holdings"):
         logger.warning("Stage 1 market_brief: no holdings in latest snapshot — skipping pipeline")
         return {"status": "skipped_no_snapshot"}
@@ -170,17 +209,33 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         f"n_holdings={len(brief.get('holdings', []))} "
         f"| hard_risks={len(brief.get('hard_risks_map', {}))}"
     )
+    await _save_step_log(
+        analysis_id, "1_brief", "market_brief",
+        input_data={"n_holdings": len(brief.get("holdings", []))},
+        output_data=brief,
+        duration_ms=dur_brief,
+    )
 
     # Stage 2: quant_baseline (Python)
+    t0 = time.time()
     quant_baseline = await run_quant_baseline_async(pipeline_context, brief)
+    dur_quant = int((time.time() - t0) * 1000)
     logger.info(
         f"Stage 2 quant_baseline done | "
         f"n_selected={len(quant_baseline.get('selected_tickers', []))} "
         f"| top5={quant_baseline.get('ranking_summary', {}).get('top_5', [])}"
     )
+    await _save_step_log(
+        analysis_id, "2_quant", "quant_baseline",
+        input_data={"strategy": pipeline_context.get("active_strategy")},
+        output_data=quant_baseline,
+        duration_ms=dur_quant,
+    )
 
     # Stage 3: RESEARCHER (LLM) —— 信息合成（只分析不决策）
+    t0 = time.time()
     research_report = await run_researcher_async(pipeline_context, brief, quant_baseline)
+    dur_researcher = int((time.time() - t0) * 1000)
     logger.info(
         f"Stage 3 RESEARCHER done | "
         f"regime={research_report.get('market_regime', {}).get('regime')} "
@@ -188,13 +243,23 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         f"| n_ticker_signals={len(research_report.get('ticker_signals', []))} "
         f"| degraded={research_report.get('used_degraded_fallback', False)}"
     )
+    await _save_step_log(
+        analysis_id, "3_researcher", "researcher",
+        input_data={"base_weights": quant_baseline.get("base_weights")},
+        output_data=research_report,
+        duration_ms=dur_researcher,
+        model=model_heavy,
+        failed=research_report.get("used_degraded_fallback", False),
+    )
 
     # Stage 4a/4b: BULL + BEAR RESEARCHERS (LLM, 并行)
     base_weights = quant_baseline.get("base_weights", {})
+    t0 = time.time()
     bull_output, bear_output = await asyncio.gather(
         run_bull_researcher_async(research_report, base_weights),
         run_bear_researcher_async(research_report, base_weights),
     )
+    dur_debate = int((time.time() - t0) * 1000)
     logger.info(
         f"Stage 4a BULL done | stance={bull_output.get('stance')} "
         f"| confidence={bull_output.get('confidence')} "
@@ -205,13 +270,32 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         f"| confidence={bear_output.get('confidence')} "
         f"| failed={bear_output.get('failed', False)}"
     )
+    # Bull 和 Bear 各记一条
+    await _save_step_log(
+        analysis_id, "4a_bull", "bull_researcher",
+        input_data={"base_weights": base_weights},
+        output_data=bull_output,
+        duration_ms=dur_debate,
+        model=model_heavy,
+        failed=bull_output.get("failed", False),
+    )
+    await _save_step_log(
+        analysis_id, "4b_bear", "bear_researcher",
+        input_data={"base_weights": base_weights},
+        output_data=bear_output,
+        duration_ms=dur_debate,
+        model=model_heavy,
+        failed=bear_output.get("failed", False),
+    )
 
     # Stage 5: SYNTHESIZER (LLM) —— 仲裁 Bull/Bear → adjusted_weights
     risk_params = pipeline_context.get("risk_params", {})
+    t0 = time.time()
     synthesizer_out = await run_synthesizer_async(
         research_report, bull_output, bear_output,
         base_weights, brief, risk_params,
     )
+    dur_synth = int((time.time() - t0) * 1000)
     logger.info(
         f"Stage 5 SYNTHESIZER done | "
         f"regime={synthesizer_out.get('market_judgment', {}).get('regime')} "
@@ -220,12 +304,27 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         f"| key_events={len(synthesizer_out.get('key_events', []))} "
         f"| degraded={synthesizer_out.get('used_degraded_fallback', False)}"
     )
+    await _save_step_log(
+        analysis_id, "5_synthesizer", "synthesizer",
+        input_data={
+            "bull_stance": bull_output.get("stance"),
+            "bull_confidence": bull_output.get("confidence"),
+            "bear_stance": bear_output.get("stance"),
+            "bear_confidence": bear_output.get("confidence"),
+        },
+        output_data=synthesizer_out,
+        duration_ms=dur_synth,
+        model=model_heavy,
+        failed=synthesizer_out.get("used_degraded_fallback", False),
+    )
 
     # Stage 6: RISK MGR (Python) —— overlays + 6 checks
     # synthesizer_out 接口兼容旧 researcher_out，Risk MGR 无需改动
+    t0 = time.time()
     risk_out = await run_risk_manager_async(
         pipeline_context, brief, quant_baseline, synthesizer_out
     )
+    dur_risk = int((time.time() - t0) * 1000)
     approved = bool(risk_out.get("approved", False))
     logger.info(
         f"Stage 6 RISK MGR done | approved={approved} "
@@ -233,18 +332,34 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         f"| cost={risk_out.get('estimated_cost_pct', 0):.4%} "
         f"| overlays={risk_out.get('overlays_applied', [])}"
     )
+    await _save_step_log(
+        analysis_id, "6_risk_mgr", "risk_manager",
+        input_data={"adjusted_weights": synthesizer_out.get("adjusted_weights")},
+        output_data=risk_out,
+        duration_ms=dur_risk,
+    )
 
-    # Stage 7: 写 analysis
-    analysis_id = await _save_analysis(
-        trigger, pipeline_context, quant_baseline, synthesizer_out, risk_out
+    # Stage 7: 更新 analysis 行（填充完整数据）
+    await _finalize_analysis(
+        analysis_id, quant_baseline, synthesizer_out, risk_out
     )
 
     # Stage 8: COMMUNICATOR —— LLM + fallback
+    t0 = time.time()
     comm_out = await run_communicator_async(
         pipeline_context, synthesizer_out, risk_out
     )
+    dur_comm = int((time.time() - t0) * 1000)
     logger.info(
         f"Stage 8 COMMUNICATOR done | used_fallback={comm_out.get('used_fallback', False)}"
+    )
+    await _save_step_log(
+        analysis_id, "8_communicator", "communicator",
+        input_data={"approved": approved, "stance": synthesizer_out.get("recommended_stance")},
+        output_data=comm_out,
+        duration_ms=dur_comm,
+        model=settings.openai_model if not comm_out.get("used_fallback") else None,
+        failed=comm_out.get("used_fallback", False),
     )
 
     # Stage 9: 分支执行
@@ -301,35 +416,42 @@ async def _send_semi_auto_proposal(
 # ─────────────────────────────── 存档 ───────────────────────────────
 
 
-async def _save_analysis(
-    trigger:          str,
-    pipeline_context: dict,
-    quant_baseline:   dict,
-    researcher_out:   dict,
-    risk_out:         dict,
-) -> int:
-    """
-    AgentAnalysis 表列名沿用旧命名（方案 A）：
-      planner_output   ← pipeline_context   （Stage 0）
-      allocator_output ← quant_baseline     （Stage 2 纯数学基准）
-      researcher_output← researcher_out     （Stage 3 LLM 调整草案）
-      risk_output      ← risk_out           （Stage 4 最终执行方案）
-    """
+async def _create_analysis_placeholder(trigger: str, pipeline_context: dict) -> int:
+    """提前创建 analysis 行（仅含 trigger + context），拿到 ID 供 step log 使用。"""
     async with AsyncSessionLocal() as db:
         row = AgentAnalysis(
             analyzed_at       = datetime.utcnow(),
             trigger_type      = trigger,
             planner_output    = pipeline_context,
-            researcher_output = researcher_out,
-            allocator_output  = quant_baseline,
-            risk_output       = risk_out,
-            risk_approved     = bool(risk_out.get("approved", False)),
-            execution_status  = "pending",
+            execution_status  = "running",
         )
         db.add(row)
         await db.commit()
         await db.refresh(row)
         return row.id
+
+
+async def _finalize_analysis(
+    analysis_id:    int,
+    quant_baseline: dict,
+    synthesizer_out: dict,
+    risk_out:       dict,
+) -> None:
+    """Pipeline 结束时回填 analysis 行的完整数据。"""
+    from sqlalchemy import update
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            update(AgentAnalysis)
+            .where(AgentAnalysis.id == analysis_id)
+            .values(
+                researcher_output = synthesizer_out,
+                allocator_output  = quant_baseline,
+                risk_output       = risk_out,
+                risk_approved     = bool(risk_out.get("approved", False)),
+                execution_status  = "pending",
+            )
+        )
+        await db.commit()
 
 
 async def _save_execution(analysis_id: int, result: dict) -> None:

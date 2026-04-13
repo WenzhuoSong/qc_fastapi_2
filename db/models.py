@@ -114,6 +114,30 @@ class ExecutionLog(Base):
     retry_count     = Column(Integer, default=0)
 
 
+# ─────────────────────────────── Agent Step Log ───────────────────────────────
+
+
+class AgentStepLog(Base):
+    """
+    Pipeline 每个 stage 的输入/输出日志。
+    每次 pipeline run 产生 7-8 条记录（brief → researcher → bull → bear → synthesizer → risk → communicator）。
+    用于事后调试和分析决策链路。
+    """
+    __tablename__ = "agent_step_log"
+
+    id            = Column(BigInteger, primary_key=True, autoincrement=True)
+    analysis_id   = Column(BigInteger, ForeignKey("agent_analysis.id"), nullable=False, index=True)
+    stage         = Column(String(30), nullable=False)   # e.g. "1_brief", "3_researcher", "4a_bull"
+    agent_name    = Column(String(30), nullable=False)   # e.g. "market_brief", "researcher", "bull"
+    input_data    = Column(JSONB)                        # 该 agent 的输入（可能较大，brief/research_report）
+    output_data   = Column(JSONB)                        # 该 agent 的输出
+    duration_ms   = Column(Integer)                      # 耗时（毫秒）
+    model         = Column(String(40))                   # LLM 模型名，Python stage 为 null
+    token_usage   = Column(JSONB)                        # {"prompt_tokens": N, "completion_tokens": N}
+    failed        = Column(Boolean, default=False)       # 是否降级
+    created_at    = Column(DateTime, nullable=False, default=func.now())
+
+
 # ─────────────────────────────── News layer ───────────────────────────────
 
 
