@@ -11,8 +11,11 @@ execution.
 ```
 qc_fastapi_2/
 ├── agents/          # Pipeline agents
-│   ├── researcher.py       # Stage 3: LLM synthesizer (base → adjusted weights)
-│   ├── risk_manager.py     # Stage 4: overlays + 6 checks → target weights
+│   ├── researcher.py       # Stage 3: LLM info synthesis → research_report
+│   ├── bull_researcher.py  # Stage 4a: Bull arguments (parallel)
+│   ├── bear_researcher.py  # Stage 4b: Bear arguments (parallel)
+│   ├── synthesizer.py      # Stage 5: CIO arbitration → adjusted_weights
+│   ├── risk_manager.py     # Stage 6: overlays + 6 checks → target weights
 │   ├── communicator.py     # LLM Telegram card + Python fallback
 │   ├── executor.py         # Deterministic execution (3 gates)
 │   └── reporter.py         # Daily report
@@ -22,6 +25,8 @@ qc_fastapi_2/
 │   ├── quant_baseline.py   # Stage 2: pure math → base_weights
 │   ├── transmission.py     # Macro event → sector pattern library
 │   ├── finnhub_client.py   # Finnhub REST + credibility scoring
+│   ├── alphavantage_client.py # Alpha Vantage News Sentiment API
+│   ├── rss_fetcher.py      # RSS feed fetcher (MarketWatch/CNBC/Yahoo/Reuters)
 │   ├── news_summarizer.py  # gpt-4o-mini batch news summarizer
 │   ├── proposal.py         # SEMI_AUTO proposal lifecycle
 │   └── telegram_commands.py# /confirm /skip /pause /status
@@ -30,7 +35,7 @@ qc_fastapi_2/
 │   ├── momentum_lite.py    # MomentumLiteV1 (default)
 │   └── defensive_adjust.py # Defense matrix + rebalance helpers
 ├── cron/            # Standalone cron entry scripts
-│   ├── pre_fetch_news.py   # Finnhub → DB (independent)
+│   ├── pre_fetch_news.py   # Multi-source news → DB (Finnhub + AV + RSS)
 │   ├── hourly_analysis.py  # Main agent pipeline
 │   ├── pending_check.py    # SEMI_AUTO timeout handler
 │   ├── morning_health.py   # Pre-open health check
@@ -48,32 +53,34 @@ webhooks; all scheduled work runs as separate Railway cron services, each
 in its own Python process with its own `asyncio.run()`. This eliminates
 asyncpg cross-event-loop issues by giving every job a fresh event loop.
 
-## Pipeline: 8-Stage Relay
+## Pipeline: 10-Stage Relay
 
 ```
-Stage 0  guard_and_config     Python    config / pause / lock
-Stage 1  market_brief         Python    snapshot + news → brief (no weights)
-Stage 2  quant_baseline       Python    pure-math scoring → base_weights
-Stage 3  RESEARCHER           LLM       base_weights + brief → adjusted_weights
-Stage 4  RISK MGR             Python    transmission → defensive → hard_risk → 6 checks
-Stage 5  save_analysis        Python    INSERT INTO agent_analysis (4 cols)
-Stage 6  COMMUNICATOR         LLM+fb    Telegram card (5s timeout → Python fallback)
-Stage 7  branch               Python    rejected / SEMI_AUTO pending / FULL_AUTO execute
-Stage 8  EXECUTOR             Python    3 gates → QC REST (FULL_AUTO path)
+Stage 0   guard_and_config     Python    config / pause / lock
+Stage 1   market_brief         Python    snapshot + news → brief (no weights)
+Stage 2   quant_baseline       Python    pure-math scoring → base_weights
+Stage 3   RESEARCHER           LLM       base + brief → research_report (info synthesis only)
+Stage 4a  BULL RESEARCHER      LLM       research_report → bull arguments (parallel)
+Stage 4b  BEAR RESEARCHER      LLM       research_report → bear arguments (parallel)
+Stage 5   SYNTHESIZER          LLM       Bull/Bear arbitration → adjusted_weights
+Stage 6   RISK MGR             Python    transmission → defensive → hard_risk → 6 checks
+Stage 7   save_analysis        Python    INSERT INTO agent_analysis (4 cols)
+Stage 8   COMMUNICATOR         LLM+fb    Telegram card (5s timeout → Python fallback)
+Stage 9   branch               Python    rejected / SEMI_AUTO pending / FULL_AUTO execute
 ```
 
 **The baton is always weights:**
 
 ```
- base_weights         adjusted_weights         target_weights
- (Stage 2 Python) ──► (Stage 3 LLM)    ──►     (Stage 4 Python) ──► QC
-   量化研究员            宏观策略师                  首席风控官
+ base_weights       research_report      bull/bear_output     adjusted_weights      target_weights
+ (Stage 2 Python) → (Stage 3 LLM)     → (Stage 4a/4b LLM) → (Stage 5 LLM)      → (Stage 6 Python) → QC
+   量化研究员          信息合成              多空辩论              首席投资官仲裁          首席风控官
 ```
 
-LLM calls per cycle: **2** — RESEARCHER (on the correctness path, with a
-degraded fallback that echoes `base_weights` if all retries fail) and
-COMMUNICATOR (5s timeout → Python f-string fallback; not on the
-correctness path).
+LLM calls per cycle: **4** — RESEARCHER (info synthesis) + BULL/BEAR
+(parallel debate, counted as 2) + SYNTHESIZER (arbitration). All on the
+correctness path with degraded fallbacks. COMMUNICATOR (5s timeout →
+Python f-string fallback; not on the correctness path) adds 1 more.
 
 ### Stage-by-stage responsibilities
 
@@ -86,33 +93,47 @@ Output: `brief` dict. No weights.
 **Stage 2 — `quant_baseline`** (Python)
 Instantiates the active strategy from `strategies/`, calls
 `strategy.score(holdings, NEUTRAL_CTX)` → `strategy.optimize(...)`. The
-context is deliberately neutral — regime judgment happens in Stage 3.
+context is deliberately neutral — regime judgment happens downstream.
 Output: `base_weights` + `scoring_breakdown` + `ranking_summary`. The
 baseline is "the Python quant researcher's best guess if it only saw the
 numbers."
 
 **Stage 3 — `RESEARCHER`** (LLM, gpt-4o)
-The macro strategist. User payload includes the brief prose, key_facts,
-macro news, calendar, **base_weights**, top-15 scoring breakdown, and
-constraints. System prompt requires the LLM to **start from base_weights
-and make qualitative micro-adjustments** (default ≤±5%, >±10% needs a
-clear macro reason). Output includes:
+The chief market analyst. **Only analyzes, does not decide weights.**
+Synthesizes quant factors + news + macro + calendar into a structured
+`research_report` for the Bull/Bear debate layer. Output:
 
-- `market_judgment` — regime (6-enum) + confidence + uncertainty
-- `recommended_stance` — 4-enum
-- `adjusted_weights` — the draft proposal
-- `weight_adjustments` — per-ticker delta vs base_weights + reason
-- `reasoning` — 150-char Chinese rationale
-- `key_events` — 3-5 phrases using terms matchable by the transmission
-  pattern library
+- `market_regime` — regime (6-enum) + confidence + evidence
+- `macro_outlook` — summary + key_events + impact_bias
+- `ticker_signals` — per-ticker quant_score + news_sentiment + combined_signal
+  (strong_positive / positive / neutral / negative / strong_negative)
+- `cross_signal_insights` — cross-ticker pattern observations
 
-Python post-processing sanitizes the weights: unknown tickers filtered,
-negative values zeroed, per-position capped at `max_single_position`,
-renormalized to sum=1.0, CASH absorbs rounding residual. If all 3 LLM
-retries fail, a **degraded fallback** returns base_weights as
-adjusted_weights with `used_degraded_fallback=True`.
+3 retries. Degraded fallback generates quant-only report (no news synthesis).
 
-**Stage 4 — `RISK MGR`** (Python)
+**Stage 4a/4b — `BULL/BEAR RESEARCHERS`** (LLM, gpt-4o, parallel)
+Two adversarial analysts running via `asyncio.gather`:
+
+- **Bull** (4a): argues maintain/increase. Finds all positive signals,
+  explains why risks are manageable. Output: stance + arguments +
+  ticker_views (overweight/hold) + suggested_weights + risk_acknowledgments.
+- **Bear** (4b): argues reduce/defensive. Finds all risk signals, explains
+  why positive signals are unreliable. Output: stance + arguments +
+  ticker_views (underweight/trim/avoid) + suggested_weights + bullish_rebuttals.
+
+Each has 2 retries. Degraded fallbacks: Bull echoes base_weights; Bear
+increases CASH to 30%.
+
+**Stage 5 — `SYNTHESIZER`** (LLM, gpt-4o)
+The CIO / arbitrator. Weighs Bull vs Bear evidence quality, identifies
+consensus and divergence points, produces final `adjusted_weights`.
+**Output is interface-compatible with old researcher_out** — Risk MGR
+needs no changes. Uses 5-level stance: buy / overweight / maintain /
+underweight / sell. Auto-detects uncertainty when |bull_conf - bear_conf|
+< 0.15 → sets `uncertainty_flag=True`. Includes `debate_summary` for
+Communicator. 3 retries. Degraded fallback echoes base_weights.
+
+**Stage 6 — `RISK MGR`** (Python)
 The CRO. Not just a gatekeeper — applies deterministic corrections before
 checks. Overlay chain in order:
 
@@ -143,7 +164,7 @@ Then 6 hard checks on the final `target_weights`:
 Pass → issue one-time 5-min UUID approval token. Fail → return
 `rejection_reasons` with specific per-check actuals.
 
-**Stage 8 — `EXECUTOR`** (Python, FULL_AUTO only)
+**Stage 9 — `EXECUTOR`** (Python, FULL_AUTO only)
 Three gates: `risk_out.approved` → `verify_approval_token` (one-shot
 consume) → weight sum sanity. On pass, HMAC-SHA256 POST to
 `{QC_API_URL}/projects/{PROJECT_ID}/live/commands` with target weights.
@@ -152,16 +173,24 @@ consume) → weight sum sanity. On pass, HMAC-SHA256 POST to
 
 Two independent tables feed Stage 1:
 
-- **`TickerNewsLibrary`** — Finnhub per-ticker news with gpt-4o-mini
+- **`TickerNewsLibrary`** — Multi-source per-ticker news with gpt-4o-mini
   summary, sentiment, relevance, hard_risks flags, source credibility
   (Bloomberg/Reuters=100 down to 30 default). 48h rolling TTL, dedup by
-  `(ticker, url)`.
+  `(ticker, url)`. Each row tagged with `source_api` (finnhub/alphavantage/rss).
 - **`MacroNewsCache`** — single-row cache of macro headlines + economic
   calendar + pre-stitched Chinese prose.
 
-Both are maintained by `cron/pre_fetch_news.py` every 2h, completely
-independent from the main pipeline. Finnhub outage → stale cache → main
-pipeline still runs. Main pipeline outage → news still refreshes.
+Both are maintained by `cron/pre_fetch_news.py` every 2h via a multi-phase
+pipeline, completely independent from the main pipeline:
+
+- **Phase A**: Finnhub — macro news + economic calendar + per-ticker news
+- **Phase B**: Alpha Vantage — bulk ticker news with built-in sentiment
+  (skips LLM summarization when sentiment is pre-populated)
+- **Phase C**: RSS feeds — MarketWatch, CNBC, Yahoo Finance, Reuters;
+  keyword-matched to ETF universe (17 tickers × keyword list)
+
+Each phase is independently fault-tolerant. Any phase failing does not
+affect the others or the main pipeline.
 
 ## Cron Jobs
 
@@ -170,7 +199,7 @@ pipeline still runs. Main pipeline outage → news still refreshes.
 
 | Entry | Schedule (ET) | Purpose |
 |---|---|---|
-| `python -m cron.pre_fetch_news` | 09:50 / 11:50 / 13:50 | Finnhub → DB (macro + ticker news) |
+| `python -m cron.pre_fetch_news` | 09:50 / 11:50 / 13:50 | Multi-source news → DB (Finnhub + AV + RSS) |
 | `python -m cron.hourly_analysis` | 10:00–15:00 hourly | Full 8-stage pipeline |
 | `python -m cron.pending_check` | every 1 min | SEMI_AUTO timeout handler |
 | `python -m cron.morning_health` | 09:00 | Pre-open health notification |
@@ -239,6 +268,7 @@ Copy `.env.example` to `.env`. Required keys:
 - `OPENAI_MODEL_HEAVY` — main reasoning model (default: `gpt-4o`) for
   RESEARCHER
 - `FINNHUB_API_KEY` — news/calendar source for `pre_fetch_news`
+- `ALPHAVANTAGE_API_KEY` — (optional) Alpha Vantage news sentiment
 - `QC_API_URL`, `QC_USER_ID`, `QC_API_TOKEN`, `QC_PROJECT_ID` —
   QuantConnect
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
@@ -303,3 +333,16 @@ cron services above.
 ✅ PostgreSQL with async SQLAlchemy + asyncpg
 ✅ QC webhook receiver with gzip decompression + HMAC-authenticated
    command posting
+
+## Phase 2 Progress
+
+✅ Multi-source news: Finnhub + Alpha Vantage + RSS feeds
+✅ `source_api` tracking per news article (finnhub/alphavantage/rss)
+✅ RSS → ETF keyword matching (17 ETF × keyword list)
+✅ Intelligent LLM skip for pre-populated sentiment (Alpha Vantage)
+✅ RESEARCHER refactored to info synthesis (research_report, no weights)
+✅ Bull/Bear structured debate (Stage 4a/4b, parallel via asyncio.gather)
+✅ Synthesizer CIO arbiter (Stage 5, interface-compatible with old researcher_out)
+✅ 10-stage pipeline refactor (pipeline.py rewired)
+✅ 5-level stance system (buy/overweight/maintain/underweight/sell)
+✅ Communicator updated with debate_summary in Telegram card

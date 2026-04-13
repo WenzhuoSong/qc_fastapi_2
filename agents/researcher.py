@@ -1,21 +1,19 @@
 # agents/researcher.py
 """
-Stage 3: RESEARCHER —— 宏观策略师（LLM 合成站）
+Stage 3: RESEARCHER —— 信息合成层（V2.1 重构）
 
-update.txt 的接力棒：
-    Stage 2 Python Quant 产出 base_weights（纯数学基准）→
-    Stage 3 LLM RESEARCHER 综合 base_weights + 新闻 + 日程 + 定量指标 →
-    产出 adjusted_weights（draft_proposal）+ regime + stance + reasoning + key_events →
-    Stage 4 Python Risk Manager 审查、应用 overlays、签 token
+V2.1 的职责变化：
+    V2 Phase 1: 又分析又决策，直接输出 adjusted_weights
+    V2.1:       **只分析不决策**，输出结构化 research_report 供 Bull/Bear 消费
 
-核心职责：**基于 base_weights 做定性微调**。LLM 不从零分配，而是针对
-Python 已经算好的基准做 ±a few percent 的偏移、剔除或加入个别标的，并给
-出人类可读的 reasoning。
+输入：brief（prose + macro + per_ticker_news）+ quant_baseline（scoring + base_weights）
+输出：research_report（ticker_signals, macro_outlook, cross_signal_insights）
 
-validation 非常严格：任何越界（non-ticker、和不为 1、单仓超限）都会被
-renormalize，若 LLM 输出彻底无法解析 → 回落到 base_weights。
+核心创新：ticker_signals 把每个 ticker 的量化因子 + 新闻情绪 + 综合信号打在一起。
+Bull/Bear 不需要各自从头解析原始数据，直接基于这份报告辩论。
 
 LLM: settings.openai_model_heavy (gpt-4o)，单次调用，3 次重试。
+容错：3 次重试均失败 → 生成仅含 quant 数据的降级报告（无 news 合成）。
 """
 from __future__ import annotations
 
@@ -40,67 +38,28 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
-SYSTEM_PROMPT = """你是量化交易系统的首席宏观策略师（Stage 3 Synthesizer）。
+SYSTEM_PROMPT = """你是量化交易系统的首席市场分析师（Stage 3 RESEARCHER）。
 
 【你的位置】
-    上游 Stage 2 是 Python 量化基准层，它已经通过 5 因子（动量/RSI/ATR）
-    给你算好了一份"纯数学基准仓位 base_weights"。
-    下游 Stage 4 是 Python 风控层，会做硬边界检查和防守覆盖。
+    上游 Stage 2 是 Python 量化基准层，已算好 base_weights 和 scoring_breakdown。
+    下游 Stage 4a/4b 是 Bull/Bear 辩论层，它们将基于你的报告构建多空论点。
 
-【你的任务】
-    拿到 base_weights 后，结合：
-      1) 市场技术面散文
-      2) 定量指标 (breadth, SPY mom, risk_on_score, drawdown...)
-      3) 宏观新闻摘要
-      4) 本周经济日程
-    做**定性微调**，产出 adjusted_weights（draft_proposal），并给出
-    regime 判断 + stance + reasoning + key_events。
+【你的任务 —— 只分析，不决策】
+    综合量化因子 + 新闻 + 宏观 + 日程，为每个 ticker 产出结构化的综合信号评估。
+    你不做仓位调整，不输出 weights，只输出一份客观的市场分析报告。
 
-【调整原则】
-    · 基准是 Python 的量化结果，默认尊重它；微调是为了把 Python 看不到
-      的东西（新闻、日程、regime 转换）注入权重。
-    · 不要重写 base_weights —— 大多数标的的权重应该和 base_weights
-      在 ±5% 以内。只有在有明确宏观理由时才做大幅调整（±10%+）。
-    · 可以剔除 base_weights 里的个别标的（置 0），也可以加入 base_weights
-      里没有的标的（但必须是 current holdings 里出现过的 ticker）。
-    · 剩余权重必须进入 CASH。
-    · 单仓不得超过 max_single_position（见 risk_params，默认 0.20）。
-    · adjusted_weights 必须包含 "CASH"，所有值总和 = 1.0。
+【输出规则】
+1. market_regime: 判断当前市场制度和置信度
+2. macro_outlook: 宏观环境总结 + 未来关键事件
+3. ticker_signals: 每个有意义的 ticker 的量化+新闻综合信号
+4. cross_signal_insights: 跨 ticker 的模式观察（共振/矛盾/轮动）
 
-【必须输出纯 JSON】
-严格字段：
-{
-  "market_judgment": {
-    "regime": "bull_trend | bull_weak | neutral | bear_weak | bear_trend | high_vol",
-    "adjusted_confidence": <float 0.0-1.0>,
-    "uncertainty_flag": <bool>
-  },
-  "recommended_stance": "maintain | increase | reduce | defensive",
-  "adjusted_weights": {
-    "<TICKER>": <float>,
-    ...
-    "CASH": <float>
-  },
-  "weight_adjustments": [
-    {
-      "ticker": "<TICKER>",
-      "base": <float>,
-      "adjusted": <float>,
-      "delta": <float>,
-      "reason": "<≤40 字中文理由>"
-    }
-  ],
-  "reasoning": "<≤150 字中文总理由，解释 regime + 整体调整思路>",
-  "consensus_points":  ["...", "..."],
-  "divergence_points": ["...", "..."],
-  "key_events": ["<event phrase 1>", "<event phrase 2>", ...]
-}
-
-【regime 取值规则（严格 6 选 1）】
-  · bull_trend / bull_weak / neutral / bear_weak / bear_trend / high_vol
-
-【stance 取值规则（严格 4 选 1）】
-  · maintain / increase / reduce / defensive
+【combined_signal 取值规则】
+    strong_positive: quant_score top 30% AND news_sentiment = positive
+    positive:        quant_score top 50% OR news_sentiment = positive
+    neutral:         信号矛盾或无明确方向
+    negative:        quant_score bottom 50% OR news_sentiment = negative
+    strong_negative: quant_score bottom 30% AND news_sentiment = negative
 
 【key_events 规则（至关重要！）】
   · 必须产出 3-5 条短语，每条 ≤ 60 字。
@@ -112,9 +71,36 @@ SYSTEM_PROMPT = """你是量化交易系统的首席宏观策略师（Stage 3 Sy
       demand destruction / earnings recession
   · 没有宏观事件时返回 ["normal market conditions"]，不要编造。
 
-【weight_adjustments 规则】
-  · 只列出和 base_weights 差 ≥ 1% 的 ticker（含新增和剔除）。
-  · 同一个 reason 可以服务多个 ticker。
+【必须输出纯 JSON】
+{
+  "market_regime": {
+    "regime": "bull_trend|bull_weak|neutral|bear_weak|bear_trend|high_vol",
+    "confidence": <float 0.0-1.0>,
+    "evidence": "<一句话解释判断依据>"
+  },
+  "macro_outlook": {
+    "summary": "<≤200 字宏观概要>",
+    "key_events": ["event phrase 1", "event phrase 2", ...],
+    "impact_bias": "positive|neutral|negative"
+  },
+  "ticker_signals": [
+    {
+      "ticker": "<TICKER>",
+      "quant_score": <float>,
+      "quant_rank": <int>,
+      "quant_factors": "<关键因子一行>",
+      "news_sentiment": "positive|neutral|negative",
+      "news_count": <int>,
+      "news_digest": "<≤50 字新闻要点>",
+      "combined_signal": "strong_positive|positive|neutral|negative|strong_negative",
+      "flag": "<风险或机会标记，无则 null>"
+    }
+  ],
+  "cross_signal_insights": [
+    "<跨 ticker 观察 1>",
+    "<跨 ticker 观察 2>"
+  ]
+}
 
 仅输出 JSON。任何额外文本都会被视为错误。"""
 
@@ -129,14 +115,8 @@ async def run_researcher_async(
     brief: dict,
     quant_baseline: dict,
 ) -> dict:
-    """Stage 3 synthesizer。消费 baseline + brief，产出 draft_proposal。"""
-    base_weights = quant_baseline.get("base_weights") or {"CASH": 1.0}
-    risk_params  = pipeline_context.get("risk_params") or {}
-    max_single_position = float(risk_params.get("max_single_position", 0.20))
-
-    user_payload = _build_user_message(brief, quant_baseline, risk_params)
-
-    allowed_tickers = _collect_allowed_tickers(brief, base_weights)
+    """Stage 3: 信息合成。消费 baseline + brief，产出 research_report。"""
+    user_payload = _build_user_message(brief, quant_baseline)
 
     client = _get_client()
     model  = settings.openai_model_heavy
@@ -158,7 +138,7 @@ async def run_researcher_async(
                 model=model,
                 messages=messages,
                 temperature=0.0,
-                max_tokens=2000,
+                max_tokens=3000,
                 response_format={"type": "json_object"},
             )
             raw = resp.choices[0].message.content or ""
@@ -170,23 +150,17 @@ async def run_researcher_async(
             )
 
             parsed = json.loads(raw)
-            _validate(parsed)
-            return _normalize(
-                parsed,
-                base_weights=base_weights,
-                allowed_tickers=allowed_tickers,
-                max_single_position=max_single_position,
-            )
+            return _validate_and_normalize(parsed, quant_baseline)
 
         except Exception as e:
             last_error = str(e)
             logger.warning(f"[RESEARCHER] attempt {attempt} failed: {e}")
 
-    # 所有重试失败 —— 安全降级：把 base_weights 当 adjusted_weights 返回
+    # 所有重试失败 → 降级报告（仅含 quant 数据，无 news 合成）
     logger.error(
-        f"[RESEARCHER] all retries failed, degrading to base_weights. last_error={last_error}"
+        f"[RESEARCHER] all retries failed, generating degraded report. last_error={last_error}"
     )
-    return _degraded_output(base_weights, last_error)
+    return _degraded_report(quant_baseline, last_error)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -194,7 +168,7 @@ async def run_researcher_async(
 # ═══════════════════════════════════════════════════════════════
 
 
-def _build_user_message(brief: dict, quant_baseline: dict, risk_params: dict) -> str:
+def _build_user_message(brief: dict, quant_baseline: dict) -> str:
     prose    = brief.get("prose_summary") or "(无)"
     macro    = brief.get("macro_news_section") or "(无)"
     calendar = brief.get("calendar_section") or "(无)"
@@ -204,11 +178,12 @@ def _build_user_message(brief: dict, quant_baseline: dict, risk_params: dict) ->
     scoring      = quant_baseline.get("scoring_breakdown") or []
     ranking      = quant_baseline.get("ranking_summary") or {}
 
-    # 裁剪 scoring breakdown 到前 15 条，避免 token 膨胀
+    # 裁剪 scoring breakdown 到前 15 条
     top_scored = scoring[:15]
 
-    max_pos = float(risk_params.get("max_single_position", 0.20))
-    min_cash = float(risk_params.get("min_cash_pct", 0.05))
+    # 格式化 per_ticker_news 为紧凑文本
+    per_ticker_news = brief.get("per_ticker_news") or {}
+    news_block = _format_per_ticker_news(per_ticker_news)
 
     return (
         "## 市场技术面\n"
@@ -219,33 +194,44 @@ def _build_user_message(brief: dict, quant_baseline: dict, risk_params: dict) ->
         f"{macro}\n\n"
         "## 本周日程\n"
         f"{calendar}\n\n"
-        "## Python Stage 2 产出的基准仓位 (base_weights)\n"
+        "## 个股新闻（按 ticker）\n"
+        f"{news_block}\n\n"
+        "## Python Stage 2 基准仓位 (base_weights)\n"
         f"{json.dumps(base_weights, ensure_ascii=False, indent=2)}\n\n"
-        "## 基准打分明细 (top 15, 按 score 降序)\n"
+        "## 基准打分明细 (top 15)\n"
         f"{json.dumps(top_scored, ensure_ascii=False, indent=2)}\n\n"
-        "## 基准排名摘要\n"
+        "## 基准排名\n"
         f"{json.dumps(ranking, ensure_ascii=False, indent=2)}\n\n"
-        "## 约束\n"
-        f"max_single_position = {max_pos}\n"
-        f"min_cash_pct = {min_cash}\n"
         "## 你的任务\n"
-        "基于以上材料，输出 market_judgment + recommended_stance + adjusted_weights +\n"
-        "weight_adjustments + reasoning + key_events。仅返回纯 JSON。"
+        "综合以上材料，输出 market_regime + macro_outlook + ticker_signals +\n"
+        "cross_signal_insights。只分析不决策，仅返回纯 JSON。"
     )
 
 
-def _collect_allowed_tickers(brief: dict, base_weights: dict) -> set[str]:
-    """adjusted_weights 只允许 ticker 来自 brief.holdings 或 base_weights（含 CASH）。"""
-    tickers: set[str] = {"CASH"}
-    for h in brief.get("holdings") or []:
-        t = (h.get("ticker") or "").upper().strip()
-        if t:
-            tickers.add(t)
-    for t in base_weights.keys():
-        t = str(t).upper().strip()
-        if t:
-            tickers.add(t)
-    return tickers
+def _format_per_ticker_news(per_ticker_news: dict) -> str:
+    """把 per_ticker_news 格式化为紧凑文本块。"""
+    if not per_ticker_news:
+        return "(无个股新闻)"
+
+    lines = []
+    for ticker, news_list in sorted(per_ticker_news.items()):
+        if not news_list:
+            continue
+        lines.append(f"### {ticker} ({len(news_list)} 条)")
+        for n in news_list[:3]:  # 每个 ticker 最多 3 条
+            source = n.get("source", "")
+            source_api = n.get("source_api", "")
+            headline = n.get("headline", "")[:80]
+            sentiment = n.get("sentiment", "neutral")
+            tag = f"[{source}|{source_api}|{sentiment}]" if source else f"[{sentiment}]"
+            summary = n.get("llm_summary") or ""
+            if summary:
+                lines.append(f"  {tag} {headline}")
+                lines.append(f"    → {summary[:100]}")
+            else:
+                lines.append(f"  {tag} {headline}")
+
+    return "\n".join(lines) if lines else "(无个股新闻)"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -253,194 +239,120 @@ def _collect_allowed_tickers(brief: dict, base_weights: dict) -> set[str]:
 # ═══════════════════════════════════════════════════════════════
 
 _VALID_REGIMES = {"bull_trend", "bull_weak", "neutral", "bear_weak", "bear_trend", "high_vol"}
-_VALID_STANCES = {"maintain", "increase", "reduce", "defensive"}
+_VALID_SIGNALS = {"strong_positive", "positive", "neutral", "negative", "strong_negative"}
 
 
-def _validate(out: dict) -> None:
-    required = [
-        "market_judgment",
-        "recommended_stance",
-        "adjusted_weights",
-        "reasoning",
-        "key_events",
-    ]
-    missing = [k for k in required if k not in out]
-    if missing:
-        raise ValueError(f"missing fields: {missing}")
-
-    mj = out.get("market_judgment") or {}
-    if "regime" not in mj:
-        raise ValueError("market_judgment.regime missing")
-
-    weights = out.get("adjusted_weights")
-    if not isinstance(weights, dict) or not weights:
-        raise ValueError("adjusted_weights must be a non-empty dict")
-
-
-def _normalize(
-    out: dict,
-    *,
-    base_weights: dict,
-    allowed_tickers: set[str],
-    max_single_position: float,
-) -> dict:
-    mj = out.get("market_judgment") or {}
-    regime = str(mj.get("regime", "")).strip()
+def _validate_and_normalize(out: dict, quant_baseline: dict) -> dict:
+    """验证并规范化 LLM 输出。"""
+    # market_regime
+    mr = out.get("market_regime") or {}
+    regime = str(mr.get("regime", "neutral")).strip()
     if regime not in _VALID_REGIMES:
-        logger.warning(f"[RESEARCHER] invalid regime '{regime}', coerced to neutral")
         regime = "neutral"
-
-    stance = str(out.get("recommended_stance", "")).strip()
-    if stance not in _VALID_STANCES:
-        logger.warning(f"[RESEARCHER] invalid stance '{stance}', coerced to maintain")
-        stance = "maintain"
-
     try:
-        conf = float(mj.get("adjusted_confidence", 0.5) or 0.5)
+        confidence = max(0.0, min(1.0, float(mr.get("confidence", 0.5))))
     except (TypeError, ValueError):
-        conf = 0.5
-    conf = max(0.0, min(1.0, conf))
+        confidence = 0.5
 
-    key_events = out.get("key_events") or []
+    # macro_outlook
+    mo = out.get("macro_outlook") or {}
+    key_events = mo.get("key_events") or []
     if not isinstance(key_events, list):
         key_events = []
     key_events = [str(e).strip() for e in key_events if str(e).strip()][:5]
     if not key_events:
         key_events = ["normal market conditions"]
+    impact_bias = str(mo.get("impact_bias", "neutral")).strip()
+    if impact_bias not in ("positive", "neutral", "negative"):
+        impact_bias = "neutral"
 
-    raw_weights = out.get("adjusted_weights") or {}
-    adjusted = _sanitize_weights(
-        raw_weights,
-        allowed_tickers=allowed_tickers,
-        max_single_position=max_single_position,
-        fallback=base_weights,
-    )
+    # ticker_signals
+    raw_signals = out.get("ticker_signals") or []
+    if not isinstance(raw_signals, list):
+        raw_signals = []
+    ticker_signals = []
+    for sig in raw_signals:
+        if not isinstance(sig, dict) or not sig.get("ticker"):
+            continue
+        combined = str(sig.get("combined_signal", "neutral")).strip()
+        if combined not in _VALID_SIGNALS:
+            combined = "neutral"
+        ticker_signals.append({
+            "ticker":          str(sig["ticker"]).upper().strip(),
+            "quant_score":     _safe_float(sig.get("quant_score"), 0.0),
+            "quant_rank":      int(sig.get("quant_rank", 0) or 0),
+            "quant_factors":   str(sig.get("quant_factors", ""))[:120],
+            "news_sentiment":  str(sig.get("news_sentiment", "neutral")).strip(),
+            "news_count":      int(sig.get("news_count", 0) or 0),
+            "news_digest":     str(sig.get("news_digest", ""))[:100],
+            "combined_signal": combined,
+            "flag":            sig.get("flag") or None,
+        })
 
-    # 计算实际的调整项 vs base_weights（过滤 < 1% 的噪声）
-    actual_adjustments = _compute_adjustments(base_weights, adjusted)
-
-    # LLM 自己提供的 reason 优先，否则用自动计算的 delta
-    llm_adjustments = out.get("weight_adjustments") or []
-    if isinstance(llm_adjustments, list) and llm_adjustments:
-        reason_by_ticker = {}
-        for item in llm_adjustments:
-            if isinstance(item, dict) and item.get("ticker"):
-                reason_by_ticker[str(item["ticker"]).upper()] = str(item.get("reason", ""))[:80]
-        for item in actual_adjustments:
-            item["reason"] = reason_by_ticker.get(item["ticker"], "")
+    # cross_signal_insights
+    insights = out.get("cross_signal_insights") or []
+    if not isinstance(insights, list):
+        insights = []
+    insights = [str(i).strip() for i in insights if str(i).strip()][:5]
 
     return {
-        "market_judgment": {
-            "regime":              regime,
-            "adjusted_confidence": conf,
-            "uncertainty_flag":    bool(mj.get("uncertainty_flag", False)),
+        "market_regime": {
+            "regime":     regime,
+            "confidence": confidence,
+            "evidence":   str(mr.get("evidence", ""))[:200],
         },
-        "recommended_stance":  stance,
-        "adjusted_weights":    adjusted,
-        "weight_adjustments":  actual_adjustments,
-        "reasoning":           str(out.get("reasoning", ""))[:500],
-        "consensus_points":    list(out.get("consensus_points") or [])[:5],
-        "divergence_points":   list(out.get("divergence_points") or [])[:5],
-        "key_events":          key_events,
+        "macro_outlook": {
+            "summary":     str(mo.get("summary", ""))[:300],
+            "key_events":  key_events,
+            "impact_bias": impact_bias,
+        },
+        "ticker_signals":        ticker_signals,
+        "cross_signal_insights": insights,
         "used_degraded_fallback": False,
     }
 
 
-def _sanitize_weights(
-    raw: dict,
-    *,
-    allowed_tickers: set[str],
-    max_single_position: float,
-    fallback: dict,
-) -> dict:
-    """
-    清洗 LLM 输出的 adjusted_weights：
-      1. 只保留 allowed_tickers 内的 ticker
-      2. 负数 / 非数字 → 0
-      3. 单仓 clip 到 max_single_position
-      4. 缺失 CASH → 自动补
-      5. 总和归一化到 1.0
-    清洗后若无有效头寸，回落到 fallback (base_weights)。
-    """
-    cleaned: dict[str, float] = {}
-    for k, v in raw.items():
-        ticker = str(k).upper().strip()
-        if ticker not in allowed_tickers:
-            logger.warning(f"[RESEARCHER] dropped unknown ticker '{ticker}'")
+def _safe_float(val, default: float) -> float:
+    try:
+        return float(val) if val is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _degraded_report(quant_baseline: dict, error: str | None) -> dict:
+    """LLM 全部重试失败时的降级报告：只有 quant 数据，无 news 合成。"""
+    scoring = quant_baseline.get("scoring_breakdown") or []
+    ticker_signals = []
+    for i, item in enumerate(scoring):
+        if not isinstance(item, dict):
             continue
-        try:
-            w = float(v)
-        except (TypeError, ValueError):
+        ticker = str(item.get("ticker", "")).upper()
+        if not ticker:
             continue
-        if w < 0:
-            w = 0.0
-        cleaned[ticker] = w
-
-    if not cleaned:
-        logger.warning("[RESEARCHER] adjusted_weights empty after cleaning — fallback to base_weights")
-        return {k: round(float(v), 4) for k, v in fallback.items()}
-
-    # 非 CASH 单仓 clip
-    for t in list(cleaned.keys()):
-        if t == "CASH":
-            continue
-        if cleaned[t] > max_single_position:
-            cleaned[t] = max_single_position
-
-    # 若缺 CASH，显式补 0
-    cleaned.setdefault("CASH", 0.0)
-
-    # 归一化到 1.0
-    total = sum(cleaned.values())
-    if total <= 0:
-        return {k: round(float(v), 4) for k, v in fallback.items()}
-
-    scaled = {t: w / total for t, w in cleaned.items()}
-
-    # 再做一次四舍五入 + CASH 吸收误差
-    out = {t: round(w, 4) for t, w in scaled.items() if t != "CASH"}
-    out["CASH"] = round(max(1.0 - sum(out.values()), 0.0), 4)
-    return out
-
-
-def _compute_adjustments(
-    base: dict[str, float],
-    adjusted: dict[str, float],
-    threshold: float = 0.01,
-) -> list[dict]:
-    """对比 base vs adjusted，生成 delta 明细（过滤 < threshold 的噪声）。"""
-    out: list[dict] = []
-    all_tickers = set(base.keys()) | set(adjusted.keys())
-    for ticker in sorted(all_tickers):
-        b = float(base.get(ticker, 0.0) or 0.0)
-        a = float(adjusted.get(ticker, 0.0) or 0.0)
-        delta = a - b
-        if abs(delta) < threshold:
-            continue
-        out.append({
-            "ticker":   ticker,
-            "base":     round(b, 4),
-            "adjusted": round(a, 4),
-            "delta":    round(delta, 4),
-            "reason":   "",
+        ticker_signals.append({
+            "ticker":          ticker,
+            "quant_score":     _safe_float(item.get("score"), 0.0),
+            "quant_rank":      i + 1,
+            "quant_factors":   str(item.get("factors", ""))[:120],
+            "news_sentiment":  "neutral",
+            "news_count":      0,
+            "news_digest":     "",
+            "combined_signal": "neutral",
+            "flag":            None,
         })
-    return out
 
-
-def _degraded_output(base_weights: dict, error: str | None) -> dict:
-    """LLM 全部重试失败时的安全降级输出。"""
     return {
-        "market_judgment": {
-            "regime":              "neutral",
-            "adjusted_confidence": 0.3,
-            "uncertainty_flag":    True,
+        "market_regime": {
+            "regime":     "neutral",
+            "confidence": 0.3,
+            "evidence":   f"LLM 降级：无法合成新闻信号 (error={error})",
         },
-        "recommended_stance":   "maintain",
-        "adjusted_weights":     {k: round(float(v), 4) for k, v in base_weights.items()},
-        "weight_adjustments":   [],
-        "reasoning":            f"LLM 降级：沿用 Stage 2 基准仓位 (error={error})",
-        "consensus_points":     [],
-        "divergence_points":    [],
-        "key_events":           ["normal market conditions"],
+        "macro_outlook": {
+            "summary":     "LLM 降级，无宏观分析",
+            "key_events":  ["normal market conditions"],
+            "impact_bias": "neutral",
+        },
+        "ticker_signals":        ticker_signals,
+        "cross_signal_insights": [],
         "used_degraded_fallback": True,
     }

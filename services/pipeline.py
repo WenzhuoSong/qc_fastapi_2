@@ -1,34 +1,43 @@
 # services/pipeline.py
 """
-完整 agent pipeline 的异步编排（update.txt 对齐版）。
+完整 agent pipeline 的异步编排（V2.1 Bull/Bear 辩论版）。
 
-流水线 stage（Python-LLM-Python 三段接力）：
+流水线 stage（10-stage Python-LLM-Python 三段接力）：
     0. guard_and_config      (Python)   —— 锁 / 暂停检查 / 读配置 / 构 context
     1. market_brief          (Python)   —— 读快照+新闻缓存 / 算定量指标 / 拼散文
     2. quant_baseline        (Python)   —— 纯数学打分 → base_weights
-    3. RESEARCHER            (LLM)      —— base_weights + brief → adjusted_weights + reasoning
-    4. RISK MGR              (Python)   —— overlays + 6 项检查 → final target_weights + token
-    5. _save_analysis        (Python)   —— 写 agent_analysis 表
-    6. COMMUNICATOR          (LLM+fb)   —— Telegram 文案（可降级）
-    7. 分支: rejected / SEMI_AUTO pending / FULL_AUTO 直接执行
+    3. RESEARCHER            (LLM)      —— base_weights + brief → research_report（只分析不决策）
+   4a. BULL RESEARCHER       (LLM)      —— research_report → 多方论证（并行）
+   4b. BEAR RESEARCHER       (LLM)      —— research_report → 空方论证（并行）
+    5. SYNTHESIZER           (LLM)      —— Bull/Bear 仲裁 → adjusted_weights（兼容旧 researcher_out）
+    6. RISK MGR              (Python)   —— overlays + 6 项检查 → final target_weights + token
+    7. _save_analysis        (Python)   —— 写 agent_analysis 表
+    8. COMMUNICATOR          (LLM+fb)   —— Telegram 文案（可降级）
+    9. 分支: rejected / SEMI_AUTO pending / FULL_AUTO 直接执行
 
 核心数据流（接力棒传的是 weights）：
-    base_weights       (Stage 2 Python) →
-    adjusted_weights   (Stage 3 LLM)    →
-    target_weights     (Stage 4 Python) →
-    execute            (Stage 8 Python)
+    base_weights       (Stage 2 Python)       →
+    research_report    (Stage 3 LLM 信息合成)  →
+    bull/bear_output   (Stage 4a/4b LLM 辩论) →
+    adjusted_weights   (Stage 5 LLM 仲裁)     →
+    target_weights     (Stage 6 Python)       →
+    execute            (Stage 9 Python)
 
 新闻数据由独立的 cron/pre_fetch_news.py 每 2h 单独刷新，主 pipeline
 只从 DB 读缓存。两条 cron 独立失败：新闻挂 → pipeline 用旧缓存继续跑；
 pipeline 挂 → 新闻照常刷新。
 """
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
-from agents.researcher    import run_researcher_async
-from agents.risk_manager  import run_risk_manager_async
-from agents.communicator  import run_communicator_async
-from agents.executor      import run_executor_async
+from agents.researcher       import run_researcher_async
+from agents.bull_researcher  import run_bull_researcher_async
+from agents.bear_researcher  import run_bear_researcher_async
+from agents.synthesizer      import run_synthesizer_async
+from agents.risk_manager     import run_risk_manager_async
+from agents.communicator     import run_communicator_async
+from agents.executor         import run_executor_async
 from services.market_brief    import build_market_brief
 from services.quant_baseline  import run_quant_baseline_async
 from db.session          import AsyncSessionLocal
@@ -170,43 +179,75 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         f"| top5={quant_baseline.get('ranking_summary', {}).get('top_5', [])}"
     )
 
-    # Stage 3: RESEARCHER (LLM)
-    researcher_out = await run_researcher_async(pipeline_context, brief, quant_baseline)
+    # Stage 3: RESEARCHER (LLM) —— 信息合成（只分析不决策）
+    research_report = await run_researcher_async(pipeline_context, brief, quant_baseline)
     logger.info(
         f"Stage 3 RESEARCHER done | "
-        f"regime={researcher_out.get('market_judgment', {}).get('regime')} "
-        f"| stance={researcher_out.get('recommended_stance')} "
-        f"| n_adjustments={len(researcher_out.get('weight_adjustments', []))} "
-        f"| key_events={len(researcher_out.get('key_events', []))} "
-        f"| degraded={researcher_out.get('used_degraded_fallback', False)}"
+        f"regime={research_report.get('market_regime', {}).get('regime')} "
+        f"| impact_bias={research_report.get('macro_outlook', {}).get('impact_bias')} "
+        f"| n_ticker_signals={len(research_report.get('ticker_signals', []))} "
+        f"| degraded={research_report.get('used_degraded_fallback', False)}"
     )
 
-    # Stage 4: RISK MGR (Python) —— overlays + 6 checks
+    # Stage 4a/4b: BULL + BEAR RESEARCHERS (LLM, 并行)
+    base_weights = quant_baseline.get("base_weights", {})
+    bull_output, bear_output = await asyncio.gather(
+        run_bull_researcher_async(research_report, base_weights),
+        run_bear_researcher_async(research_report, base_weights),
+    )
+    logger.info(
+        f"Stage 4a BULL done | stance={bull_output.get('stance')} "
+        f"| confidence={bull_output.get('confidence')} "
+        f"| failed={bull_output.get('failed', False)}"
+    )
+    logger.info(
+        f"Stage 4b BEAR done | stance={bear_output.get('stance')} "
+        f"| confidence={bear_output.get('confidence')} "
+        f"| failed={bear_output.get('failed', False)}"
+    )
+
+    # Stage 5: SYNTHESIZER (LLM) —— 仲裁 Bull/Bear → adjusted_weights
+    risk_params = pipeline_context.get("risk_params", {})
+    synthesizer_out = await run_synthesizer_async(
+        research_report, bull_output, bear_output,
+        base_weights, brief, risk_params,
+    )
+    logger.info(
+        f"Stage 5 SYNTHESIZER done | "
+        f"regime={synthesizer_out.get('market_judgment', {}).get('regime')} "
+        f"| stance={synthesizer_out.get('recommended_stance')} "
+        f"| n_adjustments={len(synthesizer_out.get('weight_adjustments', []))} "
+        f"| key_events={len(synthesizer_out.get('key_events', []))} "
+        f"| degraded={synthesizer_out.get('used_degraded_fallback', False)}"
+    )
+
+    # Stage 6: RISK MGR (Python) —— overlays + 6 checks
+    # synthesizer_out 接口兼容旧 researcher_out，Risk MGR 无需改动
     risk_out = await run_risk_manager_async(
-        pipeline_context, brief, quant_baseline, researcher_out
+        pipeline_context, brief, quant_baseline, synthesizer_out
     )
     approved = bool(risk_out.get("approved", False))
     logger.info(
-        f"Stage 4 RISK MGR done | approved={approved} "
+        f"Stage 6 RISK MGR done | approved={approved} "
         f"| n_actions={len(risk_out.get('rebalance_actions', []))} "
         f"| cost={risk_out.get('estimated_cost_pct', 0):.4%} "
         f"| overlays={risk_out.get('overlays_applied', [])}"
     )
 
-    # Stage 5: 写 analysis
+    # Stage 7: 写 analysis
     analysis_id = await _save_analysis(
-        trigger, pipeline_context, quant_baseline, researcher_out, risk_out
+        trigger, pipeline_context, quant_baseline, synthesizer_out, risk_out
     )
 
-    # Stage 6: COMMUNICATOR —— LLM + fallback
+    # Stage 8: COMMUNICATOR —— LLM + fallback
     comm_out = await run_communicator_async(
-        pipeline_context, researcher_out, risk_out
+        pipeline_context, synthesizer_out, risk_out
     )
     logger.info(
-        f"Stage 6 COMMUNICATOR done | used_fallback={comm_out.get('used_fallback', False)}"
+        f"Stage 8 COMMUNICATOR done | used_fallback={comm_out.get('used_fallback', False)}"
     )
 
-    # Stage 7: 分支执行
+    # Stage 9: 分支执行
     auth_mode = pipeline_context["auth_mode"]
 
     if not approved:

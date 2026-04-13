@@ -34,8 +34,10 @@ This is an **agentic trading system** that integrates with QuantConnect using a 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │ Cron 1: pre_fetch_news    every 2h @ 09:50/11:50/13:50 ET
-│   Finnhub → MacroNewsCache + TickerNewsLibrary
-│   Independent of main pipeline. Failure → stale cache,
+│   Phase A: Finnhub → MacroNewsCache + TickerNewsLibrary
+│   Phase B: Alpha Vantage → TickerNewsLibrary (bulk ticker)
+│   Phase C: RSS feeds → keyword match → TickerNewsLibrary
+│   Each phase independent. Failure → stale cache,
 │   main pipeline still runs.
 └─────────────────────────────────────────────────────────┘
                    ↓ writes
@@ -43,24 +45,28 @@ This is an **agentic trading system** that integrates with QuantConnect using a 
                    ↑ reads
 ┌─────────────────────────────────────────────────────────┐
 │ Cron 2: hourly_analysis   hourly @ 10:00–15:00 ET
-│   guard → market_brief → QUANT_BASELINE → RESEARCHER (LLM)
-│   → RISK MGR → save → COMMUNICATOR → branch
+│   guard → market_brief → QUANT_BASELINE → RESEARCHER
+│   → BULL/BEAR (parallel) → SYNTHESIZER → RISK MGR
+│   → save → COMMUNICATOR → branch
 │   (SEMI_AUTO pending / FULL_AUTO execute)
 └─────────────────────────────────────────────────────────┘
 ```
 
-**Pipeline stages (Python-LLM-Python 三段接力)**:
+**Pipeline stages (10-stage Python-LLM-Python 三段接力)**:
 guard_and_config → market_brief → **quant_baseline** (Python 纯数学) →
-**RESEARCHER** (LLM 综合微调) → **RISK MGR** (Python overlays + 6 项检查) →
+**RESEARCHER** (LLM 信息合成) → **BULL/BEAR** (LLM 并行辩论) →
+**SYNTHESIZER** (LLM 仲裁) → **RISK MGR** (Python overlays + 6 项检查) →
 save_analysis → COMMUNICATOR → branch
 
 **接力棒传的是 weights**：
-`base_weights` (Stage 2 Python) → `adjusted_weights` (Stage 3 LLM) →
-`target_weights` (Stage 4 Python) → execute。
+`base_weights` (Stage 2 Python) → `research_report` (Stage 3 LLM) →
+`bull/bear_output` (Stage 4a/4b LLM parallel) → `adjusted_weights` (Stage 5 LLM) →
+`target_weights` (Stage 6 Python) → execute。
 
-LLM calls per cycle: **2** (RESEARCHER + COMMUNICATOR). COMMUNICATOR is
-off the correctness path (5s timeout → Python fallback). RESEARCHER has a
-degraded-fallback path that echoes `base_weights` if all retries fail.
+LLM calls per cycle: **4+1** (RESEARCHER + BULL + BEAR + SYNTHESIZER on
+correctness path; COMMUNICATOR off correctness path with 5s timeout →
+Python fallback). Bull/Bear run in parallel via `asyncio.gather`. Each
+agent has degraded fallback if all retries fail.
 
 **Authorization Modes**:
 - `FULL_AUTO` — Fully autonomous execution
@@ -73,8 +79,11 @@ degraded-fallback path that echoes `base_weights` if all retries fail.
 qc_fastapi_2/
 ├── agents/          # Pipeline agents
 │   ├── base_agent.py       # BaseAgent with tool calling loop (legacy helper)
-│   ├── researcher.py       # Stage 3: LLM synthesizer (base_weights → adjusted_weights)
-│   ├── risk_manager.py     # Stage 4: overlays + 6 checks → target_weights + token
+│   ├── researcher.py       # Stage 3: LLM info synthesis → research_report
+│   ├── bull_researcher.py  # Stage 4a: Bull arguments (parallel)
+│   ├── bear_researcher.py  # Stage 4b: Bear arguments (parallel)
+│   ├── synthesizer.py      # Stage 5: CIO arbitration → adjusted_weights
+│   ├── risk_manager.py     # Stage 6: overlays + 6 checks → target_weights + token
 │   ├── communicator.py     # LLM Telegram card + Python fallback
 │   ├── executor.py         # Deterministic execution logic
 │   └── reporter.py         # Daily report generator
@@ -93,6 +102,8 @@ qc_fastapi_2/
 │   ├── quant_baseline.py   # Stage 2: Python scoring → base_weights
 │   ├── transmission.py     # Macro event → sector pattern library (used by risk_mgr)
 │   ├── finnhub_client.py   # Finnhub REST client + credibility
+│   ├── alphavantage_client.py # Alpha Vantage News Sentiment API client
+│   ├── rss_fetcher.py      # RSS feed fetcher (MarketWatch/CNBC/Yahoo/Reuters)
 │   ├── news_summarizer.py  # gpt-4o-mini batch news summarizer
 │   ├── proposal.py         # SEMI_AUTO proposal + timeout handler
 │   └── telegram_commands.py# /confirm /skip /pause /status
@@ -101,7 +112,7 @@ qc_fastapi_2/
 │   ├── momentum_lite.py    # 5-factor momentum composite
 │   └── defensive_adjust.py # Regime-based overlay helpers
 ├── cron/            # Cron entry scripts (standalone processes)
-│   ├── pre_fetch_news.py   # Cron 1: Finnhub → DB (every 2h)
+│   ├── pre_fetch_news.py   # Cron 1: multi-source news → DB (every 2h)
 │   ├── hourly_analysis.py  # Cron 2: main pipeline (hourly)
 │   ├── post_market_report.py
 │   ├── morning_health.py
@@ -151,7 +162,7 @@ All tools, agents, and services are async. Each cron entry script runs a single
 | `AlertLog` | QC alert tracking |
 | `AgentAnalysis` | Complete agent pipeline results |
 | `ExecutionLog` | QC command execution history |
-| `TickerNewsLibrary` | Finnhub news + LLM summary + hard_risks (48h rolling) |
+| `TickerNewsLibrary` | Multi-source news (Finnhub/Alpha Vantage/RSS) + LLM summary + hard_risks (48h rolling) |
 | `MacroNewsCache` | Single-row macro news + economic calendar cache |
 
 All use async SQLAlchemy with asyncpg driver.
@@ -202,7 +213,7 @@ with its own fresh `asyncio.run()`. Configure schedules as Railway cron services
 
 | Entry | Schedule (ET) | Purpose |
 |-------|---------------|---------|
-| `python -m cron.pre_fetch_news`    | 09:50, 11:50, 13:50 | Finnhub news → DB (independent) |
+| `python -m cron.pre_fetch_news`    | 09:50, 11:50, 13:50 | Multi-source news → DB (Finnhub + Alpha Vantage + RSS) |
 | `python -m cron.hourly_analysis`   | 10:00–15:00 hourly | Full agent pipeline |
 | `python -m cron.post_market_report`| 16:35 | Daily summary |
 | `python -m cron.morning_health`    | 09:00 | Health check notification |
@@ -277,6 +288,7 @@ OPENAI_API_KEY
 OPENAI_MODEL=gpt-4o-mini        # light tasks (news summarization, communicator)
 OPENAI_MODEL_HEAVY=gpt-4o       # main reasoning (RESEARCHER)
 FINNHUB_API_KEY                 # news/calendar source for pre_fetch_news cron
+ALPHAVANTAGE_API_KEY            # (optional) Alpha Vantage news sentiment API
 WEBHOOK_USER=qc
 WEBHOOK_SECRET
 QC_API_URL=https://www.quantconnect.com/api/v2
@@ -295,7 +307,7 @@ curl "https://api.telegram.org/bot{TOKEN}/setWebhook?url=https://{RAILWAY_DOMAIN
 
 `PORT` is dynamically assigned by Railway.
 
-### Phase 1 Scope (Current)
+### Phase 1 Scope
 
 ✅ Complete 6-agent pipeline
 ✅ Tool-based architecture with BaseAgent
@@ -305,10 +317,23 @@ curl "https://api.telegram.org/bot{TOKEN}/setWebhook?url=https://{RAILWAY_DOMAIN
 ✅ PostgreSQL with async SQLAlchemy
 ✅ QC webhook + REST API integration
 
+### Phase 2 Scope
+
+✅ Multi-source news: Finnhub + Alpha Vantage + RSS (MarketWatch/CNBC/Yahoo/Reuters)
+✅ `TickerNewsLibrary.source_api` column for source tracking
+✅ RSS → ETF keyword matching (17 ETF × keyword list)
+✅ Alpha Vantage bulk ticker sentiment with intelligent LLM skip
+✅ RESEARCHER refactored to info synthesis (research_report, no weights)
+✅ Bull/Bear structured debate (Stage 4a/4b, parallel via asyncio.gather)
+✅ Synthesizer CIO arbiter (Stage 5, interface-compatible with old researcher_out)
+✅ 10-stage pipeline refactor (pipeline.py rewired)
+✅ 5-level stance system (buy/overweight/maintain/underweight/sell)
+✅ Communicator updated with debate_summary in Telegram card
+
 ### Future Enhancements
 
 - [ ] Dynamic DAG generation (Planner upgrade)
-- [ ] Multi-agent debate/consensus
+- [ ] Decision memory + similar case retrieval
 - [ ] Adaptive risk parameters
 - [ ] Portfolio analytics dashboard
 - [ ] Alembic database migrations

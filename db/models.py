@@ -97,7 +97,7 @@ class AgentAnalysis(Base):
     risk_output        = Column(JSONB)
     risk_approved      = Column(Boolean)
     decision           = Column(JSONB)
-    execution_status   = Column(String(20), default="pending")
+    execution_status   = Column(String(40), default="pending")
     executed_at        = Column(DateTime)
     notes              = Column(Text)
 
