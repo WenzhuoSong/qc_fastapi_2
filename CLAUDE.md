@@ -161,6 +161,7 @@ All tools, agents, and services are async. Each cron entry script runs a single
 | `HoldingsFactor` | Per-ticker factor metrics |
 | `AlertLog` | QC alert tracking |
 | `AgentAnalysis` | Complete agent pipeline results |
+| `AgentStepLog` | Per-stage input/output audit trail (7-8 rows per pipeline run) |
 | `ExecutionLog` | QC command execution history |
 | `TickerNewsLibrary` | Multi-source news (Finnhub/Alpha Vantage/RSS) + LLM summary + hard_risks (48h rolling) |
 | `MacroNewsCache` | Single-row macro news + economic calendar cache |
@@ -329,6 +330,8 @@ curl "https://api.telegram.org/bot{TOKEN}/setWebhook?url=https://{RAILWAY_DOMAIN
 ✅ 10-stage pipeline refactor (pipeline.py rewired)
 ✅ 5-level stance system (buy/overweight/maintain/underweight/sell)
 ✅ Communicator updated with debate_summary in Telegram card
+✅ AgentStepLog table for per-stage input/output audit trail
+✅ Telegram error messages include exception details for remote debugging
 
 ### Future Enhancements
 

@@ -1,10 +1,10 @@
 # QC FastAPI 2 — QC Agentic Trading System
 
-Phase 1 implementation of an autonomous ETF trading system that integrates
-with QuantConnect. The pipeline is a **Python → LLM → Python 三段接力**：
-pure math computes a baseline, an LLM macro strategist adjusts it on top of
-news, and a Python risk officer applies overlays + hard checks before
-execution.
+An autonomous ETF trading system that integrates with QuantConnect.
+The pipeline is a **Python → LLM → Python 三段接力**: pure math computes a
+baseline, a Bull/Bear structured debate layer argues for and against, a
+CIO synthesizer arbitrates, and a Python risk officer applies overlays +
+hard checks before execution.
 
 ## Architecture
 
@@ -200,7 +200,7 @@ affect the others or the main pipeline.
 | Entry | Schedule (ET) | Purpose |
 |---|---|---|
 | `python -m cron.pre_fetch_news` | 09:50 / 11:50 / 13:50 | Multi-source news → DB (Finnhub + AV + RSS) |
-| `python -m cron.hourly_analysis` | 10:00–15:00 hourly | Full 8-stage pipeline |
+| `python -m cron.hourly_analysis` | 10:00–15:00 hourly | Full 10-stage pipeline |
 | `python -m cron.pending_check` | every 1 min | SEMI_AUTO timeout handler |
 | `python -m cron.morning_health` | 09:00 | Pre-open health notification |
 | `python -m cron.post_market_report` | 16:35 | Daily report |
@@ -319,7 +319,7 @@ cron services above.
 
 ## Phase 1 Features
 
-✅ 8-stage Python-LLM-Python relay pipeline
+✅ 10-stage Python-LLM-Python relay pipeline
 ✅ Weights as the interstage baton (base → adjusted → target)
 ✅ Pluggable strategy registry (MomentumLiteV1 default)
 ✅ Decoupled news layer via independent `pre_fetch_news` cron
@@ -346,3 +346,5 @@ cron services above.
 ✅ 10-stage pipeline refactor (pipeline.py rewired)
 ✅ 5-level stance system (buy/overweight/maintain/underweight/sell)
 ✅ Communicator updated with debate_summary in Telegram card
+✅ AgentStepLog table for per-stage input/output audit trail
+✅ Telegram error messages now include exception details for remote debugging
