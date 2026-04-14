@@ -98,6 +98,7 @@ def _build_payload(
         "confidence":       round(float(mj.get("adjusted_confidence", 0) or 0), 2),
         "stance":           researcher_out.get("recommended_stance", "maintain"),
         "reasoning":        (researcher_out.get("reasoning") or "")[:200],
+        "decision_rationale": (researcher_out.get("decision_rationale") or "")[:400],
         "target_weights":   risk_out.get("target_weights", {}),
         "rebalance_actions":risk_out.get("rebalance_actions", []),
         "estimated_cost":   risk_out.get("estimated_cost_pct", 0),

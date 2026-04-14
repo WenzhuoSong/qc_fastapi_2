@@ -7,9 +7,10 @@
     1. market_brief          (Python)   —— 读快照+新闻缓存 / 算定量指标 / 拼散文
     2. quant_baseline        (Python)   —— 纯数学打分 → base_weights
     3. RESEARCHER            (LLM)      —— base_weights + brief → research_report（只分析不决策）
-   4a. BULL RESEARCHER       (LLM)      —— research_report → 多方论证（并行）
-   4b. BEAR RESEARCHER       (LLM)      —— research_report → 空方论证（并行）
-    5. SYNTHESIZER           (LLM)      —— Bull/Bear 仲裁 → adjusted_weights（兼容旧 researcher_out）
+   4a. BULL RESEARCHER       (LLM)      —— draft thesis（无权重）
+   4b. BEAR RESEARCHER       (LLM)      —— draft thesis（无权重，与 4a 并行）
+   4c. CROSS_EXAM           (LLM)      —— 交换论点，短反驳（与对侧并行）
+    5. PM / SYNTHESIZER      (LLM)      —— 唯一 adjusted_weights + decision_rationale
     6. RISK MGR              (Python)   —— overlays + 6 项检查 → final target_weights + token
     7. _save_analysis        (Python)   —— 写 agent_analysis 表
     8. COMMUNICATOR          (LLM+fb)   —— Telegram 文案（可降级）
@@ -35,6 +36,7 @@ from datetime import datetime, timedelta
 from agents.researcher       import run_researcher_async
 from agents.bull_researcher  import run_bull_researcher_async
 from agents.bear_researcher  import run_bear_researcher_async
+from agents.cross_exam       import run_bull_cross_exam_async, run_bear_cross_exam_async
 from agents.synthesizer      import run_synthesizer_async
 from agents.risk_manager     import run_risk_manager_async
 from agents.communicator     import run_communicator_async
@@ -252,43 +254,70 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         failed=research_report.get("used_degraded_fallback", False),
     )
 
-    # Stage 4a/4b: BULL + BEAR RESEARCHERS (LLM, 并行)
+    # Stage 4a/4b: BULL + BEAR drafts (parallel, no weights)
     base_weights = quant_baseline.get("base_weights", {})
     t0 = time.time()
-    bull_output, bear_output = await asyncio.gather(
+    bull_draft, bear_draft = await asyncio.gather(
         run_bull_researcher_async(research_report, base_weights),
         run_bear_researcher_async(research_report, base_weights),
     )
-    dur_debate = int((time.time() - t0) * 1000)
+    dur_draft = int((time.time() - t0) * 1000)
     logger.info(
-        f"Stage 4a BULL done | stance={bull_output.get('stance')} "
-        f"| confidence={bull_output.get('confidence')} "
-        f"| failed={bull_output.get('failed', False)}"
+        f"Stage 4a BULL draft | stance={bull_draft.get('stance')} "
+        f"| confidence={bull_draft.get('confidence')} "
+        f"| failed={bull_draft.get('failed', False)}"
     )
     logger.info(
-        f"Stage 4b BEAR done | stance={bear_output.get('stance')} "
-        f"| confidence={bear_output.get('confidence')} "
-        f"| failed={bear_output.get('failed', False)}"
+        f"Stage 4b BEAR draft | stance={bear_draft.get('stance')} "
+        f"| confidence={bear_draft.get('confidence')} "
+        f"| failed={bear_draft.get('failed', False)}"
     )
-    # Bull 和 Bear 各记一条
     await _save_step_log(
         analysis_id, "4a_bull", "bull_researcher",
         input_data={"base_weights": base_weights},
-        output_data=bull_output,
-        duration_ms=dur_debate,
+        output_data=bull_draft,
+        duration_ms=dur_draft,
         model=model_heavy,
-        failed=bull_output.get("failed", False),
+        failed=bull_draft.get("failed", False),
     )
     await _save_step_log(
         analysis_id, "4b_bear", "bear_researcher",
         input_data={"base_weights": base_weights},
-        output_data=bear_output,
-        duration_ms=dur_debate,
+        output_data=bear_draft,
+        duration_ms=dur_draft,
         model=model_heavy,
-        failed=bear_output.get("failed", False),
+        failed=bear_draft.get("failed", False),
     )
 
-    # Stage 5: SYNTHESIZER (LLM) —— 仲裁 Bull/Bear → adjusted_weights
+    # Stage 4c: cross-examination (Bull sees Bear draft, Bear sees Bull draft; parallel)
+    t_ce = time.time()
+    rebuttal_vs_bear, rebuttal_vs_bull = await asyncio.gather(
+        run_bull_cross_exam_async(bear_draft, research_report),
+        run_bear_cross_exam_async(bull_draft, research_report),
+    )
+    dur_ce = int((time.time() - t_ce) * 1000)
+    bull_output = {**bull_draft, "rebuttal_vs_bear": rebuttal_vs_bear}
+    bear_output = {**bear_draft, "rebuttal_vs_bull": rebuttal_vs_bull}
+    logger.info(
+        f"Stage 4c CROSS_EXAM | bull_vs_bear_failed={rebuttal_vs_bear.get('failed')} "
+        f"| bear_vs_bull_failed={rebuttal_vs_bull.get('failed')}"
+    )
+    await _save_step_log(
+        analysis_id, "4c_cross_exam", "cross_exam",
+        input_data={
+            "bull_draft_failed": bull_draft.get("failed", False),
+            "bear_draft_failed": bear_draft.get("failed", False),
+        },
+        output_data={
+            "rebuttal_vs_bear": rebuttal_vs_bear,
+            "rebuttal_vs_bull": rebuttal_vs_bull,
+        },
+        duration_ms=dur_ce,
+        model=model_heavy,
+        failed=bool(rebuttal_vs_bear.get("failed") and rebuttal_vs_bull.get("failed")),
+    )
+
+    # Stage 5: PM / SYNTHESIZER (LLM) —— final adjusted_weights + decision_rationale
     risk_params = pipeline_context.get("risk_params", {})
     t0 = time.time()
     synthesizer_out = await run_synthesizer_async(
@@ -297,7 +326,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     )
     dur_synth = int((time.time() - t0) * 1000)
     logger.info(
-        f"Stage 5 SYNTHESIZER done | "
+        f"Stage 5 PM done | "
         f"regime={synthesizer_out.get('market_judgment', {}).get('regime')} "
         f"| stance={synthesizer_out.get('recommended_stance')} "
         f"| n_adjustments={len(synthesizer_out.get('weight_adjustments', []))} "

@@ -1,19 +1,12 @@
 # agents/synthesizer.py
 """
-Stage 5: Synthesizer — CIO arbitration layer (V2.1)
+Stage 5: Portfolio Manager (PM / Judge) — sole owner of adjusted_weights.
 
-Role:
-    Weigh Bull vs Bear arguments with base_weights → final adjusted_weights.
-    Output is **fully compatible** with V2 Phase 1 researcher_out; downstream Risk MGR unchanged.
+Bull and Bear only argue (draft + cross-exam). This stage:
+    - Reads research_report + base_weights + full debate record (including rebuttals)
+    - Produces final adjusted_weights (sum = 1.0) and decision_rationale
 
-Inputs: bull_output, bear_output, research_report, base_weights, risk_params
-Output: synthesizer_out (researcher_out-compatible + extra debate_summary)
-
-Rules:
-    - Objectively assess strength and evidence quality on both sides
-    - Mark consensus vs divergence
-    - If Bull/Bear confidence gap < 0.15, set uncertainty_flag=true and prefer conservative weights
-    - Weight moves typically ±5%, up to ±10% with strong justification
+Output remains compatible with legacy researcher_out; Risk MGR unchanged.
 
 LLM: settings.openai_model_heavy (gpt-4o)
 """
@@ -40,26 +33,28 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
-SYSTEM_PROMPT = """You are the CIO / Synthesizer for a quantitative trading system. You have heard Bull and Bear analysts debate.
+SYSTEM_PROMPT = """You are the Portfolio Manager (PM) / Judge for a quantitative trading system.
 
-【Your place】
-    Upstream Stage 3 is RESEARCHER (synthesis report).
-    Stage 4a Bull and Stage 4b Bear argued from that report.
-    You arbitrate and produce final adjusted_weights for downstream Risk Manager review.
+Your goal is to maximize risk-adjusted returns (Sharpe) and protect capital. You alone assign
+portfolio weights — Bull and Bear only provide arguments; they did not output weights.
 
-【Tasks】
-    1. Objectively assess argument strength and evidence quality on both sides
-    2. Mark consensus and divergence
-    3. Final market judgment (regime + stance)
-    4. Adjust base_weights from that judgment (typically ±5%, up to ±10% with strong reason)
-    5. If Bull/Bear confidence gap < 0.15, set uncertainty_flag=true and prefer conservative weights
+You receive:
+  · Stage 3 research_report (authoritative data)
+  · Stage 2 base_weights (quantitative baseline)
+  · Bull draft + Bear draft + cross-examination rebuttals (who attacked whom)
 
-【Rules】
-    · Do not favor either side — judge evidence only
-    · Adjusted weights must sum to 1.0
-    · Single name ≤ max_single_position
-    · Must include CASH
-    · Do not rewrite base_weights wholesale — most names stay within ±5% of base
+【How to judge】
+    · Anchor evidence in research_report (ticker_signals, macro_outlook). Do not invent facts.
+    · Evaluate logical rigor and data backing — not rhetorical volume.
+    · Do NOT mechanically average Bull vs Bear confidence. If Bear's logic is irrefutable given the data,
+      lean heavily into cash and defense. If Bull's logic prevails, allow momentum — within constraints.
+    · Cross-exam rebuttals exist to expose weak claims; use them when deciding uncertainty.
+
+【Constraints (hard)】
+    · adjusted_weights must sum to 1.0, all non-negative, include CASH
+    · Single name ≤ max_single_position; respect min_cash_pct
+    · Typical deviation from base_weights ±5%; up to ±10% only with explicit justification in weight_adjustments.reason
+    · If Bull/Bear confidences are both middling and close, set uncertainty_flag=true and prefer conservative weights
 
 【regime (exactly one of 6)】
     bull_trend / bull_weak / neutral / bear_weak / bear_trend / high_vol
@@ -68,8 +63,7 @@ SYSTEM_PROMPT = """You are the CIO / Synthesizer for a quantitative trading syst
     buy / overweight / maintain / underweight / sell
 
 【key_events】
-    · Inherit from research_report.macro_outlook.key_events where possible
-    · Use keywords the transmission matcher recognizes
+    Prefer research_report.macro_outlook.key_keywords (or key_events) for transmission matcher keywords
 
 【Output: JSON only】
 {
@@ -86,14 +80,15 @@ SYSTEM_PROMPT = """You are the CIO / Synthesizer for a quantitative trading syst
       "base": <float>,
       "adjusted": <float>,
       "delta": <float>,
-      "reason": "<≤40 chars in English>"
+      "reason": "<≤40 chars English>"
     }
   ],
-  "reasoning": "<≤200 chars total reasoning in English>",
+  "decision_rationale": "<≤400 chars: whose argument won, tied to data; name major tickers if relevant>",
+  "reasoning": "<≤200 chars short summary (may mirror decision_rationale)",
   "consensus_points": ["...", "..."],
   "divergence_points": ["...", "..."],
   "key_events": ["<event phrase 1>", "..."],
-  "debate_resolution": "<one sentence on how you resolved the debate>"
+  "debate_resolution": "<one sentence arbitration>"
 }
 
 JSON only."""
@@ -151,7 +146,7 @@ async def run_synthesizer_async(
                 model=model,
                 messages=messages,
                 temperature=0.0,
-                max_tokens=2000,
+                max_tokens=2400,
                 response_format={"type": "json_object"},
             )
             raw = resp.choices[0].message.content or ""
@@ -212,19 +207,18 @@ def _build_user_message(
         f"market_regime: {json.dumps(regime, ensure_ascii=False)}\n"
         f"macro_outlook: {json.dumps(macro, ensure_ascii=False)}\n"
         f"cross_signal_insights: {json.dumps(insights, ensure_ascii=False)}\n\n"
-        "## Bull analyst\n"
+        "## Bull — draft thesis + cross-exam vs Bear\n"
         f"{json.dumps(bull_output, ensure_ascii=False, indent=2)}\n\n"
-        "## Bear analyst\n"
+        "## Bear — draft thesis + cross-exam vs Bull\n"
         f"{json.dumps(bear_output, ensure_ascii=False, indent=2)}\n\n"
-        "## Base weights (Stage 2 baseline)\n"
+        "## Base weights (Stage 2 baseline — you allocate)\n"
         f"{json.dumps(base_weights, ensure_ascii=False, indent=2)}\n\n"
         "## Constraints\n"
         f"max_single_position = {max_pos}\n"
         f"min_cash_pct = {min_cash}\n\n"
-        "## Your task\n"
-        "Arbitrate Bull vs Bear. Output market_judgment + recommended_stance + "
-        "adjusted_weights + weight_adjustments + reasoning + key_events + debate_resolution. "
-        "JSON only."
+        "## Your task (PM)\n"
+        "Output final adjusted_weights + decision_rationale + market_judgment + recommended_stance + "
+        "weight_adjustments + consensus/divergence + key_events + debate_resolution. JSON only."
     )
 
 
@@ -252,11 +246,12 @@ def _validate(out: dict) -> None:
         "market_judgment",
         "recommended_stance",
         "adjusted_weights",
-        "reasoning",
     ]
     missing = [k for k in required if k not in out]
     if missing:
         raise ValueError(f"missing fields: {missing}")
+    if not (out.get("reasoning") or out.get("decision_rationale")):
+        raise ValueError("need reasoning or decision_rationale")
 
     mj = out.get("market_judgment") or {}
     if "regime" not in mj:
@@ -337,6 +332,9 @@ def _normalize(
 
     debate_summary = _build_debate_summary(bull_output, bear_output, out)
 
+    decision_rationale = str(out.get("decision_rationale") or out.get("reasoning") or "")[:800]
+    reasoning_line = str(out.get("reasoning") or decision_rationale)[:500]
+
     return {
         # researcher_out fields (Risk MGR consumes these)
         "market_judgment": {
@@ -347,7 +345,8 @@ def _normalize(
         "recommended_stance":  stance,
         "adjusted_weights":    adjusted,
         "weight_adjustments":  actual_adjustments,
-        "reasoning":           str(out.get("reasoning", ""))[:500],
+        "reasoning":           reasoning_line,
+        "decision_rationale":  decision_rationale,
         "consensus_points":    list(out.get("consensus_points") or [])[:5],
         "divergence_points":   list(out.get("divergence_points") or [])[:5],
         "key_events":          key_events,
@@ -359,14 +358,21 @@ def _normalize(
 
 def _build_debate_summary(bull_output: dict, bear_output: dict, synth_raw: dict) -> dict:
     """Build debate_summary for Communicator."""
+    bull_args = bull_output.get("core_arguments") or bull_output.get("arguments") or []
+    bear_args = bear_output.get("core_arguments") or bear_output.get("arguments") or []
+    rb = bull_output.get("rebuttal_vs_bear") or {}
+    rbull = bear_output.get("rebuttal_vs_bull") or {}
     return {
         "bull_confidence":      float(bull_output.get("confidence", 0.5) or 0.5),
         "bear_confidence":      float(bear_output.get("confidence", 0.5) or 0.5),
         "bull_stance":          bull_output.get("stance", "maintain"),
         "bear_stance":          bear_output.get("stance", "reduce"),
-        "bull_arguments":       (bull_output.get("arguments") or [])[:3],
-        "bear_arguments":       (bear_output.get("arguments") or [])[:3],
+        "bull_arguments":       list(bull_args)[:3],
+        "bear_arguments":       list(bear_args)[:3],
+        "bull_rebuttal_vs_bear": str(rb.get("rebuttal_statement", ""))[:280],
+        "bear_rebuttal_vs_bull": str(rbull.get("rebuttal_statement", ""))[:280],
         "resolution":           str(synth_raw.get("debate_resolution", ""))[:200],
+        "decision_rationale":   str(synth_raw.get("decision_rationale", ""))[:400],
         "bull_failed":          bool(bull_output.get("failed", False)),
         "bear_failed":          bool(bear_output.get("failed", False)),
     }
@@ -468,6 +474,8 @@ def _degraded_output(
     if not key_events:
         key_events = ["normal market conditions"]
 
+    degraded_reason = f"PM degraded: using Stage 2 baseline weights (error={error})"
+    synth_stub = {"debate_resolution": degraded_reason, "decision_rationale": degraded_reason}
     return {
         "market_judgment": {
             "regime":              "neutral",
@@ -477,10 +485,11 @@ def _degraded_output(
         "recommended_stance":   "maintain",
         "adjusted_weights":     {k: round(float(v), 4) for k, v in base_weights.items()},
         "weight_adjustments":   [],
-        "reasoning":            f"Synthesizer degraded: using Stage 2 baseline weights (error={error})",
+        "reasoning":            degraded_reason,
+        "decision_rationale":   degraded_reason,
         "consensus_points":     [],
         "divergence_points":    [],
         "key_events":           key_events,
         "used_degraded_fallback": True,
-        "debate_summary":       _build_debate_summary(bull_output, bear_output, {}),
+        "debate_summary":       _build_debate_summary(bull_output, bear_output, synth_stub),
     }

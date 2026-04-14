@@ -1,17 +1,12 @@
 # agents/bear_researcher.py
 """
-Stage 4b: Bear Researcher — short-side argumentation agent
+Stage 4b (draft): Bear Researcher — short-side argumentation only (no weights).
 
-Role: From RESEARCHER's research_report, build the strongest risk warning from the **short** side.
-Runs in parallel with Stage 4a Bull Researcher via asyncio.gather.
+Role: From RESEARCHER's research_report, build the strongest risk case.
+Does not allocate capital; Stage 5 PM sets adjusted_weights.
 
-Inputs: research_report + base_weights
-Output: bear_output (thesis, arguments, ticker_views, suggested_weights, confidence)
-
-Constraints:
-  - Argue only reduce or defensive
-  - Must cite concrete flags, risk, news_sentiment=negative from research_report
-  - Do not ignore Bull-side positive signals; explain why they may be unreliable
+Outputs: stance, confidence, core_arguments, target_tickers.
+Parallel with Bull draft; Stage 4c cross-exam and Stage 5 PM follow.
 
 LLM: settings.openai_model_heavy (gpt-4o)
 """
@@ -40,55 +35,49 @@ def _get_client() -> AsyncOpenAI:
 
 SYSTEM_PROMPT = """You are the Bear Analyst for a quantitative trading system.
 
+【Critical】You do NOT control capital. Do NOT output portfolio weights or suggested_weights.
+The Portfolio Manager (Stage 5) assigns weights. You only argue risks and the short/defensive view.
+
 【Your stance】
-    Your job is to build the strongest risk warning for the current market. You must argue the short side forcefully.
+    Build the strongest risk warning for the current market. Argue with data, not fabricated position sizes.
 
 【Inputs】
-    You receive:
     1. research_report — market_regime, macro_outlook, ticker_signals, cross_signal_insights
-    2. base_weights — Stage 2 Python quantitative baseline weights
+    2. base_weights — context only; not a template for your allocation
 
 【You must】
-    1. Find all risk signals and negative indicators (cite concrete ticker_signals values)
-    2. Emphasize drawdown risk, overheating, macro threats
-    3. Assign confidence to each bearish argument
-    4. Say which sectors/tickers to trim or avoid and why
-    5. If a ticker has a positive combined_signal, explain why it may be unreliable
+    1. Cite flags, negative sentiment, weak combined_signal from research_report
+    2. core_arguments: data-backed risk points
+    3. target_tickers: names to trim, avoid, or underweight with reason (no percentages)
+    4. Do not "guess" the Bull's text — a later cross-exam stage will address the Bull draft
 
 【Confidence calibration — CRITICAL】
-    confidence reflects how strongly the DATA supports your bearish view, NOT how forceful your argument is.
-    · 0.9–1.0: overwhelming data — most tickers negative/strong_negative, macro negative, multiple flags
-    · 0.7–0.9: solid data — majority negative signals, clear macro headwinds
-    · 0.5–0.7: mixed data — some risk signals but also positive factors
-    · 0.3–0.5: weak data — few negatives, mostly neutral or positive
-    · 0.0–0.3: data strongly contradicts the bear case
-    Be honest. If you are a bear arguing in a bull_trend regime with mostly positive signals, your confidence MUST be low (0.3–0.5).
+    confidence = how strongly the DATA supports the bearish view.
+    · 0.9–1.0: overwhelming risk evidence
+    · 0.7–0.9: solid risk evidence
+    · 0.5–0.7: mixed
+    · 0.3–0.5: weak risk evidence
+    · 0.0–0.3: data contradicts the bear case
+    In bull_trend with mostly positive signals, confidence MUST be low.
 
 【Constraints】
-    · Recommend only reduce or defensive
-    · suggested_weights: all values ≥ 0, sum = 1.0, must include CASH
-    · Adjust from base_weights; single position ≤ 0.20
-    · Prefer higher CASH (larger cash buffer)
+    · stance: reduce or defensive (intent only)
+    · No weights
 
 【Output: JSON only】
 {
   "stance": "reduce|defensive",
   "confidence": <float 0.0-1.0>,
-  "arguments": [
-    "<bearish argument 1 with data>",
-    "<bearish argument 2>"
+  "core_arguments": [
+    "<risk argument with data>",
+    "..."
   ],
-  "ticker_views": [
+  "target_tickers": [
     {
       "ticker": "<TICKER>",
-      "action": "underweight|trim|avoid",
-      "delta": <float>,
-      "reason": "<≤40 chars>"
+      "bias": "underweight|trim|avoid",
+      "reason": "<why, ≤200 chars>"
     }
-  ],
-  "suggested_weights": {"<TICKER>": <float>, "CASH": <float>},
-  "bullish_rebuttals": [
-    "<rebuttal to a positive signal>"
   ]
 }
 
@@ -99,7 +88,7 @@ async def run_bear_researcher_async(
     research_report: dict,
     base_weights: dict,
 ) -> dict:
-    """Stage 4b: short-side arguments. Parallel; does not wait for Bull."""
+    """Stage 4b draft: short-side arguments only (no weights)."""
     user_payload = _build_user_message(research_report, base_weights)
 
     client = _get_client()
@@ -122,7 +111,7 @@ async def run_bear_researcher_async(
                 model=model,
                 messages=messages,
                 temperature=0.2,
-                max_tokens=1500,
+                max_tokens=1200,
                 response_format={"type": "json_object"},
             )
             raw = resp.choices[0].message.content or ""
@@ -134,30 +123,29 @@ async def run_bear_researcher_async(
             )
 
             parsed = json.loads(raw)
-            return _normalize(parsed, base_weights)
+            return _normalize(parsed)
 
         except Exception as e:
             last_error = str(e)
             logger.warning(f"[BEAR] attempt {attempt} failed: {e}")
 
     logger.error(f"[BEAR] all retries failed. last_error={last_error}")
-    return _degraded_output(base_weights, last_error)
+    return _degraded_output(last_error)
 
 
 def _build_user_message(research_report: dict, base_weights: dict) -> str:
     return (
         "## Research Report\n"
         f"{json.dumps(research_report, ensure_ascii=False, indent=2)}\n\n"
-        "## Base Weights (Stage 2 baseline)\n"
+        "## Base weights (context only — do not output weights)\n"
         f"{json.dumps(base_weights, ensure_ascii=False, indent=2)}\n\n"
         "## Your task\n"
-        "From the short side, build the strongest risk case from the materials above. "
-        "Output stance + confidence + arguments + ticker_views + suggested_weights. "
-        "Return JSON only."
+        "Draft the strongest risk case: stance, confidence, core_arguments, "
+        "target_tickers (names + bias + reason). No portfolio weights. JSON only."
     )
 
 
-def _normalize(out: dict, base_weights: dict) -> dict:
+def _normalize(out: dict) -> dict:
     stance = str(out.get("stance", "reduce")).strip()
     if stance not in ("reduce", "defensive"):
         stance = "reduce"
@@ -167,66 +155,41 @@ def _normalize(out: dict, base_weights: dict) -> dict:
     except (TypeError, ValueError):
         confidence = 0.5
 
-    arguments = out.get("arguments") or []
-    if not isinstance(arguments, list):
-        arguments = []
-    arguments = [str(a).strip() for a in arguments if str(a).strip()][:5]
+    core = out.get("core_arguments") or out.get("arguments") or []
+    if not isinstance(core, list):
+        core = []
+    core = [str(a).strip() for a in core if str(a).strip()][:8]
 
-    ticker_views = out.get("ticker_views") or []
-    if not isinstance(ticker_views, list):
-        ticker_views = []
-    cleaned_views = []
-    for v in ticker_views:
+    targets = out.get("target_tickers") or []
+    if not isinstance(targets, list):
+        targets = []
+    cleaned_targets = []
+    for v in targets:
         if not isinstance(v, dict) or not v.get("ticker"):
             continue
-        action = str(v.get("action", "underweight")).strip()
-        if action not in ("underweight", "trim", "avoid"):
-            action = "underweight"
-        cleaned_views.append({
+        bias = str(v.get("bias", "underweight")).strip().lower()
+        if bias not in ("underweight", "trim", "avoid"):
+            bias = "underweight"
+        cleaned_targets.append({
             "ticker": str(v["ticker"]).upper().strip(),
-            "action": action,
-            "delta":  _safe_float(v.get("delta"), 0.0),
-            "reason": str(v.get("reason", ""))[:80],
+            "bias":   bias,
+            "reason": str(v.get("reason", ""))[:220],
         })
 
-    suggested = out.get("suggested_weights") or {}
-    if not isinstance(suggested, dict) or not suggested:
-        # Degraded: bump CASH to 0.30
-        suggested = dict(base_weights)
-        suggested["CASH"] = 0.30
-
-    rebuttals = out.get("bullish_rebuttals") or []
-    if not isinstance(rebuttals, list):
-        rebuttals = []
-    rebuttals = [str(r).strip() for r in rebuttals if str(r).strip()][:3]
-
     return {
-        "stance":              stance,
-        "confidence":          confidence,
-        "arguments":           arguments,
-        "ticker_views":        cleaned_views,
-        "suggested_weights":   suggested,
-        "bullish_rebuttals":   rebuttals,
-        "failed":              False,
+        "stance":         stance,
+        "confidence":     confidence,
+        "core_arguments": core,
+        "target_tickers": cleaned_targets,
+        "failed":         False,
     }
 
 
-def _degraded_output(base_weights: dict, error: str | None) -> dict:
-    defensive_weights = dict(base_weights)
-    defensive_weights["CASH"] = 0.30
+def _degraded_output(error: str | None) -> dict:
     return {
-        "stance":              "defensive",
-        "confidence":          0.3,
-        "arguments":           [f"Bear LLM degraded (error={error})"],
-        "ticker_views":        [],
-        "suggested_weights":   defensive_weights,
-        "bullish_rebuttals":   [],
-        "failed":              True,
+        "stance":         "defensive",
+        "confidence":     0.3,
+        "core_arguments": [f"Bear draft degraded (error={error})"],
+        "target_tickers": [],
+        "failed":           True,
     }
-
-
-def _safe_float(val, default: float) -> float:
-    try:
-        return float(val) if val is not None else default
-    except (TypeError, ValueError):
-        return default
