@@ -1,17 +1,17 @@
 # agents/bull_researcher.py
 """
-Stage 4a: Bull Researcher —— 多方论证 Agent
+Stage 4a: Bull Researcher — long-side argumentation agent
 
-职责：基于 RESEARCHER 的 research_report，站**多方**立场构建最强看多论据。
-与 Stage 4b Bear Researcher 通过 asyncio.gather 并行执行。
+Role: From RESEARCHER's research_report, build the strongest bullish case from the **long** side.
+Runs in parallel with Stage 4b Bear Researcher via asyncio.gather.
 
-输入：research_report + base_weights
-输出：bull_output（thesis, arguments, ticker_views, suggested_weights, confidence）
+Inputs: research_report + base_weights
+Output: bull_output (thesis, arguments, ticker_views, suggested_weights, confidence)
 
-约束：
-  - 只能论证 maintain 或 increase
-  - 必须引用 research_report 中的具体 ticker_signals 和 combined_signal
-  - 不得无视 Bear 方向的风险 flag，但需要给出为什么风险可控的理由
+Constraints:
+  - Argue only maintain or increase
+  - Must cite concrete ticker_signals and combined_signal from research_report
+  - Do not ignore Bear-side risk flags; explain why risks are manageable
 
 LLM: settings.openai_model_heavy (gpt-4o)
 """
@@ -38,59 +38,59 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
-SYSTEM_PROMPT = """你是量化交易系统的 Bull Analyst（多方分析师）。
+SYSTEM_PROMPT = """You are the Bull Analyst for a quantitative trading system.
 
-【你的立场】
-    你的职责是为当前持仓策略构建最强的看多论据。你必须全力论证看多。
+【Your stance】
+    Your job is to build the strongest bullish case for the current portfolio strategy. You must argue the long side forcefully.
 
-【输入材料】
-    你会收到：
-    1. research_report —— 包含 market_regime, macro_outlook, ticker_signals, cross_signal_insights
-    2. base_weights —— Stage 2 Python 量化基准仓位
+【Inputs】
+    You receive:
+    1. research_report — market_regime, macro_outlook, ticker_signals, cross_signal_insights
+    2. base_weights — Stage 2 Python quantitative baseline weights
 
-【你必须做到】
-    1. 从 research_report 中找到支撑看多的量化证据（引用具体 ticker_signals 数值）
-    2. 强调增长潜力、竞争优势、正面宏观条件
-    3. 对每个看多论据评估置信度
-    4. 说明哪些板块/标的应该加仓，为什么
-    5. 如果某个 ticker 有 flag（风险标记），你需要解释为什么这个风险可控
+【You must】
+    1. Find quantitative evidence supporting the long view (cite concrete ticker_signals values)
+    2. Emphasize growth, competitive advantage, supportive macro
+    3. Assign confidence to each bullish argument
+    4. Say which sectors/tickers to add to and why
+    5. If a ticker has a risk flag, explain why the risk is manageable
 
-【约束】
-    · 只能建议 maintain（维持）或 increase（加仓）
-    · suggested_weights 中所有值 ≥ 0，总和 = 1.0，必须包含 CASH
-    · 权重调整基于 base_weights，单仓不超过 0.20
-    · 你可以对 CASH 减仓（减少现金，加仓权益）
+【Constraints】
+    · Recommend only maintain or increase
+    · suggested_weights: all values ≥ 0, sum = 1.0, must include CASH
+    · Adjust from base_weights; single position ≤ 0.20
+    · You may reduce CASH (less cash, more equity)
 
-【必须输出纯 JSON】
+【Output: JSON only】
 {
   "stance": "maintain|increase",
   "confidence": <float 0.0-1.0>,
   "arguments": [
-    "<看多论据 1，引用具体数据>",
-    "<看多论据 2>"
+    "<bullish argument 1 with data>",
+    "<bullish argument 2>"
   ],
   "ticker_views": [
     {
       "ticker": "<TICKER>",
       "action": "overweight|hold",
       "delta": <float>,
-      "reason": "<≤40 字理由>"
+      "reason": "<≤40 chars>"
     }
   ],
   "suggested_weights": {"<TICKER>": <float>, "CASH": <float>},
   "risk_acknowledgments": [
-    "<承认的风险 1，但解释为什么可控>"
+    "<risk 1, why it is controllable>"
   ]
 }
 
-仅输出 JSON。"""
+JSON only."""
 
 
 async def run_bull_researcher_async(
     research_report: dict,
     base_weights: dict,
 ) -> dict:
-    """Stage 4a: 多方论证。并行调用，不等 Bear。"""
+    """Stage 4a: long-side arguments. Parallel; does not wait for Bear."""
     user_payload = _build_user_message(research_report, base_weights)
 
     client = _get_client()
@@ -106,7 +106,7 @@ async def run_bull_researcher_async(
             ]
             if attempt > 0 and last_error:
                 messages[1]["content"] = (
-                    f"[RETRY {attempt}] 上次输出错误: {last_error}\n\n" + user_payload
+                    f"[RETRY {attempt}] Previous output error: {last_error}\n\n" + user_payload
                 )
 
             resp = await client.chat.completions.create(
@@ -139,12 +139,12 @@ def _build_user_message(research_report: dict, base_weights: dict) -> str:
     return (
         "## Research Report\n"
         f"{json.dumps(research_report, ensure_ascii=False, indent=2)}\n\n"
-        "## Base Weights (Stage 2 基准)\n"
+        "## Base Weights (Stage 2 baseline)\n"
         f"{json.dumps(base_weights, ensure_ascii=False, indent=2)}\n\n"
-        "## 你的任务\n"
-        "站多方立场，基于以上材料构建最强看多论据。"
-        "输出 stance + confidence + arguments + ticker_views + suggested_weights。"
-        "仅返回纯 JSON。"
+        "## Your task\n"
+        "From the long side, build the strongest bullish case from the materials above. "
+        "Output stance + confidence + arguments + ticker_views + suggested_weights. "
+        "Return JSON only."
     )
 
 
@@ -204,7 +204,7 @@ def _degraded_output(base_weights: dict, error: str | None) -> dict:
     return {
         "stance":                "maintain",
         "confidence":            0.3,
-        "arguments":             [f"Bull LLM 降级 (error={error})"],
+        "arguments":             [f"Bull LLM degraded (error={error})"],
         "ticker_views":          [],
         "suggested_weights":     dict(base_weights),
         "risk_acknowledgments":  [],

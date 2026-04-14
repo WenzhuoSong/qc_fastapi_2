@@ -1,24 +1,23 @@
 # agents/risk_manager.py
 """
-Stage 4: RISK MGR —— 首席风控官（纯 Python）
+Stage 4: RISK MGR — chief risk officer (pure Python)
 
-update.txt 的"二次审核 + 防守覆盖"站。不是一道死门，而是一个审核员：
-    1. 拿到 researcher.adjusted_weights (draft_proposal) 作为输入
-    2. 依序应用三层 overlay，把 LLM 的提案转成最终的 target_weights：
-         Overlay 1  transmission_tilt   —— 宏观事件驱动的扇区倾斜
-         Overlay 2  defensive_adjust    —— regime 防守矩阵
-         Overlay 3  hard_risk_filter    —— 事件风险清仓（未持仓新建禁、已持仓不动）
-    3. 基于 target_weights 计算 rebalance_actions + 估算成本
-    4. 6 项硬核数学检查：
+Per update.txt: "second review + defensive overlays". Not a hard gate — an auditor:
+    1. Take researcher.adjusted_weights (draft_proposal) as input
+    2. Apply three overlays in order, turning the LLM proposal into final target_weights:
+         Overlay 1  transmission_tilt   — macro-driven sector tilt
+         Overlay 2  defensive_adjust    — regime defense matrix
+         Overlay 3  hard_risk_filter    — event risk: no new positions into flagged names; existing held
+    3. Compute rebalance_actions + estimated cost from target_weights
+    4. Six quantitative checks:
          vol_ok / drawdown_ok / position_ok / broad_market_ok / cash_ok / cost_ok
-    5. 通过则签发一次性 approval_token
-    6. 拒绝时给出具体 rejection_reasons
+    5. If pass, issue one-time approval_token
+    6. If reject, concrete rejection_reasons
 
-与旧版的差异：
-    · 旧版 strategy_engine 承担了 overlay + 打分 + 优化三件事，这里把 overlay
-      部分迁过来，和"守底线"的角色合并 —— 这正是 update.txt 里 Stage 4 的原意。
-    · 旧版 risk_manager 只负责 assert，不做修改。新版可以"修改后再 assert"，
-      但修改规则是 deterministic 的（纯 Python，不是 LLM）。
+vs legacy:
+    · Old strategy_engine mixed overlay + scoring + optimization; overlays moved here
+      merged with the "floor" role — Stage 4 intent from update.txt.
+    · Old risk_manager only asserted; new version may modify then assert (deterministic Python, not LLM).
 """
 from __future__ import annotations
 
@@ -42,11 +41,11 @@ logger = logging.getLogger("qc_fastapi_2.risk_mgr")
 
 BROAD_MARKET_TICKERS = {"SPY", "QQQ", "IWM"}
 
-# 触发 defensive_adjust 的 regime
+# Regimes that trigger defensive_adjust
 DEFENSIVE_REGIMES = {"bear_weak", "bear_trend", "high_vol"}
 
 
-# ─────────────────────────────── 主入口 ───────────────────────────────
+# ─────────────────────────────── Main entry ───────────────────────────────
 
 
 async def run_risk_manager_async(
@@ -56,13 +55,13 @@ async def run_risk_manager_async(
     researcher_out:   dict,
 ) -> dict:
     """
-    Stage 4 入口。
-    输入：
-        pipeline_context — 含 risk_params / override_mode / active_strategy
-        brief            — 含 portfolio / holdings / hard_risks_map / current_weights
-        quant_baseline   — 用于审计对照（不参与计算）
-        researcher_out   — 提供 adjusted_weights + regime + key_events
-    输出：最终 target_weights + 6 项检查 + token（若通过）。
+    Stage 4 entry.
+    Inputs:
+        pipeline_context — risk_params / override_mode / active_strategy
+        brief            — portfolio / holdings / hard_risks_map / current_weights
+        quant_baseline   — audit reference (not used in overlay math)
+        researcher_out   — adjusted_weights + regime + key_events
+    Output: final target_weights + six checks + token (if approved).
     """
     risk_params = pipeline_context.get("risk_params") or {}
     override_mode = pipeline_context.get("override_mode")
@@ -86,7 +85,7 @@ async def run_risk_manager_async(
     overlays_applied: list[str] = []
     working = dict(adjusted_weights)
 
-    # Overlay 1: transmission_tilt (宏观事件驱动)
+    # Overlay 1: transmission_tilt (macro-driven)
     working = _apply_transmission_tilt(
         working,
         key_events=key_events,
@@ -94,7 +93,7 @@ async def run_risk_manager_async(
         overlays_applied=overlays_applied,
     )
 
-    # Overlay 2: defensive_adjust (regime 防守)
+    # Overlay 2: defensive_adjust (regime defense)
     if override_mode == "DEFENSIVE" or regime in DEFENSIVE_REGIMES:
         working = defensive_adjust(
             working,
@@ -103,7 +102,7 @@ async def run_risk_manager_async(
         tag = f"defensive:{regime if regime in DEFENSIVE_REGIMES else 'override'}"
         overlays_applied.append(tag)
 
-    # Overlay 3: hard_risk_filter (事件风险清仓)
+    # Overlay 3: hard_risk_filter (event risk)
     working = _apply_hard_risk_filter(
         working,
         current_weights=current_weights,
@@ -120,7 +119,7 @@ async def run_risk_manager_async(
     )
     estimated_cost = estimate_cost_pct(rebalance_actions)
 
-    # ═══ 6 项硬核检查 ═══
+    # ═══ Six quantitative checks ═══
     checks, reasons = _run_checks(
         target_weights=target_weights,
         estimated_cost=estimated_cost,
@@ -174,7 +173,7 @@ def _apply_transmission_tilt(
     risk_params:      dict,
     overlays_applied: list[str],
 ) -> dict[str, float]:
-    """RESEARCHER.key_events → match pattern → tilt。无匹配则透传。"""
+    """RESEARCHER.key_events → match pattern → tilt. Pass-through if no match."""
     if not key_events:
         return weights
 
@@ -205,9 +204,9 @@ def _apply_hard_risk_filter(
     overlays_applied: list[str],
 ) -> dict[str, float]:
     """
-    命中硬风险的标的：
-      - 未持仓 → 禁止新建仓（权重清 0，释放到 CASH）
-      - 已持仓 → 保持现状（Phase 1 ETF 宇宙几乎不会触发）
+    Hard-risk tickers:
+      - Not held → zero target (no new position), weight to CASH
+      - Held → unchanged (Phase 1 ETF universe rarely hits this)
     """
     if not hard_risks_map:
         return weights
@@ -233,7 +232,7 @@ def _apply_hard_risk_filter(
 
 
 # ═══════════════════════════════════════════════════════════════
-# 6 Quantitative Checks
+# Six quantitative checks
 # ═══════════════════════════════════════════════════════════════
 
 
@@ -269,7 +268,7 @@ def _run_checks(
     checks: dict[str, dict] = {}
     reasons: list[str] = []
 
-    # 1. vol_ok —— 目标权重加权的 hist_vol_20d
+    # 1. vol_ok — position-weighted hist_vol_20d
     weighted_vol = 0.0
     covered = 0.0
     for ticker, w in target_weights.items():
@@ -286,7 +285,9 @@ def _run_checks(
         "threshold": max_hist_vol,
     }
     if not vol_ok:
-        reasons.append(f"持仓加权历史波动率 {vol_value:.2%} 超过上限 {max_hist_vol:.2%}")
+        reasons.append(
+            f"Position-weighted hist vol {vol_value:.2%} exceeds cap {max_hist_vol:.2%}"
+        )
 
     # 2. drawdown_ok
     drawdown_ok = drawdown_pct < max_drawdown
@@ -296,9 +297,11 @@ def _run_checks(
         "threshold": max_drawdown,
     }
     if not drawdown_ok:
-        reasons.append(f"当前回撤 {drawdown_pct:.2%} 已达上限 {max_drawdown:.2%}")
+        reasons.append(
+            f"Current drawdown {drawdown_pct:.2%} at or above cap {max_drawdown:.2%}"
+        )
 
-    # 3. position_ok —— 非 CASH 单仓上限
+    # 3. position_ok — max non-CASH single name
     max_weight = 0.0
     max_weight_ticker = None
     for ticker, w in target_weights.items():
@@ -317,7 +320,7 @@ def _run_checks(
     }
     if not position_ok:
         reasons.append(
-            f"{max_weight_ticker} 单仓 {max_weight:.2%} 超过上限 {max_single_pos:.2%}"
+            f"{max_weight_ticker} position {max_weight:.2%} exceeds cap {max_single_pos:.2%}"
         )
 
     # 4. broad_market_ok
@@ -332,7 +335,7 @@ def _run_checks(
     }
     if not broad_market_ok:
         reasons.append(
-            f"广基 ETF (SPY+QQQ+IWM) 合计 {broad_sum:.2%} 超过上限 {max_broad_market:.2%}"
+            f"Broad ETFs (SPY+QQQ+IWM) {broad_sum:.2%} exceeds cap {max_broad_market:.2%}"
         )
 
     # 5. cash_ok
@@ -344,7 +347,9 @@ def _run_checks(
         "threshold": min_cash_pct,
     }
     if not cash_ok:
-        reasons.append(f"现金比 {cash_weight:.2%} 低于下限 {min_cash_pct:.2%}")
+        reasons.append(
+            f"Cash {cash_weight:.2%} below floor {min_cash_pct:.2%}"
+        )
 
     # 6. cost_ok
     cost_ok = estimated_cost <= max_trade_cost_pct + 1e-9
@@ -355,19 +360,17 @@ def _run_checks(
     }
     if not cost_ok:
         reasons.append(
-            f"预估成本 {estimated_cost:.4%} 超过上限 {max_trade_cost_pct:.4%}"
+            f"Estimated cost {estimated_cost:.4%} exceeds cap {max_trade_cost_pct:.4%}"
         )
 
     return checks, reasons
 
 
-# ═══════════════════════════════════════════════════════════════
-# 工具
-# ═══════════════════════════════════════════════════════════════
+# ─────────────────────────────── Helpers ───────────────────────────────
 
 
 def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
-    """经过 overlay 后再做一次归一化，确保总和 = 1.0 且非负。"""
+    """Renormalize after overlays so sum = 1.0 and weights are non-negative."""
     cleaned: dict[str, float] = {}
     for t, w in weights.items():
         try:

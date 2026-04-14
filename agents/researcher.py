@@ -1,19 +1,19 @@
 # agents/researcher.py
 """
-Stage 3: RESEARCHER —— 信息合成层（V2.1 重构）
+Stage 3: RESEARCHER — information synthesis layer (V2.1 refactor)
 
-V2.1 的职责变化：
-    V2 Phase 1: 又分析又决策，直接输出 adjusted_weights
-    V2.1:       **只分析不决策**，输出结构化 research_report 供 Bull/Bear 消费
+V2.1 role change:
+    V2 Phase 1: analyzed and decided; output adjusted_weights directly
+    V2.1:       **analyze only, no decision** — structured research_report for Bull/Bear
 
-输入：brief（prose + macro + per_ticker_news）+ quant_baseline（scoring + base_weights）
-输出：research_report（ticker_signals, macro_outlook, cross_signal_insights）
+Inputs: brief (prose + macro + per_ticker_news) + quant_baseline (scoring + base_weights)
+Output: research_report (ticker_signals, macro_outlook, cross_signal_insights)
 
-核心创新：ticker_signals 把每个 ticker 的量化因子 + 新闻情绪 + 综合信号打在一起。
-Bull/Bear 不需要各自从头解析原始数据，直接基于这份报告辩论。
+Core idea: ticker_signals bundles quant factors + news sentiment + combined signal per ticker.
+Bull/Bear debate from this report instead of re-parsing raw inputs.
 
-LLM: settings.openai_model_heavy (gpt-4o)，单次调用，3 次重试。
-容错：3 次重试均失败 → 生成仅含 quant 数据的降级报告（无 news 合成）。
+LLM: settings.openai_model_heavy (gpt-4o), single call, 3 retries.
+Fallback: after 3 failures → degraded report with quant-only data (no news synthesis).
 """
 from __future__ import annotations
 
@@ -38,48 +38,48 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
-SYSTEM_PROMPT = """你是量化交易系统的首席市场分析师（Stage 3 RESEARCHER）。
+SYSTEM_PROMPT = """You are the chief market analyst (Stage 3 RESEARCHER) for a quantitative trading system.
 
-【你的位置】
-    上游 Stage 2 是 Python 量化基准层，已算好 base_weights 和 scoring_breakdown。
-    下游 Stage 4a/4b 是 Bull/Bear 辩论层，它们将基于你的报告构建多空论点。
+【Your place in the pipeline】
+    Upstream Stage 2 is the Python quant baseline (base_weights, scoring_breakdown).
+    Downstream Stage 4a/4b are Bull/Bear; they build long/short arguments from your report.
 
-【你的任务 —— 只分析，不决策】
-    综合量化因子 + 新闻 + 宏观 + 日程，为每个 ticker 产出结构化的综合信号评估。
-    你不做仓位调整，不输出 weights，只输出一份客观的市场分析报告。
+【Task — analyze only, no decision】
+    Combine quant factors + news + macro + calendar into structured signal assessments per ticker.
+    Do not output position weights; output an objective market analysis report only.
 
-【输出规则】
-1. market_regime: 判断当前市场制度和置信度
-2. macro_outlook: 宏观环境总结 + 未来关键事件
-3. ticker_signals: 每个有意义的 ticker 的量化+新闻综合信号
-4. cross_signal_insights: 跨 ticker 的模式观察（共振/矛盾/轮动）
+【Output rules】
+1. market_regime: current regime and confidence
+2. macro_outlook: macro summary + upcoming key events
+3. ticker_signals: quant + news combined signal per meaningful ticker
+4. cross_signal_insights: cross-ticker patterns (alignment / conflict / rotation)
 
-【combined_signal 取值规则】
+【combined_signal】
     strong_positive: quant_score top 30% AND news_sentiment = positive
     positive:        quant_score top 50% OR news_sentiment = positive
-    neutral:         信号矛盾或无明确方向
+    neutral:         conflicting or no clear direction
     negative:        quant_score bottom 50% OR news_sentiment = negative
     strong_negative: quant_score bottom 30% AND news_sentiment = negative
 
-【key_events 规则（至关重要！）】
-  · 必须产出 3-5 条短语，每条 ≤ 60 字。
-  · 必须使用下游 transmission 匹配器能识别的关键字：
+【key_events (critical)】
+  · Produce 3-5 phrases, each ≤ 60 characters (English).
+  · Use keywords the downstream transmission matcher recognizes:
       oil surge / hormuz / middle east / opec / war / russia / ukraine / taiwan /
       rate hike / fed hawkish / cpi / pce / fomc / yields surge /
       rate cut / dovish pivot / liquidity / credit stress / vix spike /
       bank crisis / recession / pmi contraction / jobless claims /
       demand destruction / earnings recession
-  · 没有宏观事件时返回 ["normal market conditions"]，不要编造。
+  · If no macro events, return ["normal market conditions"] — do not invent.
 
-【必须输出纯 JSON】
+【Output: JSON only】
 {
   "market_regime": {
     "regime": "bull_trend|bull_weak|neutral|bear_weak|bear_trend|high_vol",
     "confidence": <float 0.0-1.0>,
-    "evidence": "<一句话解释判断依据>"
+    "evidence": "<one sentence on the basis for the regime>"
   },
   "macro_outlook": {
-    "summary": "<≤200 字宏观概要>",
+    "summary": "<≤200 chars macro overview>",
     "key_events": ["event phrase 1", "event phrase 2", ...],
     "impact_bias": "positive|neutral|negative"
   },
@@ -88,25 +88,25 @@ SYSTEM_PROMPT = """你是量化交易系统的首席市场分析师（Stage 3 RE
       "ticker": "<TICKER>",
       "quant_score": <float>,
       "quant_rank": <int>,
-      "quant_factors": "<关键因子一行>",
+      "quant_factors": "<key factors one line>",
       "news_sentiment": "positive|neutral|negative",
       "news_count": <int>,
-      "news_digest": "<≤50 字新闻要点>",
+      "news_digest": "<≤50 chars news gist>",
       "combined_signal": "strong_positive|positive|neutral|negative|strong_negative",
-      "flag": "<风险或机会标记，无则 null>"
+      "flag": "<risk or opportunity tag, or null>"
     }
   ],
   "cross_signal_insights": [
-    "<跨 ticker 观察 1>",
-    "<跨 ticker 观察 2>"
+    "<cross-ticker observation 1>",
+    "<cross-ticker observation 2>"
   ]
 }
 
-仅输出 JSON。任何额外文本都会被视为错误。"""
+JSON only. Any extra text is an error."""
 
 
 # ═══════════════════════════════════════════════════════════════
-# 主入口
+# Main entry
 # ═══════════════════════════════════════════════════════════════
 
 
@@ -115,7 +115,7 @@ async def run_researcher_async(
     brief: dict,
     quant_baseline: dict,
 ) -> dict:
-    """Stage 3: 信息合成。消费 baseline + brief，产出 research_report。"""
+    """Stage 3: synthesize information from baseline + brief → research_report."""
     user_payload = _build_user_message(brief, quant_baseline)
 
     client = _get_client()
@@ -131,7 +131,7 @@ async def run_researcher_async(
             ]
             if attempt > 0 and last_error:
                 messages[1]["content"] = (
-                    f"[RETRY {attempt}] 上次输出错误: {last_error}\n\n" + user_payload
+                    f"[RETRY {attempt}] Previous output error: {last_error}\n\n" + user_payload
                 )
 
             resp = await client.chat.completions.create(
@@ -156,7 +156,7 @@ async def run_researcher_async(
             last_error = str(e)
             logger.warning(f"[RESEARCHER] attempt {attempt} failed: {e}")
 
-    # 所有重试失败 → 降级报告（仅含 quant 数据，无 news 合成）
+    # All retries failed → degraded report (quant only, no news synthesis)
     logger.error(
         f"[RESEARCHER] all retries failed, generating degraded report. last_error={last_error}"
     )
@@ -169,56 +169,56 @@ async def run_researcher_async(
 
 
 def _build_user_message(brief: dict, quant_baseline: dict) -> str:
-    prose    = brief.get("prose_summary") or "(无)"
-    macro    = brief.get("macro_news_section") or "(无)"
-    calendar = brief.get("calendar_section") or "(无)"
+    prose    = brief.get("prose_summary") or "(none)"
+    macro    = brief.get("macro_news_section") or "(none)"
+    calendar = brief.get("calendar_section") or "(none)"
     key_facts = brief.get("key_facts") or {}
 
     base_weights = quant_baseline.get("base_weights") or {}
     scoring      = quant_baseline.get("scoring_breakdown") or []
     ranking      = quant_baseline.get("ranking_summary") or {}
 
-    # 裁剪 scoring breakdown 到前 15 条
+    # Trim scoring breakdown to top 15
     top_scored = scoring[:15]
 
-    # 格式化 per_ticker_news 为紧凑文本
+    # Compact per_ticker_news
     per_ticker_news = brief.get("per_ticker_news") or {}
     news_block = _format_per_ticker_news(per_ticker_news)
 
     return (
-        "## 市场技术面\n"
+        "## Market technicals\n"
         f"{prose}\n\n"
-        "## 定量指标\n"
+        "## Quantitative facts\n"
         f"{json.dumps(key_facts, ensure_ascii=False, indent=2)}\n\n"
-        "## 宏观新闻\n"
+        "## Macro news\n"
         f"{macro}\n\n"
-        "## 本周日程\n"
+        "## Calendar this week\n"
         f"{calendar}\n\n"
-        "## 个股新闻（按 ticker）\n"
+        "## Per-ticker news\n"
         f"{news_block}\n\n"
-        "## Python Stage 2 基准仓位 (base_weights)\n"
+        "## Python Stage 2 baseline weights (base_weights)\n"
         f"{json.dumps(base_weights, ensure_ascii=False, indent=2)}\n\n"
-        "## 基准打分明细 (top 15)\n"
+        "## Scoring breakdown (top 15)\n"
         f"{json.dumps(top_scored, ensure_ascii=False, indent=2)}\n\n"
-        "## 基准排名\n"
+        "## Ranking summary\n"
         f"{json.dumps(ranking, ensure_ascii=False, indent=2)}\n\n"
-        "## 你的任务\n"
-        "综合以上材料，输出 market_regime + macro_outlook + ticker_signals +\n"
-        "cross_signal_insights。只分析不决策，仅返回纯 JSON。"
+        "## Your task\n"
+        "From the above, output market_regime + macro_outlook + ticker_signals +\n"
+        "cross_signal_insights. Analyze only — no trading decision. JSON only."
     )
 
 
 def _format_per_ticker_news(per_ticker_news: dict) -> str:
-    """把 per_ticker_news 格式化为紧凑文本块。"""
+    """Format per_ticker_news into a compact text block."""
     if not per_ticker_news:
-        return "(无个股新闻)"
+        return "(no per-ticker news)"
 
     lines = []
     for ticker, news_list in sorted(per_ticker_news.items()):
         if not news_list:
             continue
-        lines.append(f"### {ticker} ({len(news_list)} 条)")
-        for n in news_list[:3]:  # 每个 ticker 最多 3 条
+        lines.append(f"### {ticker} ({len(news_list)} items)")
+        for n in news_list[:3]:  # max 3 per ticker
             source = n.get("source", "")
             source_api = n.get("source_api", "")
             headline = n.get("headline", "")[:80]
@@ -231,7 +231,7 @@ def _format_per_ticker_news(per_ticker_news: dict) -> str:
             else:
                 lines.append(f"  {tag} {headline}")
 
-    return "\n".join(lines) if lines else "(无个股新闻)"
+    return "\n".join(lines) if lines else "(no per-ticker news)"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -243,7 +243,7 @@ _VALID_SIGNALS = {"strong_positive", "positive", "neutral", "negative", "strong_
 
 
 def _validate_and_normalize(out: dict, quant_baseline: dict) -> dict:
-    """验证并规范化 LLM 输出。"""
+    """Validate and normalize LLM output."""
     # market_regime
     mr = out.get("market_regime") or {}
     regime = str(mr.get("regime", "neutral")).strip()
@@ -320,7 +320,7 @@ def _safe_float(val, default: float) -> float:
 
 
 def _degraded_report(quant_baseline: dict, error: str | None) -> dict:
-    """LLM 全部重试失败时的降级报告：只有 quant 数据，无 news 合成。"""
+    """When all LLM retries fail: quant-only data, no news synthesis."""
     scoring = quant_baseline.get("scoring_breakdown") or []
     ticker_signals = []
     for i, item in enumerate(scoring):
@@ -345,10 +345,10 @@ def _degraded_report(quant_baseline: dict, error: str | None) -> dict:
         "market_regime": {
             "regime":     "neutral",
             "confidence": 0.3,
-            "evidence":   f"LLM 降级：无法合成新闻信号 (error={error})",
+            "evidence":   f"LLM degraded: could not synthesize news signals (error={error})",
         },
         "macro_outlook": {
-            "summary":     "LLM 降级，无宏观分析",
+            "summary":     "LLM degraded — no macro analysis",
             "key_events":  ["normal market conditions"],
             "impact_bias": "neutral",
         },

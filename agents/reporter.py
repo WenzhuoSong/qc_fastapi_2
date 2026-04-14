@@ -12,7 +12,7 @@ logger = logging.getLogger("qc_fastapi_2.reporter")
 
 
 async def run_reporter_async() -> dict:
-    """Phase 1: 直接查库计算主要指标，不经过 LLM。"""
+    """Phase 1: query DB for headline stats, no LLM."""
     stats  = await _gather_stats()
     msg    = _format_daily_report(stats)
     result = await tool_send_telegram({"text": msg, "parse_mode": "HTML"})
@@ -61,12 +61,12 @@ async def _gather_stats() -> dict:
 def _format_daily_report(s: dict) -> str:
     pnl_sign = "+" if s["daily_pnl_pct"] >= 0 else ""
     return (
-        f"📊 <b>每日策略日报</b> | {datetime.utcnow().strftime('%Y-%m-%d')}\n"
+        f"📊 <b>Daily strategy report</b> | {datetime.utcnow().strftime('%Y-%m-%d')}\n"
         f"――――――――――――――――\n"
-        f"💰 净值  <b>${s['total_value']:,.0f}</b>\n"
-        f"📈 日盈亏  {pnl_sign}{s['daily_pnl_pct']:.2%}\n"
-        f"📉 回撤  -{s['drawdown']:.2%}\n"
-        f"\n市场制度  {s['regime_label']} 🟢\n"
-        f"胜率(30d) {s['win_rate_30d']:.0%}\n"
-        f"今日执行  {s['executions_today']} 笔"
+        f"💰 NAV  <b>${s['total_value']:,.0f}</b>\n"
+        f"📈 Day PnL  {pnl_sign}{s['daily_pnl_pct']:.2%}\n"
+        f"📉 Drawdown  -{s['drawdown']:.2%}\n"
+        f"\nRegime  {s['regime_label']} 🟢\n"
+        f"Win rate (30d) {s['win_rate_30d']:.0%}\n"
+        f"Executions today  {s['executions_today']}"
     )

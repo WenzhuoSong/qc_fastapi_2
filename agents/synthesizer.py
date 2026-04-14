@@ -1,19 +1,19 @@
 # agents/synthesizer.py
 """
-Stage 5: Synthesizer —— 首席投资官仲裁层（V2.1 新增）
+Stage 5: Synthesizer — CIO arbitration layer (V2.1)
 
-职责：
-    权衡 Bull/Bear 双方论点，结合 base_weights，产出最终 adjusted_weights。
-    输出接口与 V2 Phase 1 的 researcher_out **完全兼容**，下游 Risk MGR 无需改动。
+Role:
+    Weigh Bull vs Bear arguments with base_weights → final adjusted_weights.
+    Output is **fully compatible** with V2 Phase 1 researcher_out; downstream Risk MGR unchanged.
 
-输入：bull_output, bear_output, research_report, base_weights, risk_params
-输出：synthesizer_out（兼容 researcher_out 接口 + 额外 debate_summary 字段）
+Inputs: bull_output, bear_output, research_report, base_weights, risk_params
+Output: synthesizer_out (researcher_out-compatible + extra debate_summary)
 
-核心规则：
-    - 客观评估双方论据的强度和证据质量
-    - 标记双方共识点和分歧点
-    - 若双方置信度差距 < 0.15，标记 uncertainty_flag=true，选择保守方案
-    - 权重调整幅度 ±5%，有充分理由可 ±10%
+Rules:
+    - Objectively assess strength and evidence quality on both sides
+    - Mark consensus vs divergence
+    - If Bull/Bear confidence gap < 0.15, set uncertainty_flag=true and prefer conservative weights
+    - Weight moves typically ±5%, up to ±10% with strong justification
 
 LLM: settings.openai_model_heavy (gpt-4o)
 """
@@ -40,38 +40,38 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
-SYSTEM_PROMPT = """你是量化交易系统的首席投资官（CIO / Synthesizer），刚刚听完 Bull 和 Bear 两位分析师的辩论。
+SYSTEM_PROMPT = """You are the CIO / Synthesizer for a quantitative trading system. You have heard Bull and Bear analysts debate.
 
-【你的位置】
-    上游 Stage 3 是 RESEARCHER（信息合成报告）。
-    Stage 4a Bull 和 Stage 4b Bear 已基于该报告各自论证。
-    你需要仲裁，产出最终的 adjusted_weights 供下游 Risk Manager 审查。
+【Your place】
+    Upstream Stage 3 is RESEARCHER (synthesis report).
+    Stage 4a Bull and Stage 4b Bear argued from that report.
+    You arbitrate and produce final adjusted_weights for downstream Risk Manager review.
 
-【你的任务】
-    1. 客观评估双方论据的强度和证据质量
-    2. 标记双方共识点和分歧点
-    3. 做出最终市场判断（regime + stance）
-    4. 基于判断调整 base_weights（调整幅度 ±5%，有充分理由可 ±10%）
-    5. 若双方置信度差距 < 0.15，标记 uncertainty_flag=true，选择保守方案
+【Tasks】
+    1. Objectively assess argument strength and evidence quality on both sides
+    2. Mark consensus and divergence
+    3. Final market judgment (regime + stance)
+    4. Adjust base_weights from that judgment (typically ±5%, up to ±10% with strong reason)
+    5. If Bull/Bear confidence gap < 0.15, set uncertainty_flag=true and prefer conservative weights
 
-【重要规则】
-    · 不要偏向任何一方，只看证据质量
-    · 权重调整之和必须 = 1.0
-    · 单仓不超过 max_single_position
-    · 必须包含 CASH
-    · 不要重写 base_weights —— 大多数标的和 base_weights 在 ±5% 以内
+【Rules】
+    · Do not favor either side — judge evidence only
+    · Adjusted weights must sum to 1.0
+    · Single name ≤ max_single_position
+    · Must include CASH
+    · Do not rewrite base_weights wholesale — most names stay within ±5% of base
 
-【regime 取值（严格 6 选 1）】
+【regime (exactly one of 6)】
     bull_trend / bull_weak / neutral / bear_weak / bear_trend / high_vol
 
-【recommended_stance 取值（严格 5 选 1）】
+【recommended_stance (exactly one of 5)】
     buy / overweight / maintain / underweight / sell
 
-【key_events 规则】
-    · 从 research_report.macro_outlook.key_events 中继承
-    · 必须使用 transmission 匹配器能识别的关键字
+【key_events】
+    · Inherit from research_report.macro_outlook.key_events where possible
+    · Use keywords the transmission matcher recognizes
 
-【必须输出纯 JSON】
+【Output: JSON only】
 {
   "market_judgment": {
     "regime": "bull_trend|bull_weak|neutral|bear_weak|bear_trend|high_vol",
@@ -86,20 +86,20 @@ SYSTEM_PROMPT = """你是量化交易系统的首席投资官（CIO / Synthesize
       "base": <float>,
       "adjusted": <float>,
       "delta": <float>,
-      "reason": "<≤40 字中文理由>"
+      "reason": "<≤40 chars in English>"
     }
   ],
-  "reasoning": "<≤200 字中文总理由>",
+  "reasoning": "<≤200 chars total reasoning in English>",
   "consensus_points": ["...", "..."],
   "divergence_points": ["...", "..."],
   "key_events": ["<event phrase 1>", "..."],
-  "debate_resolution": "<一句话说明仲裁逻辑>"
+  "debate_resolution": "<one sentence on how you resolved the debate>"
 }
 
-仅输出 JSON。"""
+JSON only."""
 
 # ═══════════════════════════════════════════════════════════════
-# 5 级 stance → 旧 4 级兼容映射（供 defensive_adjust 等下游使用）
+# 5-level stance → legacy 4-level mapping lives in strategies (defensive_adjust, etc.)
 # ═══════════════════════════════════════════════════════════════
 
 _VALID_REGIMES = {"bull_trend", "bull_weak", "neutral", "bear_weak", "bear_trend", "high_vol"}
@@ -107,7 +107,7 @@ _VALID_STANCES_5 = {"buy", "overweight", "maintain", "underweight", "sell"}
 
 
 # ═══════════════════════════════════════════════════════════════
-# 主入口
+# Main entry
 # ═══════════════════════════════════════════════════════════════
 
 
@@ -120,8 +120,8 @@ async def run_synthesizer_async(
     risk_params: dict,
 ) -> dict:
     """
-    Stage 5: 仲裁 Bull/Bear，产出 adjusted_weights。
-    输出接口兼容旧 researcher_out，下游 Risk MGR 无需改动。
+    Stage 5: arbitrate Bull/Bear → adjusted_weights.
+    Output compatible with legacy researcher_out; downstream Risk MGR unchanged.
     """
     max_single_position = float(risk_params.get("max_single_position", 0.20))
 
@@ -144,7 +144,7 @@ async def run_synthesizer_async(
             ]
             if attempt > 0 and last_error:
                 messages[1]["content"] = (
-                    f"[RETRY {attempt}] 上次输出错误: {last_error}\n\n" + user_payload
+                    f"[RETRY {attempt}] Previous output error: {last_error}\n\n" + user_payload
                 )
 
             resp = await client.chat.completions.create(
@@ -178,7 +178,7 @@ async def run_synthesizer_async(
             last_error = str(e)
             logger.warning(f"[SYNTHESIZER] attempt {attempt} failed: {e}")
 
-    # 所有重试失败 → 降级到 base_weights
+    # All retries failed → fall back to base_weights
     logger.error(
         f"[SYNTHESIZER] all retries failed, degrading to base_weights. last_error={last_error}"
     )
@@ -202,34 +202,34 @@ def _build_user_message(
     max_pos = float(risk_params.get("max_single_position", 0.20))
     min_cash = float(risk_params.get("min_cash_pct", 0.05))
 
-    # 精简 research_report（不需要完整 ticker_signals）
+    # Trim research_report (omit full ticker_signals if needed)
     regime = research_report.get("market_regime", {})
     macro = research_report.get("macro_outlook", {})
     insights = research_report.get("cross_signal_insights", [])
 
     return (
-        "## Research Report 摘要\n"
+        "## Research report summary\n"
         f"market_regime: {json.dumps(regime, ensure_ascii=False)}\n"
         f"macro_outlook: {json.dumps(macro, ensure_ascii=False)}\n"
         f"cross_signal_insights: {json.dumps(insights, ensure_ascii=False)}\n\n"
-        "## Bull Analyst 论点\n"
+        "## Bull analyst\n"
         f"{json.dumps(bull_output, ensure_ascii=False, indent=2)}\n\n"
-        "## Bear Analyst 论点\n"
+        "## Bear analyst\n"
         f"{json.dumps(bear_output, ensure_ascii=False, indent=2)}\n\n"
-        "## Base Weights (Stage 2 基准)\n"
+        "## Base weights (Stage 2 baseline)\n"
         f"{json.dumps(base_weights, ensure_ascii=False, indent=2)}\n\n"
-        "## 约束\n"
+        "## Constraints\n"
         f"max_single_position = {max_pos}\n"
         f"min_cash_pct = {min_cash}\n\n"
-        "## 你的任务\n"
-        "仲裁 Bull/Bear 双方论点，输出 market_judgment + recommended_stance + "
-        "adjusted_weights + weight_adjustments + reasoning + key_events + debate_resolution。"
-        "仅返回纯 JSON。"
+        "## Your task\n"
+        "Arbitrate Bull vs Bear. Output market_judgment + recommended_stance + "
+        "adjusted_weights + weight_adjustments + reasoning + key_events + debate_resolution. "
+        "JSON only."
     )
 
 
 def _collect_allowed_tickers(brief: dict, base_weights: dict) -> set[str]:
-    """adjusted_weights 只允许 ticker 来自 brief.holdings 或 base_weights（含 CASH）。"""
+    """adjusted_weights may only use tickers from brief.holdings or base_weights (plus CASH)."""
     tickers: set[str] = {"CASH"}
     for h in brief.get("holdings") or []:
         t = (h.get("ticker") or "").upper().strip()
@@ -293,13 +293,13 @@ def _normalize(
     conf = max(0.0, min(1.0, conf))
 
     uncertainty = bool(mj.get("uncertainty_flag", False))
-    # 自动检测：如果 Bull/Bear 置信度差距 < 0.15，强制 uncertainty
+    # Auto: if Bull/Bear confidence gap < 0.15, force uncertainty
     bull_conf = float(bull_output.get("confidence", 0.5) or 0.5)
     bear_conf = float(bear_output.get("confidence", 0.5) or 0.5)
     if abs(bull_conf - bear_conf) < 0.15:
         uncertainty = True
 
-    # key_events: 优先从 research_report 继承
+    # key_events: prefer research_report
     key_events = out.get("key_events") or []
     if not isinstance(key_events, list) or not key_events:
         key_events = (research_report.get("macro_outlook") or {}).get("key_events") or []
@@ -317,7 +317,7 @@ def _normalize(
 
     actual_adjustments = _compute_adjustments(base_weights, adjusted)
 
-    # LLM 提供的 reason 优先
+    # Prefer LLM-provided reasons per ticker
     llm_adjustments = out.get("weight_adjustments") or []
     if isinstance(llm_adjustments, list) and llm_adjustments:
         reason_by_ticker = {}
@@ -327,11 +327,10 @@ def _normalize(
         for item in actual_adjustments:
             item["reason"] = reason_by_ticker.get(item["ticker"], "")
 
-    # 构建 debate_summary
     debate_summary = _build_debate_summary(bull_output, bear_output, out)
 
     return {
-        # ── 兼容 researcher_out 接口（Risk MGR 消费这些字段）──
+        # researcher_out fields (Risk MGR consumes these)
         "market_judgment": {
             "regime":              regime,
             "adjusted_confidence": conf,
@@ -345,13 +344,13 @@ def _normalize(
         "divergence_points":   list(out.get("divergence_points") or [])[:5],
         "key_events":          key_events,
         "used_degraded_fallback": False,
-        # ── 新增字段（Communicator 消费，Risk MGR 不消费）──
+        # Extra (Communicator; not consumed by Risk MGR)
         "debate_summary":      debate_summary,
     }
 
 
 def _build_debate_summary(bull_output: dict, bear_output: dict, synth_raw: dict) -> dict:
-    """构建 debate_summary 供 Communicator 展示。"""
+    """Build debate_summary for Communicator."""
     return {
         "bull_confidence":      float(bull_output.get("confidence", 0.5) or 0.5),
         "bear_confidence":      float(bear_output.get("confidence", 0.5) or 0.5),
@@ -373,12 +372,12 @@ def _sanitize_weights(
     fallback: dict,
 ) -> dict:
     """
-    清洗 LLM 输出的 adjusted_weights：
-      1. 只保留 allowed_tickers 内的 ticker
-      2. 负数 / 非数字 → 0
-      3. 单仓 clip 到 max_single_position
-      4. 缺失 CASH → 自动补
-      5. 总和归一化到 1.0
+    Sanitize LLM adjusted_weights:
+      1. Keep only allowed_tickers
+      2. Negative / non-numeric → 0
+      3. Clip single name to max_single_position
+      4. Ensure CASH present
+      5. Renormalize sum to 1.0
     """
     cleaned: dict[str, float] = {}
     for k, v in raw.items():
@@ -422,7 +421,7 @@ def _compute_adjustments(
     adjusted: dict[str, float],
     threshold: float = 0.01,
 ) -> list[dict]:
-    """对比 base vs adjusted，生成 delta 明细（过滤 < threshold 的噪声）。"""
+    """Base vs adjusted deltas; drop noise below threshold."""
     out: list[dict] = []
     all_tickers = set(base.keys()) | set(adjusted.keys())
     for ticker in sorted(all_tickers):
@@ -448,7 +447,7 @@ def _degraded_output(
     research_report: dict,
     error: str | None,
 ) -> dict:
-    """LLM 全部重试失败时的安全降级输出。"""
+    """Safe fallback when all LLM retries fail."""
     key_events = (research_report.get("macro_outlook") or {}).get("key_events") or [
         "normal market conditions"
     ]
@@ -462,7 +461,7 @@ def _degraded_output(
         "recommended_stance":   "maintain",
         "adjusted_weights":     {k: round(float(v), 4) for k, v in base_weights.items()},
         "weight_adjustments":   [],
-        "reasoning":            f"Synthesizer 降级：沿用 Stage 2 基准仓位 (error={error})",
+        "reasoning":            f"Synthesizer degraded: using Stage 2 baseline weights (error={error})",
         "consensus_points":     [],
         "divergence_points":    [],
         "key_events":           key_events,

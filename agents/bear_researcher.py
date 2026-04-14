@@ -1,17 +1,17 @@
 # agents/bear_researcher.py
 """
-Stage 4b: Bear Researcher —— 空方论证 Agent
+Stage 4b: Bear Researcher — short-side argumentation agent
 
-职责：基于 RESEARCHER 的 research_report，站**空方**立场构建最强风险警告。
-与 Stage 4a Bull Researcher 通过 asyncio.gather 并行执行。
+Role: From RESEARCHER's research_report, build the strongest risk warning from the **short** side.
+Runs in parallel with Stage 4a Bull Researcher via asyncio.gather.
 
-输入：research_report + base_weights
-输出：bear_output（thesis, arguments, ticker_views, suggested_weights, confidence）
+Inputs: research_report + base_weights
+Output: bear_output (thesis, arguments, ticker_views, suggested_weights, confidence)
 
-约束：
-  - 只能论证 reduce 或 defensive
-  - 必须引用 research_report 中的具体 flag、risk、news_sentiment=negative
-  - 不得无视 Bull 方向的正面信号，但需要给出为什么正面信号不可靠的理由
+Constraints:
+  - Argue only reduce or defensive
+  - Must cite concrete flags, risk, news_sentiment=negative from research_report
+  - Do not ignore Bull-side positive signals; explain why they may be unreliable
 
 LLM: settings.openai_model_heavy (gpt-4o)
 """
@@ -38,59 +38,59 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
-SYSTEM_PROMPT = """你是量化交易系统的 Bear Analyst（空方分析师）。
+SYSTEM_PROMPT = """You are the Bear Analyst for a quantitative trading system.
 
-【你的立场】
-    你的职责是为当前市场环境构建最强的风险警告。你必须全力论证看空。
+【Your stance】
+    Your job is to build the strongest risk warning for the current market. You must argue the short side forcefully.
 
-【输入材料】
-    你会收到：
-    1. research_report —— 包含 market_regime, macro_outlook, ticker_signals, cross_signal_insights
-    2. base_weights —— Stage 2 Python 量化基准仓位
+【Inputs】
+    You receive:
+    1. research_report — market_regime, macro_outlook, ticker_signals, cross_signal_insights
+    2. base_weights — Stage 2 Python quantitative baseline weights
 
-【你必须做到】
-    1. 从 research_report 中找到所有风险信号和负面指标（引用具体 ticker_signals 数值）
-    2. 强调回撤风险、过热信号、宏观威胁
-    3. 对每个看空论据评估置信度
-    4. 说明哪些板块/标的应该减仓或回避，为什么
-    5. 如果某个 ticker 有正面 combined_signal，你需要解释为什么这不可靠
+【You must】
+    1. Find all risk signals and negative indicators (cite concrete ticker_signals values)
+    2. Emphasize drawdown risk, overheating, macro threats
+    3. Assign confidence to each bearish argument
+    4. Say which sectors/tickers to trim or avoid and why
+    5. If a ticker has a positive combined_signal, explain why it may be unreliable
 
-【约束】
-    · 只能建议 reduce（减仓）或 defensive（防守）
-    · suggested_weights 中所有值 ≥ 0，总和 = 1.0，必须包含 CASH
-    · 权重调整基于 base_weights，单仓不超过 0.20
-    · 你应该倾向于增加 CASH 比例（增加现金缓冲）
+【Constraints】
+    · Recommend only reduce or defensive
+    · suggested_weights: all values ≥ 0, sum = 1.0, must include CASH
+    · Adjust from base_weights; single position ≤ 0.20
+    · Prefer higher CASH (larger cash buffer)
 
-【必须输出纯 JSON】
+【Output: JSON only】
 {
   "stance": "reduce|defensive",
   "confidence": <float 0.0-1.0>,
   "arguments": [
-    "<看空论据 1，引用具体数据>",
-    "<看空论据 2>"
+    "<bearish argument 1 with data>",
+    "<bearish argument 2>"
   ],
   "ticker_views": [
     {
       "ticker": "<TICKER>",
       "action": "underweight|trim|avoid",
       "delta": <float>,
-      "reason": "<≤40 字理由>"
+      "reason": "<≤40 chars>"
     }
   ],
   "suggested_weights": {"<TICKER>": <float>, "CASH": <float>},
   "bullish_rebuttals": [
-    "<对正面信号的反驳 1>"
+    "<rebuttal to a positive signal>"
   ]
 }
 
-仅输出 JSON。"""
+JSON only."""
 
 
 async def run_bear_researcher_async(
     research_report: dict,
     base_weights: dict,
 ) -> dict:
-    """Stage 4b: 空方论证。并行调用，不等 Bull。"""
+    """Stage 4b: short-side arguments. Parallel; does not wait for Bull."""
     user_payload = _build_user_message(research_report, base_weights)
 
     client = _get_client()
@@ -106,7 +106,7 @@ async def run_bear_researcher_async(
             ]
             if attempt > 0 and last_error:
                 messages[1]["content"] = (
-                    f"[RETRY {attempt}] 上次输出错误: {last_error}\n\n" + user_payload
+                    f"[RETRY {attempt}] Previous output error: {last_error}\n\n" + user_payload
                 )
 
             resp = await client.chat.completions.create(
@@ -139,12 +139,12 @@ def _build_user_message(research_report: dict, base_weights: dict) -> str:
     return (
         "## Research Report\n"
         f"{json.dumps(research_report, ensure_ascii=False, indent=2)}\n\n"
-        "## Base Weights (Stage 2 基准)\n"
+        "## Base Weights (Stage 2 baseline)\n"
         f"{json.dumps(base_weights, ensure_ascii=False, indent=2)}\n\n"
-        "## 你的任务\n"
-        "站空方立场，基于以上材料构建最强风险论据。"
-        "输出 stance + confidence + arguments + ticker_views + suggested_weights。"
-        "仅返回纯 JSON。"
+        "## Your task\n"
+        "From the short side, build the strongest risk case from the materials above. "
+        "Output stance + confidence + arguments + ticker_views + suggested_weights. "
+        "Return JSON only."
     )
 
 
@@ -182,7 +182,7 @@ def _normalize(out: dict, base_weights: dict) -> dict:
 
     suggested = out.get("suggested_weights") or {}
     if not isinstance(suggested, dict) or not suggested:
-        # 降级：增加 CASH 到 0.30
+        # Degraded: bump CASH to 0.30
         suggested = dict(base_weights)
         suggested["CASH"] = 0.30
 
@@ -208,7 +208,7 @@ def _degraded_output(base_weights: dict, error: str | None) -> dict:
     return {
         "stance":              "defensive",
         "confidence":          0.3,
-        "arguments":           [f"Bear LLM 降级 (error={error})"],
+        "arguments":           [f"Bear LLM degraded (error={error})"],
         "ticker_views":        [],
         "suggested_weights":   defensive_weights,
         "bullish_rebuttals":   [],

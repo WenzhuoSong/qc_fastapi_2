@@ -14,10 +14,10 @@ client = AsyncOpenAI(api_key=settings.openai_api_key)
 
 class BaseAgent:
     """
-    所有 Agent 的基类。
-    负责：Prompt 加载 / OpenAI API 调用循环 / 工具执行 / 输出验证 / 重试。
+    Base class for all agents.
+    Handles: prompt loading / OpenAI API call loop / tool execution / output validation / retries.
 
-    仅异步接口。所有 tool_executor 中的工具必须是 async 可等待的。
+    Async-only. Every tool in tool_executor must be awaitable.
     """
 
     def __init__(
@@ -39,7 +39,7 @@ class BaseAgent:
         self.model         = settings.openai_model if use_mini_model else settings.openai_model_heavy
 
     def _convert_tools_to_openai_format(self, tools: list[dict]) -> list[dict]:
-        """将 Anthropic 风格的工具定义转换为 OpenAI 格式。"""
+        """Convert Anthropic-style tool definitions to OpenAI format."""
         if not tools:
             return []
 
@@ -62,7 +62,7 @@ class BaseAgent:
         return openai_tools
 
     async def run(self, input_data: dict, output_schema: dict | None = None) -> dict:
-        """异步运行 Agent，内含工具调用循环 + 重试。返回解析后的 JSON 字典。"""
+        """Run the agent asynchronously with tool loop + retries. Returns parsed JSON dict."""
         attempt = 0
         last_error = None
 
@@ -88,13 +88,13 @@ class BaseAgent:
         attempt: int,
         last_error: str | None,
     ) -> dict:
-        """单次 OpenAI API 调用 + 工具循环。"""
+        """Single OpenAI API call + tool loop."""
         user_content = json.dumps(input_data, ensure_ascii=False)
 
         if attempt > 0:
             user_content = (
-                f"[RETRY {attempt}] 上次输出错误：{last_error}。"
-                f"请严格遵循输出 Schema。\n\n" + user_content
+                f"[RETRY {attempt}] Previous output error: {last_error}. "
+                f"Follow the output schema strictly.\n\n" + user_content
             )
 
         messages = [
@@ -156,14 +156,14 @@ class BaseAgent:
             return self._parse_json(text)
 
     async def _call_tool(self, tool_name: str, tool_input: dict) -> Any:
-        """ToolRegistry 局部执行——拦截未授权工具。"""
+        """Local ToolRegistry execution — reject unauthorized tools."""
         if tool_name not in self.tool_executor:
-            raise ValueError(f"[{self.name}] 调用未授权工具: {tool_name}")
+            raise ValueError(f"[{self.name}] unauthorized tool call: {tool_name}")
         logger.debug(f"[{self.name}] tool_call: {tool_name}({tool_input})")
         return await self.tool_executor[tool_name](tool_input)
 
     def _parse_json(self, text: str) -> dict:
-        """JSON 提取——容错 markdown 代码块。"""
+        """Extract JSON — tolerant of markdown code fences."""
         text = text.strip()
         if text.startswith("```"):
             lines = text.split("\n")
@@ -174,8 +174,8 @@ class BaseAgent:
             raise ValueError(f"JSON parse error: {e}\n\nRaw: {text[:500]}")
 
     def _validate(self, result: dict, schema: dict):
-        """简化验证: 检查必要字段是否存在。"""
+        """Light validation: ensure required fields exist."""
         required = schema.get("required", [])
         missing  = [f for f in required if f not in result]
         if missing:
-            raise ValueError(f"缺少必要字段: {missing}")
+            raise ValueError(f"missing required fields: {missing}")
