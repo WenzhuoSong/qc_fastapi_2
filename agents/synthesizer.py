@@ -299,10 +299,18 @@ def _normalize(
     if abs(bull_conf - bear_conf) < 0.15:
         uncertainty = True
 
-    # key_events: prefer research_report
+    # key_events: LLM output (string list) or inherit from research_report.key_keywords
     key_events = out.get("key_events") or []
     if not isinstance(key_events, list) or not key_events:
-        key_events = (research_report.get("macro_outlook") or {}).get("key_events") or []
+        # Prefer key_keywords (flat string list for transmission matcher)
+        key_events = (research_report.get("macro_outlook") or {}).get("key_keywords") or []
+    # If still empty, try rich key_events and extract keywords
+    if not key_events:
+        rich = (research_report.get("macro_outlook") or {}).get("key_events") or []
+        key_events = [
+            e["keyword"] if isinstance(e, dict) else str(e)
+            for e in rich if e
+        ]
     key_events = [str(e).strip() for e in key_events if str(e).strip()][:5]
     if not key_events:
         key_events = ["normal market conditions"]
@@ -448,9 +456,17 @@ def _degraded_output(
     error: str | None,
 ) -> dict:
     """Safe fallback when all LLM retries fail."""
-    key_events = (research_report.get("macro_outlook") or {}).get("key_events") or [
-        "normal market conditions"
-    ]
+    macro = research_report.get("macro_outlook") or {}
+    key_events = macro.get("key_keywords") or []
+    if not key_events:
+        # Extract from rich key_events
+        rich = macro.get("key_events") or []
+        key_events = [
+            e["keyword"] if isinstance(e, dict) else str(e)
+            for e in rich if e
+        ]
+    if not key_events:
+        key_events = ["normal market conditions"]
 
     return {
         "market_judgment": {

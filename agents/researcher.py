@@ -62,14 +62,19 @@ SYSTEM_PROMPT = """You are the chief market analyst (Stage 3 RESEARCHER) for a q
     strong_negative: quant_score bottom 30% AND news_sentiment = negative
 
 【key_events (critical)】
-  · Produce 3-5 phrases, each ≤ 60 characters (English).
-  · Use keywords the downstream transmission matcher recognizes:
+  · Produce 3-5 event objects (not plain strings).
+  · Each event MUST contain a keyword the downstream transmission matcher recognizes:
       oil surge / hormuz / middle east / opec / war / russia / ukraine / taiwan /
       rate hike / fed hawkish / cpi / pce / fomc / yields surge /
       rate cut / dovish pivot / liquidity / credit stress / vix spike /
       bank crisis / recession / pmi contraction / jobless claims /
       demand destruction / earnings recession
-  · If no macro events, return ["normal market conditions"] — do not invent.
+  · Additionally, provide context the keyword alone cannot capture:
+      - "freshness": "breaking" (< 24h), "developing" (1-3 days), "ongoing" (> 3 days)
+      - "magnitude": "high" / "medium" / "low" — how much market impact
+      - "description": ≤ 80 chars — what specifically happened (not just the keyword)
+  · If no macro events, return [{"keyword": "normal market conditions", "freshness": "ongoing", "magnitude": "low", "description": "no significant macro events"}]
+  · Do NOT invent events not supported by the input data.
 
 【Output: JSON only】
 {
@@ -80,7 +85,14 @@ SYSTEM_PROMPT = """You are the chief market analyst (Stage 3 RESEARCHER) for a q
   },
   "macro_outlook": {
     "summary": "<≤200 chars macro overview>",
-    "key_events": ["event phrase 1", "event phrase 2", ...],
+    "key_events": [
+      {
+        "keyword": "<transmission-matchable keyword phrase>",
+        "freshness": "breaking|developing|ongoing",
+        "magnitude": "high|medium|low",
+        "description": "<≤80 chars what specifically happened>"
+      }
+    ],
     "impact_bias": "positive|neutral|negative"
   },
   "ticker_signals": [
@@ -174,14 +186,12 @@ def _build_user_message(brief: dict, quant_baseline: dict) -> str:
     calendar = brief.get("calendar_section") or "(none)"
     key_facts = brief.get("key_facts") or {}
 
-    base_weights = quant_baseline.get("base_weights") or {}
-    scoring      = quant_baseline.get("scoring_breakdown") or []
-    ranking      = quant_baseline.get("ranking_summary") or {}
+    base_weights    = quant_baseline.get("base_weights") or {}
+    current_weights = brief.get("current_weights") or {}
+    scoring         = quant_baseline.get("scoring_breakdown") or []
+    ranking         = quant_baseline.get("ranking_summary") or {}
 
-    # Trim scoring breakdown to top 15
-    top_scored = scoring[:15]
-
-    # Compact per_ticker_news
+    # Per-ticker news: all articles, no cap
     per_ticker_news = brief.get("per_ticker_news") or {}
     news_block = _format_per_ticker_news(per_ticker_news)
 
@@ -196,10 +206,12 @@ def _build_user_message(brief: dict, quant_baseline: dict) -> str:
         f"{calendar}\n\n"
         "## Per-ticker news\n"
         f"{news_block}\n\n"
+        "## Current portfolio weights (actual holdings)\n"
+        f"{json.dumps(current_weights, ensure_ascii=False, indent=2)}\n\n"
         "## Python Stage 2 baseline weights (base_weights)\n"
         f"{json.dumps(base_weights, ensure_ascii=False, indent=2)}\n\n"
-        "## Scoring breakdown (top 15)\n"
-        f"{json.dumps(top_scored, ensure_ascii=False, indent=2)}\n\n"
+        "## Scoring breakdown (all tickers)\n"
+        f"{json.dumps(scoring, ensure_ascii=False, indent=2)}\n\n"
         "## Ranking summary\n"
         f"{json.dumps(ranking, ensure_ascii=False, indent=2)}\n\n"
         "## Your task\n"
@@ -209,7 +221,7 @@ def _build_user_message(brief: dict, quant_baseline: dict) -> str:
 
 
 def _format_per_ticker_news(per_ticker_news: dict) -> str:
-    """Format per_ticker_news into a compact text block."""
+    """Format per_ticker_news into a compact text block. All articles included."""
     if not per_ticker_news:
         return "(no per-ticker news)"
 
@@ -218,16 +230,16 @@ def _format_per_ticker_news(per_ticker_news: dict) -> str:
         if not news_list:
             continue
         lines.append(f"### {ticker} ({len(news_list)} items)")
-        for n in news_list[:3]:  # max 3 per ticker
+        for n in news_list:
             source = n.get("source", "")
             source_api = n.get("source_api", "")
-            headline = n.get("headline", "")[:80]
+            headline = n.get("headline", "")[:100]
             sentiment = n.get("sentiment", "neutral")
             tag = f"[{source}|{source_api}|{sentiment}]" if source else f"[{sentiment}]"
             summary = n.get("llm_summary") or ""
             if summary:
                 lines.append(f"  {tag} {headline}")
-                lines.append(f"    → {summary[:100]}")
+                lines.append(f"    → {summary[:150]}")
             else:
                 lines.append(f"  {tag} {headline}")
 
@@ -256,12 +268,42 @@ def _validate_and_normalize(out: dict, quant_baseline: dict) -> dict:
 
     # macro_outlook
     mo = out.get("macro_outlook") or {}
-    key_events = mo.get("key_events") or []
-    if not isinstance(key_events, list):
-        key_events = []
-    key_events = [str(e).strip() for e in key_events if str(e).strip()][:5]
-    if not key_events:
-        key_events = ["normal market conditions"]
+    raw_events = mo.get("key_events") or []
+    if not isinstance(raw_events, list):
+        raw_events = []
+
+    # Normalize key_events: accept both new dict format and legacy string format
+    key_events_rich: list[dict] = []
+    key_events_keywords: list[str] = []
+    for e in raw_events[:5]:
+        if isinstance(e, dict) and e.get("keyword"):
+            kw = str(e["keyword"]).strip()
+            key_events_rich.append({
+                "keyword":     kw,
+                "freshness":   str(e.get("freshness", "ongoing")).strip(),
+                "magnitude":   str(e.get("magnitude", "medium")).strip(),
+                "description": str(e.get("description", ""))[:100],
+            })
+            key_events_keywords.append(kw)
+        elif isinstance(e, str) and e.strip():
+            # Legacy string format fallback
+            key_events_rich.append({
+                "keyword":     e.strip(),
+                "freshness":   "ongoing",
+                "magnitude":   "medium",
+                "description": e.strip(),
+            })
+            key_events_keywords.append(e.strip())
+
+    if not key_events_rich:
+        key_events_rich = [{
+            "keyword": "normal market conditions",
+            "freshness": "ongoing",
+            "magnitude": "low",
+            "description": "no significant macro events",
+        }]
+        key_events_keywords = ["normal market conditions"]
+
     impact_bias = str(mo.get("impact_bias", "neutral")).strip()
     if impact_bias not in ("positive", "neutral", "negative"):
         impact_bias = "neutral"
@@ -302,9 +344,10 @@ def _validate_and_normalize(out: dict, quant_baseline: dict) -> dict:
             "evidence":   str(mr.get("evidence", ""))[:200],
         },
         "macro_outlook": {
-            "summary":     str(mo.get("summary", ""))[:300],
-            "key_events":  key_events,
-            "impact_bias": impact_bias,
+            "summary":      str(mo.get("summary", ""))[:300],
+            "key_events":   key_events_rich,       # Rich format with freshness/magnitude
+            "key_keywords": key_events_keywords,    # Flat list for transmission matcher
+            "impact_bias":  impact_bias,
         },
         "ticker_signals":        ticker_signals,
         "cross_signal_insights": insights,
@@ -348,9 +391,10 @@ def _degraded_report(quant_baseline: dict, error: str | None) -> dict:
             "evidence":   f"LLM degraded: could not synthesize news signals (error={error})",
         },
         "macro_outlook": {
-            "summary":     "LLM degraded — no macro analysis",
-            "key_events":  ["normal market conditions"],
-            "impact_bias": "neutral",
+            "summary":      "LLM degraded — no macro analysis",
+            "key_events":   [{"keyword": "normal market conditions", "freshness": "ongoing", "magnitude": "low", "description": "no significant macro events"}],
+            "key_keywords": ["normal market conditions"],
+            "impact_bias":  "neutral",
         },
         "ticker_signals":        ticker_signals,
         "cross_signal_insights": [],
