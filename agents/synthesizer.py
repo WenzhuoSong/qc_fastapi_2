@@ -293,6 +293,8 @@ def _normalize(
     bear_conf = float(bear_output.get("confidence", 0.5) or 0.5)
     if abs(bull_conf - bear_conf) < 0.15:
         uncertainty = True
+    # 确保 uncertainty 是一个布尔值
+    uncertainty = bool(uncertainty)
 
     # key_events: LLM output (string list) or inherit from research_report.key_keywords
     key_events = out.get("key_events") or []
@@ -358,17 +360,37 @@ def _normalize(
 
 def _build_debate_summary(bull_output: dict, bear_output: dict, synth_raw: dict) -> dict:
     """Build debate_summary for Communicator."""
+    # 防御性编程：确保所有字段都存在
     bull_args = bull_output.get("core_arguments") or bull_output.get("arguments") or []
     bear_args = bear_output.get("core_arguments") or bear_output.get("arguments") or []
-    rb = bull_output.get("rebuttal_vs_bear") or {}
-    rbull = bear_output.get("rebuttal_vs_bull") or {}
+    
+    # 处理反驳信息
+    rb = bull_output.get("rebuttal_vs_bear")
+    if not isinstance(rb, dict):
+        rb = {}
+    
+    rbull = bear_output.get("rebuttal_vs_bull")
+    if not isinstance(rbull, dict):
+        rbull = {}
+    
+    # 处理置信度
+    try:
+        bull_conf = float(bull_output.get("confidence", 0.5) or 0.5)
+    except (TypeError, ValueError):
+        bull_conf = 0.5
+    
+    try:
+        bear_conf = float(bear_output.get("confidence", 0.5) or 0.5)
+    except (TypeError, ValueError):
+        bear_conf = 0.5
+    
     return {
-        "bull_confidence":      float(bull_output.get("confidence", 0.5) or 0.5),
-        "bear_confidence":      float(bear_output.get("confidence", 0.5) or 0.5),
-        "bull_stance":          bull_output.get("stance", "maintain"),
-        "bear_stance":          bear_output.get("stance", "reduce"),
-        "bull_arguments":       list(bull_args)[:3],
-        "bear_arguments":       list(bear_args)[:3],
+        "bull_confidence":      bull_conf,
+        "bear_confidence":      bear_conf,
+        "bull_stance":          str(bull_output.get("stance", "maintain")),
+        "bear_stance":          str(bear_output.get("stance", "reduce")),
+        "bull_arguments":       [str(arg) for arg in list(bull_args)[:3]],
+        "bear_arguments":       [str(arg) for arg in list(bear_args)[:3]],
         "bull_rebuttal_vs_bear": str(rb.get("rebuttal_statement", ""))[:280],
         "bear_rebuttal_vs_bull": str(rbull.get("rebuttal_statement", ""))[:280],
         "resolution":           str(synth_raw.get("debate_resolution", ""))[:200],

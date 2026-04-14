@@ -176,8 +176,17 @@ def _apply_transmission_tilt(
     """RESEARCHER.key_events → match pattern → tilt. Pass-through if no match."""
     if not key_events:
         return weights
+    
+    # 确保 key_events 是字符串列表
+    if not isinstance(key_events, list):
+        return weights
+    
+    # 过滤掉非字符串的元素
+    event_strings = [str(e) for e in key_events if e]
+    if not event_strings:
+        return weights
 
-    pattern = match_event_to_pattern(key_events)
+    pattern = match_event_to_pattern(event_strings)
     if not pattern:
         return weights
 
