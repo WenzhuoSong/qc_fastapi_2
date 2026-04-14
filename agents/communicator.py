@@ -35,6 +35,8 @@ Hard format:
 - Debate summary: Bull/Bear confidence and resolution (1–2 lines)
 - Do not invent numbers — only repeat fields you are given
 - No graphical characters beyond emoji
+- CRITICAL: For SEMI_AUTO mode (when auth_mode == "SEMI_AUTO"), you MUST include clickable command options at the end: <b>/confirm</b>  <b>/skip</b>  <b>/pause</b>
+- If auth_mode is FULL_AUTO or MANUAL, omit the command options
 
 Output: return the card text only — no explanation, no JSON, no markdown fences."""
 
@@ -56,6 +58,16 @@ async def run_communicator_async(
     try:
         text = await asyncio.wait_for(_llm_format(payload), timeout=LLM_TIMEOUT_SECONDS)
         if text and text.strip():
+            # 如果是 SEMI_AUTO 模式，确保包含操作命令
+            auth_mode = payload.get("auth_mode", "SEMI_AUTO")
+            if auth_mode == "SEMI_AUTO":
+                # 检查是否已经包含 /confirm, /skip, /pause 命令
+                has_confirm = "/confirm" in text
+                has_skip = "/skip" in text
+                has_pause = "/pause" in text
+                if not (has_confirm and has_skip and has_pause):
+                    # 如果没有包含所有命令，追加它们
+                    text += f"\n\n<b>/confirm</b>  <b>/skip</b>  <b>/pause</b>"
             return {"text": text.strip(), "used_fallback": False}
         logger.warning("COMMUNICATOR: empty LLM response, falling back")
     except asyncio.TimeoutError:
@@ -165,6 +177,12 @@ def _fallback_template(p: dict) -> str:
 
     overlay_line = f"🔧 Overlays: {', '.join(overlays)}\n" if overlays else ""
 
+    # 只有在 SEMI_AUTO 模式下才显示操作命令
+    auth_mode = p.get("auth_mode", "SEMI_AUTO")
+    command_buttons = ""
+    if auth_mode == "SEMI_AUTO":
+        command_buttons = f"\n<b>/confirm</b>  <b>/skip</b>  <b>/pause</b>"
+
     return (
         f"📋 <b>Rebalance proposal</b>\n"
         f"――――――――――――――――\n"
@@ -176,6 +194,6 @@ def _fallback_template(p: dict) -> str:
         f"💰 Est. cost: {cost:.2%}\n"
         f"🛡️ Risk: ✅ APPROVED\n"
         f"{overlay_line}"
-        f"\n⏱️ No reply in {p['timeout_minutes']} min → auto-execute when market is normal\n"
-        f"\n<b>/confirm</b>  <b>/skip</b>  <b>/pause</b>"
+        f"\n⏱️ No reply in {p['timeout_minutes']} min → auto-execute when market is normal"
+        f"{command_buttons}"
     )
