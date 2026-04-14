@@ -5,7 +5,7 @@ Stage 4b (draft): Bear Researcher — short-side argumentation only (no weights)
 Role: From RESEARCHER's research_report, build the strongest risk case.
 Does not allocate capital; Stage 5 PM sets adjusted_weights.
 
-Outputs: stance, confidence, core_arguments, target_tickers.
+Outputs: stance, confidence, core_arguments, target_tickers, opportunity_acknowledgments.
 Parallel with Bull draft; Stage 4c cross-exam and Stage 5 PM follow.
 
 LLM: settings.openai_model_heavy (gpt-4o)
@@ -46,10 +46,11 @@ The Portfolio Manager (Stage 5) assigns weights. You only argue risks and the sh
     2. base_weights — context only; not a template for your allocation
 
 【You must】
-    1. Cite flags, negative sentiment, weak combined_signal from research_report
+    1. Each core argument MUST cite specific fields from research_report (e.g., ticker_signals[].combined_signal, market_regime.regime, macro_outlook.impact_bias, cross_signal_insights[])
     2. core_arguments: data-backed risk points
     3. target_tickers: names to trim, avoid, or underweight with reason (no percentages)
-    4. Do not "guess" the Bull's text — a later cross-exam stage will address the Bull draft
+    4. opportunity_acknowledgments: acknowledge potential upside risks or opportunities that could limit downside
+    5. Do not "guess" the Bull's text — a later cross-exam stage will address the Bull draft
 
 【Confidence calibration — CRITICAL】
     confidence = how strongly the DATA supports the bearish view.
@@ -78,6 +79,9 @@ The Portfolio Manager (Stage 5) assigns weights. You only argue risks and the sh
       "bias": "underweight|trim|avoid",
       "reason": "<why, ≤200 chars>"
     }
+  ],
+  "opportunity_acknowledgments": [
+    "<potential upside or opportunity that may limit downside>"
   ]
 }
 
@@ -141,7 +145,8 @@ def _build_user_message(research_report: dict, base_weights: dict) -> str:
         f"{json.dumps(base_weights, ensure_ascii=False, indent=2)}\n\n"
         "## Your task\n"
         "Draft the strongest risk case: stance, confidence, core_arguments, "
-        "target_tickers (names + bias + reason). No portfolio weights. JSON only."
+        "target_tickers (names + bias + reason), opportunity_acknowledgments. "
+        "No portfolio weights. JSON only."
     )
 
 
@@ -176,20 +181,27 @@ def _normalize(out: dict) -> dict:
             "reason": str(v.get("reason", ""))[:220],
         })
 
+    opp_acks = out.get("opportunity_acknowledgments") or []
+    if not isinstance(opp_acks, list):
+        opp_acks = []
+    opp_acks = [str(r).strip() for r in opp_acks if str(r).strip()][:5]
+
     return {
-        "stance":         stance,
-        "confidence":     confidence,
-        "core_arguments": core,
-        "target_tickers": cleaned_targets,
-        "failed":         False,
+        "stance":                    stance,
+        "confidence":                confidence,
+        "core_arguments":            core,
+        "target_tickers":            cleaned_targets,
+        "opportunity_acknowledgments": opp_acks,
+        "failed":                    False,
     }
 
 
 def _degraded_output(error: str | None) -> dict:
     return {
-        "stance":         "defensive",
-        "confidence":     0.3,
-        "core_arguments": [f"Bear draft degraded (error={error})"],
-        "target_tickers": [],
-        "failed":           True,
+        "stance":                    "defensive",
+        "confidence":                0.3,
+        "core_arguments":            [f"Bear draft degraded (error={error})"],
+        "target_tickers":            [],
+        "opportunity_acknowledgments": [],
+        "failed":                    True,
     }
