@@ -75,6 +75,12 @@ async def run_risk_manager_async(
     regime = str(market_judgment.get("regime", "neutral"))
     uncertainty = bool(market_judgment.get("uncertainty_flag", False))
     key_events = researcher_out.get("key_events") or []
+    # 确保 key_events 是一个列表
+    if not isinstance(key_events, list):
+        key_events = []
+    # 确保 key_events 是一个列表
+    if not isinstance(key_events, list):
+        key_events = []
 
     current_weights = brief.get("current_weights") or {}
     hard_risks_map = brief.get("hard_risks_map") or {}
