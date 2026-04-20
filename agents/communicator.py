@@ -31,12 +31,12 @@ You receive structured data after decisions are made. Turn it into a **concise, 
 Hard format:
 - Use HTML (<b>bold</b>), not Markdown
 - Total length ≤ 800 characters
-- Include 5 blocks: long/short debate summary / market view / rebalance / risk result / command hints
+- Include 5 blocks: long/short debate summary / market view / rebalance / risk result / command hints (only include command hints if approved is true)
 - Debate summary: Bull/Bear confidence and resolution (1–2 lines)
 - Do not invent numbers — only repeat fields you are given
 - No graphical characters beyond emoji
-- CRITICAL: For SEMI_AUTO mode (when auth_mode == "SEMI_AUTO"), you MUST include clickable command options at the end: <b>/confirm</b>  <b>/skip</b>  <b>/pause</b>
-- If auth_mode is FULL_AUTO or MANUAL, omit the command options
+- CRITICAL: For SEMI_AUTO mode (when auth_mode == "SEMI_AUTO") AND approved is true, you MUST include clickable command options at the end: <b>/confirm</b>  <b>/skip</b>  <b>/pause</b>
+- If auth_mode is FULL_AUTO or MANUAL, or approved is false, omit the command options
 
 Output: return the card text only — no explanation, no JSON, no markdown fences."""
 
@@ -58,9 +58,10 @@ async def run_communicator_async(
     try:
         text = await asyncio.wait_for(_llm_format(payload), timeout=LLM_TIMEOUT_SECONDS)
         if text and text.strip():
-            # 如果是 SEMI_AUTO 模式，确保包含操作命令
+            # 如果是 SEMI_AUTO 模式且已批准，确保包含操作命令
             auth_mode = payload.get("auth_mode", "SEMI_AUTO")
-            if auth_mode == "SEMI_AUTO":
+            approved = payload.get("approved", False)
+            if auth_mode == "SEMI_AUTO" and approved:
                 # 检查是否已经包含 /confirm, /skip, /pause 命令
                 has_confirm = "/confirm" in text
                 has_skip = "/skip" in text
@@ -177,10 +178,10 @@ def _fallback_template(p: dict) -> str:
 
     overlay_line = f"🔧 Overlays: {', '.join(overlays)}\n" if overlays else ""
 
-    # 只有在 SEMI_AUTO 模式下才显示操作命令
+    # 只有在 SEMI_AUTO 模式下且已批准时才显示操作命令
     auth_mode = p.get("auth_mode", "SEMI_AUTO")
     command_buttons = ""
-    if auth_mode == "SEMI_AUTO":
+    if auth_mode == "SEMI_AUTO" and approved:
         command_buttons = f"\n<b>/confirm</b>  <b>/skip</b>  <b>/pause</b>"
 
     return (
