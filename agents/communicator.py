@@ -41,6 +41,22 @@ Hard format:
 Output: return the card text only — no explanation, no JSON, no markdown fences."""
 
 
+def remove_command_hints(text: str) -> str:
+    """移除 Telegram 命令提示（/confirm, /skip, /pause），包括可能的 HTML 标签。"""
+    import re
+    # 移除包含命令的行或短语
+    text = re.sub(r'\s*<b>\s*/confirm\s*</b>', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s*<b>\s*/skip\s*</b>', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s*<b>\s*/pause\s*</b>', '', text, flags=re.IGNORECASE)
+    # 也移除不带标签的纯文本命令
+    text = re.sub(r'\s*/confirm\b', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s*/skip\b', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s*/pause\b', '', text, flags=re.IGNORECASE)
+    # 移除可能残留的空行
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
 async def run_communicator_async(
     pipeline_context: dict,
     researcher_out:   dict,
@@ -58,17 +74,13 @@ async def run_communicator_async(
     try:
         text = await asyncio.wait_for(_llm_format(payload), timeout=LLM_TIMEOUT_SECONDS)
         if text and text.strip():
-            # 如果是 SEMI_AUTO 模式且已批准，确保包含操作命令
+            # 移除未批准或非 SEMI_AUTO 模式下的命令提示
             auth_mode = payload.get("auth_mode", "SEMI_AUTO")
             approved = payload.get("approved", False)
-            if auth_mode == "SEMI_AUTO" and approved:
-                # 检查是否已经包含 /confirm, /skip, /pause 命令
-                has_confirm = "/confirm" in text
-                has_skip = "/skip" in text
-                has_pause = "/pause" in text
-                if not (has_confirm and has_skip and has_pause):
-                    # 如果没有包含所有命令，追加它们
-                    text += f"\n\n<b>/confirm</b>  <b>/skip</b>  <b>/pause</b>"
+
+            # 如果未批准或非 SEMI_AUTO 模式，移除任何命令提示
+            if not approved or auth_mode != "SEMI_AUTO":
+                text = remove_command_hints(text)
             return {"text": text.strip(), "used_fallback": False}
         logger.warning("COMMUNICATOR: empty LLM response, falling back")
     except asyncio.TimeoutError:
@@ -198,3 +210,10 @@ def _fallback_template(p: dict) -> str:
         f"\n⏱️ No reply in {p['timeout_minutes']} min → auto-execute when market is normal"
         f"{command_buttons}"
     )
+
+
+def append_command_hints(text: str) -> str:
+    cleaned = remove_command_hints(text)
+    if cleaned:
+        return f"{cleaned}\n\n<b>/confirm</b>  <b>/skip</b>  <b>/pause</b>"
+    return "<b>/confirm</b>  <b>/skip</b>  <b>/pause</b>"

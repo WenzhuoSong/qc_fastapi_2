@@ -39,7 +39,7 @@ from agents.bear_researcher  import run_bear_researcher_async
 from agents.cross_exam       import run_bull_cross_exam_async, run_bear_cross_exam_async
 from agents.synthesizer      import run_synthesizer_async
 from agents.risk_manager     import run_risk_manager_async
-from agents.communicator     import run_communicator_async
+from agents.communicator     import run_communicator_async, append_command_hints, remove_command_hints
 from agents.executor         import run_executor_async
 from services.market_brief    import build_market_brief
 from services.quant_baseline  import run_quant_baseline_async
@@ -395,7 +395,8 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     auth_mode = pipeline_context["auth_mode"]
 
     if not approved:
-        await tool_send_telegram({"text": comm_out["text"]})
+        # Never expose confirm/skip/pause when there is no pending proposal.
+        await tool_send_telegram({"text": remove_command_hints(comm_out["text"])})
         logger.info("Risk rejected — notified and stopping")
         return {"status": "rejected_by_risk", "analysis_id": analysis_id}
 
@@ -439,7 +440,8 @@ async def _send_semi_auto_proposal(
         "estimated_cost_pct": cost,
     })
 
-    await tool_send_telegram({"text": comm_out["text"]})
+    # Command hints are bound to pending state, so append only after proposal is saved.
+    await tool_send_telegram({"text": append_command_hints(comm_out["text"])})
 
 
 # ─────────────────────────────── 存档 ───────────────────────────────
