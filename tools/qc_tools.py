@@ -41,14 +41,13 @@ async def tool_send_weight_command(inp: dict) -> dict:
     weights = inp.get("weights", {})
     url = f"{settings.qc_api_url}/live/commands/create"
 
-    # on_command 收到的就是 command 的内容
     command_payload = {
         "target":  "SetWeights",
         "weights": {k: v for k, v in weights.items() if k != "CASH"},
     }
     body = {
         "projectId": int(settings.qc_project_id),
-        "command":   json.dumps(command_payload),
+        "command":   command_payload,
     }
 
     async with httpx.AsyncClient(timeout=15) as client:
@@ -76,7 +75,7 @@ async def tool_emergency_liquidate(_input: dict) -> dict:
     command_payload = {"target": "EmergencyLiquidate"}
     body = {
         "projectId": int(settings.qc_project_id),
-        "command":   json.dumps(command_payload),
+        "command":   command_payload,
     }
     try:
         async with httpx.AsyncClient(timeout=10) as client:
