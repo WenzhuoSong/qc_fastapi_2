@@ -21,30 +21,60 @@ settings = get_settings()
 
 _client: AsyncOpenAI | None = None
 
-BULL_CROSS_EXAM_PROMPT = """You are the Bull analyst. The Bear analyst has published a thesis (JSON below).
+CROSS_EXAM_PROMPT_TEMPLATE = """你是{{side}}方，正在审阅对方（{{opponent_side}}）的论点并提出反驳。
+
+## 对方的完整立场（结构化 JSON）
+{opponent_output_json}
+
+## 你的任务
+针对对方 ticker_views 中 confidence=high 的持仓，提出具体反驳。
+
+输出格式（JSON）：
+{{
+  "rebuttals": [
+    {{
+      "ticker": "TICKER",
+      "opponent_claim": "对方的 primary_reason（原文）",
+      "rebuttal": "你的反驳（50字以内）",
+      "rebuttal_strength": "strong" | "moderate" | "weak"
+    }}
+  ],
+  "concessions": [
+    {{
+      "ticker": "TICKER",
+      "conceded_point": "你认为对方说得有道理的点"
+    }}
+  ],
+  "unaddressed_risks": ["对方完全没有提到但你认为重要的风险1", "..."]
+}}
+
+只针对对方 confidence=high 的 ticker 反驳，最多5条 rebuttals。
+JSON only。"""
+
+BULL_CROSS_EXAM_PROMPT = """You are the Bull analyst. The Bear analyst has published a structured thesis (JSON below).
 
 Your task: cross-examine the Bear's case. Attack logical gaps, overstated risks, or inconsistencies
 with the Stage 3 research_report data. Be precise and evidence-based — not rhetorical fluff.
 
-You receive only key fields from research_report: market_regime, macro_outlook, cross_signal_insights.
-Use these authoritative data points to fact-check the Bear's arguments.
+You receive the opponent's structured output with ticker_views. Target rebuttals at Bear's high-confidence tickers.
 
 Rules:
 - Do NOT output portfolio weights or percentages.
-- 2–4 sentences OR up to 5 bullet strings in rebuttal_points.
+- Focus on Bear's primary_reason for each high-confidence ticker.
+- Provide rebuttal_strength (strong/moderate/weak) for each rebuttal.
 - JSON only."""
 
-BEAR_CROSS_EXAM_PROMPT = """You are the Bear analyst. The Bull analyst has published a thesis (JSON below).
+BEAR_CROSS_EXAM_PROMPT = """You are the Bear analyst. The Bull analyst has published a structured thesis (JSON below).
 
 Your task: cross-examine the Bull's case. Attack complacency, stretched valuations, ignored flags,
 or conflicts with the Stage 3 research_report data. Be precise and evidence-based.
 
-You receive only key fields from research_report: market_regime, macro_outlook, cross_signal_insights.
-Use these authoritative data points to fact-check the Bull's arguments.
+You receive the opponent's structured output with ticker_views. Target rebuttals at Bull's high-confidence tickers.
 
 Rules:
 - Do NOT output portfolio weights or percentages.
-- 2–4 sentences OR up to 5 bullet strings in rebuttal_points.
+- Focus on Bull's primary_reason for each high-confidence ticker.
+- Provide rebuttal_strength (strong/moderate/weak) for each rebuttal.
 - JSON only."""
 
 MAX_CROSS_EXAM_TOKENS = 500
@@ -61,6 +91,8 @@ async def run_bull_cross_exam_async(bear_draft: dict, research_report: dict) -> 
     """Bull reads Bear's draft + research_report; returns rebuttal attacking Bear."""
     return await _run_cross_exam(
         role="BULL",
+        side="多头",
+        opponent_side="空头",
         system=BULL_CROSS_EXAM_PROMPT,
         opponent_draft=bear_draft,
         research_report=research_report,
@@ -71,6 +103,8 @@ async def run_bear_cross_exam_async(bull_draft: dict, research_report: dict) -> 
     """Bear reads Bull's draft + research_report; returns rebuttal attacking Bull."""
     return await _run_cross_exam(
         role="BEAR",
+        side="空头",
+        opponent_side="多头",
         system=BEAR_CROSS_EXAM_PROMPT,
         opponent_draft=bull_draft,
         research_report=research_report,
@@ -133,53 +167,65 @@ def _truncate_opponent_draft(draft: dict) -> dict:
     if not isinstance(draft, dict):
         return draft
     truncated = draft.copy()
-    # Limit core_arguments to 5 items
-    if "core_arguments" in truncated:
-        args = truncated["core_arguments"]
-        if isinstance(args, list):
-            truncated["core_arguments"] = args[:5]
-    # Limit target_tickers to 5 items, truncate reason strings
-    if "target_tickers" in truncated:
-        tickers = truncated["target_tickers"]
-        if isinstance(tickers, list):
-            tickers = tickers[:5]
-            for ticker in tickers:
-                if isinstance(ticker, dict) and "reason" in ticker:
-                    reason = ticker["reason"]
-                    if isinstance(reason, str) and len(reason) > 200:
-                        ticker["reason"] = reason[:197] + "..."
-            truncated["target_tickers"] = tickers
-    # Limit risk_acknowledgments to 5 items
-    if "risk_acknowledgments" in truncated:
-        risks = truncated["risk_acknowledgments"]
-        if isinstance(risks, list):
-            truncated["risk_acknowledgments"] = risks[:5]
-    # Truncate long strings in core_arguments and risk_acknowledgments
-    for field in ["core_arguments", "risk_acknowledgments"]:
+
+    # For new schema: focus on ticker_views (key fields for cross-exam)
+    if "ticker_views" in truncated:
+        views = truncated["ticker_views"]
+        if isinstance(views, dict):
+            # Keep only high-confidence tickers for brevity
+            filtered = {}
+            for ticker, view in views.items():
+                if isinstance(view, dict) and view.get("confidence") == "high":
+                    filtered[ticker] = {
+                        "direction": view.get("direction", "hold"),
+                        "magnitude": view.get("magnitude", "moderate"),
+                        "confidence": view.get("confidence", "medium"),
+                        "primary_reason": str(view.get("primary_reason", ""))[:60],
+                        "key_risk": str(view.get("key_risk", ""))[:60],
+                    }
+            truncated["ticker_views"] = filtered
+
+    # Legacy support: also truncate old-style fields if present
+    for field in ["core_arguments", "risk_acknowledgments", "opportunity_acknowledgments"]:
         if field in truncated and isinstance(truncated[field], list):
             truncated[field] = [
                 item[:197] + "..." if isinstance(item, str) and len(item) > 200 else item
-                for item in truncated[field]
+                for item in truncated[field][:5]
             ]
+
+    for field in ["target_tickers"]:
+        if field in truncated and isinstance(truncated[field], list):
+            tickers = truncated[field][:5]
+            for ticker in tickers:
+                if isinstance(ticker, dict) and "reason" in ticker:
+                    ticker["reason"] = str(ticker["reason"])[:197] + "..."
+            truncated[field] = tickers
+
     return truncated
 
 
 async def _run_cross_exam(
     *,
     role: str,
+    side: str,
+    opponent_side: str,
     system: str,
     opponent_draft: dict,
     research_report: dict,
 ) -> dict:
     key_fields = _extract_key_research_fields(research_report)
     opponent_truncated = _truncate_opponent_draft(opponent_draft)
+    opponent_json = json.dumps(opponent_truncated, ensure_ascii=False, indent=2)
+
     user = (
-        "## Opponent thesis (full JSON)\n"
-        f"{json.dumps(opponent_truncated, ensure_ascii=False, indent=2)}\n\n"
-        "## Stage 3 research_report (key fields for fact-checking)\n"
+        f"## 对方（{opponent_side}）完整立场\n"
+        f"{opponent_json}\n\n"
+        "## Stage 3 research_report（用于事实核查）\n"
         f"{json.dumps(key_fields, ensure_ascii=False, indent=2)}\n\n"
-        "Output JSON: "
-        '{"rebuttal_statement": "<2-4 sentences>", "rebuttal_points": ["<optional bullets>"]}'
+        "## 输出格式\n"
+        '{"rebuttals": [{"ticker": "...", "opponent_claim": "...", "rebuttal": "...", "rebuttal_strength": "strong|moderate|weak"}], '
+        '"concessions": [{"ticker": "...", "conceded_point": "..."}], '
+        '"unaddressed_risks": ["..."]}'
     )
     client = _get_client()
     model = settings.openai_model_heavy
@@ -216,22 +262,49 @@ async def _run_cross_exam(
 
     logger.error(f"[CROSS_EXAM {role}] failed: {last_error}")
     return {
-        "rebuttal_statement": "",
-        "rebuttal_points":    [],
-        "failed":             True,
+        "rebuttals": [],
+        "concessions": [],
+        "unaddressed_risks": [],
+        "failed": True,
     }
 
 
 def _normalize_cross_exam(parsed: dict) -> dict:
-    stmt = str(parsed.get("rebuttal_statement", "") or "").strip()
-    pts = parsed.get("rebuttal_points") or []
-    if not isinstance(pts, list):
-        pts = []
-    pts = [str(p).strip() for p in pts if str(p).strip()][:5]
-    if not stmt and pts:
-        stmt = " ".join(pts[:3])
+    rebuttals = parsed.get("rebuttals") or []
+    if not isinstance(rebuttals, list):
+        rebuttals = []
+    cleaned_rebuttals = []
+    for r in rebuttals[:5]:
+        if isinstance(r, dict) and r.get("ticker"):
+            strength = str(r.get("rebuttal_strength", "moderate")).strip().lower()
+            if strength not in ("strong", "moderate", "weak"):
+                strength = "moderate"
+            cleaned_rebuttals.append({
+                "ticker": str(r["ticker"]).upper().strip(),
+                "opponent_claim": str(r.get("opponent_claim", ""))[:120],
+                "rebuttal": str(r.get("rebuttal", ""))[:100],
+                "rebuttal_strength": strength,
+            })
+
+    concessions = parsed.get("concessions") or []
+    if not isinstance(concessions, list):
+        concessions = []
+    cleaned_concessions = []
+    for c in concessions:
+        if isinstance(c, dict) and c.get("ticker"):
+            cleaned_concessions.append({
+                "ticker": str(c["ticker"]).upper().strip(),
+                "conceded_point": str(c.get("conceded_point", ""))[:120],
+            })
+
+    unaddressed_risks = parsed.get("unaddressed_risks") or []
+    if not isinstance(unaddressed_risks, list):
+        unaddressed_risks = []
+    unaddressed_risks = [str(r).strip() for r in unaddressed_risks if str(r).strip()][:5]
+
     return {
-        "rebuttal_statement": stmt[:1200],
-        "rebuttal_points":    pts,
-        "failed":             False,
+        "rebuttals": cleaned_rebuttals,
+        "concessions": cleaned_concessions,
+        "unaddressed_risks": unaddressed_risks,
+        "failed": False,
     }

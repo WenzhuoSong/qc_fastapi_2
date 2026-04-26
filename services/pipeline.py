@@ -514,6 +514,35 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         failed=synthesizer_out.get("used_degraded_fallback", False),
     )
 
+    # ── Stage 5 Task 5: CoT reasoning_chain extraction + consistency validation ──
+    reasoning_chain = synthesizer_out.get("reasoning_chain") or {}
+    if reasoning_chain:
+        # Step 4 consistency validation: cash_pct vs actual CASH weight
+        step4 = reasoning_chain.get("step4_risk_sanity_check") or {}
+        stated_cash = step4.get("cash_pct")
+        actual_cash = synthesizer_out.get("adjusted_weights", {}).get("CASH", 0)
+        if stated_cash is not None and actual_cash is not None:
+            cash_diff = abs(stated_cash - actual_cash)
+            if cash_diff > 0.03:
+                logger.warning(
+                    f"[Stage5] Synthesizer CoT 前后矛盾: "
+                    f"step4.cash_pct={stated_cash:.2%} vs actual CASH={actual_cash:.2%}"
+                )
+            else:
+                logger.info(f"[Stage5] CoT cash 一致性校验通过: step4={stated_cash:.2%} actual={actual_cash:.2%}")
+
+        # Log reasoning_chain to agent_step_log for audit
+        await _save_step_log(
+            analysis_id, "5a_synthesizer_cot", "synthesizer_cot",
+            input_data={"regime": regime_result.get("regime") if regime_result else None},
+            output_data=reasoning_chain,
+            duration_ms=0,
+            model=model_heavy,
+            failed=False,
+        )
+    else:
+        logger.warning("[Stage5] No reasoning_chain in synthesizer output (Task 5)")
+
     # ── Stage 5→6: PM 硬裁剪 ──────────────────────────────────────
     adjusted_weights_raw = synthesizer_out.get("adjusted_weights") or {}
     if not adjusted_weights_raw:

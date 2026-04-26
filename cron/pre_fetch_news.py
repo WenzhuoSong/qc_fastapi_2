@@ -23,11 +23,13 @@ Railway 推荐 cron (ET):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from datetime import datetime
 from typing import Any
 
+from openai import AsyncOpenAI
 from sqlalchemy import delete, select
 
 from constants import DEFAULT_ETF_UNIVERSE, resolve_universe
@@ -55,38 +57,171 @@ logger = logging.getLogger("qc_fastapi_2.cron.pre_fetch_news")
 PRE_FETCH_TIMEOUT_S = 600       # 10 分钟整体超时
 TTL_SECONDS         = 48 * 3600 # 48h
 
+# ═══════════════════════════════════════════════════════════════
+# News Structuring (Phase D')
+# ═══════════════════════════════════════════════════════════════
+
+NEWS_STRUCTURING_PROMPT = """
+你是一个金融新闻结构化引擎。我会给你一组原始新闻，
+你需要提取对 ETF 投资组合管理有用的结构化信号。
+
+## 输入新闻
+{raw_news_text}
+
+## ETF Universe
+{etf_universe}
+
+## 输出要求（严格 JSON，无前缀）
+
+{{
+  "processed_at": "ISO timestamp",
+  "macro_signals": [
+    {{
+      "event": "事件名称（20字以内）",
+      "category": "fed_policy"|"inflation"|"employment"|"geopolitical"|"earnings"|"other",
+      "direction": "positive"|"negative"|"neutral"|"mixed",
+      "impact_horizon": "immediate"|"short_term"|"medium_term",
+      "confidence": "high"|"medium"|"low",
+      "affected_sectors": ["XLK", "XLF"],
+      "summary": "一句话说明（40字以内）"
+    }}
+  ],
+  "ticker_signals": {{
+    "<TICKER>": {{
+      "sentiment": "positive"|"negative"|"neutral",
+      "news_count": <int>,
+      "key_events": ["事件1（20字）", "事件2"],
+      "data_quality": "fresh"|"stale"|"no_news"
+    }}
+  }},
+  "noise_filtered": <int>,  // 过滤掉的重复/低质量新闻数
+  "data_gaps": ["XLE 过去48h无有效新闻", "..."]
+}}
+
+macro_signals 最多5条，只保留影响力 >= medium 的。
+ticker_signals 只包含有新闻的 ticker，没有新闻的不要写进去。
+如果多条新闻描述同一事件，合并为一条，不要重复。
+"""
+
+
+async def structure_news_with_llm(
+    raw_news: list[dict],
+    etf_universe: list[str],
+) -> dict:
+    """
+    调用 gpt-4o-mini 对原始新闻做结构化预处理。
+    输入的 raw_news 格式： Finnhub/AlphaVantage/RSS 统一格式
+      {headline, summary, source, datetime, url, ...}
+    成本：约 $0.002-0.005 per run（远低于 gpt-4o）
+    """
+    from config import get_settings
+    settings = get_settings()
+
+    if not raw_news:
+        return {
+            "macro_signals": [],
+            "ticker_signals": {},
+            "noise_filtered": 0,
+            "data_gaps": ["无新闻数据"],
+        }
+
+    # 拼接原始新闻（控制 token，截取关键字段）
+    news_parts = []
+    for n in raw_news[:40]:  # 最多40条，防止超 token
+        source = n.get("source", "?")
+        dt = n.get("datetime", 0)
+        if dt:
+            from datetime import datetime as dt_cls
+            try:
+                dt_str = dt_cls.utcfromtimestamp(dt).strftime("%Y-%m-%d %H:%M")
+            except (ValueError, OSError):
+                dt_str = str(dt)
+        else:
+            dt_str = "?"
+        headline = n.get("headline", "")
+        summary = n.get("summary", "")[:300]
+        news_parts.append(
+            f"[{source}] {dt_str}\n标题: {headline}\n摘要: {summary}"
+        )
+    news_text = "\n\n".join(news_parts)
+
+    prompt = NEWS_STRUCTURING_PROMPT.format(
+        raw_news_text=news_text,
+        etf_universe=", ".join(etf_universe),
+    )
+
+    try:
+        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        response = await client.chat.completions.create(
+            model=settings.openai_model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1500,
+            temperature=0.1,  # 低温度，确保结构稳定
+            response_format={"type": "json_object"},
+        )
+
+        structured = json.loads(response.choices[0].message.content)
+        structured["_model"] = settings.openai_model
+        structured["_raw_news_count"] = len(raw_news)
+        logger.info(
+            f"新闻结构化完成: {len(raw_news)} 条 -> "
+            f"{len(structured.get('macro_signals', []))} macro_signals"
+        )
+        return structured
+
+    except Exception as e:
+        logger.error(f"新闻结构化失败: {e}，使用空结构")
+        return {
+            "macro_signals": [],
+            "ticker_signals": {},
+            "noise_filtered": 0,
+            "data_gaps": [f"结构化失败: {str(e)}"],
+            "_fallback": True,
+        }
+
 
 # ═══════════════════════════════════════════════════════════════
 # Macro section
 # ═══════════════════════════════════════════════════════════════
 
-async def _refresh_macro_cache() -> dict[str, Any]:
-    """拉 macro news + calendar，upsert 到 MacroNewsCache (单行，id=1)。"""
+async def _refresh_macro_cache(universe: list[str]) -> dict[str, Any]:
+    """
+    拉 macro news + calendar，upsert 到 MacroNewsCache (单行，id=1)。
+    Phase D': 调用 gpt-4o-mini 做结构化预处理，存储 raw_payload + structured_payload。
+    """
     # 同步 httpx 放到 to_thread 里避免阻塞事件循环
     macro_news   = await asyncio.to_thread(fetch_macro_news, 20)
     econ_events  = await asyncio.to_thread(fetch_economic_calendar, 3)
+
+    # Phase D': 新闻结构化
+    structured = await structure_news_with_llm(macro_news, universe)
 
     prose = _build_macro_prose(macro_news, econ_events)
 
     async with AsyncSessionLocal() as db:
         existing = (await db.execute(select(MacroNewsCache).where(MacroNewsCache.id == 1))).scalar_one_or_none()
         if existing:
-            existing.as_of             = datetime.utcnow()
-            existing.macro_news        = macro_news
-            existing.economic_calendar = econ_events
-            existing.prose_summary     = prose
+            existing.as_of              = datetime.utcnow()
+            existing.macro_news         = macro_news
+            existing.economic_calendar  = econ_events
+            existing.prose_summary      = prose
+            existing.raw_payload        = macro_news
+            existing.structured_payload  = structured
         else:
             db.add(MacroNewsCache(
-                id                = 1,
-                as_of             = datetime.utcnow(),
-                macro_news        = macro_news,
-                economic_calendar = econ_events,
-                prose_summary     = prose,
+                id                 = 1,
+                as_of              = datetime.utcnow(),
+                macro_news         = macro_news,
+                economic_calendar  = econ_events,
+                prose_summary      = prose,
+                raw_payload        = macro_news,
+                structured_payload = structured,
             ))
         await db.commit()
 
     logger.info(
-        f"macro cache refreshed | news={len(macro_news)} | calendar={len(econ_events)}"
+        f"macro cache refreshed | news={len(macro_news)} | calendar={len(econ_events)} | "
+        f"structured={not structured.get('_fallback')}"
     )
     return {"n_news": len(macro_news), "n_events": len(econ_events)}
 
@@ -434,7 +569,7 @@ async def run_pre_fetch() -> dict:
     logger.info(f"=== pre_fetch_news START | universe={len(universe)} tickers ===")
 
     # ── Phase A: Finnhub (macro + per-ticker) ──
-    macro_stats = await _refresh_macro_cache()
+    macro_stats = await _refresh_macro_cache(universe)
 
     finnhub_new = 0
     for ticker in universe:

@@ -176,6 +176,10 @@ class MacroNewsCache(Base):
     """
     单行滚动缓存：宏观新闻 + 经济日历 + 拼好的 prose 摘要。
     由 cron/pre_fetch_news.py 每 2h upsert，始终只保留最新 1 行（key=1）。
+
+    Phase 2 新增字段:
+    - raw_payload: 原始新闻列表（结构化前的全量新闻）
+    - structured_payload: gpt-4o-mini 结构化输出（macro_signals + ticker_signals）
     """
     __tablename__ = "macro_news_cache"
 
@@ -185,3 +189,6 @@ class MacroNewsCache(Base):
     economic_calendar = Column(JSONB)          # list[dict] (from fetch_economic_calendar)
     prose_summary     = Column(Text)           # 预拼的散文，供 market_brief 直接读
     updated_at        = Column(DateTime, default=func.now(), onupdate=func.now())
+    # Phase 2: 结构化新闻预处理
+    raw_payload        = Column(JSONB, nullable=True)   # 原始新闻列表
+    structured_payload = Column(JSONB, nullable=True)   # LLM 结构化输出

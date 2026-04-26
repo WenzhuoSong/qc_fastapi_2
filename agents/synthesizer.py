@@ -65,31 +65,15 @@ You receive:
 【key_events】
     Prefer research_report.macro_outlook.key_keywords (or key_events) for transmission matcher keywords
 
-【Output: JSON only】
-{
-  "market_judgment": {
-    "regime": "bull_trend|bull_weak|neutral|bear_weak|bear_trend|high_vol",
-    "adjusted_confidence": <float 0.0-1.0>,
-    "uncertainty_flag": <bool>
-  },
-  "recommended_stance": "buy|overweight|maintain|underweight|sell",
-  "adjusted_weights": {"<TICKER>": <float>, "CASH": <float>},
-  "weight_adjustments": [
-    {
-      "ticker": "<TICKER>",
-      "base": <float>,
-      "adjusted": <float>,
-      "delta": <float>,
-      "reason": "<≤40 chars English>"
-    }
-  ],
-  "decision_rationale": "<≤400 chars: whose argument won, tied to data; name major tickers if relevant>",
-  "reasoning": "<≤200 chars short summary (may mirror decision_rationale)",
-  "consensus_points": ["...", "..."],
-  "divergence_points": ["...", "..."],
-  "key_events": ["<event phrase 1>", "..."],
-  "debate_resolution": "<one sentence arbitration>"
-}
+【Output: JSON only — 必须包含 reasoning_chain，顺序不可颠倒】
+
+ reasoning_chain 必须在 adjusted_weights 之前，顺序不可颠倒。
+ reasoning_chain 包含 5 个步骤：regime acknowledgment → quant baseline assessment →
+ debate arbitration → risk sanity check → final judgment。
+ step3_debate_arbitration 只包含 Bull/Bear 有分歧的 ticker。
+ step4 的数值必须与 adjusted_weights 实际一致，不允许前后矛盾。
+
+""" + SYNTHESIZER_COT_SCHEMA + """
 
 JSON only."""
 
@@ -99,6 +83,75 @@ JSON only."""
 
 _VALID_REGIMES = {"bull_trend", "bull_weak", "neutral", "bear_weak", "bear_trend", "high_vol"}
 _VALID_STANCES_5 = {"buy", "overweight", "maintain", "underweight", "sell"}
+
+
+# ═══════════════════════════════════════════════════════════════
+# Synthesizer Chain-of-Thought Schema (Task 5)
+# ═══════════════════════════════════════════════════════════════
+
+SYNTHESIZER_COT_SCHEMA = """
+## 输出格式（严格按此顺序，完整 JSON）
+
+{
+  "reasoning_chain": {
+
+    "step1_regime_acknowledgment": {
+      "regime": "从 regime_result 读取，原文填入",
+      "constraints_accepted": true | false,
+      "override_reason": null | "仅在极端情况下说明为何不遵守约束"
+    },
+
+    "step2_quant_baseline_assessment": {
+      "baseline_quality": "reliable" | "questionable",
+      "questionable_reason": null | "说明为何不信任量化基线",
+      "top3_by_score": ["TICKER1", "TICKER2", "TICKER3"],
+      "bottom3_by_score": ["TICKER1", "TICKER2", "TICKER3"]
+    },
+
+    "step3_debate_arbitration": [
+      {
+        "ticker": "TICKER",
+        "bull_stance": "overweight/hold/underweight",
+        "bear_stance": "overweight/hold/underweight",
+        "my_decision": "overweight/hold/underweight",
+        "decision_basis": "bull_wins" | "bear_wins" | "compromise" | "quant_override",
+        "rationale": "一句话（30字以内）"
+      }
+    ],
+
+    "step4_risk_sanity_check": {
+      "total_equity_pct": <float>,
+      "largest_single_position": {"ticker": "X", "weight": <float>},
+      "hedge_allocation_pct": <float>,
+      "cash_pct": <float>,
+      "regime_constraints_satisfied": true | false
+    },
+
+    "step5_final_judgment": {
+      "market_view": "一句话市场判断（30字以内）",
+      "key_conviction": "最高确信的一个判断",
+      "biggest_uncertainty": "最大的不确定性"
+    }
+  },
+
+  "adjusted_weights": {
+    "<TICKER>": <float>,
+    "CASH": <float>
+  },
+
+  "decision_rationale": "面向人类的决策摘要（100字以内）",
+
+  "market_judgment": "bullish" | "cautious_bullish" | "neutral" | "cautious_bearish" | "bearish"
+}
+
+规则：
+1. reasoning_chain 必须在 adjusted_weights 之前，顺序不可颠倒
+2. step3_debate_arbitration 只包含有分歧的 ticker
+3. step4 的数值必须与 adjusted_weights 实际一致，不允许前后矛盾
+4. adjusted_weights 所有值之和必须 = 1.0（允许 ±0.001 浮点误差）
+5. 如果 step1 的 constraints_accepted = false，必须填写 override_reason，
+   且 adjusted_weights 必须仍然满足防御性要求（CASH >= 0.15）
+"""
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -255,19 +308,26 @@ def _collect_allowed_tickers(brief: dict, base_weights: dict) -> set[str]:
 
 def _validate(out: dict) -> None:
     required = [
-        "market_judgment",
-        "recommended_stance",
+        "reasoning_chain",
         "adjusted_weights",
+        "decision_rationale",
     ]
     missing = [k for k in required if k not in out]
     if missing:
         raise ValueError(f"missing fields: {missing}")
-    if not (out.get("reasoning") or out.get("decision_rationale")):
-        raise ValueError("need reasoning or decision_rationale")
 
-    mj = out.get("market_judgment") or {}
-    if "regime" not in mj:
-        raise ValueError("market_judgment.regime missing")
+    # Validate reasoning_chain structure (Task 5)
+    rc = out.get("reasoning_chain") or {}
+    required_steps = [
+        "step1_regime_acknowledgment",
+        "step2_quant_baseline_assessment",
+        "step3_debate_arbitration",
+        "step4_risk_sanity_check",
+        "step5_final_judgment",
+    ]
+    for step in required_steps:
+        if step not in rc:
+            raise ValueError(f"reasoning_chain missing step: {step}")
 
     weights = out.get("adjusted_weights")
     if not isinstance(weights, dict) or not weights:
@@ -301,8 +361,12 @@ def _normalize(
 
     uncertainty = bool(mj.get("uncertainty_flag", False))
     # Auto: if Bull/Bear confidence gap < 0.15, force uncertainty
-    bull_conf = float(bull_output.get("confidence", 0.5) or 0.5)
-    bear_conf = float(bear_output.get("confidence", 0.5) or 0.5)
+    # Map overall_confidence (high=0.9, medium=0.5, low=0.3) to float for gap calculation
+    _conf_map = {"high": 0.9, "medium": 0.5, "low": 0.3}
+    bull_conf_str = bull_output.get("overall_confidence", "medium")
+    bear_conf_str = bear_output.get("overall_confidence", "medium")
+    bull_conf = _conf_map.get(bull_conf_str, 0.5)
+    bear_conf = _conf_map.get(bear_conf_str, 0.5)
     if abs(bull_conf - bear_conf) < 0.15:
         uncertainty = True
     # 确保 uncertainty 是一个布尔值
@@ -349,6 +413,9 @@ def _normalize(
     decision_rationale = str(out.get("decision_rationale") or out.get("reasoning") or "")[:800]
     reasoning_line = str(out.get("reasoning") or decision_rationale)[:500]
 
+    # Preserve reasoning_chain from LLM output (Task 5)
+    reasoning_chain = out.get("reasoning_chain") or {}
+
     return {
         # researcher_out fields (Risk MGR consumes these)
         "market_judgment": {
@@ -367,48 +434,92 @@ def _normalize(
         "used_degraded_fallback": False,
         # Extra (Communicator; not consumed by Risk MGR)
         "debate_summary":      debate_summary,
+        # Task 5: Chain-of-Thought reasoning chain
+        "reasoning_chain":     reasoning_chain,
     }
 
 
 def _build_debate_summary(bull_output: dict, bear_output: dict, synth_raw: dict) -> dict:
-    """Build debate_summary for Communicator."""
-    # 防御性编程：确保所有字段都存在
-    bull_args = bull_output.get("core_arguments") or bull_output.get("arguments") or []
-    bear_args = bear_output.get("core_arguments") or bear_output.get("arguments") or []
-    
-    # 处理反驳信息
-    rb = bull_output.get("rebuttal_vs_bear")
-    if not isinstance(rb, dict):
-        rb = {}
-    
-    rbull = bear_output.get("rebuttal_vs_bull")
-    if not isinstance(rbull, dict):
-        rbull = {}
-    
-    # 处理置信度
-    try:
-        bull_conf = float(bull_output.get("confidence", 0.5) or 0.5)
-    except (TypeError, ValueError):
-        bull_conf = 0.5
-    
-    try:
-        bear_conf = float(bear_output.get("confidence", 0.5) or 0.5)
-    except (TypeError, ValueError):
-        bear_conf = 0.5
-    
+    """Build debate_summary for Communicator from structured outputs."""
+    bull_views = bull_output.get("ticker_views") or {}
+    bear_views = bear_output.get("ticker_views") or {}
+
+    # Handle legacy cross_exam output format
+    bull_rb = bull_output.get("rebuttal_vs_bear") if isinstance(bull_output.get("rebuttal_vs_bear"), dict) else {}
+    bear_rb = bear_output.get("rebuttal_vs_bull") if isinstance(bear_output.get("rebuttal_vs_bull"), dict) else {}
+
+    # Handle new cross_exam output format
+    if not bull_rb and "rebuttals" in bull_output:
+        bull_rb = bull_output
+    if not bear_rb and "rebuttals" in bear_output:
+        bear_rb = bear_output
+
+    # Confidence mapping (high=0.9, medium=0.5, low=0.3)
+    conf_map = {"high": 0.9, "medium": 0.5, "low": 0.3}
+    bull_conf_str = bull_output.get("overall_confidence", "medium")
+    bear_conf_str = bear_output.get("overall_confidence", "medium")
+    bull_conf = conf_map.get(bull_conf_str, 0.5)
+    bear_conf = conf_map.get(bear_conf_str, 0.5)
+
+    disagreements = []
+    agreements = []
+    all_tickers = set(bull_views.keys()) | set(bear_views.keys())
+
+    for ticker in all_tickers:
+        bull_view = bull_views.get(ticker)
+        bear_view = bear_views.get(ticker)
+
+        if not bull_view or not bear_view:
+            continue
+
+        bull_dir = bull_view.get("direction", "hold")
+        bear_dir = bear_view.get("direction", "hold")
+
+        is_conflict = (
+            (bull_dir == "overweight" and bear_dir == "underweight") or
+            (bull_dir == "underweight" and bear_dir == "overweight")
+        )
+
+        if is_conflict:
+            # Find corresponding rebuttals
+            bull_rebuttal_list = bull_rb.get("rebuttals", []) if isinstance(bull_rb, dict) else []
+            bear_rebuttal_list = bear_rb.get("rebuttals", []) if isinstance(bear_rb, dict) else []
+
+            bull_rb_item = next(
+                (r for r in bull_rebuttal_list if isinstance(r, dict) and r.get("ticker", "").upper() == ticker.upper()),
+                None,
+            )
+            bear_rb_item = next(
+                (r for r in bear_rebuttal_list if isinstance(r, dict) and r.get("ticker", "").upper() == ticker.upper()),
+                None,
+            )
+
+            disagreements.append({
+                "ticker": ticker,
+                "bull": f"{bull_dir}({bull_view.get('magnitude')}) - {bull_view.get('primary_reason')}",
+                "bear": f"{bear_dir}({bear_view.get('magnitude')}) - {bear_view.get('primary_reason')}",
+                "bull_rebuttal": bull_rb_item.get("rebuttal") if bull_rb_item else None,
+                "bear_rebuttal": bear_rb_item.get("rebuttal") if bear_rb_item else None,
+            })
+        else:
+            agreements.append(ticker)
+
     return {
-        "bull_confidence":      bull_conf,
-        "bear_confidence":      bear_conf,
-        "bull_stance":          str(bull_output.get("stance", "maintain")),
-        "bear_stance":          str(bear_output.get("stance", "reduce")),
-        "bull_arguments":       [str(arg) for arg in list(bull_args)[:3]],
-        "bear_arguments":       [str(arg) for arg in list(bear_args)[:3]],
-        "bull_rebuttal_vs_bear": str(rb.get("rebuttal_statement", ""))[:280],
-        "bear_rebuttal_vs_bull": str(rbull.get("rebuttal_statement", ""))[:280],
-        "resolution":           str(synth_raw.get("debate_resolution", ""))[:200],
-        "decision_rationale":   str(synth_raw.get("decision_rationale", ""))[:400],
-        "bull_failed":          bool(bull_output.get("failed", False)),
-        "bear_failed":          bool(bear_output.get("failed", False)),
+        "bull_confidence":       bull_conf,
+        "bear_confidence":       bear_conf,
+        "bull_stance":           str(bull_output.get("overall_stance", "neutral")),
+        "bear_stance":           str(bear_output.get("overall_stance", "neutral")),
+        "thesis_summary":        str(bull_output.get("thesis_summary", ""))[:200],
+        "disagreement_map":      disagreements,
+        "agreed_tickers":        agreements,
+        "bull_top_3":            bull_output.get("top_3_conviction", []),
+        "bear_top_3":            bear_output.get("top_3_conviction", []),
+        "bull_macro_tailwinds":   bull_output.get("macro_tailwinds", []),
+        "bear_macro_headwinds":   bear_output.get("macro_headwinds", []),
+        "resolution":            str(synth_raw.get("debate_resolution", ""))[:200],
+        "decision_rationale":     str(synth_raw.get("decision_rationale", ""))[:400],
+        "bull_failed":           bool(bull_output.get("failed", False)),
+        "bear_failed":           bool(bear_output.get("failed", False)),
     }
 
 
@@ -526,4 +637,14 @@ def _degraded_output(
         "key_events":           key_events,
         "used_degraded_fallback": True,
         "debate_summary":       _build_debate_summary(bull_output, bear_output, synth_stub),
+        # Task 5: Chain-of-Thought (degraded fallback)
+        "reasoning_chain": {
+            "_degraded": True,
+            "_error": str(error) if error else "unknown",
+            "step1_regime_acknowledgment": {"regime": "neutral", "constraints_accepted": True, "override_reason": None},
+            "step2_quant_baseline_assessment": {"baseline_quality": "questionable", "questionable_reason": degraded_reason, "top3_by_score": [], "bottom3_by_score": []},
+            "step3_debate_arbitration": [],
+            "step4_risk_sanity_check": {"total_equity_pct": 1.0, "largest_single_position": {"ticker": "N/A", "weight": 0.0}, "hedge_allocation_pct": 0.0, "cash_pct": 0.0, "regime_constraints_satisfied": False},
+            "step5_final_judgment": {"market_view": degraded_reason, "key_conviction": "none", "biggest_uncertainty": "system degraded"},
+        },
     }

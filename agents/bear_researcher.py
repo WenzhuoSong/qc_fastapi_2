@@ -33,7 +33,38 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
-SYSTEM_PROMPT = """You are the Bear Analyst for a quantitative trading system.
+BEAR_OUTPUT_SCHEMA = """
+{
+  "overall_stance": "bearish" | "cautious_bearish" | "neutral",
+  "overall_confidence": "high" | "medium" | "low",
+  "thesis_summary": "一句话核心论点（50字以内）",
+  "ticker_views": {
+    "<TICKER>": {
+      "direction": "overweight" | "hold" | "underweight",
+      "magnitude": "strong" | "moderate" | "slight",
+      "confidence": "high" | "medium" | "low",
+      "primary_reason": "最关键的一个理由（30字以内）",
+      "key_risk": "最大的一个反驳风险（30字以内）"
+    }
+  },
+  "top_3_conviction": ["TICKER1", "TICKER2", "TICKER3"],
+  "macro_headwinds": ["利空因素1", "利空因素2"],
+  "conflicting_signals": [
+    {
+      "ticker": "TICKER",
+      "signal_a": "技术面偏弱",
+      "signal_b": "基本面韧性好",
+      "resolution": "短期看空，中期存疑"
+    }
+  ]
+}
+
+ticker_views 只需包含你有明确观点的 ticker，
+不确定的 ticker 直接省略（不要写 "hold" 来凑数）。
+magnitude 含义：strong=±5-10%, moderate=±3-5%, slight=±1-3%
+"""
+
+SYSTEM_PROMPT = f"""You are the Bear Analyst for a quantitative trading system.
 
 【Critical】You do NOT control capital. Do NOT output portfolio weights or suggested_weights.
 The Portfolio Manager (Stage 5) assigns weights. You only argue risks and the short/defensive view.
@@ -47,43 +78,24 @@ The Portfolio Manager (Stage 5) assigns weights. You only argue risks and the sh
 
 【You must】
     1. Each core argument MUST cite specific fields from research_report (e.g., ticker_signals[].combined_signal, market_regime.regime, macro_outlook.impact_bias, cross_signal_insights[])
-    2. core_arguments: data-backed risk points
-    3. target_tickers: names to trim, avoid, or underweight with reason (no percentages)
-    4. opportunity_acknowledgments: acknowledge potential upside risks or opportunities that could limit downside
-    5. Do not "guess" the Bull's text — a later cross-exam stage will address the Bull draft
+    2. Provide overall_stance (bearish/cautious_bearish/neutral)
+    3. Provide overall_confidence (high/medium/low)
+    4. Write a concise thesis_summary (≤50 chars)
+    5. For each ticker with clear view: provide ticker_views entry with direction, magnitude, confidence, primary_reason, key_risk
+    6. List top_3_conviction tickers you are most confident about
+    7. List macro_headwinds (利空因素)
+    8. Note any conflicting_signals where indicators disagree
 
 【Confidence calibration — CRITICAL】
-    confidence = how strongly the DATA supports the bearish view.
-    · 0.9–1.0: overwhelming risk evidence
-    · 0.7–0.9: solid risk evidence
-    · 0.5–0.7: mixed
-    · 0.3–0.5: weak risk evidence
-    · 0.0–0.3: data contradicts the bear case
-    In bull_trend with mostly positive signals, confidence MUST be low.
+    overall_confidence = high/medium/low reflects how strongly the DATA supports the bearish view.
+    In bull_trend with mostly positive signals, overall_confidence MUST be low.
 
 【Constraints】
-    · stance: reduce or defensive (intent only)
+    · Only include tickers with clear views; omit uncertain ones
     · No weights
 
-【Output: JSON only】
-{
-  "stance": "reduce|defensive",
-  "confidence": <float 0.0-1.0>,
-  "core_arguments": [
-    "<risk argument with data>",
-    "..."
-  ],
-  "target_tickers": [
-    {
-      "ticker": "<TICKER>",
-      "bias": "underweight|trim|avoid",
-      "reason": "<why, ≤200 chars>"
-    }
-  ],
-  "opportunity_acknowledgments": [
-    "<potential upside or opportunity that may limit downside>"
-  ]
-}
+【Output: JSON only — follow this schema exactly】
+{BEAR_OUTPUT_SCHEMA}
 
 JSON only."""
 
@@ -144,64 +156,92 @@ def _build_user_message(research_report: dict, base_weights: dict) -> str:
         "## Base weights (context only — do not output weights)\n"
         f"{json.dumps(base_weights, ensure_ascii=False, indent=2)}\n\n"
         "## Your task\n"
-        "Draft the strongest risk case: stance, confidence, core_arguments, "
-        "target_tickers (names + bias + reason), opportunity_acknowledgments. "
+        "Draft the strongest risk case: overall_stance, overall_confidence, thesis_summary, "
+        "ticker_views (per-ticker direction + magnitude + confidence + primary_reason + key_risk), "
+        "top_3_conviction, macro_headwinds, conflicting_signals. "
         "No portfolio weights. JSON only."
     )
 
 
 def _normalize(out: dict) -> dict:
-    stance = str(out.get("stance", "reduce")).strip()
-    if stance not in ("reduce", "defensive"):
-        stance = "reduce"
+    overall_stance = str(out.get("overall_stance", "neutral")).strip()
+    if overall_stance not in ("bearish", "cautious_bearish", "neutral"):
+        overall_stance = "neutral"
 
-    try:
-        confidence = max(0.0, min(1.0, float(out.get("confidence", 0.5))))
-    except (TypeError, ValueError):
-        confidence = 0.5
+    overall_confidence = str(out.get("overall_confidence", "medium")).strip()
+    if overall_confidence not in ("high", "medium", "low"):
+        overall_confidence = "medium"
 
-    core = out.get("core_arguments") or out.get("arguments") or []
-    if not isinstance(core, list):
-        core = []
-    core = [str(a).strip() for a in core if str(a).strip()][:8]
+    thesis_summary = str(out.get("thesis_summary", ""))[:100]
 
-    targets = out.get("target_tickers") or []
-    if not isinstance(targets, list):
-        targets = []
-    cleaned_targets = []
-    for v in targets:
-        if not isinstance(v, dict) or not v.get("ticker"):
+    ticker_views = out.get("ticker_views") or {}
+    if not isinstance(ticker_views, dict):
+        ticker_views = {}
+    cleaned_views = {}
+    for ticker, view in ticker_views.items():
+        if not isinstance(view, dict):
             continue
-        bias = str(v.get("bias", "underweight")).strip().lower()
-        if bias not in ("underweight", "trim", "avoid"):
-            bias = "underweight"
-        cleaned_targets.append({
-            "ticker": str(v["ticker"]).upper().strip(),
-            "bias":   bias,
-            "reason": str(v.get("reason", ""))[:220],
-        })
+        direction = str(view.get("direction", "hold")).strip().lower()
+        if direction not in ("overweight", "hold", "underweight"):
+            direction = "hold"
+        magnitude = str(view.get("magnitude", "moderate")).strip().lower()
+        if magnitude not in ("strong", "moderate", "slight"):
+            magnitude = "moderate"
+        conf = str(view.get("confidence", "medium")).strip().lower()
+        if conf not in ("high", "medium", "low"):
+            conf = "medium"
+        cleaned_views[str(ticker).upper().strip()] = {
+            "direction": direction,
+            "magnitude": magnitude,
+            "confidence": conf,
+            "primary_reason": str(view.get("primary_reason", ""))[:60],
+            "key_risk": str(view.get("key_risk", ""))[:60],
+        }
 
-    opp_acks = out.get("opportunity_acknowledgments") or []
-    if not isinstance(opp_acks, list):
-        opp_acks = []
-    opp_acks = [str(r).strip() for r in opp_acks if str(r).strip()][:5]
+    top_3 = out.get("top_3_conviction") or []
+    if not isinstance(top_3, list):
+        top_3 = []
+    top_3 = [str(t).upper().strip() for t in top_3 if str(t).strip()][:3]
+
+    macro_headwinds = out.get("macro_headwinds") or []
+    if not isinstance(macro_headwinds, list):
+        macro_headwinds = []
+    macro_headwinds = [str(w).strip() for w in macro_headwinds if str(w).strip()][:5]
+
+    conflicting_signals = out.get("conflicting_signals") or []
+    if not isinstance(conflicting_signals, list):
+        conflicting_signals = []
+    cleaned_signals = []
+    for sig in conflicting_signals:
+        if isinstance(sig, dict) and sig.get("ticker"):
+            cleaned_signals.append({
+                "ticker": str(sig["ticker"]).upper().strip(),
+                "signal_a": str(sig.get("signal_a", ""))[:80],
+                "signal_b": str(sig.get("signal_b", ""))[:80],
+                "resolution": str(sig.get("resolution", ""))[:120],
+            })
+    conflicting_signals = cleaned_signals[:3]
 
     return {
-        "stance":                    stance,
-        "confidence":                confidence,
-        "core_arguments":            core,
-        "target_tickers":            cleaned_targets,
-        "opportunity_acknowledgments": opp_acks,
-        "failed":                    False,
+        "overall_stance":       overall_stance,
+        "overall_confidence":   overall_confidence,
+        "thesis_summary":       thesis_summary,
+        "ticker_views":         cleaned_views,
+        "top_3_conviction":     top_3,
+        "macro_headwinds":      macro_headwinds,
+        "conflicting_signals":  conflicting_signals,
+        "failed":              False,
     }
 
 
 def _degraded_output(error: str | None) -> dict:
     return {
-        "stance":                    "defensive",
-        "confidence":                0.3,
-        "core_arguments":            [f"Bear draft degraded (error={error})"],
-        "target_tickers":            [],
-        "opportunity_acknowledgments": [],
-        "failed":                    True,
+        "overall_stance":      "neutral",
+        "overall_confidence":   "low",
+        "thesis_summary":      f"Bear draft degraded (error={error})",
+        "ticker_views":        {},
+        "top_3_conviction":    [],
+        "macro_headwinds":     [],
+        "conflicting_signals": [],
+        "failed":             True,
     }

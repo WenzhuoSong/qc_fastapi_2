@@ -15,8 +15,10 @@ Stage 1: market_brief —— 纯 Python 市场概要生成。
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
+from datetime import datetime as dt_cls
 from typing import Any
 
 from sqlalchemy import desc, select
@@ -46,6 +48,7 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
         holdings:            list[dict]    # 原 snapshot.holdings
         current_weights:     dict[ticker, float],
         portfolio:            dict,
+        news_context:        dict,         # 结构化新闻（Phase 2 新增）
     }
     """
     snapshot = await _read_latest_snapshot()
@@ -57,6 +60,7 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
     tickers_of_interest = sorted(set(current_weights.keys()) | _candidate_tickers(holdings))
 
     macro = await _read_macro_cache()
+    news_context = await get_news_context()
     per_ticker_news, hard_risks_map = await _read_ticker_news(tickers_of_interest)
 
     key_facts = _compute_key_facts(holdings, portfolio)
@@ -73,6 +77,7 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
         "holdings":           holdings,
         "current_weights":    current_weights,
         "portfolio":          portfolio,
+        "news_context":       news_context,
     }
 
     logger.info(
@@ -138,6 +143,89 @@ async def _read_macro_cache() -> dict:
         "macro_news":        row.macro_news or [],
         "economic_calendar": row.economic_calendar or [],
         "prose_summary":     row.prose_summary or "",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# Structured news context (Phase 2)
+# ═══════════════════════════════════════════════════════════════
+
+async def get_news_context() -> dict:
+    """
+    读取结构化新闻上下文。
+    优先使用 structured_payload，降级到 raw_payload（仅包含原始新闻列表）。
+
+    返回格式：
+    {
+        "macro_signals": [...],   # LLM 结构化的宏观信号
+        "ticker_signals": {...},  # LLM 结构化的 ticker 信号
+        "noise_filtered": int,
+        "data_gaps": [...],
+        "_stale_warning": str,    # 可选，时效性警告
+        "_fallback": bool,        # 是否为降级响应
+    }
+    """
+    async with AsyncSessionLocal() as db:
+        row = (await db.execute(
+            select(MacroNewsCache).where(MacroNewsCache.id == 1)
+        )).scalar_one_or_none()
+
+    if not row:
+        return {
+            "macro_signals": [],
+            "ticker_signals": {},
+            "noise_filtered": 0,
+            "data_gaps": ["无新闻缓存"],
+            "_fallback": True,
+        }
+
+    # 优先使用结构化版本
+    if row.structured_payload:
+        try:
+            structured = row.structured_payload
+            if isinstance(structured, str):
+                structured = json.loads(structured)
+
+            # 检查时效性（超过4小时视为 stale）
+            processed_at = structured.get("processed_at")
+            if processed_at:
+                try:
+                    processed_dt = dt_cls.fromisoformat(processed_at)
+                    age_seconds = (dt_cls.utcnow() - processed_dt).total_seconds()
+                    age_hours = age_seconds / 3600
+                    if age_hours > 4:
+                        structured["_stale_warning"] = f"新闻已 {age_hours:.1f} 小时未更新"
+                except (ValueError, TypeError):
+                    pass
+
+            return structured
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning(f"structured_payload 解析失败: {e}，降级到 raw_payload")
+
+    # 降级：使用 raw_payload（原始新闻列表，格式：[{headline, summary, source, datetime, ...}, ...]）
+    if row.raw_payload:
+        try:
+            raw_news = row.raw_payload
+            if isinstance(raw_news, str):
+                raw_news = json.loads(raw_news)
+            return {
+                "macro_signals": [],
+                "ticker_signals": {},
+                "noise_filtered": 0,
+                "data_gaps": ["结构化数据不可用，仅有原始缓存"],
+                "_fallback": True,
+                "_raw_news_count": len(raw_news) if isinstance(raw_news, list) else 0,
+            }
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # 完全降级：返回空结构，让 RESEARCHER 知道数据质量差
+    return {
+        "macro_signals": [],
+        "ticker_signals": {},
+        "noise_filtered": 0,
+        "data_gaps": ["结构化数据不可用，仅有原始缓存"],
+        "_fallback": True,
     }
 
 
