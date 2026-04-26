@@ -1,24 +1,24 @@
 """
-cron/pre_fetch_news.py —— Cron 1: 独立的多源新闻预抓取任务。
+cron/pre_fetch_news.py -- Cron 1: Independent multi-source news pre-fetch.
 
-职责：与主 pipeline 完全解耦，每 2h 跑一次：
-    Phase A: Finnhub → fetch_macro_news + fetch_economic_calendar → upsert MacroNewsCache
-                       + per-ticker news → TickerNewsLibrary
-    Phase B: Alpha Vantage → 批量拉取 ticker news → TickerNewsLibrary (source_api=alphavantage)
-    Phase C: RSS feeds → 并行抓 5 个 feed → 关键词匹配 ticker → TickerNewsLibrary (source_api=rss)
-    Phase D: LLM batch summarize (gpt-4o-mini, 已有，Phase A 内执行)
-    Phase E: cross-source dedup (url 去重，已在各 Phase 内按 url 去重)
+Responsibilities: Fully decoupled from the main pipeline, runs every 2h:
+    Phase A: Finnhub -> fetch_macro_news + fetch_economic_calendar -> upsert MacroNewsCache
+                       + per-ticker news -> TickerNewsLibrary
+    Phase B: Alpha Vantage -> bulk ticker news -> TickerNewsLibrary (source_api=alphavantage)
+    Phase C: RSS feeds -> fetch 5 feeds in parallel -> keyword-match ticker -> TickerNewsLibrary (source_api=rss)
+    Phase D: LLM batch summarize (gpt-4o-mini, existing, executed within Phase A)
+    Phase E: cross-source dedup (url dedup, already done per-Phase by url)
     Phase F: cleanup 48h old news
 
-两条 cron 独立失败：新闻挂了，主 pipeline 用上一轮缓存继续跑；
-                   主 pipeline 挂了，新闻照常刷新。
-各 Phase 独立失败：Phase B/C 挂了不影响 Phase A（Finnhub），反之亦然。
+Two crons fail independently: news down -> main pipeline uses previous-round cache;
+                   main pipeline down -> news continues refreshing.
+Each Phase fails independently: Phase B/C down does not affect Phase A (Finnhub), and vice versa.
 
-使用：
+Usage:
     python -m cron.pre_fetch_news
 
-Railway 推荐 cron (ET):
-    09:50, 11:50, 13:50  (交易时段前/中/后各一次)
+Railway recommended cron (ET):
+    09:50, 11:50, 13:50  (once before/during/after trading session)
 """
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("qc_fastapi_2.cron.pre_fetch_news")
 
-PRE_FETCH_TIMEOUT_S = 600       # 10 分钟整体超时
+PRE_FETCH_TIMEOUT_S = 600       # 10 minutes overall timeout
 TTL_SECONDS         = 48 * 3600 # 48h
 
 # ═══════════════════════════════════════════════════════════════
@@ -62,45 +62,45 @@ TTL_SECONDS         = 48 * 3600 # 48h
 # ═══════════════════════════════════════════════════════════════
 
 NEWS_STRUCTURING_PROMPT = """
-你是一个金融新闻结构化引擎。我会给你一组原始新闻，
-你需要提取对 ETF 投资组合管理有用的结构化信号。
+You are a financial news structuring engine. I will give you a set of raw news articles,
+and you need to extract structured signals useful for ETF portfolio management.
 
-## 输入新闻
+## Input news
 {raw_news_text}
 
 ## ETF Universe
 {etf_universe}
 
-## 输出要求（严格 JSON，无前缀）
+## Output requirements (strict JSON, no prefix)
 
 {{
   "processed_at": "ISO timestamp",
   "macro_signals": [
     {{
-      "event": "事件名称（20字以内）",
+      "event": "event name (≤20 chars)",
       "category": "fed_policy"|"inflation"|"employment"|"geopolitical"|"earnings"|"other",
       "direction": "positive"|"negative"|"neutral"|"mixed",
       "impact_horizon": "immediate"|"short_term"|"medium_term",
       "confidence": "high"|"medium"|"low",
       "affected_sectors": ["XLK", "XLF"],
-      "summary": "一句话说明（40字以内）"
+      "summary": "one-sentence explanation (≤40 chars)"
     }}
   ],
   "ticker_signals": {{
     "<TICKER>": {{
       "sentiment": "positive"|"negative"|"neutral",
       "news_count": <int>,
-      "key_events": ["事件1（20字）", "事件2"],
+      "key_events": ["event 1 (≤20 chars)", "event 2"],
       "data_quality": "fresh"|"stale"|"no_news"
     }}
   }},
-  "noise_filtered": <int>,  // 过滤掉的重复/低质量新闻数
-  "data_gaps": ["XLE 过去48h无有效新闻", "..."]
+  "noise_filtered": <int>,  // duplicate/low-quality news filtered out
+  "data_gaps": ["XLE has no valid news in past 48h", "..."]
 }}
 
-macro_signals 最多5条，只保留影响力 >= medium 的。
-ticker_signals 只包含有新闻的 ticker，没有新闻的不要写进去。
-如果多条新闻描述同一事件，合并为一条，不要重复。
+macro_signals: max 5 items, only keep impact >= medium.
+ticker_signals: only include tickers with news; do not include tickers with no news.
+If multiple news items describe the same event, merge into one; do not duplicate.
 """
 
 
@@ -109,10 +109,10 @@ async def structure_news_with_llm(
     etf_universe: list[str],
 ) -> dict:
     """
-    调用 gpt-4o-mini 对原始新闻做结构化预处理。
-    输入的 raw_news 格式： Finnhub/AlphaVantage/RSS 统一格式
+    Call gpt-4o-mini to structurize raw news.
+    raw_news format: Finnhub/AlphaVantage/RSS unified format
       {headline, summary, source, datetime, url, ...}
-    成本：约 $0.002-0.005 per run（远低于 gpt-4o）
+    Cost: ~$0.002-0.005 per run (far lower than gpt-4o)
     """
     from config import get_settings
     settings = get_settings()
@@ -122,12 +122,12 @@ async def structure_news_with_llm(
             "macro_signals": [],
             "ticker_signals": {},
             "noise_filtered": 0,
-            "data_gaps": ["无新闻数据"],
+            "data_gaps": ["no news data"],
         }
 
-    # 拼接原始新闻（控制 token，截取关键字段）
+    # Concatenate raw news (control tokens, truncate key fields)
     news_parts = []
-    for n in raw_news[:40]:  # 最多40条，防止超 token
+    for n in raw_news[:40]:  # max 40 items to prevent token overflow
         source = n.get("source", "?")
         dt = n.get("datetime", 0)
         if dt:
@@ -141,7 +141,7 @@ async def structure_news_with_llm(
         headline = n.get("headline", "")
         summary = n.get("summary", "")[:300]
         news_parts.append(
-            f"[{source}] {dt_str}\n标题: {headline}\n摘要: {summary}"
+            f"[{source}] {dt_str}\nTitle: {headline}\nSummary: {summary}"
         )
     news_text = "\n\n".join(news_parts)
 
@@ -156,7 +156,7 @@ async def structure_news_with_llm(
             model=settings.openai_model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1500,
-            temperature=0.1,  # 低温度，确保结构稳定
+            temperature=0.1,  # low temperature to ensure structure stability
             response_format={"type": "json_object"},
         )
 
@@ -164,18 +164,18 @@ async def structure_news_with_llm(
         structured["_model"] = settings.openai_model
         structured["_raw_news_count"] = len(raw_news)
         logger.info(
-            f"新闻结构化完成: {len(raw_news)} 条 -> "
+            f"News structuring complete: {len(raw_news)} raw -> "
             f"{len(structured.get('macro_signals', []))} macro_signals"
         )
         return structured
 
     except Exception as e:
-        logger.error(f"新闻结构化失败: {e}，使用空结构")
+        logger.error(f"News structuring failed: {e}, using empty structure")
         return {
             "macro_signals": [],
             "ticker_signals": {},
             "noise_filtered": 0,
-            "data_gaps": [f"结构化失败: {str(e)}"],
+            "data_gaps": [f"structuring failed: {str(e)}"],
             "_fallback": True,
         }
 
@@ -186,14 +186,14 @@ async def structure_news_with_llm(
 
 async def _refresh_macro_cache(universe: list[str]) -> dict[str, Any]:
     """
-    拉 macro news + calendar，upsert 到 MacroNewsCache (单行，id=1)。
-    Phase D': 调用 gpt-4o-mini 做结构化预处理，存储 raw_payload + structured_payload。
+    Pull macro news + calendar, upsert to MacroNewsCache (single row, id=1).
+    Phase D': call gpt-4o-mini for structurization, store raw_payload + structured_payload.
     """
-    # 同步 httpx 放到 to_thread 里避免阻塞事件循环
+    # Move sync httpx to to_thread to avoid blocking event loop
     macro_news   = await asyncio.to_thread(fetch_macro_news, 20)
     econ_events  = await asyncio.to_thread(fetch_economic_calendar, 3)
 
-    # Phase D': 新闻结构化
+    # Phase D': News structurization
     structured = await structure_news_with_llm(macro_news, universe)
 
     prose = _build_macro_prose(macro_news, econ_events)
@@ -227,22 +227,22 @@ async def _refresh_macro_cache(universe: list[str]) -> dict[str, Any]:
 
 
 def _build_macro_prose(macro_news: list[dict], econ_events: list[dict]) -> str:
-    """把 macro news + calendar 拼成一段可直接塞进 prompt 的散文。"""
+    """Assemble macro news + calendar into prose ready for prompt insertion."""
     lines: list[str] = []
 
     if macro_news:
-        lines.append("## 宏观新闻")
+        lines.append("## Macro News")
         for it in macro_news[:8]:
             headline = sanitize(it.get("headline", ""))
             source   = it.get("source", "") or "unknown"
             if headline:
                 lines.append(f"- [{source}] {headline}")
     else:
-        lines.append("## 宏观新闻\n(无数据)")
+        lines.append("## Macro News\n(no data)")
 
     lines.append("")
     if econ_events:
-        lines.append("## 本周经济日程")
+        lines.append("## This Week's Economic Calendar")
         for e in econ_events[:8]:
             event  = sanitize(e.get("event", ""))
             impact = e.get("impact", "")
@@ -250,7 +250,7 @@ def _build_macro_prose(macro_news: list[dict], econ_events: list[dict]) -> str:
             if event:
                 lines.append(f"- [{impact}] {time_str} {event}")
     else:
-        lines.append("## 本周经济日程\n(无高影响事件)")
+        lines.append("## This Week's Economic Calendar\n(no high-impact events)")
 
     return "\n".join(lines)
 
@@ -261,14 +261,14 @@ def _build_macro_prose(macro_news: list[dict], econ_events: list[dict]) -> str:
 
 async def _process_ticker(ticker: str) -> int:
     """
-    处理单个 ticker：fetch → dedupe → summarize → hard_risks → insert。
-    返回新写入的条数。
+    Process single ticker: fetch -> dedupe -> summarize -> hard_risks -> insert.
+    Returns number of newly written entries.
     """
     news_items = await asyncio.to_thread(fetch_ticker_news, ticker, 2, 10)
     if not news_items:
         return 0
 
-    # 清洗 headline + url
+    # Clean headline + url
     cleaned: list[dict] = []
     for it in news_items:
         url = (it.get("url") or "").strip()
@@ -280,7 +280,7 @@ async def _process_ticker(ticker: str) -> int:
     if not cleaned:
         return 0
 
-    # 查已有 url 去重
+    # Check existing url for dedup
     urls = [it["url"] for it in cleaned]
     async with AsyncSessionLocal() as db:
         stmt = (
@@ -294,14 +294,14 @@ async def _process_ticker(ticker: str) -> int:
     if not new_items:
         return 0
 
-    # LLM 批量摘要 —— 失败有回落，不抛异常
+    # LLM batch summarize -- has fallback on failure, no exception thrown
     summaries = await summarize_headlines_batch(ticker, new_items)
 
-    # earnings + hard risks (基于全部 news_items, 不只是新加的)
+    # earnings + hard risks (based on all news_items, not just newly added)
     has_earnings = await asyncio.to_thread(fetch_earnings_flag, ticker, 7)
     hard_risks   = scan_hard_risks(ticker, news_items, has_earnings)
 
-    # 批量插入
+    # Batch insert
     rows: list[TickerNewsLibrary] = []
     for it, summary_data in zip(new_items, summaries):
         source = it.get("source", "")
@@ -328,7 +328,7 @@ async def _process_ticker(ticker: str) -> int:
         try:
             await db.commit()
         except Exception as e:
-            # UniqueConstraint 并发冲突 —— 跳过这一批
+            # UniqueConstraint concurrent conflict -- skip this batch
             await db.rollback()
             logger.warning(f"{ticker}: insert conflict, skipped ({e})")
             return 0
@@ -342,9 +342,9 @@ async def _process_ticker(ticker: str) -> int:
 
 async def _fetch_alphavantage(universe: list[str]) -> int:
     """
-    Phase B: 批量从 Alpha Vantage 拉取新闻。
-    AV 支持逗号分隔多 ticker 一次请求（免费 25 req/day）。
-    返回新写入条数。
+    Phase B: Bulk fetch news from Alpha Vantage.
+    AV supports comma-separated multi-ticker in one request (free 25 req/day).
+    Returns number of newly written entries.
     """
     try:
         av_items = await asyncio.to_thread(fetch_ticker_news_av, universe, 50)
@@ -355,7 +355,7 @@ async def _fetch_alphavantage(universe: list[str]) -> int:
     if not av_items:
         return 0
 
-    # 按 ticker 分桶（AV 返回的 related 包含关联 ticker 列表）
+    # Bucket by ticker (AV returns related ticker list in 'related')
     universe_set = set(universe)
     ticker_buckets: dict[str, list[dict]] = {}
     for item in av_items:
@@ -366,7 +366,7 @@ async def _fetch_alphavantage(universe: list[str]) -> int:
         if not item["headline"]:
             continue
 
-        # 从 ticker_sentiments 或 related 中匹配我们 universe 的 ticker
+        # Match our universe tickers from ticker_sentiments or related
         related = item.get("related") or []
         av_sentiments = item.get("ticker_sentiments") or {}
         matched_tickers = set()
@@ -396,7 +396,7 @@ async def _fetch_alphavantage(universe: list[str]) -> int:
 # Phase C: RSS feeds
 # ═══════════════════════════════════════════════════════════════
 
-# 简单的 ETF → 关键词映射，用于将 RSS 宏观新闻关联到 ticker
+# Simple ETF -> keyword mapping for associating RSS macro news to tickers
 _TICKER_KEYWORDS: dict[str, list[str]] = {
     "XLK":  ["tech", "technology", "semiconductor", "chip", "ai ", "artificial intelligence", "software", "apple", "microsoft", "nvidia"],
     "XLF":  ["bank", "financial", "fed ", "federal reserve", "interest rate", "credit", "jpmorgan", "goldman"],
@@ -419,7 +419,7 @@ _TICKER_KEYWORDS: dict[str, list[str]] = {
 
 
 def _match_tickers_from_headline(headline: str, summary: str, universe_set: set[str]) -> set[str]:
-    """基于关键词匹配将 RSS 文章关联到 universe 中的 ticker。"""
+    """Match RSS articles to tickers in universe based on keyword matching."""
     text = (headline + " " + summary).lower()
     matched = set()
     for ticker, keywords in _TICKER_KEYWORDS.items():
@@ -434,8 +434,8 @@ def _match_tickers_from_headline(headline: str, summary: str, universe_set: set[
 
 async def _fetch_rss(universe: list[str]) -> int:
     """
-    Phase C: 从 RSS feeds 抓取新闻，关键词匹配 ticker 后写入 TickerNewsLibrary。
-    返回新写入条数。
+    Phase C: Fetch news from RSS feeds, keyword-match tickers, write to TickerNewsLibrary.
+    Returns number of newly written entries.
     """
     try:
         rss_items = await asyncio.to_thread(fetch_rss_news, 10)
@@ -483,11 +483,11 @@ async def _insert_external_news(
     ticker: str, items: list[dict], source_api: str
 ) -> int:
     """
-    将 Alpha Vantage 或 RSS 的文章写入 TickerNewsLibrary。
-    按 url 去重，LLM 摘要（仅对没有预置 sentiment 的条目），批量插入。
-    返回新写入条数。
+    Write Alpha Vantage or RSS articles to TickerNewsLibrary.
+    Dedupe by url, LLM summarize (only for entries without pre-set sentiment), batch insert.
+    Returns number of newly written entries.
     """
-    # url 去重
+    # url dedup
     urls = [it["url"] for it in items]
     async with AsyncSessionLocal() as db:
         stmt = (
@@ -501,7 +501,7 @@ async def _insert_external_news(
     if not new_items:
         return 0
 
-    # 只对没有预置 sentiment 的条目做 LLM 摘要
+    # Only LLM summarize entries without pre-set sentiment
     needs_llm = [it for it in new_items if not it.get("sentiment")]
     if needs_llm:
         summaries = await summarize_headlines_batch(ticker, needs_llm)
@@ -561,7 +561,7 @@ async def _cleanup_old_news() -> int:
 # ═══════════════════════════════════════════════════════════════
 
 async def run_pre_fetch() -> dict:
-    """主入口。返回统计信息。"""
+    """Main entry. Returns statistics."""
     from db.session import init_db
     await init_db()
 
@@ -629,7 +629,7 @@ async def main() -> None:
         logger.exception("pre_fetch_news FAILED")
         try:
             await tool_send_telegram(
-                {"text": f"新闻预抓取异常: {e}", "parse_mode": ""}
+                {"text": f"News pre-fetch error: {e}", "parse_mode": ""}
             )
         except Exception:
             pass

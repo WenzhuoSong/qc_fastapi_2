@@ -1,32 +1,32 @@
 # services/pipeline.py
 """
-完整 agent pipeline 的异步编排（V2.1 Bull/Bear 辩论版）。
+Full agent pipeline async orchestration (V2.1 Bull/Bear debate version).
 
-流水线 stage（10-stage Python-LLM-Python 三段接力）：
-    0. guard_and_config      (Python)   —— 锁 / 暂停检查 / 读配置 / 构 context
-    1. market_brief          (Python)   —— 读快照+新闻缓存 / 算定量指标 / 拼散文
-    2. quant_baseline        (Python)   —— 纯数学打分 → base_weights
-    3. RESEARCHER            (LLM)      —— base_weights + brief → research_report（只分析不决策）
-   4a. BULL RESEARCHER       (LLM)      —— draft thesis（无权重）
-   4b. BEAR RESEARCHER       (LLM)      —— draft thesis（无权重，与 4a 并行）
-   4c. CROSS_EXAM           (LLM)      —— 交换论点，短反驳（与对侧并行）
-    5. PM / SYNTHESIZER      (LLM)      —— 唯一 adjusted_weights + decision_rationale
-    6. RISK MGR              (Python)   —— overlays + 6 项检查 → final target_weights + token
-    7. _save_analysis        (Python)   —— 写 agent_analysis 表
-    8. COMMUNICATOR          (LLM+fb)   —— Telegram 文案（可降级）
-    9. 分支: rejected / SEMI_AUTO pending / FULL_AUTO 直接执行
+Pipeline stages (10-stage Python-LLM-Python relay):
+    0. guard_and_config      (Python)   -- lock / pause check / read config / build context
+    1. market_brief          (Python)   -- read snapshot + news cache / compute quant metrics / build prose
+    2. quant_baseline        (Python)   -- pure math scoring -> base_weights
+    3. RESEARCHER            (LLM)      -- base_weights + brief -> research_report (analysis only, no decisions)
+   4a. BULL RESEARCHER       (LLM)      -- draft thesis (no weights)
+   4b. BEAR RESEARCHER       (LLM)      -- draft thesis (no weights, parallel with 4a)
+   4c. CROSS_EXAM           (LLM)      -- swap arguments, short rebuttals (parallel with opposite side)
+    5. PM / SYNTHESIZER      (LLM)      -- sole adjusted_weights + decision_rationale
+    6. RISK MGR              (Python)   -- overlays + 6 checks -> final target_weights + token
+    7. _save_analysis        (Python)   -- write agent_analysis table
+    8. COMMUNICATOR          (LLM+fb)   -- Telegram copy (degradable)
+    9. Branch: rejected / SEMI_AUTO pending / FULL_AUTO execute
 
-核心数据流（接力棒传的是 weights）：
-    base_weights       (Stage 2 Python)       →
-    research_report    (Stage 3 LLM 信息合成)  →
-    bull/bear_output   (Stage 4a/4b LLM 辩论) →
-    adjusted_weights   (Stage 5 LLM 仲裁)     →
-    target_weights     (Stage 6 Python)       →
+Core data flow (the baton being passed is weights):
+    base_weights       (Stage 2 Python)       ->
+    research_report    (Stage 3 LLM synthesis)  ->
+    bull/bear_output   (Stage 4a/4b LLM debate) ->
+    adjusted_weights   (Stage 5 LLM arbitration) ->
+    target_weights     (Stage 6 Python)       ->
     execute            (Stage 9 Python)
 
-新闻数据由独立的 cron/pre_fetch_news.py 每 2h 单独刷新，主 pipeline
-只从 DB 读缓存。两条 cron 独立失败：新闻挂 → pipeline 用旧缓存继续跑；
-pipeline 挂 → 新闻照常刷新。
+News data is refreshed independently every 2h by cron/pre_fetch_news.py; the main pipeline
+only reads from DB cache. Both crons fail independently: news down -> pipeline uses stale cache;
+pipeline down -> news continues refreshing.
 """
 import asyncio
 import logging
@@ -55,7 +55,7 @@ settings = get_settings()
 
 # --------------- Pipeline TTL Lock ---------------
 PIPELINE_LOCK_KEY    = "pipeline_lock"
-PIPELINE_TTL_MINUTES = 55  # 略小于 1 小时 cron 间隔
+PIPELINE_TTL_MINUTES = 55  # slightly less than 1 hour cron interval
 
 
 async def _acquire_pipeline_lock() -> bool:
@@ -84,7 +84,7 @@ async def _release_pipeline_lock() -> None:
         }, "pipeline")
 
 
-# ─────────────────────────────── PM 硬裁剪 ───────────────────────────────
+# ─────────────────────────────── PM Hard Clip ───────────────────────────────
 
 
 def enforce_pm_constraints(
@@ -94,18 +94,18 @@ def enforce_pm_constraints(
     hard_max_delta: float = 0.10,
 ) -> tuple[dict[str, float], list[str]]:
     """
-    对 SYNTHESIZER 输出的 adjusted_weights 做 Python 层硬裁剪。
+    Python-level hard clip of SYNTHESIZER's adjusted_weights output.
 
-    规则：
-    1. 每个 ticker 相对 base_weights 的偏离不超过 max_delta (default 5%)
-    2. CASH 单独处理：只允许增加不允许减少（保守原则）
-    3. 新增 ticker（base 中没有）：权重 cap 在 hard_max_delta (10%)
-    4. 裁剪后重新归一化确保 sum = 1.0
-    5. 返回裁剪后的权重 + 裁剪日志列表
+    Rules:
+    1. Each ticker's deviation from base_weights must not exceed max_delta (default 5%)
+    2. CASH handled separately: only allowed to increase, not decrease (conservative principle)
+    3. New tickers (not in base): weight capped at hard_max_delta (10%)
+    4. Renormalize after clip to ensure sum = 1.0
+    5. Return clipped weights + clip log list
 
     Returns:
-        clipped_weights: 裁剪后归一化的权重字典
-        clip_log: 被裁剪的条目列表，格式 ["SPY: 0.32→0.27 (base=0.22, delta capped)"]
+        clipped_weights: post-clip normalized weight dict
+        clip_log: clipped entry list, format ["SPY: 0.32→0.27 (base=0.22, delta capped)"]
     """
     clipped: dict[str, float] = {}
     clip_log: list[str] = []
@@ -144,7 +144,7 @@ def enforce_pm_constraints(
 
     total = sum(clipped.values())
     if total <= 0:
-        raise ValueError("enforce_pm_constraints: 裁剪后权重总和为0，数据异常")
+        raise ValueError("enforce_pm_constraints: post-clip total weight is 0, data anomaly")
 
     normalized = {k: round(v / total, 6) for k, v in clipped.items()}
 
@@ -156,7 +156,7 @@ def enforce_pm_constraints(
     return normalized, clip_log
 
 
-# ─────────────────────────────── Regime 约束校验 ───────────────────────────────
+# ─────────────────────────────── Regime Constraint Validation ───────────────────────────────
 
 
 HEDGE_TICKERS = {"GLD", "TLT", "BND", "IEF"}
@@ -168,12 +168,12 @@ def apply_regime_constraints(
     base_weights: dict[str, float],
 ) -> tuple[dict[str, float], list[str]]:
     """
-    用 regime 约束对 target_weights 做最终校验和裁剪。
+    Final validation and clipping of target_weights using regime constraints.
 
-    规则：
-    1. 检查 allow_new_positions — 新开仓 ticker（base 中没有且 > 0）→ cap 或拒绝
-    2. 总权益权重不超过 max_equity_weight
-    3. CASH 不低于 min_cash_weight
+    Rules:
+    1. Check allow_new_positions -- new tickers not in base with > 0 -> cap or reject
+    2. Total equity weight must not exceed max_equity_weight
+    3. CASH must not be below min_cash_weight
 
     Returns:
         (clipped_weights, violations_log)
@@ -185,7 +185,7 @@ def apply_regime_constraints(
     violations: list[str] = []
     working = dict(target_weights)
 
-    # 1. 新开仓检查
+    # 1. New position check
     if not constraints.get("allow_new_positions", True):
         for ticker, w in list(working.items()):
             if ticker == "CASH" or ticker in HEDGE_TICKERS:
@@ -198,7 +198,7 @@ def apply_regime_constraints(
                     )
                     working[ticker] = hard_cap
 
-    # 2. 权益权重上限
+    # 2. Equity weight cap
     max_equity = constraints.get("max_equity_weight", 1.0)
     cash_and_hedges = {k: v for k, v in working.items() if k == "CASH" or k in HEDGE_TICKERS}
     equity_weight = 1.0 - sum(cash_and_hedges.values())
@@ -212,7 +212,7 @@ def apply_regime_constraints(
             f"equity_weight {equity_weight:.2%}→{max_equity:.2%} (regime cap)"
         )
 
-    # 3. CASH 下限
+    # 3. CASH floor
     min_cash = constraints.get("min_cash_weight", 0.05)
     if working.get("CASH", 0.0) < min_cash - 1e-6:
         shortfall = min_cash - working.get("CASH", 0.0)
@@ -225,7 +225,7 @@ def apply_regime_constraints(
             f"CASH {working.get('CASH', 0.0):.2%}→{min_cash:.2%} (regime floor)"
         )
 
-    # 归一化
+    # Normalize
     total = sum(working.values())
     if total > 0:
         working = {k: round(v / total, 6) for k, v in working.items()}
@@ -238,8 +238,8 @@ def apply_regime_constraints(
 
 async def _guard_and_config(trigger: str) -> dict | None:
     """
-    读系统配置，构建 pipeline_context。
-    返回 None 表示需要 skip（暂停 / MANUAL 模式）。
+    Read system config, build pipeline_context.
+    Returns None to signal skip (paused / MANUAL mode).
     """
     async with AsyncSessionLocal() as db:
         paused_cfg    = await get_system_config(db, "trading_paused")
@@ -296,7 +296,7 @@ async def _save_step_log(
     model: str | None = None,
     failed: bool = False,
 ) -> None:
-    """写一条 agent_step_log 记录。静默失败，不影响 pipeline。"""
+    """Write one agent_step_log record. Silent failure, does not affect pipeline."""
     try:
         async with AsyncSessionLocal() as db:
             db.add(AgentStepLog(
@@ -314,11 +314,11 @@ async def _save_step_log(
         logger.warning(f"Failed to save step log for {stage}: {e}")
 
 
-# ─────────────────────────────── 主入口 ───────────────────────────────
+# ─────────────────────────────── Main Entry ───────────────────────────────
 
 
 async def run_full_pipeline(trigger: str = "scheduled_hourly") -> dict:
-    """运行完整 agent pipeline。"""
+    """Run full agent pipeline."""
     logger.info(f"=== Pipeline START | trigger={trigger} ===")
 
     if not await _acquire_pipeline_lock():
@@ -345,7 +345,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         f"| strategy={pipeline_context['active_strategy']}"
     )
 
-    # 提前创建 analysis 行，拿到 analysis_id 供 step log 使用
+    # Pre-create analysis row to get analysis_id for step log
     analysis_id = await _create_analysis_placeholder(trigger, pipeline_context)
 
     # Stage 1: market_brief (Python)
@@ -383,7 +383,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         duration_ms=dur_quant,
     )
 
-    # ── Regime 硬分类 step log ───────────────────────────────────
+    # ── Regime hard classification step log ───────────────────────────────────
     regime_result = quant_baseline.get("regime_result")
     if regime_result:
         await _save_step_log(
@@ -398,7 +398,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             duration_ms=0,
         )
 
-    # Stage 3: RESEARCHER (LLM) —— 信息合成（只分析不决策）
+    # Stage 3: RESEARCHER (LLM) -- info synthesis (analysis only, no decisions)
     t0 = time.time()
     research_report = await run_researcher_async(
         pipeline_context, brief, quant_baseline, regime_result
@@ -525,11 +525,11 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             cash_diff = abs(stated_cash - actual_cash)
             if cash_diff > 0.03:
                 logger.warning(
-                    f"[Stage5] Synthesizer CoT 前后矛盾: "
+                    f"[Stage5] Synthesizer CoT inconsistency: "
                     f"step4.cash_pct={stated_cash:.2%} vs actual CASH={actual_cash:.2%}"
                 )
             else:
-                logger.info(f"[Stage5] CoT cash 一致性校验通过: step4={stated_cash:.2%} actual={actual_cash:.2%}")
+                logger.info(f"[Stage5] CoT cash consistency check passed: step4={stated_cash:.2%} actual={actual_cash:.2%}")
 
         # Log reasoning_chain to agent_step_log for audit
         await _save_step_log(
@@ -543,10 +543,10 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     else:
         logger.warning("[Stage5] No reasoning_chain in synthesizer output (Task 5)")
 
-    # ── Stage 5→6: PM 硬裁剪 ──────────────────────────────────────
+    # ── Stage 5→6: PM Hard Clip ──────────────────────────────────────
     adjusted_weights_raw = synthesizer_out.get("adjusted_weights") or {}
     if not adjusted_weights_raw:
-        logger.info("[Stage5→6] degraded fallback，跳过 PM 硬裁剪")
+        logger.info("[Stage5→6] degraded fallback, skipping PM hard clip")
     else:
         adjusted_weights_clipped, clip_log = enforce_pm_constraints(
             base_weights=base_weights,
@@ -558,7 +558,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
 
         if clip_log:
             logger.warning(
-                f"[Stage5→6] PM 权重被硬裁剪 {len(clip_log)} 项:\n" + "\n".join(clip_log)
+                f"[Stage5→6] PM weights hard-clipped {len(clip_log)} items:\n" + "\n".join(clip_log)
             )
             await _save_step_log(
                 analysis_id, "5b_pm_constraint", "pm_constraint_enforcement",
@@ -570,10 +570,10 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 duration_ms=0,
             )
         else:
-            logger.info("[Stage5→6] PM 权重在约束范围内，无裁剪")
+            logger.info("[Stage5→6] PM weights within constraints, no clip needed")
 
     # Stage 6: RISK MGR (Python) —— overlays + 6 checks
-    # synthesizer_out 接口兼容旧 researcher_out，Risk MGR 无需改动
+    # synthesizer_out interface compatible with old researcher_out, Risk MGR unchanged
     t0 = time.time()
     risk_out = await run_risk_manager_async(
         pipeline_context, brief, quant_baseline, synthesizer_out
@@ -593,7 +593,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         duration_ms=dur_risk,
     )
 
-    # ── Stage 6→7: Regime 硬约束校验 ───────────────────────────────
+    # ── Stage 6→7: Regime Hard Constraint Validation ───────────────────────────────
     if regime_result and risk_out.get("approved"):
         target_from_risk = risk_out.get("target_weights") or {}
         clipped, regime_violations = apply_regime_constraints(
@@ -602,7 +602,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         risk_out["target_weights"] = clipped
         if regime_violations:
             logger.warning(
-                f"[Stage6→7] Regime 约束裁剪 {len(regime_violations)} 项:\n"
+                f"[Stage6→7] Regime constraint clipped {len(regime_violations)} items:\n"
                 + "\n".join(regime_violations)
             )
             await _save_step_log(
@@ -612,9 +612,9 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 duration_ms=0,
             )
         else:
-            logger.info("[Stage6→7] Regime 权重在约束范围内，无裁剪")
+            logger.info("[Stage6→7] Regime weights within constraints, no clip needed")
 
-    # Stage 7: 更新 analysis 行（填充完整数据）
+    # Stage 7: Update analysis row (fill complete data)
     await _finalize_analysis(
         analysis_id, quant_baseline, synthesizer_out, risk_out
     )
@@ -637,7 +637,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         failed=comm_out.get("used_fallback", False),
     )
 
-    # Stage 9: 分支执行
+    # Stage 9: Branch execution
     auth_mode = pipeline_context["auth_mode"]
 
     if not approved:
@@ -663,7 +663,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     return {"status": "unknown_auth_mode", "analysis_id": analysis_id}
 
 
-# ─────────────────────────────── SEMI_AUTO 提案 ───────────────────────────────
+# ─────────────────────────────── SEMI_AUTO Proposal ───────────────────────────────
 
 
 async def _send_semi_auto_proposal(
@@ -690,11 +690,11 @@ async def _send_semi_auto_proposal(
     await tool_send_telegram({"text": append_command_hints(comm_out["text"])})
 
 
-# ─────────────────────────────── 存档 ───────────────────────────────
+# ─────────────────────────────── Archival ───────────────────────────────
 
 
 async def _create_analysis_placeholder(trigger: str, pipeline_context: dict) -> int:
-    """提前创建 analysis 行（仅含 trigger + context），拿到 ID 供 step log 使用。"""
+    """Pre-create analysis row (with trigger + context only), get ID for step log use."""
     async with AsyncSessionLocal() as db:
         row = AgentAnalysis(
             analyzed_at       = datetime.utcnow(),
@@ -714,7 +714,7 @@ async def _finalize_analysis(
     synthesizer_out: dict,
     risk_out:       dict,
 ) -> None:
-    """Pipeline 结束时回填 analysis 行的完整数据。"""
+    """Backfill complete data to analysis row when pipeline ends."""
     from sqlalchemy import update
     async with AsyncSessionLocal() as db:
         await db.execute(

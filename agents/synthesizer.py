@@ -65,13 +65,13 @@ You receive:
 【key_events】
     Prefer research_report.macro_outlook.key_keywords (or key_events) for transmission matcher keywords
 
-【Output: JSON only — 必须包含 reasoning_chain，顺序不可颠倒】
+【Output: JSON only — must include reasoning_chain, order is fixed】
 
- reasoning_chain 必须在 adjusted_weights 之前，顺序不可颠倒。
- reasoning_chain 包含 5 个步骤：regime acknowledgment → quant baseline assessment →
- debate arbitration → risk sanity check → final judgment。
- step3_debate_arbitration 只包含 Bull/Bear 有分歧的 ticker。
- step4 的数值必须与 adjusted_weights 实际一致，不允许前后矛盾。
+ reasoning_chain must appear before adjusted_weights; order cannot be changed.
+ reasoning_chain contains 5 steps: regime acknowledgment → quant baseline assessment →
+ debate arbitration → risk sanity check → final judgment.
+ step3_debate_arbitration includes only tickers where Bull/Bear disagree.
+ step4 values must be consistent with actual adjusted_weights, no contradictions allowed.
 
 """ + SYNTHESIZER_COT_SCHEMA + """
 
@@ -90,20 +90,20 @@ _VALID_STANCES_5 = {"buy", "overweight", "maintain", "underweight", "sell"}
 # ═══════════════════════════════════════════════════════════════
 
 SYNTHESIZER_COT_SCHEMA = """
-## 输出格式（严格按此顺序，完整 JSON）
+## Output format (strict order, complete JSON)
 
 {
   "reasoning_chain": {
 
     "step1_regime_acknowledgment": {
-      "regime": "从 regime_result 读取，原文填入",
+      "regime": "copy from regime_result verbatim",
       "constraints_accepted": true | false,
-      "override_reason": null | "仅在极端情况下说明为何不遵守约束"
+      "override_reason": null | "only in extreme cases: explain why constraints are not followed"
     },
 
     "step2_quant_baseline_assessment": {
       "baseline_quality": "reliable" | "questionable",
-      "questionable_reason": null | "说明为何不信任量化基线",
+      "questionable_reason": null | "explain why the quant baseline is not trusted",
       "top3_by_score": ["TICKER1", "TICKER2", "TICKER3"],
       "bottom3_by_score": ["TICKER1", "TICKER2", "TICKER3"]
     },
@@ -115,7 +115,7 @@ SYNTHESIZER_COT_SCHEMA = """
         "bear_stance": "overweight/hold/underweight",
         "my_decision": "overweight/hold/underweight",
         "decision_basis": "bull_wins" | "bear_wins" | "compromise" | "quant_override",
-        "rationale": "一句话（30字以内）"
+        "rationale": "one-sentence rationale (≤30 chars)"
       }
     ],
 
@@ -128,9 +128,9 @@ SYNTHESIZER_COT_SCHEMA = """
     },
 
     "step5_final_judgment": {
-      "market_view": "一句话市场判断（30字以内）",
-      "key_conviction": "最高确信的一个判断",
-      "biggest_uncertainty": "最大的不确定性"
+      "market_view": "one-sentence market view (≤30 chars)",
+      "key_conviction": "single highest-confidence conviction",
+      "biggest_uncertainty": "largest source of uncertainty"
     }
   },
 
@@ -139,18 +139,18 @@ SYNTHESIZER_COT_SCHEMA = """
     "CASH": <float>
   },
 
-  "decision_rationale": "面向人类的决策摘要（100字以内）",
+  "decision_rationale": "human-readable decision summary (≤100 chars)",
 
   "market_judgment": "bullish" | "cautious_bullish" | "neutral" | "cautious_bearish" | "bearish"
 }
 
-规则：
-1. reasoning_chain 必须在 adjusted_weights 之前，顺序不可颠倒
-2. step3_debate_arbitration 只包含有分歧的 ticker
-3. step4 的数值必须与 adjusted_weights 实际一致，不允许前后矛盾
-4. adjusted_weights 所有值之和必须 = 1.0（允许 ±0.001 浮点误差）
-5. 如果 step1 的 constraints_accepted = false，必须填写 override_reason，
-   且 adjusted_weights 必须仍然满足防御性要求（CASH >= 0.15）
+Rules:
+1. reasoning_chain must appear before adjusted_weights; order cannot be changed
+2. step3_debate_arbitration includes only tickers where Bull/Bear disagree
+3. step4 values must be consistent with actual adjusted_weights, no contradictions
+4. sum of all adjusted_weights values must = 1.0 (±0.001 float tolerance allowed)
+5. If step1.constraints_accepted = false, override_reason must be filled in,
+   and adjusted_weights must still satisfy defensive requirements (CASH >= 0.15)
 """
 
 
@@ -369,7 +369,7 @@ def _normalize(
     bear_conf = _conf_map.get(bear_conf_str, 0.5)
     if abs(bull_conf - bear_conf) < 0.15:
         uncertainty = True
-    # 确保 uncertainty 是一个布尔值
+    # Defensive programming: ensure uncertainty is a boolean
     uncertainty = bool(uncertainty)
 
     # key_events: LLM output (string list) or inherit from research_report.key_keywords

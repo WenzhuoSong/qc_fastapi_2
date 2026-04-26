@@ -37,31 +37,30 @@ BULL_OUTPUT_SCHEMA = """
 {
   "overall_stance": "bullish" | "cautious_bullish" | "neutral",
   "overall_confidence": "high" | "medium" | "low",
-  "thesis_summary": "一句话核心论点（50字以内）",
+  "thesis_summary": "one-sentence core thesis (≤50 chars)",
   "ticker_views": {
     "<TICKER>": {
       "direction": "overweight" | "hold" | "underweight",
       "magnitude": "strong" | "moderate" | "slight",
       "confidence": "high" | "medium" | "low",
-      "primary_reason": "最关键的一个理由（30字以内）",
-      "key_risk": "最大的一个反驳风险（30字以内）"
+      "primary_reason": "single most important reason (≤30 chars)",
+      "key_risk": "single biggest counter-argument risk (≤30 chars)"
     }
   },
   "top_3_conviction": ["TICKER1", "TICKER2", "TICKER3"],
-  "macro_tailwinds": ["利好因素1", "利好因素2"],
+  "macro_tailwinds": ["bullish factor 1", "bullish factor 2"],
   "conflicting_signals": [
     {
       "ticker": "TICKER",
-      "signal_a": "技术面偏强",
-      "signal_b": "基本面走弱",
-      "resolution": "短期看多，中期存疑"
+      "signal_a": "technically strong",
+      "signal_b": "fundamentally weakening",
+      "resolution": "bullish short-term, uncertain medium-term"
     }
   ]
 }
 
-ticker_views 只需包含你有明确观点的 ticker，
-不确定的 ticker 直接省略（不要写 "hold" 来凑数）。
-magnitude 含义：strong=±5-10%, moderate=±3-5%, slight=±1-3%
+ticker_views: include only tickers with a clear view; omit uncertain tickers (do not pad with "hold").
+magnitude: strong=±5-10%, moderate=±3-5%, slight=±1-3%
 """
 
 SYSTEM_PROMPT = f"""You are the Bull Analyst for a quantitative trading system.
@@ -83,7 +82,7 @@ suggested_weights. The Portfolio Manager (Stage 5) assigns weights. You only arg
     4. Write a concise thesis_summary (≤50 chars)
     5. For each ticker with clear view: provide ticker_views entry with direction, magnitude, confidence, primary_reason, key_risk
     6. List top_3_conviction tickers you are most confident about
-    7. List macro_tailwinds (利好因素)
+    7. List macro_tailwinds (bullish factors)
     8. Note any conflicting_signals where indicators disagree
 
 【Confidence calibration — CRITICAL】

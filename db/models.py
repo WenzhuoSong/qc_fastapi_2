@@ -119,9 +119,9 @@ class ExecutionLog(Base):
 
 class AgentStepLog(Base):
     """
-    Pipeline 每个 stage 的输入/输出日志。
-    每次 pipeline run 产生 7-8 条记录（brief → researcher → bull → bear → synthesizer → risk → communicator）。
-    用于事后调试和分析决策链路。
+    Input/output log for each pipeline stage.
+    Each pipeline run produces 7-8 records (brief -> researcher -> bull -> bear -> synthesizer -> risk -> communicator).
+    Used for post-hoc debugging and analyzing decision chains.
     """
     __tablename__ = "agent_step_log"
 
@@ -129,12 +129,12 @@ class AgentStepLog(Base):
     analysis_id   = Column(BigInteger, ForeignKey("agent_analysis.id"), nullable=False, index=True)
     stage         = Column(String(30), nullable=False)   # e.g. "1_brief", "3_researcher", "4a_bull"
     agent_name    = Column(String(30), nullable=False)   # e.g. "market_brief", "researcher", "bull"
-    input_data    = Column(JSONB)                        # 该 agent 的输入（可能较大，brief/research_report）
-    output_data   = Column(JSONB)                        # 该 agent 的输出
-    duration_ms   = Column(Integer)                      # 耗时（毫秒）
-    model         = Column(String(40))                   # LLM 模型名，Python stage 为 null
+    input_data    = Column(JSONB)                        # this agent's input (can be large: brief/research_report)
+    output_data   = Column(JSONB)                        # this agent's output
+    duration_ms   = Column(Integer)                      # duration in milliseconds
+    model         = Column(String(40))                   # LLM model name, null for Python stages
     token_usage   = Column(JSONB)                        # {"prompt_tokens": N, "completion_tokens": N}
-    failed        = Column(Boolean, default=False)       # 是否降级
+    failed        = Column(Boolean, default=False)       # whether degraded
     created_at    = Column(DateTime, nullable=False, default=func.now())
 
 
@@ -143,9 +143,9 @@ class AgentStepLog(Base):
 
 class TickerNewsLibrary(Base):
     """
-    多源新闻 + LLM 摘要 + 硬风险标记。
-    由 cron/pre_fetch_news.py 每 2h 写入（Finnhub / Alpha Vantage / RSS），48h 自动清理。
-    由 market_brief 和 risk_manager.hard_risk_filter 读取。
+    Multi-source news + LLM summary + hard risk tagging.
+    Written every 2h by cron/pre_fetch_news.py (Finnhub / Alpha Vantage / RSS), auto-cleaned after 48h.
+    Read by market_brief and risk_manager.hard_risk_filter.
     """
     __tablename__ = "ticker_news_library"
 
@@ -155,16 +155,16 @@ class TickerNewsLibrary(Base):
     headline      = Column(Text, nullable=False)
     source        = Column(String(100))
     source_api    = Column(String(20), default="finnhub")  # finnhub|alphavantage|rss
-    summary       = Column(Text)               # 原始摘要
-    llm_summary   = Column(Text)               # gpt-4o-mini 一句话影响摘要
+    summary       = Column(Text)               # raw summary
+    llm_summary   = Column(Text)               # gpt-4o-mini one-sentence impact summary
     sentiment     = Column(String(10))         # positive|negative|neutral
     relevance     = Column(String(15))         # direct|indirect|not_relevant
     is_hard_event = Column(Boolean, default=False)
-    hard_risks    = Column(JSONB)              # {risk_type: reason}，scan_hard_risks 输出
+    hard_risks    = Column(JSONB)              # {risk_type: reason}, output of scan_hard_risks
     category      = Column(String(50))
     related       = Column(JSONB)              # Finnhub related tickers
-    datetime_utc  = Column(BigInteger, index=True)  # Unix 秒，用于 48h TTL 过滤
-    credibility   = Column(Integer)            # 0−100 source 可信度
+    datetime_utc  = Column(BigInteger, index=True)  # Unix seconds, used for 48h TTL filtering
+    credibility   = Column(Integer)            # 0-100 source credibility
     created_at    = Column(DateTime, nullable=False, default=func.now())
 
     __table_args__ = (
@@ -174,12 +174,12 @@ class TickerNewsLibrary(Base):
 
 class MacroNewsCache(Base):
     """
-    单行滚动缓存：宏观新闻 + 经济日历 + 拼好的 prose 摘要。
-    由 cron/pre_fetch_news.py 每 2h upsert，始终只保留最新 1 行（key=1）。
+    Single-row rolling cache: macro news + economic calendar + pre-assembled prose summary.
+    Upserted every 2h by cron/pre_fetch_news.py, always keeps only the latest 1 row (key=1).
 
-    Phase 2 新增字段:
-    - raw_payload: 原始新闻列表（结构化前的全量新闻）
-    - structured_payload: gpt-4o-mini 结构化输出（macro_signals + ticker_signals）
+    Phase 2 new fields:
+    - raw_payload: raw news list (all news before structurization)
+    - structured_payload: gpt-4o-mini structurized output (macro_signals + ticker_signals)
     """
     __tablename__ = "macro_news_cache"
 
@@ -187,8 +187,8 @@ class MacroNewsCache(Base):
     as_of             = Column(DateTime, nullable=False, default=func.now())
     macro_news        = Column(JSONB)          # list[dict] (from fetch_macro_news)
     economic_calendar = Column(JSONB)          # list[dict] (from fetch_economic_calendar)
-    prose_summary     = Column(Text)           # 预拼的散文，供 market_brief 直接读
+    prose_summary     = Column(Text)           # pre-assembled prose for market_brief to read directly
     updated_at        = Column(DateTime, default=func.now(), onupdate=func.now())
-    # Phase 2: 结构化新闻预处理
-    raw_payload        = Column(JSONB, nullable=True)   # 原始新闻列表
-    structured_payload = Column(JSONB, nullable=True)   # LLM 结构化输出
+    # Phase 2: structurized news preprocessing
+    raw_payload        = Column(JSONB, nullable=True)   # raw news list
+    structured_payload = Column(JSONB, nullable=True)   # LLM structurized output

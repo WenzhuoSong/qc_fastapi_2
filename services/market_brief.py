@@ -1,17 +1,17 @@
 """
-Stage 1: market_brief —— 纯 Python 市场概要生成。
+Stage 1: market_brief -- pure Python market summary generation.
 
-职责（无 LLM 调用）：
-    1. 读 latest QCSnapshot → holdings[] + portfolio
-    2. 读 MacroNewsCache (最新 1 行) → macro_news + calendar + 已拼好的 prose
-    3. 读 TickerNewsLibrary (48h 内) → per_ticker_news + hard_risks_map
-    4. Python 算定量指标: breadth_pct / spy_mom_60d / avg_atr_pct / risk_on_score /
+Responsibilities (no LLM calls):
+    1. Read latest QCSnapshot -> holdings[] + portfolio
+    2. Read MacroNewsCache (latest 1 row) -> macro_news + calendar + pre-assembled prose
+    3. Read TickerNewsLibrary (within 48h) -> per_ticker_news + hard_risks_map
+    4. Python compute quant metrics: breadth_pct / spy_mom_60d / avg_atr_pct / risk_on_score /
                           drawdown_pct / top5 / bottom5
-    5. 翻译成散文 + 打包为 brief dict 供下游 RESEARCHER / STRATEGY ENGINE 消费
+    5. Translate to prose + package as brief dict for downstream RESEARCHER / STRATEGY ENGINE
 
-下游消费：
-    - RESEARCHER: 拿 prose_summary + macro_news_section + calendar_section 作 user_message
-    - STRATEGY ENGINE: 拿 hard_risks_map 驱动 hard_risk_filter；拿 current_weights / holdings
+Downstream consumers:
+    - RESEARCHER: uses prose_summary + macro_news_section + calendar_section as user_message
+    - STRATEGY ENGINE: uses hard_risks_map for hard_risk_filter; uses current_weights / holdings
 """
 from __future__ import annotations
 
@@ -38,17 +38,17 @@ NEWS_LOOKBACK_SECONDS = 48 * 3600
 
 async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
     """
-    返回 brief = {
+    Returns brief = {
         prose_summary:       str,
         key_facts:           dict,
         macro_news_section:  str,
         calendar_section:    str,
         per_ticker_news:     dict[ticker, list[news_dict]],
         hard_risks_map:      dict[ticker, dict[risk_type, reason]],
-        holdings:            list[dict]    # 原 snapshot.holdings
+        holdings:            list[dict]    # original snapshot.holdings
         current_weights:     dict[ticker, float],
         portfolio:            dict,
-        news_context:        dict,         # 结构化新闻（Phase 2 新增）
+        news_context:        dict,         # structured news (Phase 2 addition)
     }
     """
     snapshot = await _read_latest_snapshot()
@@ -95,7 +95,7 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════
 
 async def _read_latest_snapshot() -> dict | None:
-    """读最新一条 heartbeat 快照的 raw_payload。"""
+    """Read latest heartbeat snapshot's raw_payload."""
     async with AsyncSessionLocal() as db:
         stmt = (
             select(QCSnapshot)
@@ -123,7 +123,7 @@ def _extract_current_weights(holdings: list[dict]) -> dict[str, float]:
 
 
 def _candidate_tickers(holdings: list[dict]) -> set[str]:
-    """从 holdings 里也收集 target/drift 出现过的 ticker 作为 news 查询范围。"""
+    """Also collect tickers appearing in target/drift from holdings as news query scope."""
     return {(h.get("ticker") or "").upper() for h in holdings if h.get("ticker")}
 
 
@@ -152,17 +152,17 @@ async def _read_macro_cache() -> dict:
 
 async def get_news_context() -> dict:
     """
-    读取结构化新闻上下文。
-    优先使用 structured_payload，降级到 raw_payload（仅包含原始新闻列表）。
+    Read structured news context.
+    Prefer structured_payload, fall back to raw_payload (only contains raw news list).
 
-    返回格式：
+    Return format:
     {
-        "macro_signals": [...],   # LLM 结构化的宏观信号
-        "ticker_signals": {...},  # LLM 结构化的 ticker 信号
+        "macro_signals": [...],   # LLM-structured macro signals
+        "ticker_signals": {...},  # LLM-structured ticker signals
         "noise_filtered": int,
         "data_gaps": [...],
-        "_stale_warning": str,    # 可选，时效性警告
-        "_fallback": bool,        # 是否为降级响应
+        "_stale_warning": str,    # optional, freshness warning
+        "_fallback": bool,        # whether this is a fallback response
     }
     """
     async with AsyncSessionLocal() as db:
@@ -175,18 +175,18 @@ async def get_news_context() -> dict:
             "macro_signals": [],
             "ticker_signals": {},
             "noise_filtered": 0,
-            "data_gaps": ["无新闻缓存"],
+            "data_gaps": ["no news cache"],
             "_fallback": True,
         }
 
-    # 优先使用结构化版本
+    # Prefer structured version
     if row.structured_payload:
         try:
             structured = row.structured_payload
             if isinstance(structured, str):
                 structured = json.loads(structured)
 
-            # 检查时效性（超过4小时视为 stale）
+            # Check freshness (older than 4 hours considered stale)
             processed_at = structured.get("processed_at")
             if processed_at:
                 try:
@@ -194,15 +194,15 @@ async def get_news_context() -> dict:
                     age_seconds = (dt_cls.utcnow() - processed_dt).total_seconds()
                     age_hours = age_seconds / 3600
                     if age_hours > 4:
-                        structured["_stale_warning"] = f"新闻已 {age_hours:.1f} 小时未更新"
+                        structured["_stale_warning"] = f"News has not been updated in {age_hours:.1f} hours"
                 except (ValueError, TypeError):
                     pass
 
             return structured
         except (json.JSONDecodeError, TypeError) as e:
-            logger.warning(f"structured_payload 解析失败: {e}，降级到 raw_payload")
+            logger.warning(f"structured_payload parse failed: {e}, falling back to raw_payload")
 
-    # 降级：使用 raw_payload（原始新闻列表，格式：[{headline, summary, source, datetime, ...}, ...]）
+    # Fallback: use raw_payload (raw news list, format: [{headline, summary, source, datetime, ...}, ...]）
     if row.raw_payload:
         try:
             raw_news = row.raw_payload
@@ -212,26 +212,26 @@ async def get_news_context() -> dict:
                 "macro_signals": [],
                 "ticker_signals": {},
                 "noise_filtered": 0,
-                "data_gaps": ["结构化数据不可用，仅有原始缓存"],
+                "data_gaps": ["structured data unavailable, raw cache only"],
                 "_fallback": True,
                 "_raw_news_count": len(raw_news) if isinstance(raw_news, list) else 0,
             }
         except (json.JSONDecodeError, TypeError):
             pass
 
-    # 完全降级：返回空结构，让 RESEARCHER 知道数据质量差
+    # Complete fallback: return empty structure to let RESEARCHER know data quality is poor
     return {
         "macro_signals": [],
         "ticker_signals": {},
         "noise_filtered": 0,
-        "data_gaps": ["结构化数据不可用，仅有原始缓存"],
+        "data_gaps": ["structured data unavailable, raw cache only"],
         "_fallback": True,
     }
 
 
 def _format_calendar(events: list[dict]) -> str:
     if not events:
-        return "(本周无高影响经济事件)"
+        return "(No high-impact economic events this week)"
     lines = []
     for e in events[:8]:
         impact = e.get("impact", "")
@@ -249,8 +249,8 @@ async def _read_ticker_news(
     tickers: list[str],
 ) -> tuple[dict[str, list[dict]], dict[str, dict]]:
     """
-    读最近 48h 的 TickerNewsLibrary，按 ticker 分组。
-    返回 (per_ticker_news, hard_risks_map)。
+    Read TickerNewsLibrary from last 48h, grouped by ticker.
+    Returns (per_ticker_news, hard_risks_map).
     """
     if not tickers:
         return {}, {}
@@ -281,11 +281,11 @@ async def _read_ticker_news(
             "datetime":    r.datetime_utc,
             "is_hard_event": bool(r.is_hard_event),
         })
-        # 保留每个 ticker 最新那条的 hard_risks (rows 已按 datetime_utc desc)
+        # Keep hard_risks from latest ticker entry (rows already sorted by datetime_utc desc)
         if r.ticker not in hard_risks_map and r.hard_risks:
             hard_risks_map[r.ticker] = r.hard_risks
 
-    # 每个 ticker 最多留前 5 条
+    # Keep max 5 items per ticker
     for t in per_ticker:
         per_ticker[t] = per_ticker[t][:5]
 
@@ -298,13 +298,13 @@ async def _read_ticker_news(
 
 def _compute_key_facts(holdings: list[dict], portfolio: dict) -> dict[str, Any]:
     """
-    计算量化指标：
-      - breadth_pct      : 正动量 ETF 占比 (mom_60d > 0)
-      - spy_mom_60d      : SPY 的 60 日动量
-      - avg_atr_pct      : 所有 ETF 的平均 ATR%
-      - risk_on_score    : (XLK+XLY+XLC+XLI) − (XLP+XLU+XLV+XLRE) 的 mom_60d 之差
+    Compute quant metrics:
+      - breadth_pct      : positive momentum ETF ratio (mom_60d > 0)
+      - spy_mom_60d      : SPY 60-day momentum
+      - avg_atr_pct      : average ATR% across all ETFs
+      - risk_on_score    : (XLK+XLY+XLC+XLI) − (XLP+XLU+XLV+XLRE) mom_60d spread
       - drawdown_pct     : portfolio.current_drawdown_pct
-      - top5 / bottom5   : mom_60d 排序
+      - top5 / bottom5   : sorted by mom_60d
     """
     etf_rows = [
         h for h in holdings
@@ -365,40 +365,40 @@ def _compute_key_facts(holdings: list[dict], portfolio: dict) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════
 
 def _build_prose(key_facts: dict, holdings: list[dict]) -> str:
-    """把 key_facts 翻译成人类可读的一段话。"""
+    """Translate key_facts into human-readable prose."""
     parts: list[str] = []
 
     spy = key_facts.get("spy_mom_60d")
     if spy is not None:
-        direction = "上升" if spy > 0.01 else ("下降" if spy < -0.01 else "横盘")
-        parts.append(f"SPY 60日动量 {spy:+.2%}, 趋势{direction}。")
+        direction = "rising" if spy > 0.01 else ("falling" if spy < -0.01 else "sideways")
+        parts.append(f"SPY 60d momentum {spy:+.2%}, trend {direction}.")
 
     breadth = key_facts.get("breadth_pct")
     n_etfs  = key_facts.get("n_etfs") or 0
     if breadth is not None:
         up = int(round(breadth * n_etfs))
-        parts.append(f"广度 {up}/{n_etfs} ({breadth:.0%})。")
+        parts.append(f"Breadth {up}/{n_etfs} ({breadth:.0%}).")
 
     atr = key_facts.get("avg_atr_pct")
     if atr is not None:
-        level = "低位" if atr < 0.015 else ("中位" if atr < 0.025 else "高位")
-        parts.append(f"平均 ATR {atr:.2%} 处于{level}。")
+        level = "low" if atr < 0.015 else ("mid" if atr < 0.025 else "high")
+        parts.append(f"Avg ATR {atr:.2%} at {level} level.")
 
     risk_score = key_facts.get("risk_on_score")
     if risk_score is not None:
         bias = "risk-on" if risk_score > 0.005 else ("risk-off" if risk_score < -0.005 else "balanced")
-        parts.append(f"风格轮动 {bias} ({risk_score:+.2%})。")
+        parts.append(f"Style rotation {bias} ({risk_score:+.2%}).")
 
     dd = key_facts.get("drawdown_pct")
     if dd is not None:
-        safety = "安全区间" if dd > -0.05 else ("警戒区间" if dd > -0.10 else "危险区间")
-        parts.append(f"账户回撤 {dd:+.2%} {safety}。")
+        safety = "safe zone" if dd > -0.05 else ("warning zone" if dd > -0.10 else "danger zone")
+        parts.append(f"Account drawdown {dd:+.2%} {safety}.")
 
     top = key_facts.get("top5_momentum") or []
     bot = key_facts.get("bottom5_momentum") or []
     if top:
-        parts.append(f"动量头部: {' '.join(top)}.")
+        parts.append(f"Momentum leaders: {' '.join(top)}.")
     if bot:
-        parts.append(f"动量尾部: {' '.join(bot)}.")
+        parts.append(f"Momentum laggards: {' '.join(bot)}.")
 
-    return " ".join(parts) if parts else "(暂无足够数据构建 brief)"
+    return " ".join(parts) if parts else "(Insufficient data to build brief)"

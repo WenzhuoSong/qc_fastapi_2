@@ -21,34 +21,34 @@ settings = get_settings()
 
 _client: AsyncOpenAI | None = None
 
-CROSS_EXAM_PROMPT_TEMPLATE = """你是{{side}}方，正在审阅对方（{{opponent_side}}）的论点并提出反驳。
+CROSS_EXAM_PROMPT_TEMPLATE = """You are the {{side}} side, reviewing your opponent's ({{opponent_side}}) arguments and providing rebuttals.
 
-## 对方的完整立场（结构化 JSON）
+## Opponent's full position (structured JSON)
 {opponent_output_json}
 
-## 你的任务
-针对对方 ticker_views 中 confidence=high 的持仓，提出具体反驳。
+## Your task
+Target rebuttals at tickers where opponent's ticker_views has confidence=high.
 
-输出格式（JSON）：
+Output format (JSON):
 {{
   "rebuttals": [
     {{
       "ticker": "TICKER",
-      "opponent_claim": "对方的 primary_reason（原文）",
-      "rebuttal": "你的反驳（50字以内）",
+      "opponent_claim": "opponent's primary_reason (original text)",
+      "rebuttal": "your rebuttal (≤50 chars)",
       "rebuttal_strength": "strong" | "moderate" | "weak"
     }}
   ],
   "concessions": [
     {{
       "ticker": "TICKER",
-      "conceded_point": "你认为对方说得有道理的点"
+      "conceded_point": "point where opponent has a valid argument"
     }}
   ],
-  "unaddressed_risks": ["对方完全没有提到但你认为重要的风险1", "..."]
+  "unaddressed_risks": ["important risk opponent did not mention at all 1", "..."]
 }}
 
-只针对对方 confidence=high 的 ticker 反驳，最多5条 rebuttals。
+Only rebut tickers with confidence=high from opponent; max 5 rebuttals.
 JSON only。"""
 
 BULL_CROSS_EXAM_PROMPT = """You are the Bull analyst. The Bear analyst has published a structured thesis (JSON below).
@@ -91,8 +91,8 @@ async def run_bull_cross_exam_async(bear_draft: dict, research_report: dict) -> 
     """Bull reads Bear's draft + research_report; returns rebuttal attacking Bear."""
     return await _run_cross_exam(
         role="BULL",
-        side="多头",
-        opponent_side="空头",
+        side="bull",
+        opponent_side="bear",
         system=BULL_CROSS_EXAM_PROMPT,
         opponent_draft=bear_draft,
         research_report=research_report,
@@ -103,8 +103,8 @@ async def run_bear_cross_exam_async(bull_draft: dict, research_report: dict) -> 
     """Bear reads Bull's draft + research_report; returns rebuttal attacking Bull."""
     return await _run_cross_exam(
         role="BEAR",
-        side="空头",
-        opponent_side="多头",
+        side="bear",
+        opponent_side="bull",
         system=BEAR_CROSS_EXAM_PROMPT,
         opponent_draft=bull_draft,
         research_report=research_report,
@@ -218,11 +218,11 @@ async def _run_cross_exam(
     opponent_json = json.dumps(opponent_truncated, ensure_ascii=False, indent=2)
 
     user = (
-        f"## 对方（{opponent_side}）完整立场\n"
+        f"## Opponent ({opponent_side}) full position\n"
         f"{opponent_json}\n\n"
-        "## Stage 3 research_report（用于事实核查）\n"
+        "## Stage 3 research_report (for fact-checking)\n"
         f"{json.dumps(key_fields, ensure_ascii=False, indent=2)}\n\n"
-        "## 输出格式\n"
+        "## Output format\n"
         '{"rebuttals": [{"ticker": "...", "opponent_claim": "...", "rebuttal": "...", "rebuttal_strength": "strong|moderate|weak"}], '
         '"concessions": [{"ticker": "...", "conceded_point": "..."}], '
         '"unaddressed_risks": ["..."]}'
