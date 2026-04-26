@@ -156,6 +156,90 @@ def enforce_pm_constraints(
     return normalized, clip_log
 
 
+def enforce_pm_constraints_v2(
+    base_weights: dict[str, float],
+    adjusted_weights: dict[str, float],
+    researcher_signals: dict | None = None,
+    default_max_delta: float = 0.03,
+    hard_max_delta: float = 0.10,
+) -> tuple[dict[str, float], list[str]]:
+    """
+    Python-level hard clip of SYNTHESIZER's adjusted_weights output (Task 7).
+
+    Per-ticker max_delta derived from researcher_signals[ticker]["confidence"]:
+        high:   0.05
+        medium: 0.03
+        low:    0.01
+    Falls back to default_max_delta if ticker not in researcher_signals.
+
+    Returns:
+        clipped_weights: post-clip normalized weight dict
+        clip_log: clipped entry list
+    """
+    clipped: dict[str, float] = {}
+    clip_log: list[str] = []
+
+    all_tickers = set(base_weights.keys()) | set(adjusted_weights.keys())
+
+    CONFIDENCE_DELTA_MAP = {
+        "high": 0.05,
+        "medium": 0.03,
+        "low": 0.01,
+    }
+
+    for ticker in all_tickers:
+        base = base_weights.get(ticker, 0.0)
+        adj = adjusted_weights.get(ticker, 0.0)
+
+        if ticker == "CASH":
+            if adj < base:
+                clipped[ticker] = base
+                clip_log.append(f"CASH: {adj:.3f}→{base:.3f} (cash floor enforced)")
+            else:
+                clipped[ticker] = adj
+            continue
+
+        # Dynamic max_delta from researcher confidence (Task 7)
+        ticker_confidence = "medium"
+        if researcher_signals and isinstance(researcher_signals, dict):
+            sig = researcher_signals.get(ticker.upper(), {}) or {}
+            ticker_confidence = str(sig.get("confidence", "medium")).strip()
+        max_delta = CONFIDENCE_DELTA_MAP.get(ticker_confidence, default_max_delta)
+
+        if base == 0.0:
+            if adj > hard_max_delta:
+                clipped[ticker] = hard_max_delta
+                clip_log.append(
+                    f"{ticker}: {adj:.3f}→{hard_max_delta:.3f} (new pos hard cap)"
+                )
+            else:
+                clipped[ticker] = adj
+        else:
+            lower = max(0.0, base - max_delta)
+            upper = base + max_delta
+            capped = round(min(max(adj, lower), upper), 6)
+            if abs(capped - adj) > 0.001:
+                clip_log.append(
+                    f"{ticker}: {adj:.3f}→{capped:.3f} "
+                    f"(base={base:.3f}, confidence={ticker_confidence}, "
+                    f"max_delta={max_delta:.2%})"
+                )
+            clipped[ticker] = capped
+
+    total = sum(clipped.values())
+    if total <= 0:
+        raise ValueError("enforce_pm_constraints_v2: post-clip total weight is 0")
+
+    normalized = {k: round(v / total, 6) for k, v in clipped.items()}
+
+    diff = 1.0 - sum(normalized.values())
+    if abs(diff) > 1e-9:
+        largest = max(normalized, key=lambda k: normalized[k] if k != "CASH" else -1)
+        normalized[largest] = round(normalized[largest] + diff, 6)
+
+    return normalized, clip_log
+
+
 # ─────────────────────────────── Regime Constraint Validation ───────────────────────────────
 
 
@@ -420,6 +504,9 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         failed=research_report.get("used_degraded_fallback", False),
     )
 
+    # Task 7: Extract researcher_signals for downstream confidence-based clipping
+    researcher_signals: dict = research_report.get("ticker_signals_dict") or {}
+
     # Stage 4a/4b: BULL + BEAR drafts (parallel, no weights)
     base_weights = quant_baseline.get("base_weights", {})
     t0 = time.time()
@@ -543,15 +630,16 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     else:
         logger.warning("[Stage5] No reasoning_chain in synthesizer output (Task 5)")
 
-    # ── Stage 5→6: PM Hard Clip ──────────────────────────────────────
+    # ── Stage 5→6: PM Hard Clip (Task 7: confidence-aware) ─────────────────
     adjusted_weights_raw = synthesizer_out.get("adjusted_weights") or {}
     if not adjusted_weights_raw:
         logger.info("[Stage5→6] degraded fallback, skipping PM hard clip")
     else:
-        adjusted_weights_clipped, clip_log = enforce_pm_constraints(
+        adjusted_weights_clipped, clip_log = enforce_pm_constraints_v2(
             base_weights=base_weights,
             adjusted_weights=adjusted_weights_raw,
-            max_delta=0.05,
+            researcher_signals=researcher_signals,
+            default_max_delta=0.03,
             hard_max_delta=0.10,
         )
         synthesizer_out["adjusted_weights"] = adjusted_weights_clipped

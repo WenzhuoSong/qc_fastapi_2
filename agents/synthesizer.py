@@ -33,6 +33,27 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
+CONFIDENCE_ARBITRATION_RULES = """
+## 基于 Researcher Confidence 的权重调整上限
+
+从 research_report.ticker_signals_dict 读取每个 ticker 的 confidence，
+并严格遵守以下调整幅度上限（相对 base_weight）：
+
+| Researcher Confidence | 最大权重调整幅度 |
+|-----------------------|----------------|
+| high                  | ±5%            |
+| medium                | ±3%            |
+| low                   | ±1%            |
+| ticker 不在报告中     | ±1%（保守）    |
+
+即使辩论中 Bull/Bear 双方均强烈建议大幅调整，
+如果 Researcher 对该 ticker 的 confidence = low，
+你也只能做 ±1% 的微调。
+
+**在 step3_debate_arbitration 的每条记录里，
+必须填写 researcher_confidence 字段和实际使用的 max_delta。**
+"""
+
 SYSTEM_PROMPT = """You are the Portfolio Manager (PM) / Judge for a quantitative trading system.
 
 Your goal is to maximize risk-adjusted returns (Sharpe) and protect capital. You alone assign
@@ -64,6 +85,8 @@ You receive:
 
 【key_events】
     Prefer research_report.macro_outlook.key_keywords (or key_events) for transmission matcher keywords
+
+""" + CONFIDENCE_ARBITRATION_RULES + """
 
 【Output: JSON only — must include reasoning_chain, order is fixed】
 
@@ -408,7 +431,10 @@ def _normalize(
         for item in actual_adjustments:
             item["reason"] = reason_by_ticker.get(item["ticker"], "")
 
-    debate_summary = _build_debate_summary(bull_output, bear_output, out)
+    debate_summary = _build_debate_summary(
+        bull_output, bear_output, out,
+        researcher_signals=research_report.get("ticker_signals_dict"),
+    )
 
     decision_rationale = str(out.get("decision_rationale") or out.get("reasoning") or "")[:800]
     reasoning_line = str(out.get("reasoning") or decision_rationale)[:500]
@@ -439,8 +465,20 @@ def _normalize(
     }
 
 
-def _build_debate_summary(bull_output: dict, bear_output: dict, synth_raw: dict) -> dict:
-    """Build debate_summary for Communicator from structured outputs."""
+def _build_debate_summary(
+    bull_output: dict,
+    bear_output: dict,
+    synth_raw: dict,
+    researcher_signals: dict | None = None,
+) -> dict:
+    """Build debate_summary for Communicator from structured outputs.
+
+    Args:
+        bull_output: Bull researcher output
+        bear_output: Bear researcher output
+        synth_raw: Raw synthesizer output
+        researcher_signals: research_report["ticker_signals_dict"] with confidence info (Task 7)
+    """
     bull_views = bull_output.get("ticker_views") or {}
     bear_views = bear_output.get("ticker_views") or {}
 
@@ -461,6 +499,13 @@ def _build_debate_summary(bull_output: dict, bear_output: dict, synth_raw: dict)
     bull_conf = conf_map.get(bull_conf_str, 0.5)
     bear_conf = conf_map.get(bear_conf_str, 0.5)
 
+    # Task 7: delta map from researcher confidence
+    CONFIDENCE_DELTA_MAP = {
+        "high": 0.05,
+        "medium": 0.03,
+        "low": 0.01,
+    }
+
     disagreements = []
     agreements = []
     all_tickers = set(bull_views.keys()) | set(bear_views.keys())
@@ -479,6 +524,14 @@ def _build_debate_summary(bull_output: dict, bear_output: dict, synth_raw: dict)
             (bull_dir == "overweight" and bear_dir == "underweight") or
             (bull_dir == "underweight" and bear_dir == "overweight")
         )
+
+        # Task 7: extract researcher confidence for this ticker
+        researcher_confidence = "medium"
+        max_allowed_delta = 0.03
+        if researcher_signals:
+            sig = researcher_signals.get(ticker.upper(), {}) if isinstance(researcher_signals, dict) else {}
+            researcher_confidence = str(sig.get("confidence", "medium")).strip()
+            max_allowed_delta = CONFIDENCE_DELTA_MAP.get(researcher_confidence, 0.03)
 
         if is_conflict:
             # Find corresponding rebuttals
@@ -500,6 +553,8 @@ def _build_debate_summary(bull_output: dict, bear_output: dict, synth_raw: dict)
                 "bear": f"{bear_dir}({bear_view.get('magnitude')}) - {bear_view.get('primary_reason')}",
                 "bull_rebuttal": bull_rb_item.get("rebuttal") if bull_rb_item else None,
                 "bear_rebuttal": bear_rb_item.get("rebuttal") if bear_rb_item else None,
+                "researcher_confidence": researcher_confidence,  # Task 7
+                "max_allowed_delta": max_allowed_delta,         # Task 7
             })
         else:
             agreements.append(ticker)
@@ -520,6 +575,7 @@ def _build_debate_summary(bull_output: dict, bear_output: dict, synth_raw: dict)
         "decision_rationale":     str(synth_raw.get("decision_rationale", ""))[:400],
         "bull_failed":           bool(bull_output.get("failed", False)),
         "bear_failed":           bool(bear_output.get("failed", False)),
+        "researcher_signals":    researcher_signals or {},  # Task 7: pass through for downstream
     }
 
 
@@ -636,7 +692,10 @@ def _degraded_output(
         "divergence_points":    [],
         "key_events":           key_events,
         "used_degraded_fallback": True,
-        "debate_summary":       _build_debate_summary(bull_output, bear_output, synth_stub),
+        "debate_summary":       _build_debate_summary(
+            bull_output, bear_output, synth_stub,
+            researcher_signals=research_report.get("ticker_signals_dict"),
+        ),
         # Task 5: Chain-of-Thought (degraded fallback)
         "reasoning_chain": {
             "_degraded": True,

@@ -1,52 +1,260 @@
 # services/quant_baseline.py
 """
-Stage 2: QUANT BASELINE —— 纯 Python 量化基准打分层
+Stage 2: QUANT BASELINE — layered Python signal decomposition.
 
-职责（无 LLM）：
-    1. 从 brief 拿 holdings
-    2. 读 pipeline_context 里的策略名 / 参数 / risk_params
-    3. strategy.score() → scored[]       （5 因子复合 Z-score 排名）
-    4. strategy.optimize() → base_weights（分数加权 + 波动率混合 + 单仓 cap + 现金底线）
-    5. 打包 baseline 给下游 RESEARCHER 用
+Responsibilities (no LLM):
+    1. Take holdings from brief
+    2. Classify market regime (hard-math, no LLM)
+    3. compute_layered_signals() -> LayeredSignal[] (short/medium/long Z-score layers)
+    4. scores_to_weights() -> base_weights (score-weighted + vol-adjusted + cap + cash floor)
+    5. Pack baseline for downstream RESEARCHER
 
-严格无状态、无副作用、无任何 overlay。Overlay (transmission / defensive /
-hard_risk) 全部下沉到 RISK MGR 负责。
-
-输出约定（下游消费者合同）：
+Output contract (downstream consumer):
     {
-        "base_weights":       dict[ticker, float]  # 总和 ≈ 1.0 (含 CASH)
-        "scoring_breakdown":  list[dict]            # 全 universe 的 ticker + score + factors
-        "ranking_summary":    {"top_5": [...], "bottom_3": [...]}
-        "selected_tickers":   list[str]             # optimize 选中的非 CASH 头部
-        "metadata":           {strategy_used, strategy_version, params_used}
+        "base_weights":        dict[ticker, float]   # sum ~= 1.0 (incl. CASH)
+        "scoring_breakdown":   list[dict]             # [{ticker, score, factors}, ...]
+        "ranking_summary":     {"top_5": [...], "bottom_3": [...]}
+        "selected_tickers":    list[str]              # non-CASH tickers with w > 0
+        "regime_result":       dict                   # from classify_market_regime
+        "metadata":            {strategy_used, strategy_version, params_used}
     }
 """
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
-
-from strategies import get_strategy
 
 logger = logging.getLogger("qc_fastapi_2.quant_baseline")
 
 
-# regime 映射（Stage 2 的 optimize 需要 direction_bias 决定 N）
-# 注意：Stage 2 发生在 RESEARCHER 之前，此时还没有 regime 判断。
-# 为此我们用一个"中性"占位上下文 —— baseline 只负责做"纯数学"的最优分配，
-# 让 LLM 稍后在 Stage 3 基于 baseline + 新闻 + 自己的 regime 判断做定性调整。
-NEUTRAL_STRATEGY_CONTEXT = {
-    "regime":           "neutral",
-    "confidence":       0.5,
-    "uncertainty_flag": False,
-    "stance":           "maintain",
-    "direction_bias":   "neutral",
+# Regime -> time-layer blend weights mapping
+REGIME_BLEND_WEIGHTS = {
+    "trending_bull": {
+        "short":  0.20,
+        "medium": 0.55,
+        "long":   0.25,
+    },
+    "trending_bear": {
+        "short":  0.10,
+        "medium": 0.35,
+        "long":   0.55,
+    },
+    "high_vol": {
+        "short":  0.10,
+        "medium": 0.30,
+        "long":   0.60,
+    },
+    "mean_reverting": {
+        "short":  0.40,
+        "medium": 0.40,
+        "long":   0.20,
+    },
+    "defensive": {
+        "short":  0.05,
+        "medium": 0.25,
+        "long":   0.70,
+    },
 }
 
+DEFAULT_BLEND_WEIGHTS = {"short": 0.25, "medium": 0.45, "long": 0.30}
 
-# ─────────────────────────────── 主入口 ───────────────────────────────
+
+@dataclass
+class LayeredSignal:
+    """Three-layer signal decomposition result."""
+    ticker: str
+
+    # Short-term signal (1-5d perspective)
+    signal_short: float
+    signal_short_components: dict
+
+    # Medium-term signal (20-60d perspective)
+    signal_medium: float
+    signal_medium_components: dict
+
+    # Long-term signal (60-252d perspective)
+    signal_long: float
+    signal_long_components: dict
+
+    # Final composite score (blended by regime)
+    composite_score: float
+    blend_weights_used: dict
+
+
+# ─────────────────────────────── Layered Signal Helpers ───────────────────────────────
+
+
+def _safe_zscore(values: list[float]) -> list[float]:
+    """Cross-sectional Z-score, handling constant columns and NaN."""
+    arr = [v if v is not None else 0.0 for v in values]
+    mean = sum(arr) / len(arr) if arr else 0
+    std = (sum((x - mean) ** 2 for x in arr) / len(arr)) ** 0.5
+    if std < 1e-8:
+        return [0.0] * len(arr)
+    return [(x - mean) / std for x in arr]
+
+
+def _clip_signal(values: list[float], clip: float = 2.5) -> list[float]:
+    """Winsorize: clip extreme values to prevent single ticker domination."""
+    return [max(-clip, min(clip, v)) for v in values]
+
+
+def compute_layered_signals(
+    holdings: list[dict],
+    regime: str,
+) -> list[LayeredSignal]:
+    """
+    Compute three-layer (short/medium/long) separated signals per ticker,
+    blended by regime.
+
+    Short-term factors:   mom_20d, RSI (direction varies by regime), BB position (mean-reversion)
+    Medium-term factors: mom_60d, hist_vol (low-vol premium), RSI confirmation
+    Long-term factors:   mom_252d, ATR (low-ATR stability)
+    """
+    blend = REGIME_BLEND_WEIGHTS.get(regime, DEFAULT_BLEND_WEIGHTS)
+
+    # Filter to non-CASH tickers
+    valid = [h for h in holdings if h.get("ticker") and h.get("ticker") != "CASH"]
+    tickers = [h["ticker"] for h in valid]
+
+    # Extract raw series
+    mom_20d  = [float(h.get("mom_20d", 0) or 0) for h in valid]
+    mom_60d  = [float(h.get("mom_60d", 0) or 0) for h in valid]
+    mom_252d = [float(h.get("mom_252d", 0) or 0) for h in valid]
+    rsi      = [float(h.get("rsi_14", 50) or 50) for h in valid]
+    bb_pos   = [float(h.get("bb_position", 0.5) or 0.5) for h in valid]
+    hist_vol = [float(h.get("hist_vol_20d", 0.15) or 0.15) for h in valid]
+    atr_pct  = [float(h.get("atr_pct", 0.01) or 0.01) for h in valid]
+
+    # Cross-sectional Z-scores
+    z_mom20  = _clip_signal(_safe_zscore(mom_20d))
+    z_mom60  = _clip_signal(_safe_zscore(mom_60d))
+    z_mom252 = _clip_signal(_safe_zscore(mom_252d))
+    z_rsi    = _clip_signal(_safe_zscore(rsi))
+    z_bb     = _clip_signal(_safe_zscore(bb_pos))
+    z_vol    = _clip_signal(_safe_zscore([-v for v in hist_vol]))  # low vol = good
+    z_atr    = _clip_signal(_safe_zscore([-v for v in atr_pct]))   # low ATR = good
+
+    results = []
+    for i, ticker in enumerate(tickers):
+
+        # Short-term signal
+        if regime in ("trending_bull", "trending_bear"):
+            # Trending: RSI follows trend (high RSI = strength)
+            short_raw = (
+                0.60 * z_mom20[i]
+                + 0.25 * z_rsi[i]
+                + 0.15 * (-z_bb[i])
+            )
+        else:
+            # Volatile/defensive: RSI mean-reverts (high RSI = overbought = bearish)
+            short_raw = (
+                0.50 * z_mom20[i]
+                + 0.30 * (-z_rsi[i])
+                + 0.20 * (-z_bb[i])
+            )
+
+        # Medium-term signal
+        medium_raw = (
+            0.65 * z_mom60[i]
+            + 0.25 * z_vol[i]
+            + 0.10 * z_rsi[i]
+        )
+
+        # Long-term signal
+        long_raw = (
+            0.80 * z_mom252[i]
+            + 0.20 * z_atr[i]
+        )
+
+        # Regime blend
+        composite = (
+            blend["short"]  * short_raw
+            + blend["medium"] * medium_raw
+            + blend["long"]   * long_raw
+        )
+
+        results.append(LayeredSignal(
+            ticker=ticker,
+            signal_short=round(short_raw, 4),
+            signal_short_components={
+                "mom_20d_z": round(z_mom20[i], 3),
+                "rsi_z":    round(z_rsi[i],  3),
+                "bb_z":     round(z_bb[i],   3),
+            },
+            signal_medium=round(medium_raw, 4),
+            signal_medium_components={
+                "mom_60d_z":     round(z_mom60[i], 3),
+                "hist_vol_z":    round(z_vol[i],  3),
+                "rsi_confirm_z": round(z_rsi[i],  3),
+            },
+            signal_long=round(long_raw, 4),
+            signal_long_components={
+                "mom_252d_z": round(z_mom252[i], 3),
+                "atr_z":     round(z_atr[i],    3),
+            },
+            composite_score=round(composite, 4),
+            blend_weights_used=blend,
+        ))
+
+    return results
+
+
+def scores_to_weights(
+    signals: list[LayeredSignal],
+    min_cash: float = 0.05,
+    max_single: float = 0.20,
+    vol_adjustment: bool = True,
+    hist_vol_map: dict[str, float] | None = None,
+) -> dict[str, float]:
+    """
+    Convert composite_score to portfolio weights.
+    vol_adjustment=True: 70% score weight + 30% inverse-vol weight.
+    """
+    if not signals:
+        return {"CASH": 1.0}
+
+    positive = [s for s in signals if s.composite_score > 0]
+    if not positive:
+        return {"CASH": 1.0}
+
+    # Score-weighted allocation
+    total_score = sum(s.composite_score for s in positive)
+    score_weights = {
+        s.ticker: s.composite_score / total_score
+        for s in positive
+    }
+
+    # Volatility adjustment (optional)
+    if vol_adjustment and hist_vol_map:
+        inv_vol = {
+            t: 1.0 / max(hist_vol_map.get(t, 0.15), 0.05)
+            for t in score_weights
+        }
+        total_inv_vol = sum(inv_vol.values())
+        vol_weights = {t: v / total_inv_vol for t, v in inv_vol.items()}
+        raw_weights = {
+            t: 0.70 * score_weights[t] + 0.30 * vol_weights[t]
+            for t in score_weights
+        }
+    else:
+        raw_weights = score_weights
+
+    # Single-position cap
+    capped = {t: min(w, max_single) for t, w in raw_weights.items()}
+
+    # Cash floor enforcement
+    equity_total = min(sum(capped.values()), 1.0 - min_cash)
+    scale = equity_total / sum(capped.values()) if sum(capped.values()) > 0 else 1.0
+    scaled = {t: w * scale for t, w in capped.items()}
+    scaled["CASH"] = round(1.0 - sum(scaled.values()), 6)
+
+    return {k: round(v, 6) for k, v in scaled.items()}
+
+
+# ─────────────────────────────── Main Entry ───────────────────────────────
 
 
 async def run_quant_baseline_async(
@@ -54,40 +262,18 @@ async def run_quant_baseline_async(
     brief: dict,
 ) -> dict:
     """
-    Stage 2 入口。同步逻辑，async 只是为了和其他 stage 对齐。
+    Stage 2 entry: layered signal computation -> base_weights.
+    Async only for interface alignment with other stages.
     """
     holdings = brief.get("holdings") or []
-    current_weights = brief.get("current_weights") or {}
 
     if not holdings:
         logger.error("QuantBaseline: no holdings in brief")
         return _empty_output("no_holdings")
 
-    risk_params     = pipeline_context.get("risk_params") or {}
-    active_name     = pipeline_context.get("active_strategy") or "momentum_lite_v1"
-    strategy_params = pipeline_context.get("strategy_params") or {}
+    risk_params = pipeline_context.get("risk_params") or {}
 
-    strategy = get_strategy(active_name, strategy_params)
-
-    context = {
-        **NEUTRAL_STRATEGY_CONTEXT,
-        "risk_params":     risk_params,
-        "current_weights": current_weights,
-    }
-
-    scored = strategy.score(holdings, context)
-    if not scored:
-        logger.error("QuantBaseline: strategy produced empty scoring")
-        return _empty_output("empty_scoring")
-
-    base_weights = strategy.optimize(scored, context)
-
-    selected_tickers = [
-        t for t, w in base_weights.items()
-        if t != "CASH" and w > 0
-    ]
-
-    # ── Regime 硬分类 ─────────────────────────────────────────────
+    # ── Regime classification (must precede layered signal computation) ──
     portfolio = brief.get("portfolio") or {}
     spy_holding = next(
         (h for h in holdings if (h.get("ticker") or "").upper() == "SPY"),
@@ -99,25 +285,64 @@ async def run_quant_baseline_async(
         f"(confidence={regime_result.confidence}) | {regime_result.reasoning}"
     )
 
+    # ── Layered signals ──
+    layered_signals = compute_layered_signals(
+        holdings=holdings,
+        regime=regime_result.regime.value,
+    )
+
+    # ── Build hist_vol_map for volatility adjustment ──
+    hist_vol_map = {
+        h["ticker"]: float(h.get("hist_vol_20d", 0.15) or 0.15)
+        for h in holdings
+        if h.get("ticker") and h.get("ticker") != "CASH"
+    }
+
+    # ── Convert to weights ──
+    base_weights = scores_to_weights(
+        signals=layered_signals,
+        min_cash=float(risk_params.get("min_cash_pct", 0.05)),
+        max_single=float(risk_params.get("max_single_position", 0.20)),
+        vol_adjustment=True,
+        hist_vol_map=hist_vol_map,
+    )
+
+    selected_tickers = [
+        t for t, w in base_weights.items()
+        if t != "CASH" and w > 0
+    ]
+
+    # Sort by composite_score for ranking
+    sorted_signals = sorted(layered_signals, key=lambda s: s.composite_score, reverse=True)
+
     logger.info(
-        f"QuantBaseline done | strategy={active_name} | "
-        f"n_scored={len(scored)} | n_selected={len(selected_tickers)} | "
-        f"top5={[s.ticker for s in scored[:5]]}"
+        f"QuantBaseline done | regime={regime_result.regime.value} | "
+        f"n_signals={len(layered_signals)} | n_selected={len(selected_tickers)} | "
+        f"top5={[s.ticker for s in sorted_signals[:5]]}"
     )
 
     return {
         "base_weights": base_weights,
         "scoring_breakdown": [
             {
-                "ticker":  s.ticker,
-                "score":   round(s.score, 4),
-                "factors": s.factor_breakdown,
+                "ticker":          s.ticker,
+                "score":            s.composite_score,
+                "factors": {
+                    "composite_score":  s.composite_score,
+                    "signal_short":     s.signal_short,
+                    "signal_medium":    s.signal_medium,
+                    "signal_long":      s.signal_long,
+                    "blend_weights":    s.blend_weights_used,
+                    "short_components": s.signal_short_components,
+                    "medium_components": s.signal_medium_components,
+                    "long_components":  s.signal_long_components,
+                },
             }
-            for s in scored
+            for s in layered_signals
         ],
         "ranking_summary": {
-            "top_5":    [s.ticker for s in scored[:5]],
-            "bottom_3": [s.ticker for s in scored[-3:]],
+            "top_5":    [s.ticker for s in sorted_signals[:5]],
+            "bottom_3": [s.ticker for s in sorted_signals[-3:]],
         },
         "selected_tickers": selected_tickers,
         "regime_result": {
@@ -128,9 +353,9 @@ async def run_quant_baseline_async(
             "reasoning":   regime_result.reasoning,
         },
         "metadata": {
-            "strategy_used":    active_name,
-            "strategy_version": strategy.version,
-            "params_used":      dict(strategy.params),
+            "strategy_used":    "layered_momentum_v1",
+            "strategy_version": "1.0",
+            "params_used":      {},
         },
     }
 
@@ -142,8 +367,9 @@ def _empty_output(reason: str) -> dict:
     return {
         "base_weights":      {"CASH": 1.0},
         "scoring_breakdown": [],
-        "ranking_summary":   {"top_5": [], "bottom_3": []},
+        "ranking_summary":    {"top_5": [], "bottom_3": []},
         "selected_tickers":  [],
+        "regime_result":      None,
         "metadata":          {"strategy_used": None, "error": reason},
     }
 

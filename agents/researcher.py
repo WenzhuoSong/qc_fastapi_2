@@ -38,6 +38,85 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
+RESEARCHER_OUTPUT_SCHEMA = """
+你必须以如下 JSON 格式输出（严格 JSON，无前缀）：
+
+{
+  "market_regime": {
+    "assessment": "trending_bull" | "trending_bear" | "high_vol" |
+                  "mean_reverting" | "defensive",
+    "confidence": "high" | "medium" | "low",
+    "alignment_with_quant": "agree" | "disagree" | "partial",
+    "disagreement_reason": null | "说明为何与系统 regime 判断不同（如填写则必须具体）"
+  },
+
+  "macro_outlook": {
+    "summary": "宏观环境一句话概述（50字以内）",
+    "confidence": "high" | "medium" | "low",
+    "key_drivers": [
+      {
+        "driver": "驱动因素名称",
+        "direction": "positive" | "negative" | "neutral",
+        "time_horizon": "immediate" | "short_term" | "medium_term",
+        "confidence": "high" | "medium" | "low"
+      }
+    ],
+    "data_quality": "fresh" | "stale" | "missing",
+    "data_gaps": ["缺失数据说明，如有"]
+  },
+
+  "ticker_signals": {
+    "<TICKER>": {
+      "overall_signal": "bullish" | "bearish" | "neutral",
+      "confidence": "high" | "medium" | "low",
+      "signal_sources": {
+        "quant_score": "high" | "medium" | "low" | null,
+        "news_sentiment": "positive" | "negative" | "neutral" | null,
+        "macro_alignment": "tailwind" | "headwind" | "neutral" | null
+      },
+      "confidence_drivers": {
+        "supporting_count": <int>,
+        "conflicting_signals": ["具体冲突说明（如有）"]
+      },
+      "note": null | "补充说明（20字以内，仅在特殊情况填写）"
+    }
+  },
+
+  "cross_signal_insights": [
+    {
+      "insight": "跨资产/跨板块洞察（40字以内）",
+      "confidence": "high" | "medium" | "low",
+      "affected_tickers": ["TICKER1", "TICKER2"],
+      "actionable": true | false
+    }
+  ],
+
+  "overall_confidence": "high" | "medium" | "low",
+  "low_confidence_reasons": ["原因1（如 overall_confidence = low）"]
+}
+
+confidence 评定规则：
+- high:   多个独立信号一致，数据新鲜（<4h），无重大矛盾
+- medium: 部分信号一致，或数据轻微 stale（4-12h），或存在小冲突
+- low:    信号矛盾，数据 stale（>12h），或信息严重缺失
+
+ticker_signals 只包含你有实质性判断的 ticker（有新闻或量化异常），
+其他 ticker 不要填写（保持 null 比写 neutral 更诚实）。
+"""
+
+RESEARCHER_CONFIDENCE_INSTRUCTION = """
+## 关于 confidence 的重要说明
+
+你的 confidence 评分将被下游 PM agent 直接使用：
+- confidence=high 的 ticker_signals → PM 可据此调整权重 ±5%
+- confidence=medium 的 ticker_signals → PM 限制调整幅度 ±3%
+- confidence=low 的 ticker_signals → PM 倾向保持 base_weight，仅微调 ±1%
+
+因此，不要为了显得有价值而虚报 high confidence。
+宁可报 low confidence + 诚实的 data_gaps，
+也不要在信息不足时假装确定。
+"""
+
 SYSTEM_PROMPT = """You are the chief market analyst (Stage 3 RESEARCHER) for a quantitative trading system.
 
 【Your place in the pipeline】
@@ -76,43 +155,9 @@ SYSTEM_PROMPT = """You are the chief market analyst (Stage 3 RESEARCHER) for a q
   · If no macro events, return [{"keyword": "normal market conditions", "freshness": "ongoing", "magnitude": "low", "description": "no significant macro events"}]
   · Do NOT invent events not supported by the input data.
 
-【Output: JSON only】
-{
-  "market_regime": {
-    "regime": "bull_trend|bull_weak|neutral|bear_weak|bear_trend|high_vol",
-    "confidence": <float 0.0-1.0>,
-    "evidence": "<one sentence on the basis for the regime>"
-  },
-  "macro_outlook": {
-    "summary": "<≤200 chars macro overview>",
-    "key_events": [
-      {
-        "keyword": "<transmission-matchable keyword phrase>",
-        "freshness": "breaking|developing|ongoing",
-        "magnitude": "high|medium|low",
-        "description": "<≤80 chars what specifically happened>"
-      }
-    ],
-    "impact_bias": "positive|neutral|negative"
-  },
-  "ticker_signals": [
-    {
-      "ticker": "<TICKER>",
-      "quant_score": <float>,
-      "quant_rank": <int>,
-      "quant_factors": "<key factors one line>",
-      "news_sentiment": "positive|neutral|negative",
-      "news_count": <int>,
-      "news_digest": "<≤50 chars news gist>",
-      "combined_signal": "strong_positive|positive|neutral|negative|strong_negative",
-      "flag": "<risk or opportunity tag, or null>"
-    }
-  ],
-  "cross_signal_insights": [
-    "<cross-ticker observation 1>",
-    "<cross-ticker observation 2>"
-  ]
-}
+""" + RESEARCHER_OUTPUT_SCHEMA + """
+
+""" + RESEARCHER_CONFIDENCE_INSTRUCTION + """
 
 JSON only. Any extra text is an error."""
 
@@ -265,51 +310,66 @@ def _format_per_ticker_news(per_ticker_news: dict) -> str:
 # Validation + normalization
 # ═══════════════════════════════════════════════════════════════
 
-_VALID_REGIMES = {"bull_trend", "bull_weak", "neutral", "bear_weak", "bear_trend", "high_vol"}
+# New regime values (Task 7)
+_VALID_REGIMES_NEW = {
+    "trending_bull", "trending_bear", "high_vol",
+    "mean_reverting", "defensive",
+}
+# Legacy regime mapping for downstream compatibility
+_REGIME_MAP = {
+    "trending_bull": "bull_trend",
+    "trending_bear": "bear_trend",
+    "high_vol": "high_vol",
+    "mean_reverting": "neutral",
+    "defensive": "neutral",
+}
 _VALID_SIGNALS = {"strong_positive", "positive", "neutral", "negative", "strong_negative"}
+_VALID_SIGNALS_NEW = {"bullish", "bearish", "neutral"}
 
 
 def _validate_and_normalize(out: dict, quant_baseline: dict) -> dict:
-    """Validate and normalize LLM output."""
+    """Validate and normalize LLM output with new confidence schema (Task 7)."""
     # market_regime
     mr = out.get("market_regime") or {}
-    regime = str(mr.get("regime", "neutral")).strip()
-    if regime not in _VALID_REGIMES:
-        regime = "neutral"
-    try:
-        confidence = max(0.0, min(1.0, float(mr.get("confidence", 0.5))))
-    except (TypeError, ValueError):
-        confidence = 0.5
+    assessment = str(mr.get("assessment", "neutral")).strip()
+    if assessment not in _VALID_REGIMES_NEW:
+        assessment = "mean_reverting"
+
+    # confidence is now a string: "high" | "medium" | "low"
+    conf_str = str(mr.get("confidence", "medium")).strip()
+    if conf_str not in ("high", "medium", "low"):
+        conf_str = "medium"
+    conf_map = {"high": 0.9, "medium": 0.5, "low": 0.3}
+    confidence = conf_map.get(conf_str, 0.5)
+
+    alignment = str(mr.get("alignment_with_quant", "agree")).strip()
+    if alignment not in ("agree", "disagree", "partial"):
+        alignment = "agree"
+    disagreement_reason = mr.get("disagreement_reason")
 
     # macro_outlook
     mo = out.get("macro_outlook") or {}
-    raw_events = mo.get("key_events") or []
-    if not isinstance(raw_events, list):
-        raw_events = []
+    macro_summary = str(mo.get("summary", ""))[:200]
 
-    # Normalize key_events: accept both new dict format and legacy string format
+    # key_drivers (new format) — convert to key_events for downstream
+    raw_drivers = mo.get("key_drivers") or []
     key_events_rich: list[dict] = []
     key_events_keywords: list[str] = []
-    for e in raw_events[:5]:
-        if isinstance(e, dict) and e.get("keyword"):
-            kw = str(e["keyword"]).strip()
-            key_events_rich.append({
-                "keyword":     kw,
-                "freshness":   str(e.get("freshness", "ongoing")).strip(),
-                "magnitude":   str(e.get("magnitude", "medium")).strip(),
-                "description": str(e.get("description", ""))[:100],
-            })
-            key_events_keywords.append(kw)
-        elif isinstance(e, str) and e.strip():
-            # Legacy string format fallback
-            key_events_rich.append({
-                "keyword":     e.strip(),
-                "freshness":   "ongoing",
-                "magnitude":   "medium",
-                "description": e.strip(),
-            })
-            key_events_keywords.append(e.strip())
-
+    if isinstance(raw_drivers, list):
+        for d in raw_drivers[:5]:
+            if isinstance(d, dict):
+                driver_name = str(d.get("driver", "")).strip()
+                direction = str(d.get("direction", "neutral")).strip()
+                horizon = str(d.get("time_horizon", "short_term")).strip()
+                d_conf = str(d.get("confidence", "medium")).strip()
+                if driver_name:
+                    key_events_rich.append({
+                        "keyword": driver_name,
+                        "freshness": horizon,
+                        "magnitude": direction,
+                        "description": f"{driver_name} ({direction})",
+                    })
+                    key_events_keywords.append(driver_name)
     if not key_events_rich:
         key_events_rich = [{
             "keyword": "normal market conditions",
@@ -319,53 +379,164 @@ def _validate_and_normalize(out: dict, quant_baseline: dict) -> dict:
         }]
         key_events_keywords = ["normal market conditions"]
 
-    impact_bias = str(mo.get("impact_bias", "neutral")).strip()
-    if impact_bias not in ("positive", "neutral", "negative"):
-        impact_bias = "neutral"
+    data_quality = str(mo.get("data_quality", "fresh")).strip()
+    if data_quality not in ("fresh", "stale", "missing"):
+        data_quality = "fresh"
+    data_gaps = mo.get("data_gaps") or []
+    if not isinstance(data_gaps, list):
+        data_gaps = []
 
-    # ticker_signals
-    raw_signals = out.get("ticker_signals") or []
-    if not isinstance(raw_signals, list):
-        raw_signals = []
-    ticker_signals = []
-    for sig in raw_signals:
-        if not isinstance(sig, dict) or not sig.get("ticker"):
-            continue
-        combined = str(sig.get("combined_signal", "neutral")).strip()
-        if combined not in _VALID_SIGNALS:
-            combined = "neutral"
-        ticker_signals.append({
-            "ticker":          str(sig["ticker"]).upper().strip(),
-            "quant_score":     _safe_float(sig.get("quant_score"), 0.0),
-            "quant_rank":      int(sig.get("quant_rank", 0) or 0),
-            "quant_factors":   str(sig.get("quant_factors", ""))[:120],
-            "news_sentiment":  str(sig.get("news_sentiment", "neutral")).strip(),
-            "news_count":      int(sig.get("news_count", 0) or 0),
-            "news_digest":     str(sig.get("news_digest", ""))[:100],
-            "combined_signal": combined,
-            "flag":            sig.get("flag") or None,
-        })
+    # ticker_signals — new dict format (keyed by ticker)
+    raw_signals = out.get("ticker_signals") or {}
+    ticker_signals_dict: dict[str, dict] = {}  # new format with confidence
+    ticker_signals_list: list[dict] = []      # legacy list format for downstream
 
-    # cross_signal_insights
-    insights = out.get("cross_signal_insights") or []
-    if not isinstance(insights, list):
-        insights = []
-    insights = [str(i).strip() for i in insights if str(i).strip()][:5]
+    if isinstance(raw_signals, dict):
+        for ticker, sig in raw_signals.items():
+            if not isinstance(sig, dict):
+                continue
+            t = str(ticker).upper().strip()
+            if not t:
+                continue
 
+            overall = str(sig.get("overall_signal", "neutral")).strip()
+            if overall not in _VALID_SIGNALS_NEW:
+                overall = "neutral"
+            sig_conf = str(sig.get("confidence", "medium")).strip()
+            if sig_conf not in ("high", "medium", "low"):
+                sig_conf = "medium"
+
+            signal_sources = sig.get("signal_sources") or {}
+            quant_src = str(signal_sources.get("quant_score") or "medium").strip()
+            news_src = str(signal_sources.get("news_sentiment") or "neutral").strip()
+            macro_src = str(signal_sources.get("macro_alignment") or "neutral").strip()
+
+            conf_drivers = sig.get("confidence_drivers") or {}
+            supporting = int(conf_drivers.get("supporting_count") or 0)
+            conflicts = conf_drivers.get("conflicting_signals") or []
+            if not isinstance(conflicts, list):
+                conflicts = []
+
+            note = sig.get("note")
+
+            # Build new-format entry
+            ticker_signals_dict[t] = {
+                "overall_signal": overall,
+                "confidence": sig_conf,
+                "signal_sources": {
+                    "quant_score": quant_src,
+                    "news_sentiment": news_src,
+                    "macro_alignment": macro_src,
+                },
+                "confidence_drivers": {
+                    "supporting_count": supporting,
+                    "conflicting_signals": conflicts,
+                },
+                "note": note,
+            }
+
+            # Legacy list format for downstream Bull/Bear/Synthesizer
+            # Map overall_signal to combined_signal
+            combined_map = {"bullish": "positive", "bearish": "negative", "neutral": "neutral"}
+            combined = combined_map.get(overall, "neutral")
+            ticker_signals_list.append({
+                "ticker": t,
+                "combined_signal": combined,
+                "confidence": sig_conf,
+                "news_sentiment": news_src if news_src != "null" else "neutral",
+                "note": note,
+            })
+    elif isinstance(raw_signals, list):
+        # Legacy list format (fallback for degraded upstream)
+        for sig in raw_signals:
+            if not isinstance(sig, dict) or not sig.get("ticker"):
+                continue
+            combined = str(sig.get("combined_signal", "neutral")).strip()
+            if combined not in _VALID_SIGNALS:
+                combined = "neutral"
+            t = str(sig["ticker"]).upper().strip()
+            ticker_signals_list.append({
+                "ticker": t,
+                "combined_signal": combined,
+                "confidence": "medium",
+                "news_sentiment": str(sig.get("news_sentiment", "neutral")).strip(),
+                "note": sig.get("flag") or sig.get("note"),
+            })
+            ticker_signals_dict[t] = {
+                "overall_signal": combined,
+                "confidence": "medium",
+                "signal_sources": {
+                    "quant_score": "medium",
+                    "news_sentiment": str(sig.get("news_sentiment", "neutral")).strip(),
+                    "macro_alignment": "neutral",
+                },
+                "confidence_drivers": {"supporting_count": 1, "conflicting_signals": []},
+                "note": sig.get("note"),
+            }
+
+    # cross_signal_insights — new format: list of dicts with insight/confidence/affected_tickers/actionable
+    raw_insights = out.get("cross_signal_insights") or []
+    insights_list: list[dict] = []
+    insights_str_list: list[str] = []  # legacy string list for downstream
+
+    if isinstance(raw_insights, list):
+        for item in raw_insights:
+            if isinstance(item, dict):
+                insight_text = str(item.get("insight", "")).strip()
+                ins_conf = str(item.get("confidence", "medium")).strip()
+                if ins_conf not in ("high", "medium", "low"):
+                    ins_conf = "medium"
+                affected = item.get("affected_tickers") or []
+                if not isinstance(affected, list):
+                    affected = []
+                actionable = bool(item.get("actionable", False))
+                insights_list.append({
+                    "insight": insight_text,
+                    "confidence": ins_conf,
+                    "affected_tickers": affected,
+                    "actionable": actionable,
+                })
+                insights_str_list.append(insight_text)
+            elif isinstance(item, str) and item.strip():
+                insights_str_list.append(item.strip())
+
+    # overall_confidence + low_confidence_reasons
+    overall_conf = str(out.get("overall_confidence", "medium")).strip()
+    if overall_conf not in ("high", "medium", "low"):
+        overall_conf = "medium"
+    low_reasons = out.get("low_confidence_reasons") or []
+    if not isinstance(low_reasons, list):
+        low_reasons = []
+
+    # Return: new format fields + legacy-compatible fields for downstream
     return {
+        # New format fields (Task 7)
         "market_regime": {
-            "regime":     regime,
-            "confidence": confidence,
-            "evidence":   str(mr.get("evidence", ""))[:200],
+            "assessment": assessment,
+            "confidence": conf_str,
+            "alignment_with_quant": alignment,
+            "disagreement_reason": disagreement_reason,
+            # Legacy compat
+            "regime": _REGIME_MAP.get(assessment, "neutral"),
+            "evidence": str(mr.get("disagreement_reason") or "")[:200],
         },
         "macro_outlook": {
-            "summary":      str(mo.get("summary", ""))[:300],
-            "key_events":   key_events_rich,       # Rich format with freshness/magnitude
-            "key_keywords": key_events_keywords,    # Flat list for transmission matcher
-            "impact_bias":  impact_bias,
+            "summary": macro_summary,
+            "confidence": conf_str,
+            "key_drivers": raw_drivers if isinstance(raw_drivers, list) else [],
+            "data_quality": data_quality,
+            "data_gaps": data_gaps,
+            # Legacy compat
+            "key_events": key_events_rich,
+            "key_keywords": key_events_keywords,
+            "impact_bias": "neutral",
         },
-        "ticker_signals":        ticker_signals,
-        "cross_signal_insights": insights,
+        "ticker_signals_dict": ticker_signals_dict,  # New dict format with confidence
+        "ticker_signals": ticker_signals_list,       # Legacy list for downstream
+        "cross_signal_insights_list": insights_list,  # New structured format
+        "cross_signal_insights": insights_str_list,   # Legacy string list for downstream
+        "overall_confidence": overall_conf,
+        "low_confidence_reasons": low_reasons,
         "used_degraded_fallback": False,
     }
 
@@ -380,38 +551,62 @@ def _safe_float(val, default: float) -> float:
 def _degraded_report(quant_baseline: dict, error: str | None) -> dict:
     """When all LLM retries fail: quant-only data, no news synthesis."""
     scoring = quant_baseline.get("scoring_breakdown") or []
-    ticker_signals = []
+    ticker_signals_list: list[dict] = []
+    ticker_signals_dict: dict[str, dict] = {}
+
     for i, item in enumerate(scoring):
         if not isinstance(item, dict):
             continue
         ticker = str(item.get("ticker", "")).upper()
-        if not ticker:
+        if not ticker or ticker == "CASH":
             continue
-        ticker_signals.append({
+        ticker_signals_list.append({
             "ticker":          ticker,
-            "quant_score":     _safe_float(item.get("score"), 0.0),
-            "quant_rank":      i + 1,
-            "quant_factors":   str(item.get("factors", ""))[:120],
-            "news_sentiment":  "neutral",
-            "news_count":      0,
-            "news_digest":     "",
             "combined_signal": "neutral",
-            "flag":            None,
+            "confidence":      "low",
+            "news_sentiment":  "neutral",
+            "note":            None,
         })
+        ticker_signals_dict[ticker] = {
+            "overall_signal": "neutral",
+            "confidence":      "low",
+            "signal_sources": {
+                "quant_score":     "medium",
+                "news_sentiment":  "neutral",
+                "macro_alignment": "neutral",
+            },
+            "confidence_drivers": {
+                "supporting_count": 0,
+                "conflicting_signals": ["no news synthesis — LLM degraded"],
+            },
+            "note": None,
+        }
 
+    degraded_reason = f"LLM degraded: could not synthesize news signals (error={error})"
     return {
         "market_regime": {
-            "regime":     "neutral",
-            "confidence": 0.3,
-            "evidence":   f"LLM degraded: could not synthesize news signals (error={error})",
+            "assessment": "mean_reverting",
+            "confidence": "low",
+            "alignment_with_quant": "agree",
+            "disagreement_reason": degraded_reason,
+            "regime": "neutral",
+            "evidence": degraded_reason,
         },
         "macro_outlook": {
             "summary":      "LLM degraded — no macro analysis",
+            "confidence":   "low",
+            "key_drivers":   [],
+            "data_quality":  "missing",
+            "data_gaps":     [degraded_reason],
             "key_events":   [{"keyword": "normal market conditions", "freshness": "ongoing", "magnitude": "low", "description": "no significant macro events"}],
             "key_keywords": ["normal market conditions"],
             "impact_bias":  "neutral",
         },
-        "ticker_signals":        ticker_signals,
+        "ticker_signals_dict": ticker_signals_dict,
+        "ticker_signals":        ticker_signals_list,
+        "cross_signal_insights_list": [],
         "cross_signal_insights": [],
+        "overall_confidence": "low",
+        "low_confidence_reasons": [degraded_reason],
         "used_degraded_fallback": True,
     }
