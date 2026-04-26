@@ -84,6 +84,78 @@ async def _release_pipeline_lock() -> None:
         }, "pipeline")
 
 
+# ─────────────────────────────── PM 硬裁剪 ───────────────────────────────
+
+
+def enforce_pm_constraints(
+    base_weights: dict[str, float],
+    adjusted_weights: dict[str, float],
+    max_delta: float = 0.05,
+    hard_max_delta: float = 0.10,
+) -> tuple[dict[str, float], list[str]]:
+    """
+    对 SYNTHESIZER 输出的 adjusted_weights 做 Python 层硬裁剪。
+
+    规则：
+    1. 每个 ticker 相对 base_weights 的偏离不超过 max_delta (default 5%)
+    2. CASH 单独处理：只允许增加不允许减少（保守原则）
+    3. 新增 ticker（base 中没有）：权重 cap 在 hard_max_delta (10%)
+    4. 裁剪后重新归一化确保 sum = 1.0
+    5. 返回裁剪后的权重 + 裁剪日志列表
+
+    Returns:
+        clipped_weights: 裁剪后归一化的权重字典
+        clip_log: 被裁剪的条目列表，格式 ["SPY: 0.32→0.27 (base=0.22, delta capped)"]
+    """
+    clipped: dict[str, float] = {}
+    clip_log: list[str] = []
+
+    all_tickers = set(base_weights.keys()) | set(adjusted_weights.keys())
+
+    for ticker in all_tickers:
+        base = base_weights.get(ticker, 0.0)
+        adj = adjusted_weights.get(ticker, 0.0)
+
+        if ticker == "CASH":
+            if adj < base:
+                clipped[ticker] = base
+                clip_log.append(f"CASH: {adj:.3f}→{base:.3f} (cash floor enforced)")
+            else:
+                clipped[ticker] = adj
+            continue
+
+        if base == 0.0:
+            if adj > hard_max_delta:
+                clipped[ticker] = hard_max_delta
+                clip_log.append(
+                    f"{ticker}: {adj:.3f}→{hard_max_delta:.3f} (new position hard cap)"
+                )
+            else:
+                clipped[ticker] = adj
+        else:
+            lower = max(0.0, base - max_delta)
+            upper = base + max_delta
+            capped = round(min(max(adj, lower), upper), 6)
+            if abs(capped - adj) > 0.001:
+                clip_log.append(
+                    f"{ticker}: {adj:.3f}→{capped:.3f} (base={base:.3f}, delta={adj-base:+.3f} capped)"
+                )
+            clipped[ticker] = capped
+
+    total = sum(clipped.values())
+    if total <= 0:
+        raise ValueError("enforce_pm_constraints: 裁剪后权重总和为0，数据异常")
+
+    normalized = {k: round(v / total, 6) for k, v in clipped.items()}
+
+    diff = 1.0 - sum(normalized.values())
+    if abs(diff) > 1e-9:
+        largest = max(normalized, key=lambda k: normalized[k] if k != "CASH" else -1)
+        normalized[largest] = round(normalized[largest] + diff, 6)
+
+    return normalized, clip_log
+
+
 # ─────────────────────────────── Stage 0: guard_and_config ───────────────────────────────
 
 
@@ -346,6 +418,35 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         model=model_heavy,
         failed=synthesizer_out.get("used_degraded_fallback", False),
     )
+
+    # ── Stage 5→6: PM 硬裁剪 ──────────────────────────────────────
+    adjusted_weights_raw = synthesizer_out.get("adjusted_weights") or {}
+    if not adjusted_weights_raw:
+        logger.info("[Stage5→6] degraded fallback，跳过 PM 硬裁剪")
+    else:
+        adjusted_weights_clipped, clip_log = enforce_pm_constraints(
+            base_weights=base_weights,
+            adjusted_weights=adjusted_weights_raw,
+            max_delta=0.05,
+            hard_max_delta=0.10,
+        )
+        synthesizer_out["adjusted_weights"] = adjusted_weights_clipped
+
+        if clip_log:
+            logger.warning(
+                f"[Stage5→6] PM 权重被硬裁剪 {len(clip_log)} 项:\n" + "\n".join(clip_log)
+            )
+            await _save_step_log(
+                analysis_id, "5b_pm_constraint", "pm_constraint_enforcement",
+                input_data={"adjusted_weights_raw": adjusted_weights_raw},
+                output_data={
+                    "adjusted_weights_clipped": adjusted_weights_clipped,
+                    "clip_log": clip_log,
+                },
+                duration_ms=0,
+            )
+        else:
+            logger.info("[Stage5→6] PM 权重在约束范围内，无裁剪")
 
     # Stage 6: RISK MGR (Python) —— overlays + 6 checks
     # synthesizer_out 接口兼容旧 researcher_out，Risk MGR 无需改动
