@@ -113,6 +113,7 @@ async def run_synthesizer_async(
     base_weights: dict,
     brief: dict,
     risk_params: dict,
+    regime_result: dict | None = None,
 ) -> dict:
     """
     Stage 5: arbitrate Bull/Bear → adjusted_weights.
@@ -123,7 +124,7 @@ async def run_synthesizer_async(
     allowed_tickers = _collect_allowed_tickers(brief, base_weights)
 
     user_payload = _build_user_message(
-        research_report, bull_output, bear_output, base_weights, risk_params
+        research_report, bull_output, bear_output, base_weights, risk_params, regime_result
     )
 
     client = _get_client()
@@ -193,16 +194,27 @@ def _build_user_message(
     bear_output: dict,
     base_weights: dict,
     risk_params: dict,
+    regime_result: dict | None = None,
 ) -> str:
     max_pos = float(risk_params.get("max_single_position", 0.20))
     min_cash = float(risk_params.get("min_cash_pct", 0.05))
 
-    # Trim research_report (omit full ticker_signals if needed)
     regime = research_report.get("market_regime", {})
     macro = research_report.get("macro_outlook", {})
     insights = research_report.get("cross_signal_insights", [])
 
+    # Regime constraint block
+    regime_block = ""
+    if regime_result:
+        regime_block = (
+            "## SYSTEM REGIME CONSTRAINT (hard classification, do not override)\n"
+            f"Regime: {regime_result.get('regime', 'unknown')}\n"
+            f"Confidence: {regime_result.get('confidence', 'unknown')}\n"
+            f"Constraint: {regime_result.get('constraints', {}).get('llm_instruction', '')}\n\n"
+        )
+
     return (
+        f"{regime_block}"
         "## Research report summary\n"
         f"market_regime: {json.dumps(regime, ensure_ascii=False)}\n"
         f"macro_outlook: {json.dumps(macro, ensure_ascii=False)}\n"

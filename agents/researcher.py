@@ -126,9 +126,10 @@ async def run_researcher_async(
     pipeline_context: dict,
     brief: dict,
     quant_baseline: dict,
+    regime_result: dict | None = None,
 ) -> dict:
     """Stage 3: synthesize information from baseline + brief → research_report."""
-    user_payload = _build_user_message(brief, quant_baseline)
+    user_payload = _build_user_message(brief, quant_baseline, regime_result)
 
     client = _get_client()
     model  = settings.openai_model_heavy
@@ -180,10 +181,14 @@ async def run_researcher_async(
 # ═══════════════════════════════════════════════════════════════
 
 
-def _build_user_message(brief: dict, quant_baseline: dict) -> str:
-    prose    = brief.get("prose_summary") or "(none)"
-    macro    = brief.get("macro_news_section") or "(none)"
-    calendar = brief.get("calendar_section") or "(none)"
+def _build_user_message(
+    brief: dict,
+    quant_baseline: dict,
+    regime_result: dict | None = None,
+) -> str:
+    prose     = brief.get("prose_summary") or "(none)"
+    macro     = brief.get("macro_news_section") or "(none)"
+    calendar  = brief.get("calendar_section") or "(none)"
     key_facts = brief.get("key_facts") or {}
 
     base_weights    = quant_baseline.get("base_weights") or {}
@@ -191,11 +196,21 @@ def _build_user_message(brief: dict, quant_baseline: dict) -> str:
     scoring         = quant_baseline.get("scoring_breakdown") or []
     ranking         = quant_baseline.get("ranking_summary") or {}
 
-    # Per-ticker news: all articles, no cap
     per_ticker_news = brief.get("per_ticker_news") or {}
     news_block = _format_per_ticker_news(per_ticker_news)
 
+    # Regime constraint block
+    regime_block = ""
+    if regime_result:
+        regime_block = (
+            "## SYSTEM REGIME CONSTRAINT (hard classification, do not override)\n"
+            f"Regime: {regime_result.get('regime', 'unknown')}\n"
+            f"Confidence: {regime_result.get('confidence', 'unknown')}\n"
+            f"Constraint: {regime_result.get('constraints', {}).get('llm_instruction', '')}\n\n"
+        )
+
     return (
+        f"{regime_block}"
         "## Market technicals\n"
         f"{prose}\n\n"
         "## Quantitative facts\n"

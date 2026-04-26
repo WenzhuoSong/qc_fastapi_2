@@ -156,6 +156,83 @@ def enforce_pm_constraints(
     return normalized, clip_log
 
 
+# ─────────────────────────────── Regime 约束校验 ───────────────────────────────
+
+
+HEDGE_TICKERS = {"GLD", "TLT", "BND", "IEF"}
+
+
+def apply_regime_constraints(
+    target_weights: dict[str, float],
+    regime_result: dict | None,
+    base_weights: dict[str, float],
+) -> tuple[dict[str, float], list[str]]:
+    """
+    用 regime 约束对 target_weights 做最终校验和裁剪。
+
+    规则：
+    1. 检查 allow_new_positions — 新开仓 ticker（base 中没有且 > 0）→ cap 或拒绝
+    2. 总权益权重不超过 max_equity_weight
+    3. CASH 不低于 min_cash_weight
+
+    Returns:
+        (clipped_weights, violations_log)
+    """
+    if not regime_result:
+        return target_weights, []
+
+    constraints = regime_result.get("constraints", {})
+    violations: list[str] = []
+    working = dict(target_weights)
+
+    # 1. 新开仓检查
+    if not constraints.get("allow_new_positions", True):
+        for ticker, w in list(working.items()):
+            if ticker == "CASH" or ticker in HEDGE_TICKERS:
+                continue
+            if base_weights.get(ticker, 0.0) == 0.0 and w > 0:
+                hard_cap = constraints.get("max_single_position", 0.15)
+                if w > hard_cap:
+                    violations.append(
+                        f"new_pos {ticker}: {w:.3f}→{hard_cap:.3f} (new pos blocked in {regime_result.get('regime')})"
+                    )
+                    working[ticker] = hard_cap
+
+    # 2. 权益权重上限
+    max_equity = constraints.get("max_equity_weight", 1.0)
+    cash_and_hedges = {k: v for k, v in working.items() if k == "CASH" or k in HEDGE_TICKERS}
+    equity_weight = 1.0 - sum(cash_and_hedges.values())
+    if equity_weight > max_equity + 1e-6:
+        scale = max_equity / equity_weight
+        for k in working:
+            if k != "CASH" and k not in HEDGE_TICKERS:
+                working[k] = round(working[k] * scale, 6)
+        working["CASH"] = round(working.get("CASH", 0.0) + equity_weight - max_equity, 6)
+        violations.append(
+            f"equity_weight {equity_weight:.2%}→{max_equity:.2%} (regime cap)"
+        )
+
+    # 3. CASH 下限
+    min_cash = constraints.get("min_cash_weight", 0.05)
+    if working.get("CASH", 0.0) < min_cash - 1e-6:
+        shortfall = min_cash - working.get("CASH", 0.0)
+        equity_tickers = [k for k in working if k != "CASH" and k not in HEDGE_TICKERS]
+        if equity_tickers:
+            largest = max(equity_tickers, key=lambda k: working[k])
+            working[largest] = round(working[largest] - shortfall, 6)
+        working["CASH"] = round(min_cash, 6)
+        violations.append(
+            f"CASH {working.get('CASH', 0.0):.2%}→{min_cash:.2%} (regime floor)"
+        )
+
+    # 归一化
+    total = sum(working.values())
+    if total > 0:
+        working = {k: round(v / total, 6) for k, v in working.items()}
+
+    return working, violations
+
+
 # ─────────────────────────────── Stage 0: guard_and_config ───────────────────────────────
 
 
@@ -306,9 +383,26 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         duration_ms=dur_quant,
     )
 
+    # ── Regime 硬分类 step log ───────────────────────────────────
+    regime_result = quant_baseline.get("regime_result")
+    if regime_result:
+        await _save_step_log(
+            analysis_id, "2b_regime", "regime_classification",
+            input_data=regime_result.get("signals", {}),
+            output_data={
+                "regime":      regime_result.get("regime"),
+                "confidence":  regime_result.get("confidence"),
+                "constraints": regime_result.get("constraints"),
+                "reasoning":   regime_result.get("reasoning"),
+            },
+            duration_ms=0,
+        )
+
     # Stage 3: RESEARCHER (LLM) —— 信息合成（只分析不决策）
     t0 = time.time()
-    research_report = await run_researcher_async(pipeline_context, brief, quant_baseline)
+    research_report = await run_researcher_async(
+        pipeline_context, brief, quant_baseline, regime_result
+    )
     dur_researcher = int((time.time() - t0) * 1000)
     logger.info(
         f"Stage 3 RESEARCHER done | "
@@ -394,7 +488,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     t0 = time.time()
     synthesizer_out = await run_synthesizer_async(
         research_report, bull_output, bear_output,
-        base_weights, brief, risk_params,
+        base_weights, brief, risk_params, regime_result,
     )
     dur_synth = int((time.time() - t0) * 1000)
     logger.info(
@@ -412,6 +506,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             "bull_confidence": bull_output.get("confidence"),
             "bear_stance": bear_output.get("stance"),
             "bear_confidence": bear_output.get("confidence"),
+            "regime": regime_result.get("regime") if regime_result else None,
         },
         output_data=synthesizer_out,
         duration_ms=dur_synth,
@@ -468,6 +563,27 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         output_data=risk_out,
         duration_ms=dur_risk,
     )
+
+    # ── Stage 6→7: Regime 硬约束校验 ───────────────────────────────
+    if regime_result and risk_out.get("approved"):
+        target_from_risk = risk_out.get("target_weights") or {}
+        clipped, regime_violations = apply_regime_constraints(
+            target_from_risk, regime_result, base_weights
+        )
+        risk_out["target_weights"] = clipped
+        if regime_violations:
+            logger.warning(
+                f"[Stage6→7] Regime 约束裁剪 {len(regime_violations)} 项:\n"
+                + "\n".join(regime_violations)
+            )
+            await _save_step_log(
+                analysis_id, "6b_regime_constraint", "regime_enforcement",
+                input_data={"regime": regime_result.get("regime"), "target_weights_raw": target_from_risk},
+                output_data={"target_weights_clipped": clipped, "violations": regime_violations},
+                duration_ms=0,
+            )
+        else:
+            logger.info("[Stage6→7] Regime 权重在约束范围内，无裁剪")
 
     # Stage 7: 更新 analysis 行（填充完整数据）
     await _finalize_analysis(
