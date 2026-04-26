@@ -88,6 +88,18 @@ You receive:
 
 """ + CONFIDENCE_ARBITRATION_RULES + """
 
+【Disagreement Map — REQUIRED for step3_debate_arbitration】
+A Structured Disagreement Map has been appended to your input below.
+
+For each ticker in the map:
+  1. Read researcher_confidence to determine the max delta from base_weights
+  2. bull_wins → move toward overweight within allowed delta
+  3. bear_wins → move toward underweight within allowed delta
+  4. compromise → split the difference within both constraints
+
+Do NOT re-read raw bull/bear JSON for arbitration decisions.
+Use the Structured Disagreement Map table directly.
+
 【Output: JSON only — must include reasoning_chain, order is fixed】
 
  reasoning_chain must appear before adjusted_weights; order cannot be changed.
@@ -190,6 +202,7 @@ async def run_synthesizer_async(
     brief: dict,
     risk_params: dict,
     regime_result: dict | None = None,
+    debate_summary: dict | None = None,   # NEW: structured disagreement_map for PM injection
 ) -> dict:
     """
     Stage 5: arbitrate Bull/Bear → adjusted_weights.
@@ -200,7 +213,8 @@ async def run_synthesizer_async(
     allowed_tickers = _collect_allowed_tickers(brief, base_weights)
 
     user_payload = _build_user_message(
-        research_report, bull_output, bear_output, base_weights, risk_params, regime_result
+        research_report, bull_output, bear_output, base_weights, risk_params, regime_result,
+        debate_summary=debate_summary,
     )
 
     client = _get_client()
@@ -271,6 +285,7 @@ def _build_user_message(
     base_weights: dict,
     risk_params: dict,
     regime_result: dict | None = None,
+    debate_summary: dict | None = None,   # NEW: structured disagreement_map
 ) -> str:
     max_pos = float(risk_params.get("max_single_position", 0.20))
     min_cash = float(risk_params.get("min_cash_pct", 0.05))
@@ -289,7 +304,7 @@ def _build_user_message(
             f"Constraint: {regime_result.get('constraints', {}).get('llm_instruction', '')}\n\n"
         )
 
-    return (
+    user_payload = (
         f"{regime_block}"
         "## Research report summary\n"
         f"market_regime: {json.dumps(regime, ensure_ascii=False)}\n"
@@ -308,6 +323,32 @@ def _build_user_message(
         "Output final adjusted_weights + decision_rationale + market_judgment + recommended_stance + "
         "weight_adjustments + consensus/divergence + key_events + debate_resolution. JSON only."
     )
+
+    # ── Inject Structured Disagreement Map ──────────────────────
+    if debate_summary:
+        disagreement_map = debate_summary.get("disagreement_map") or []
+        if disagreement_map:
+            rows = []
+            for item in disagreement_map:
+                ticker = item.get("ticker", "?")
+                bull_v = item.get("bull", "?")
+                bear_v = item.get("bear", "?")
+                researcher_conf = item.get("researcher_confidence", "medium")
+                max_delta = item.get("max_allowed_delta", 0.03)
+                rows.append(
+                    f"{ticker}: Bull={bull_v} | Bear={bear_v} | "
+                    f"researcher_confidence={researcher_conf} | max_delta={max_delta:.2%}"
+                )
+            user_payload += (
+                "\n## Structured Disagreement Map "
+                "(REQUIRED for step3_debate_arbitration)\n"
+                "Use this table for systematic ticker-level arbitration.\n"
+                "High researcher_confidence → ±5% max delta | "
+                "Medium → ±3% | Low → ±1%\n"
+                + "\n".join(rows)
+            )
+
+    return user_payload
 
 
 def _collect_allowed_tickers(brief: dict, base_weights: dict) -> set[str]:

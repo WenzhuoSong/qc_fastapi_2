@@ -317,6 +317,67 @@ def apply_regime_constraints(
     return working, violations
 
 
+# ─────────────────────────────── Stage 4d: Disagreement Map ───────────────────────────────
+
+
+def _build_disagreement_map_for_pm(
+    bull_output: dict,
+    bear_output: dict,
+    researcher_signals: dict,
+) -> list[dict]:
+    """
+    Extract per-ticker Bull/Bear disagreements with researcher confidence constraints,
+    for injection into PM's user_message before Stage 5 synthesizer call.
+
+    Identical logic to synthesizer._build_debate_summary()["disagreement_map"]
+    but called here so output can be passed as structured input to the synthesizer.
+    """
+    bull_views = bull_output.get("ticker_views") or {}
+    bear_views = bear_output.get("ticker_views") or {}
+
+    CONFIDENCE_DELTA_MAP = {
+        "high": 0.05,
+        "medium": 0.03,
+        "low": 0.01,
+    }
+
+    disagreements: list[dict] = []
+    all_tickers = set(bull_views.keys()) | set(bear_views.keys())
+
+    for ticker in all_tickers:
+        bull_view = bull_views.get(ticker)
+        bear_view = bear_views.get(ticker)
+        if not bull_view or not bear_view:
+            continue
+
+        bull_dir = bull_view.get("direction", "hold")
+        bear_dir = bear_view.get("direction", "hold")
+
+        is_conflict = (
+            (bull_dir == "overweight" and bear_dir == "underweight")
+            or (bull_dir == "underweight" and bear_dir == "overweight")
+        )
+        if not is_conflict:
+            continue
+
+        researcher_confidence = "medium"
+        max_allowed_delta = 0.03
+        if researcher_signals:
+            sig = researcher_signals.get(ticker.upper(), {}) or {}
+            researcher_confidence = str(sig.get("confidence", "medium")).strip()
+            max_allowed_delta = CONFIDENCE_DELTA_MAP.get(researcher_confidence, 0.03)
+
+        disagreements.append({
+            "ticker": ticker,
+            "bull": f"{bull_dir}({bull_view.get('magnitude')}) - {bull_view.get('primary_reason')}",
+            "bear": f"{bear_dir}({bear_view.get('magnitude')}) - {bear_view.get('primary_reason')}",
+            "researcher_confidence": researcher_confidence,
+            "max_allowed_delta": max_allowed_delta,
+        })
+
+    return disagreements
+
+
 # ─────────────────────────────── Stage 0: guard_and_config ───────────────────────────────
 
 
@@ -570,12 +631,26 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         failed=bool(rebuttal_vs_bear.get("failed") and rebuttal_vs_bull.get("failed")),
     )
 
+    # Stage 4d: Build structured disagreement map for PM input injection
+    disagreement_map = _build_disagreement_map_for_pm(
+        bull_output=bull_output,
+        bear_output=bear_output,
+        researcher_signals=researcher_signals,
+    )
+    debate_summary_for_pm = {"disagreement_map": disagreement_map}
+    if disagreement_map:
+        logger.info(
+            f"[Stage 4d] disagreement_map built: "
+            f"{len(disagreement_map)} tickers with Bull/Bear conflict"
+        )
+
     # Stage 5: PM / SYNTHESIZER (LLM) —— final adjusted_weights + decision_rationale
     risk_params = pipeline_context.get("risk_params", {})
     t0 = time.time()
     synthesizer_out = await run_synthesizer_async(
         research_report, bull_output, bear_output,
         base_weights, brief, risk_params, regime_result,
+        debate_summary=debate_summary_for_pm,
     )
     dur_synth = int((time.time() - t0) * 1000)
     logger.info(
@@ -604,7 +679,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     # ── Stage 5 Task 5: CoT reasoning_chain extraction + consistency validation ──
     reasoning_chain = synthesizer_out.get("reasoning_chain") or {}
     if reasoning_chain:
-        # Step 4 consistency validation: cash_pct vs actual CASH weight
+        # Step 4 consistency validation + auto-correction: cash_pct vs actual CASH weight
         step4 = reasoning_chain.get("step4_risk_sanity_check") or {}
         stated_cash = step4.get("cash_pct")
         actual_cash = synthesizer_out.get("adjusted_weights", {}).get("CASH", 0)
@@ -613,10 +688,26 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             if cash_diff > 0.03:
                 logger.warning(
                     f"[Stage5] Synthesizer CoT inconsistency: "
-                    f"step4.cash_pct={stated_cash:.2%} vs actual CASH={actual_cash:.2%}"
+                    f"step4.cash_pct={stated_cash:.2%} vs actual CASH={actual_cash:.2%} — auto-correcting"
                 )
+                step4["cash_pct"] = round(actual_cash, 4)
+                reasoning_chain["step4_risk_sanity_check"] = step4
+                synthesizer_out["reasoning_chain"] = reasoning_chain
             else:
                 logger.info(f"[Stage5] CoT cash consistency check passed: step4={stated_cash:.2%} actual={actual_cash:.2%}")
+
+        # Also validate total_equity_pct
+        actual_equity = round(1.0 - actual_cash, 4)
+        stated_equity = step4.get("total_equity_pct")
+        if stated_equity is not None:
+            equity_diff = abs(stated_equity - actual_equity)
+            if equity_diff > 0.01:
+                logger.warning(
+                    f"[Stage5] total_equity_pct {stated_equity:.2%} ≠ {actual_equity:.2%} — auto-correcting"
+                )
+                step4["total_equity_pct"] = actual_equity
+                reasoning_chain["step4_risk_sanity_check"] = step4
+                synthesizer_out["reasoning_chain"] = reasoning_chain
 
         # Log reasoning_chain to agent_step_log for audit
         await _save_step_log(

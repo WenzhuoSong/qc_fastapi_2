@@ -54,8 +54,12 @@ This is an **agentic trading system** that integrates with QuantConnect using a 
 
 **Pipeline stages (10-stage Python-LLM-Python 三段接力)**:
 guard_and_config → market_brief → **quant_baseline** (Python 纯数学) →
-**RESEARCHER** (LLM 信息合成) → **BULL/BEAR** (LLM 并行辩论) →
-**SYNTHESIZER** (LLM 仲裁) → **RISK MGR** (Python overlays + 6 项检查) →
+**RESEARCHER** (LLM 信息合成) →
+**BULL** (LLM, ticker_views: direction+magnitude+confidence+primary_reason+key_risk) →
+**BEAR** (LLM, same schema, bearish framing, parallel) →
+**CROSS_EXAM** (LLM, each rebuts opponent's high-confidence claims, parallel) →
+**SYNTHESIZER** (LLM 仲裁 + Structured Disagreement Map 注入) →
+**RISK MGR** (Python overlays + 6 项检查 + Stage 6→7 regime 硬约束校验) →
 save_analysis → COMMUNICATOR → branch
 
 **接力棒传的是 weights**：
@@ -324,14 +328,19 @@ curl "https://api.telegram.org/bot{TOKEN}/setWebhook?url=https://{RAILWAY_DOMAIN
 ✅ `TickerNewsLibrary.source_api` column for source tracking
 ✅ RSS → ETF keyword matching (17 ETF × keyword list)
 ✅ Alpha Vantage bulk ticker sentiment with intelligent LLM skip
+✅ Phase D' gpt-4o-mini macro structurization: macro_signals[] + ticker_signals{} → MacroNewsCache.structured_payload
+✅ Phase D gpt-4o-mini per-ticker headline summarization: BatchAnalysisResponse (Pydantic Structured Outputs) → TickerNewsLibrary.llm_summary
 ✅ RESEARCHER refactored to info synthesis (research_report, no weights)
-✅ Bull/Bear structured debate (Stage 4a/4b, parallel via asyncio.gather)
+✅ Bull/Bear structured output: ticker_views dict {direction+magnitude+confidence+primary_reason+key_risk} per ticker (Stage 4a/4b, parallel via asyncio.gather)
 ✅ Synthesizer CIO arbiter (Stage 5, interface-compatible with old researcher_out)
 ✅ 10-stage pipeline refactor (pipeline.py rewired)
 ✅ 5-level stance system (buy/overweight/maintain/underweight/sell)
 ✅ Communicator updated with debate_summary in Telegram card
 ✅ AgentStepLog table for per-stage input/output audit trail
 ✅ Telegram error messages include exception details for remote debugging
+✅ Stage 5 PM 仲裁输入包含结构化分歧地图（disagreement_map），基于 researcher ticker_confidence 约束调整幅度（Bull/Bear 高置信度冲突 ticker 的 max_delta 由 researcher_confidence 决定）
+✅ Stage 6→7 Regime Hard Constraint Validation：apply_regime_constraints() 在 RISK MGR 通过后做最终兜底校验（权益上限 + 现金下限 + 新仓硬上限），clip 后值写回 risk_out 再流向 EXECUTOR
+✅ Researcher confidence 体系：overall_confidence + low_confidence_reasons + macro_outlook.data_quality/data_gaps + ticker_signals_dict[ticker].confidence + confidence_drivers.supporting_count/conflicting_signals
 
 ### Future Enhancements
 
