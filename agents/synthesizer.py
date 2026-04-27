@@ -54,6 +54,70 @@ CONFIDENCE_ARBITRATION_RULES = """
 必须填写 researcher_confidence 字段和实际使用的 max_delta。**
 """
 
+SYNTHESIZER_COT_SCHEMA = """
+## Output format (strict order, complete JSON)
+
+{
+  "reasoning_chain": {
+
+    "step1_regime_acknowledgment": {
+      "regime": "copy from regime_result verbatim",
+      "constraints_accepted": true | false,
+      "override_reason": null | "only in extreme cases: explain why constraints are not followed"
+    },
+
+    "step2_quant_baseline_assessment": {
+      "baseline_quality": "reliable" | "questionable",
+      "questionable_reason": null | "explain why the quant baseline is not trusted",
+      "top3_by_score": ["TICKER1", "TICKER2", "TICKER3"],
+      "bottom3_by_score": ["TICKER1", "TICKER2", "TICKER3"]
+    },
+
+    "step3_debate_arbitration": [
+      {
+        "ticker": "TICKER",
+        "bull_stance": "overweight/hold/underweight",
+        "bear_stance": "overweight/hold/underweight",
+        "my_decision": "overweight/hold/underweight",
+        "decision_basis": "bull_wins" | "bear_wins" | "compromise" | "quant_override",
+        "rationale": "one-sentence rationale (≤30 chars)"
+      }
+    ],
+
+    "step4_risk_sanity_check": {
+      "total_equity_pct": <float>,
+      "largest_single_position": {"ticker": "X", "weight": <float>},
+      "hedge_allocation_pct": <float>,
+      "cash_pct": <float>,
+      "regime_constraints_satisfied": true | false
+    },
+
+    "step5_final_judgment": {
+      "market_view": "one-sentence market view (≤30 chars)",
+      "key_conviction": "single highest-confidence conviction",
+      "biggest_uncertainty": "largest source of uncertainty"
+    }
+  },
+
+  "adjusted_weights": {
+    "<TICKER>": <float>,
+    "CASH": <float>
+  },
+
+  "decision_rationale": "human-readable decision summary (≤100 chars)",
+
+  "market_judgment": "bullish" | "cautious_bullish" | "neutral" | "cautious_bearish" | "bearish"
+}
+
+Rules:
+1. reasoning_chain must appear before adjusted_weights; order cannot be changed
+2. step3_debate_arbitration includes only tickers where Bull/Bear disagree
+3. step4 values must be consistent with actual adjusted_weights, no contradictions
+4. sum of all adjusted_weights values must = 1.0 (±0.001 float tolerance allowed)
+5. If step1.constraints_accepted = false, override_reason must be filled in,
+   and adjusted_weights must still satisfy defensive requirements (CASH >= 0.15)
+"""
+
 SYSTEM_PROMPT = """You are the Portfolio Manager (PM) / Judge for a quantitative trading system.
 
 Your goal is to maximize risk-adjusted returns (Sharpe) and protect capital. You alone assign
@@ -122,73 +186,6 @@ _VALID_STANCES_5 = {"buy", "overweight", "maintain", "underweight", "sell"}
 
 # ═══════════════════════════════════════════════════════════════
 # Synthesizer Chain-of-Thought Schema (Task 5)
-# ═══════════════════════════════════════════════════════════════
-
-SYNTHESIZER_COT_SCHEMA = """
-## Output format (strict order, complete JSON)
-
-{
-  "reasoning_chain": {
-
-    "step1_regime_acknowledgment": {
-      "regime": "copy from regime_result verbatim",
-      "constraints_accepted": true | false,
-      "override_reason": null | "only in extreme cases: explain why constraints are not followed"
-    },
-
-    "step2_quant_baseline_assessment": {
-      "baseline_quality": "reliable" | "questionable",
-      "questionable_reason": null | "explain why the quant baseline is not trusted",
-      "top3_by_score": ["TICKER1", "TICKER2", "TICKER3"],
-      "bottom3_by_score": ["TICKER1", "TICKER2", "TICKER3"]
-    },
-
-    "step3_debate_arbitration": [
-      {
-        "ticker": "TICKER",
-        "bull_stance": "overweight/hold/underweight",
-        "bear_stance": "overweight/hold/underweight",
-        "my_decision": "overweight/hold/underweight",
-        "decision_basis": "bull_wins" | "bear_wins" | "compromise" | "quant_override",
-        "rationale": "one-sentence rationale (≤30 chars)"
-      }
-    ],
-
-    "step4_risk_sanity_check": {
-      "total_equity_pct": <float>,
-      "largest_single_position": {"ticker": "X", "weight": <float>},
-      "hedge_allocation_pct": <float>,
-      "cash_pct": <float>,
-      "regime_constraints_satisfied": true | false
-    },
-
-    "step5_final_judgment": {
-      "market_view": "one-sentence market view (≤30 chars)",
-      "key_conviction": "single highest-confidence conviction",
-      "biggest_uncertainty": "largest source of uncertainty"
-    }
-  },
-
-  "adjusted_weights": {
-    "<TICKER>": <float>,
-    "CASH": <float>
-  },
-
-  "decision_rationale": "human-readable decision summary (≤100 chars)",
-
-  "market_judgment": "bullish" | "cautious_bullish" | "neutral" | "cautious_bearish" | "bearish"
-}
-
-Rules:
-1. reasoning_chain must appear before adjusted_weights; order cannot be changed
-2. step3_debate_arbitration includes only tickers where Bull/Bear disagree
-3. step4 values must be consistent with actual adjusted_weights, no contradictions
-4. sum of all adjusted_weights values must = 1.0 (±0.001 float tolerance allowed)
-5. If step1.constraints_accepted = false, override_reason must be filled in,
-   and adjusted_weights must still satisfy defensive requirements (CASH >= 0.15)
-"""
-
-
 # ═══════════════════════════════════════════════════════════════
 # Main entry
 # ═══════════════════════════════════════════════════════════════
