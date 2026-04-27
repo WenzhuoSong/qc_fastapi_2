@@ -205,6 +205,22 @@ async def run_synthesizer_async(
     Stage 5: arbitrate Bull/Bear → adjusted_weights.
     Output compatible with legacy researcher_out; downstream Risk MGR unchanged.
     """
+    # Defensive: ensure all dict inputs are actually dicts before any .get() call
+    if not isinstance(bull_output, dict):
+        bull_output = {}
+    if not isinstance(bear_output, dict):
+        bear_output = {}
+    if not isinstance(research_report, dict):
+        research_report = {}
+    if not isinstance(brief, dict):
+        brief = {}
+    if not isinstance(risk_params, dict):
+        risk_params = {}
+    if not isinstance(regime_result, dict):
+        regime_result = None
+    if debate_summary is not None and not isinstance(debate_summary, dict):
+        debate_summary = None
+
     max_single_position = float(risk_params.get("max_single_position", 0.20))
 
     allowed_tickers = _collect_allowed_tickers(brief, base_weights)
@@ -405,6 +421,12 @@ def _normalize(
     bear_output: dict,
     research_report: dict,
 ) -> dict:
+    # Defensive: guard against non-dict inputs leaking through (e.g., error strings)
+    if not isinstance(bull_output, dict):
+        bull_output = {}
+    if not isinstance(bear_output, dict):
+        bear_output = {}
+
     mj = out.get("market_judgment") or {}
     regime = str(mj.get("regime", "")).strip()
     if regime not in _VALID_REGIMES:
@@ -517,6 +539,16 @@ def _build_debate_summary(
         synth_raw: Raw synthesizer output
         researcher_signals: research_report["ticker_signals_dict"] with confidence info (Task 7)
     """
+    # Defensive: ensure inputs are dicts (guard against string error messages leaking through)
+    if not isinstance(bull_output, dict):
+        bull_output = {}
+    if not isinstance(bear_output, dict):
+        bear_output = {}
+    if not isinstance(synth_raw, dict):
+        synth_raw = {}
+    if researcher_signals is None:
+        researcher_signals = {}
+
     bull_views = bull_output.get("ticker_views") or {}
     bear_views = bear_output.get("ticker_views") or {}
 
