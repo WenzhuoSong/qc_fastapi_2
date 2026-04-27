@@ -394,7 +394,11 @@ def _validate(out: dict) -> None:
         raise ValueError(f"missing fields: {missing}")
 
     # Validate reasoning_chain structure (Task 5)
-    rc = out.get("reasoning_chain") or {}
+    rc = out.get("reasoning_chain")
+    # Guard: reasoning_chain must be a dict, not a string or other type
+    if not isinstance(rc, dict):
+        raise ValueError(f"reasoning_chain must be dict, got {type(rc).__name__}")
+
     required_steps = [
         "step1_regime_acknowledgment",
         "step2_quant_baseline_assessment",
@@ -428,6 +432,8 @@ def _normalize(
         bear_output = {}
 
     mj = out.get("market_judgment") or {}
+    if not isinstance(mj, dict):
+        mj = {}
     regime = str(mj.get("regime", "")).strip()
     if regime not in _VALID_REGIMES:
         regime = "neutral"
@@ -501,6 +507,8 @@ def _normalize(
 
     # Preserve reasoning_chain from LLM output (Task 5)
     reasoning_chain = out.get("reasoning_chain") or {}
+    if not isinstance(reasoning_chain, dict):
+        reasoning_chain = {}
 
     return {
         # researcher_out fields (Risk MGR consumes these)
@@ -514,8 +522,8 @@ def _normalize(
         "weight_adjustments":  actual_adjustments,
         "reasoning":           reasoning_line,
         "decision_rationale":  decision_rationale,
-        "consensus_points":    list(out.get("consensus_points") or [])[:5],
-        "divergence_points":   list(out.get("divergence_points") or [])[:5],
+        "consensus_points":    list(out.get("consensus_points"))[:5] if isinstance(out.get("consensus_points"), list) else [],
+        "divergence_points":   list(out.get("divergence_points"))[:5] if isinstance(out.get("divergence_points"), list) else [],
         "key_events":          key_events,
         "used_degraded_fallback": False,
         # Extra (Communicator; not consumed by Risk MGR)
