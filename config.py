@@ -46,6 +46,16 @@ class Settings(BaseSettings):
     finnhub_api_key: str = ""
     alphavantage_api_key: str = ""
 
+    # MLflow tracking (optional — pipeline runs without it if not set)
+    mlflow_tracking_uri: str = ""        # MLFLOW_TRACKING_URI
+    mlflow_experiment_name: str = "agentix"   # default experiment name
+
+    # DVC / S3 export (optional — only needed for data versioning)
+    dvc_s3_bucket: str = ""              # e.g. "my-agentix-data"
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_region: str = "us-east-1"
+
     class Config:
         env_file = ".env"
         case_sensitive = False

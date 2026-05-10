@@ -263,7 +263,7 @@ async def run_synthesizer_async(
 
             parsed = json.loads(raw)
             _validate(parsed)
-            return _normalize(
+            result = _normalize(
                 parsed,
                 base_weights=base_weights,
                 allowed_tickers=allowed_tickers,
@@ -272,6 +272,11 @@ async def run_synthesizer_async(
                 bear_output=bear_output,
                 research_report=research_report,
             )
+            result["_token_usage"] = {
+                "prompt_tokens": resp.usage.prompt_tokens,
+                "completion_tokens": resp.usage.completion_tokens,
+            }
+            return result
 
         except Exception as e:
             last_error = str(e)

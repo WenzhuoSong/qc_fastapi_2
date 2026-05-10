@@ -43,6 +43,7 @@ from agents.communicator     import run_communicator_async, append_command_hints
 from agents.executor         import run_executor_async
 from services.market_brief    import build_market_brief
 from services.quant_baseline  import run_quant_baseline_async
+from tracking.mlflow_client   import PipelineRunTracker
 from db.session          import AsyncSessionLocal
 from db.queries          import get_system_config, upsert_system_config
 from db.models           import AgentAnalysis, AgentStepLog, ExecutionLog
@@ -479,10 +480,22 @@ async def run_full_pipeline(trigger: str = "scheduled_hourly") -> dict:
 async def _run_pipeline_inner(trigger: str) -> dict:
     model_heavy = settings.openai_model_heavy
 
+    # MLflow tracking — starts here; all tracker calls are no-ops if MLflow disabled
+    tracker = PipelineRunTracker()
+    regime_result_for_tracker: dict | None = None
+    synthesizer_out_for_tracker: dict | None = None
+    risk_out_for_tracker: dict | None = None
+    pipeline_status = "unknown"
+
     # Stage 0: guard + config
     pipeline_context = await _guard_and_config(trigger)
     if pipeline_context is None:
+        tracker.end_run("skipped_gated")
         return {"status": "skipped_gated"}
+
+    if not tracker.is_disabled:
+        regime_result_for_tracker = pipeline_context.get("regime_result")
+        tracker.start_run(pipeline_context, regime_result_for_tracker)
 
     logger.info(
         f"Stage 0 done | auth={pipeline_context['auth_mode']} "
@@ -499,7 +512,9 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     dur_brief = int((time.time() - t0) * 1000)
     if not brief.get("holdings"):
         logger.warning("Stage 1 market_brief: no holdings in latest snapshot — skipping pipeline")
-        return {"status": "skipped_no_snapshot"}
+        pipeline_status = "skipped_no_snapshot"
+        tracker.end_run(pipeline_status)
+        return {"status": pipeline_status}
     logger.info(
         f"Stage 1 market_brief done | "
         f"n_holdings={len(brief.get('holdings', []))} "
@@ -511,6 +526,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         output_data=brief,
         duration_ms=dur_brief,
     )
+    tracker.log_stage_metrics("1_brief", dur_brief, n_holdings=len(brief.get("holdings", [])))
 
     # Stage 2: quant_baseline (Python)
     t0 = time.time()
@@ -527,6 +543,9 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         output_data=quant_baseline,
         duration_ms=dur_quant,
     )
+    tracker.log_stage_metrics("2_quant", dur_quant,
+        n_signals=len(quant_baseline.get("signal_scores", [])),
+        n_selected=len(quant_baseline.get("selected_tickers", [])))
 
     # ── Regime hard classification step log ───────────────────────────────────
     regime_result = quant_baseline.get("regime_result")
@@ -564,6 +583,10 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         model=model_heavy,
         failed=research_report.get("used_degraded_fallback", False),
     )
+    tracker.log_stage_metrics("3_researcher", dur_researcher,
+        tokens=research_report.get("_token_usage"),
+        n_ticker_signals=len(research_report.get("ticker_signals", [])),
+        degraded=research_report.get("used_degraded_fallback", False))
 
     # Task 7: Extract researcher_signals for downstream confidence-based clipping
     researcher_signals: dict = research_report.get("ticker_signals_dict") or {}
@@ -602,6 +625,11 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         model=model_heavy,
         failed=bear_draft.get("failed", False),
     )
+    tracker.log_stage_metrics("4_drafts", dur_draft,
+        tokens_bull=bull_draft.get("_token_usage"),
+        tokens_bear=bear_draft.get("_token_usage"),
+        bull_failed=bull_draft.get("failed", False),
+        bear_failed=bear_draft.get("failed", False))
 
     # Stage 4c: cross-examination (Bull sees Bear draft, Bear sees Bull draft; parallel)
     t_ce = time.time()
@@ -630,6 +658,9 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         model=model_heavy,
         failed=bool(rebuttal_vs_bear.get("failed") and rebuttal_vs_bull.get("failed")),
     )
+    tracker.log_stage_metrics("4c_cross_exam", dur_ce,
+        tokens_bull=rebuttal_vs_bear.get("_token_usage"),
+        tokens_bear=rebuttal_vs_bull.get("_token_usage"))
 
     # Stage 4d: Build structured disagreement map for PM input injection
     disagreement_map = _build_disagreement_map_for_pm(
@@ -675,6 +706,11 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         model=model_heavy,
         failed=synthesizer_out.get("used_degraded_fallback", False),
     )
+    tracker.log_stage_metrics("5_synthesizer", dur_synth,
+        tokens=synthesizer_out.get("_token_usage"),
+        n_adjustments=len(synthesizer_out.get("weight_adjustments", [])),
+        degraded=synthesizer_out.get("used_degraded_fallback", False))
+    synthesizer_out_for_tracker = synthesizer_out
 
     # ── Stage 5 Task 5: CoT reasoning_chain extraction + consistency validation ──
     reasoning_chain = synthesizer_out.get("reasoning_chain") or {}
@@ -771,6 +807,11 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         output_data=risk_out,
         duration_ms=dur_risk,
     )
+    risk_out_for_tracker = risk_out
+    tracker.log_stage_metrics("6_risk_mgr", dur_risk,
+        risk_approved=bool(risk_out.get("approved")),
+        n_actions=len(risk_out.get("rebalance_actions", [])),
+        overlay_count=len(risk_out.get("overlays_applied") or []))
 
     # ── Stage 6→7: Regime Hard Constraint Validation ───────────────────────────────
     if regime_result and risk_out.get("approved"):
@@ -815,31 +856,31 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         model=settings.openai_model if not comm_out.get("used_fallback") else None,
         failed=comm_out.get("used_fallback", False),
     )
+    tracker.log_stage_metrics("8_communicator", dur_comm,
+        used_fallback=comm_out.get("used_fallback", False))
 
     # Stage 9: Branch execution
     auth_mode = pipeline_context["auth_mode"]
 
     if not approved:
-        # Never expose confirm/skip/pause when there is no pending proposal.
         await tool_send_telegram({"text": remove_command_hints(comm_out["text"])})
         logger.info("Risk rejected — notified and stopping")
-        return {"status": "rejected_by_risk", "analysis_id": analysis_id}
-
-    if auth_mode == "SEMI_AUTO":
-        await _send_semi_auto_proposal(
-            pipeline_context, risk_out, comm_out, analysis_id
-        )
-        return {"status": "semi_auto_pending", "analysis_id": analysis_id}
-
-    if auth_mode == "FULL_AUTO":
-        result = await run_executor_async(
-            pipeline_context, risk_out, analysis_id
-        )
+        pipeline_status = "rejected_by_risk"
+    elif auth_mode == "SEMI_AUTO":
+        await _send_semi_auto_proposal(pipeline_context, risk_out, comm_out, analysis_id)
+        pipeline_status = "semi_auto_pending"
+    elif auth_mode == "FULL_AUTO":
+        result = await run_executor_async(pipeline_context, risk_out, analysis_id)
         await _save_execution(analysis_id, result)
         logger.info(f"FULL_AUTO execution: {result.get('execution_status')}")
-        return {"status": result.get("execution_status", "unknown"), "analysis_id": analysis_id}
+        pipeline_status = result.get("execution_status", "unknown")
+    else:
+        pipeline_status = "unknown_auth_mode"
 
-    return {"status": "unknown_auth_mode", "analysis_id": analysis_id}
+    if synthesizer_out_for_tracker and risk_out_for_tracker:
+        tracker.log_final_decision(synthesizer_out_for_tracker, risk_out_for_tracker)
+    tracker.end_run(pipeline_status)
+    return {"status": pipeline_status, "analysis_id": analysis_id}
 
 
 # ─────────────────────────────── SEMI_AUTO Proposal ───────────────────────────────

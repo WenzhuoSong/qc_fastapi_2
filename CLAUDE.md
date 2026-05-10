@@ -120,6 +120,13 @@ qc_fastapi_2/
 │   ├── hourly_analysis.py  # Cron 2: main pipeline (hourly)
 │   ├── post_market_report.py
 │   ├── morning_health.py
+│   ├── pending_check.py
+│   └── export_for_dvc.py   # Standalone DVC data export (local dev only)
+├── tracking/        # MLflow experiment tracking + DVC export utilities
+│   ├── __init__.py        # Module entry point
+│   ├── mlflow_client.py   # PipelineRunTracker (MLflow wrapper)
+│   └── dvc_exporter.py    # DB → parquet export for DVC versioning
+│   ├── morning_health.py
 │   └── pending_check.py
 ├── tools/           # Tool implementations
 │   ├── registry.py         # Tool whitelist management
@@ -310,6 +317,25 @@ AUTHORIZATION_MODE=SEMI_AUTO
 curl "https://api.telegram.org/bot{TOKEN}/setWebhook?url=https://{RAILWAY_DOMAIN}/api/telegram"
 ```
 
+### MLflow Server Deployment (Railway)
+
+MLflow runs as a **separate Railway service** (`mlflow_server/` directory):
+
+1. **Railway dashboard**: Add a new service → Connect repo → select `mlflow_server/` directory
+2. **Configure persistent volume**: In Railway dashboard for the MLflow service → Storage → Add Volume → mount at `/mlflow` (stores `mlflow.db` + artifact files)
+3. **Set PORT = 5000** in MLflow service environment variables
+4. **qc_fastapi_2 service env vars**:
+   ```
+   MLFLOW_TRACKING_URI=http://mlflow-server:5000
+   MLFLOW_EXPERIMENT_NAME=agentix
+   ```
+   Railway's internal DNS resolves `mlflow-server` to the MLflow service.
+5. **Access MLflow UI**: Open the MLflow service URL in Railway dashboard (port 5000)
+
+**Files**:
+- `mlflow_server/Dockerfile` — Python 3.11-slim + `mlflow[skinny]`
+- `mlflow_server/railway.toml` — service definition
+
 `PORT` is dynamically assigned by Railway.
 
 ### Phase 1 Scope
@@ -341,6 +367,38 @@ curl "https://api.telegram.org/bot{TOKEN}/setWebhook?url=https://{RAILWAY_DOMAIN
 ✅ Stage 5 PM 仲裁输入包含结构化分歧地图（disagreement_map），基于 researcher ticker_confidence 约束调整幅度（Bull/Bear 高置信度冲突 ticker 的 max_delta 由 researcher_confidence 决定）
 ✅ Stage 6→7 Regime Hard Constraint Validation：apply_regime_constraints() 在 RISK MGR 通过后做最终兜底校验（权益上限 + 现金下限 + 新仓硬上限），clip 后值写回 risk_out 再流向 EXECUTOR
 ✅ Researcher confidence 体系：overall_confidence + low_confidence_reasons + macro_outlook.data_quality/data_gaps + ticker_signals_dict[ticker].confidence + confidence_drivers.supporting_count/conflicting_signals
+
+### MLOps Tracking (MLflow + DVC)
+
+**`tracking/` module** — experiment tracking + data export utilities:
+
+| File | Purpose |
+|------|---------|
+| `tracking/__init__.py` | Module entry point |
+| `tracking/mlflow_client.py` | `PipelineRunTracker` class — logs pipeline metadata, stage metrics, final decisions to MLflow |
+| `tracking/dvc_exporter.py` | Exports DB records to parquet files for DVC versioning |
+
+**PipelineRunTracker** (all methods are no-ops if `MLFLOW_TRACKING_URI` is not set):
+- `start_run()` — creates MLflow run, logs pipeline params (trigger, auth_mode, strategy, regime)
+- `log_stage_metrics()` — called after each stage (1_brief → 8_communicator), logs duration_ms + token usage
+- `log_final_decision()` — logs PM decision outcome (weights, risk_approved, overlays)
+- `end_run()` — closes MLflow run
+
+**DVC export** via `cron/export_for_dvc.py`:
+- `--type news` — exports TickerNewsLibrary (48h window) to `data/raw/news/news_{date}.parquet`
+- `--type pipeline --id N` — exports specific `AgentAnalysis` row to `data/outputs/analysis_{N}.parquet`
+- `--type params` — exports current risk params + regime constraints to `data/params/params_{ts}.yaml`
+- All exports upload to S3 if `DVC_S3_BUCKET` is configured
+
+**Config settings** (optional, no-op if not set):
+```bash
+MLFLOW_TRACKING_URI=http://localhost:5000  # MLflow server URL
+MLFLOW_EXPERIMENT_NAME=agentix              # default experiment
+DVC_S3_BUCKET=my-agentix-data              # S3 bucket for DVC remote
+AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION
+```
+
+**Token usage tracking**: Each LLM agent surfaces `_token_usage: {prompt_tokens, completion_tokens}` in its return dict. `pipeline.py` passes these to `PipelineRunTracker.log_stage_metrics()`.
 
 ### Future Enhancements
 

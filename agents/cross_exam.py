@@ -255,7 +255,12 @@ async def _run_cross_exam(
                 f"tokens out={resp.usage.completion_tokens if resp.usage else 0}"
             )
             parsed = json.loads(raw)
-            return _normalize_cross_exam(parsed)
+            result = _normalize_cross_exam(parsed)
+            result["_token_usage"] = {
+                "prompt_tokens": resp.usage.prompt_tokens if resp.usage else 0,
+                "completion_tokens": resp.usage.completion_tokens if resp.usage else 0,
+            }
+            return result
         except Exception as e:
             last_error = str(e)
             logger.warning(f"[CROSS_EXAM {role}] attempt {attempt} failed: {e}")

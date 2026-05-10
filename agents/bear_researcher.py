@@ -138,7 +138,12 @@ async def run_bear_researcher_async(
             )
 
             parsed = json.loads(raw)
-            return _normalize(parsed)
+            result = _normalize(parsed)
+            result["_token_usage"] = {
+                "prompt_tokens": resp.usage.prompt_tokens,
+                "completion_tokens": resp.usage.completion_tokens,
+            }
+            return result
 
         except Exception as e:
             last_error = str(e)
