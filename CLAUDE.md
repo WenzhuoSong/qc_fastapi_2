@@ -121,13 +121,7 @@ qc_fastapi_2/
 │   ├── post_market_report.py
 │   ├── morning_health.py
 │   ├── pending_check.py
-│   └── export_for_dvc.py   # Standalone DVC data export (local dev only)
-├── tracking/        # MLflow experiment tracking + DVC export utilities
-│   ├── __init__.py        # Module entry point
-│   ├── mlflow_client.py   # PipelineRunTracker (MLflow wrapper)
-│   └── dvc_exporter.py    # DB → parquet export for DVC versioning
-│   ├── morning_health.py
-│   └── pending_check.py
+├── tracking/        # W&B experiment tracking
 ├── tools/           # Tool implementations
 │   ├── registry.py         # Tool whitelist management
 │   ├── db_tools.py         # Database operations
@@ -349,15 +343,14 @@ curl "https://api.telegram.org/bot{TOKEN}/setWebhook?url=https://{RAILWAY_DOMAIN
 ✅ Stage 6→7 Regime Hard Constraint Validation：apply_regime_constraints() 在 RISK MGR 通过后做最终兜底校验（权益上限 + 现金下限 + 新仓硬上限），clip 后值写回 risk_out 再流向 EXECUTOR
 ✅ Researcher confidence 体系：overall_confidence + low_confidence_reasons + macro_outlook.data_quality/data_gaps + ticker_signals_dict[ticker].confidence + confidence_drivers.supporting_count/conflicting_signals
 
-### MLOps Tracking (W&B + DVC)
+### W&B Experiment Tracking
 
-**`tracking/` module** — experiment tracking + data export utilities:
+**`tracking/` module**:
 
 | File | Purpose |
 |------|---------|
 | `tracking/__init__.py` | Module entry point |
 | `tracking/wandb_client.py` | `PipelineRunTracker` class — logs pipeline metadata, stage metrics, final decisions to W&B |
-| `tracking/dvc_exporter.py` | Exports DB records to parquet files for DVC versioning |
 
 **PipelineRunTracker** (all methods are no-ops if `WANDB_API_KEY` is not set):
 - `start_run()` — creates W&B run, logs pipeline config (trigger, auth_mode, strategy, regime)
@@ -365,19 +358,11 @@ curl "https://api.telegram.org/bot{TOKEN}/setWebhook?url=https://{RAILWAY_DOMAIN
 - `log_final_decision()` — logs PM decision outcome (weights, risk_approved, overlays)
 - `end_run()` — finishes W&B run
 
-**DVC export** via `cron/export_for_dvc.py`:
-- `--type news` — exports TickerNewsLibrary (48h window) to `data/raw/news/news_{date}.parquet`
-- `--type pipeline --id N` — exports specific `AgentAnalysis` row to `data/outputs/analysis_{N}.parquet`
-- `--type params` — exports current risk params + regime constraints to `data/params/params_{ts}.yaml`
-- All exports upload to S3 if `DVC_S3_BUCKET` is configured
-
 **Config settings** (optional, no-op if not set):
 ```bash
 WANDB_API_KEY=<your-wandb-api-key>      # from wandb.ai/authorize
 WANDB_PROJECT=agentix                    # W&B project name
 WANDB_ENTITY=<your-username>            # W&B entity (username or team)
-DVC_S3_BUCKET=my-agentix-data           # S3 bucket for DVC remote
-AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION
 ```
 
 **Token usage tracking**: Each LLM agent surfaces `_token_usage: {prompt_tokens, completion_tokens}` in its return dict. `pipeline.py` passes these to `PipelineRunTracker.log_stage_metrics()`.

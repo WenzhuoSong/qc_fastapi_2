@@ -1,7 +1,7 @@
 # db/queries.py
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
-from db.models import QCSnapshot, PortfolioTimeseries, HoldingsFactor, SystemConfig, AgentAnalysis
+from db.models import QCSnapshot, PortfolioTimeseries, HoldingsFactor, SystemConfig
 from datetime import datetime, timedelta
 
 
@@ -52,22 +52,3 @@ async def get_holdings_latest(db: AsyncSession, snapshot_id: int = None):
     result = await db.execute(stmt)
     return result.scalars().all()
 
-
-async def get_analysis_by_id(analysis_id: int):
-    """Get AgentAnalysis row by id for DVC export."""
-    from db.session import async_session
-    async with async_session() as db:
-        stmt = select(AgentAnalysis).where(AgentAnalysis.id == analysis_id)
-        result = await db.execute(stmt)
-        row = result.scalar_one_or_none()
-        if not row:
-            return None
-        return {
-            "id": row.id,
-            "created_at": row.created_at,
-            "trigger": row.trigger,
-            "execution_status": row.execution_status,
-            "researcher_output": row.researcher_output,
-            "allocator_output": row.allocator_output,
-            "risk_output": row.risk_output,
-        }

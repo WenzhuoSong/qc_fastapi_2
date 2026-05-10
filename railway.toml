@@ -10,5 +10,3 @@ restartPolicyMaxRetries = 3
 #   WANDB_API_KEY=<your-wandb-api-key>
 #   WANDB_PROJECT=agentix
 #   WANDB_ENTITY=<your-username>
-#   DVC_S3_BUCKET=<bucket> (optional, for data versioning exports)
-#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION (for DVC S3)

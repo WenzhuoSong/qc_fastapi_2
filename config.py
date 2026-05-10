@@ -51,12 +51,6 @@ class Settings(BaseSettings):
     wandb_project: str = "agentix"       # W&B project name
     wandb_entity: str = ""               # W&B entity (username or team name)
 
-    # DVC / S3 export (optional — only needed for data versioning)
-    dvc_s3_bucket: str = ""              # e.g. "my-agentix-data"
-    aws_access_key_id: str = ""
-    aws_secret_access_key: str = ""
-    aws_region: str = "us-east-1"
-
     class Config:
         env_file = ".env"
         case_sensitive = False
