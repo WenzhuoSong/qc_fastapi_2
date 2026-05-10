@@ -249,6 +249,19 @@ def _build_user_message(
     per_ticker_news = brief.get("per_ticker_news") or {}
     news_block = _format_per_ticker_news(per_ticker_news)
 
+    # Memory context block (from context_assembler, injected during market_brief)
+    memory_context = brief.get("memory_context") or {}
+    memory_section = ""
+    if memory_context.get("has_memory"):
+        memory_section = (
+            "\n\n## HISTORICAL MEMORY CONTEXT (for reference only — do not be dominated by it)\n\n"
+            f"**Recent Regime Trend**: {memory_context.get('regime_trend', 'none')}\n\n"
+            f"{memory_context.get('memory_prose', '')}\n\n"
+            "**Note**: Historical memory is for reference only. "
+            "If current market signals clearly differ from historical patterns, "
+            "prioritize the current data.\n"
+        )
+
     # Regime constraint block
     regime_block = ""
     if regime_result:
@@ -282,6 +295,7 @@ def _build_user_message(
         "## Your task\n"
         "From the above, output market_regime + macro_outlook + ticker_signals +\n"
         "cross_signal_insights. Analyze only — no trading decision. JSON only."
+        + memory_section
     )
 
 

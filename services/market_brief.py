@@ -80,6 +80,11 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
         "news_context":       news_context,
     }
 
+    # Inject historical memory context for downstream RESEARCHER
+    from services.context_assembler import assemble_memory_context
+    memory_context = await assemble_memory_context()
+    brief["memory_context"] = memory_context
+
     logger.info(
         f"market_brief built | breadth={key_facts.get('breadth_pct')} "
         f"| spy_mom_60d={key_facts.get('spy_mom_60d')} "

@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, date
 from sqlalchemy import (
     BigInteger, Boolean, Column, Date, DateTime,
-    Integer, Numeric, String, Text, ForeignKey, UniqueConstraint, func
+    Float, Integer, Numeric, String, Text, ForeignKey, UniqueConstraint, func
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from db.session import Base
@@ -192,3 +192,94 @@ class MacroNewsCache(Base):
     # Phase 2: structurized news preprocessing
     raw_payload        = Column(JSONB, nullable=True)   # raw news list
     structured_payload = Column(JSONB, nullable=True)   # LLM structurized output
+
+
+# ─────────────────────────────── Memory Layer ───────────────────────────────
+
+
+class MemoryDaily(Base):
+    """
+    Daily market memory distilled from the day's last pipeline run.
+    Written by cron/daily_analyst.py each trading day after market close.
+
+    Captures: regime snapshot, portfolio decisions, macro narrative, and key events.
+    Portfolio performance fields (portfolio_return_pct, decision_quality_score)
+    are backfilled the following day.
+    """
+    __tablename__ = "memory_daily"
+
+    id                   = Column(BigInteger, primary_key=True, autoincrement=True)
+    trading_date         = Column(Date, nullable=False, unique=True)
+    created_at           = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at           = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Market state snapshot (from day's last pipeline result)
+    regime_label         = Column(String(50), nullable=False)   # trending_bull / high_vol / mean_reverting / etc.
+    regime_confidence    = Column(Float, nullable=True)
+    vix_close            = Column(Float, nullable=True)
+    spy_return_pct       = Column(Float, nullable=True)         # SPY day return %
+
+    # Pipeline decision summary
+    recommended_stance   = Column(String(50), nullable=True)    # buy / overweight / maintain / underweight / sell
+    risk_approved        = Column(Boolean, nullable=False, default=False)
+    execution_happened   = Column(Boolean, nullable=False, default=False)
+    top3_overweight      = Column(JSONB, nullable=True)         # [{"ticker": "XLK", "weight": 0.18}]
+    top3_underweight     = Column(JSONB, nullable=True)
+
+    # Macro narrative (LLM distilled, ≤200 chars)
+    macro_narrative      = Column(Text, nullable=True)
+    key_events           = Column(JSONB, nullable=True)          # ["Fed hawkish", "CPI beat"]
+    hard_risks_detected  = Column(JSONB, nullable=True)          # ["XLE: earnings_soon"]
+
+    # Strategy performance (backfilled next day, null today)
+    portfolio_return_pct  = Column(Float, nullable=True)         # actual portfolio day return %
+    decision_quality_score = Column(Float, nullable=True)         # 0-1, post-hoc evaluation
+
+    # Source reference
+    agent_analysis_id     = Column(BigInteger, ForeignKey("agent_analysis.id"), nullable=True)
+    raw_researcher_output = Column(JSONB, nullable=True)          # full researcher output snapshot
+
+
+class MemoryWeekly(Base):
+    """
+    Weekly market memory distilled from the week's MemoryDaily records.
+    Written by cron/weekly_analyst.py each Friday after market close.
+
+    Captures: dominant regime, regime shifts, macro themes, sector rotation signals,
+    strategy effectiveness review, and next-week outlook.
+    """
+    __tablename__ = "memory_weekly"
+
+    id                   = Column(BigInteger, primary_key=True, autoincrement=True)
+    week_start           = Column(Date, nullable=False, unique=True)   # Monday date
+    week_end             = Column(Date, nullable=False)                # Friday date
+    created_at           = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Weekly market summary (LLM distilled)
+    dominant_regime      = Column(String(50), nullable=False)          # dominant regime this week
+    regime_shift         = Column(Boolean, default=False)               # whether regime switched this week
+    regime_shift_detail  = Column(Text, nullable=True)                  # how it switched
+
+    # Key macro themes (LLM distilled, 3-5 items)
+    macro_themes         = Column(JSONB, nullable=True)                 # ["Fed pivot narrative", "Tech earnings beat"]
+    sector_rotation_signal = Column(Text, nullable=True)                # sector rotation summary
+
+    # Strategy signal effectiveness review
+    momentum_effectiveness = Column(String(20), nullable=True)          # strong / moderate / weak / failed
+    signal_conflicts      = Column(JSONB, nullable=True)                # tickers with biggest Bull/Bear disagreements
+    best_calls            = Column(JSONB, nullable=True)                # most accurate calls this week
+    worst_calls           = Column(JSONB, nullable=True)                # worst calls this week
+
+    # Portfolio performance
+    weekly_return_pct    = Column(Float, nullable=True)
+    weekly_sharpe        = Column(Float, nullable=True)
+    max_drawdown_pct     = Column(Float, nullable=True)
+    execution_count      = Column(Integer, default=0)
+
+    # Next-week outlook (LLM generated, ≤150 chars)
+    next_week_watch      = Column(Text, nullable=True)                  # risks/opportunities to watch next week
+    calendar_events      = Column(JSONB, nullable=True)                 # important economic events next week
+
+    # Source records
+    daily_count          = Column(Integer, default=0)                   # how many days have memory_daily this week
+    source_daily_ids     = Column(JSONB, nullable=True)                 # memory_daily id list
