@@ -46,9 +46,10 @@ class Settings(BaseSettings):
     finnhub_api_key: str = ""
     alphavantage_api_key: str = ""
 
-    # MLflow tracking (optional — pipeline runs without it if not set)
-    mlflow_tracking_uri: str = ""        # MLFLOW_TRACKING_URI
-    mlflow_experiment_name: str = "agentix"   # default experiment name
+    # Weights & Biases tracking (optional — pipeline runs without it if not set)
+    wandb_api_key: str = ""              # WANDB_API_KEY
+    wandb_project: str = "agentix"       # W&B project name
+    wandb_entity: str = ""               # W&B entity (username or team name)
 
     # DVC / S3 export (optional — only needed for data versioning)
     dvc_s3_bucket: str = ""              # e.g. "my-agentix-data"

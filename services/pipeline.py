@@ -43,7 +43,7 @@ from agents.communicator     import run_communicator_async, append_command_hints
 from agents.executor         import run_executor_async
 from services.market_brief    import build_market_brief
 from services.quant_baseline  import run_quant_baseline_async
-from tracking.mlflow_client   import PipelineRunTracker
+from tracking.wandb_client   import PipelineRunTracker
 from db.session          import AsyncSessionLocal
 from db.queries          import get_system_config, upsert_system_config
 from db.models           import AgentAnalysis, AgentStepLog, ExecutionLog
