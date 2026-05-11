@@ -72,7 +72,7 @@ class AlertLog(Base):
     __tablename__ = "alerts_log"
     id           = Column(BigInteger, primary_key=True, autoincrement=True)
     snapshot_id  = Column(BigInteger, ForeignKey("qc_snapshots.id"))
-    alert_id     = Column(String(20))
+    alert_id     = Column(String(60))
     level        = Column(String(10), nullable=False)  # info|warning|critical
     type         = Column(String(30), nullable=False)
     message      = Column(Text)
