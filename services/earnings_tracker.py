@@ -17,7 +17,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
-from constants import ETF_UNIVERSE
+from constants import DEFAULT_ETF_UNIVERSE as ETF_UNIVERSE
 from db.session import AsyncSessionLocal
 from db.models import EarningsCalendar
 from services.finnhub_client import fetch_earnings_calendar_detail

@@ -258,7 +258,7 @@ def _empty_context() -> dict:
 async def _get_earnings_context() -> dict:
     """Fetch upcoming earnings for held tickers (next 7 days)."""
     try:
-        from constants import ETF_UNIVERSE
+        from constants import DEFAULT_ETF_UNIVERSE as ETF_UNIVERSE
         tickers = list(ETF_UNIVERSE)
         upcoming = await get_upcoming_earnings(tickers, days=7)
         if not upcoming:
