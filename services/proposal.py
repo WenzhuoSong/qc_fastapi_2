@@ -2,6 +2,8 @@
 """
 SEMI_AUTO 待确认建议的持久化 + 超时处理。
 在 cron 架构下，超时处理由独立的 pending_check cron 定期轮询。
+
+P2-1: Proposal Invalidation — 在执行前检查 proposal 是否仍然有效。
 """
 import logging
 from datetime import datetime
@@ -18,8 +20,10 @@ from db.models import AgentAnalysis
 from tools.db_tools import tool_verify_approval_token
 from tools.qc_tools import tool_send_weight_command
 from tools.notify_tools import tool_send_telegram
+from config import get_settings
 
 logger = logging.getLogger("qc_fastapi_2.proposal")
+settings = get_settings()
 
 
 async def save_pending_proposal(proposal: dict) -> None:
@@ -92,6 +96,15 @@ async def check_and_handle_timeout() -> dict:
     weights = pending.get("weights", {})
     token   = pending.get("token", "")
 
+    # P2-1: Proposal validation before execution
+    valid, reason = await validate_proposal_still_relevant(pending, latest_row)
+    if not valid:
+        await mark_proposal_done(analysis_id, f"skipped_invalidation_{reason}")
+        await tool_send_telegram(
+            {"text": f"⚠️ 建议作废（{reason}），不执行原计划"}
+        )
+        return {"action": f"skipped_invalidation_{reason}"}
+
     verify = await tool_verify_approval_token({"token": token})
     if not verify.get("valid"):
         await mark_proposal_done(analysis_id, f"aborted_token_{verify.get('reason')}")
@@ -111,3 +124,48 @@ async def check_and_handle_timeout() -> dict:
         {"text": f"❌ 超时自动执行失败: {result.get('error')}"}
     )
     return {"action": "failed"}
+
+
+async def validate_proposal_still_relevant(
+    pending: dict,
+    latest_portfolio,
+) -> tuple[bool, str]:
+    """
+    P2-1: 检查 proposal 是否仍然有效。
+
+    检查项：
+    1. VIX 是否突破阈值（> proposal_invalidation_vix_threshold 立即作废）
+    2. 组合价值是否已大幅变动（相对 proposal 产出时变化 > drift_threshold）
+    3. 是否超过日内最大可接受回撤
+
+    返回 (valid, reason) — valid=True 表示可以执行，reason 说明原因。
+    """
+    # 1. VIX check
+    vix_threshold = settings.proposal_invalidation_vix_threshold
+    async with AsyncSessionLocal() as db:
+        last_vix_cfg = await get_system_config(db, "last_vix")
+    vix = float((last_vix_cfg.value if last_vix_cfg else {}).get("value", 0) or 0)
+    if vix > vix_threshold:
+        return False, f"vix_spike_{vix:.1f}"
+
+    # 2. Portfolio drift check
+    if latest_portfolio and pending.get("proposal_value"):
+        try:
+            current_value = float(latest_portfolio.total_value or 0)
+            proposal_value = float(pending["proposal_value"])
+            if proposal_value > 0:
+                drift = abs(current_value - proposal_value) / proposal_value
+                drift_threshold = settings.proposal_invalidation_portfolio_drift_threshold
+                if drift > drift_threshold:
+                    return False, f"portfolio_drift_{drift:.2%}"
+        except (TypeError, ValueError):
+            pass
+
+    # 3. Circuit state check
+    async with AsyncSessionLocal() as db:
+        circuit_cfg = await get_system_config(db, "circuit_state")
+    circuit = (circuit_cfg.value if circuit_cfg else {}).get("value", "CLOSED")
+    if circuit == "ALERT":
+        return False, "circuit_alert"
+
+    return True, "valid"

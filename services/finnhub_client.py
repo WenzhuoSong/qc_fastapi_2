@@ -174,6 +174,46 @@ def fetch_earnings_flag(ticker: str, days_ahead: int = 7) -> bool:
         return False
 
 
+def fetch_earnings_calendar_detail(
+    ticker: str, weeks_ahead: int = 4
+) -> List[dict]:
+    """
+    获取 ticker 未来 N 周的详细财报日历（日期、EPS 预期/实际、营收等）。
+    返回 list[dict]。失败返回空列表。
+    """
+    if not _token():
+        return []
+    today = datetime.utcnow().date()
+    end = today + timedelta(weeks=weeks_ahead)
+    try:
+        resp = _get(
+            f"{_BASE}/calendar/earnings",
+            params={
+                "from":   str(today),
+                "to":     str(end),
+                "symbol": ticker,
+                "token":  _token(),
+            },
+        )
+        items = resp.json().get("earningsCalendar", []) or []
+        return [
+            {
+                "ticker":           it.get("symbol"),
+                "company_name":     it.get("companyName"),
+                "earnings_date":    it.get("date"),
+                "eps_estimate":     it.get("epsEstimate"),
+                "eps_actual":       it.get("epsActual"),
+                "revenue_estimate": it.get("revenueEstimate"),
+                "revenue_actual":   it.get("revenueActual"),
+                "is_confirmed":     bool(it.get("confirmed", False)),
+            }
+            for it in items
+        ]
+    except Exception as e:
+        logger.error(f"fetch_earnings_calendar_detail({ticker}) error: {e}")
+        return []
+
+
 # ═══════════════════════════════════════════════════════════════
 # Hard risk scanning —— 关键字匹配 (factual, not predictive)
 # ═══════════════════════════════════════════════════════════════

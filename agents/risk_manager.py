@@ -86,6 +86,7 @@ async def run_risk_manager_async(
     hard_risks_map = brief.get("hard_risks_map") or {}
     portfolio = brief.get("portfolio") or {}
     holdings = brief.get("holdings") or []
+    critical_alerts = brief.get("critical_alerts") or []
 
     # ═══ 3-layer overlay chain ═══
     overlays_applied: list[str] = []
@@ -115,6 +116,15 @@ async def run_risk_manager_async(
         hard_risks_map=hard_risks_map,
         overlays_applied=overlays_applied,
     )
+
+    # Overlay 4: critical_alerts — QC webhook emergency/critical alerts (P1-1)
+    if critical_alerts:
+        working = _apply_critical_alerts_overlay(
+            working,
+            current_weights=current_weights,
+            critical_alerts=critical_alerts,
+            overlays_applied=overlays_applied,
+        )
 
     target_weights = _normalize_weights(working)
 
@@ -242,6 +252,55 @@ def _apply_hard_risk_filter(
     if flagged:
         filtered["CASH"] = round(filtered.get("CASH", 0) + freed_weight, 4)
         overlays_applied.append(f"hard_risk:{'/'.join(flagged)}")
+
+    return filtered
+
+
+def _apply_critical_alerts_overlay(
+    weights:          dict[str, float],
+    *,
+    current_weights:  dict[str, float],
+    critical_alerts:  list[dict],
+    overlays_applied: list[str],
+) -> dict[str, float]:
+    """
+    P1-1: Overlay for QC webhook critical alerts.
+    Based on alert type, reduce exposure to affected tickers or overall equity.
+    """
+    if not critical_alerts:
+        return weights
+
+    filtered = dict(weights)
+    freed_weight = 0.0
+    affected: list[str] = []
+
+    for alert in critical_alerts:
+        ticker = (alert.get("ticker") or "").upper().strip()
+        alert_type = (alert.get("type") or "").lower()
+        message = alert.get("message") or ""
+
+        # Determine action based on alert type
+        if ticker and ticker in filtered and filtered.get(ticker, 0) > 0:
+            if any(kw in alert_type or kw in message.lower()
+                   for kw in ("drawdown", "loss", "risk", "emergency", "critical")):
+                freed_weight += filtered[ticker]
+                filtered[ticker] = 0.0
+                affected.append(ticker)
+        elif not ticker or ticker == "":
+            # Portfolio-level alert (no specific ticker) — reduce overall equity by 10%
+            if any(kw in alert_type or kw in message.lower()
+                   for kw in ("drawdown", "loss", "risk", "emergency", "critical")):
+                for t in list(filtered.keys()):
+                    if t == "CASH":
+                        continue
+                    freed_weight += filtered[t] * 0.10
+                    filtered[t] = round(filtered[t] * 0.90, 4)
+                affected.append("PORTFOLIO")
+
+    if affected:
+        filtered["CASH"] = round(filtered.get("CASH", 0) + freed_weight, 4)
+        overlays_applied.append(f"critical_alerts:{'/'.join(affected)}")
+        logger.warning(f"[RiskMgr] critical_alerts overlay applied: {affected}")
 
     return filtered
 

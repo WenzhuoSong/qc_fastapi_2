@@ -80,6 +80,18 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
         "news_context":       news_context,
     }
 
+    # Inject pending critical alerts from QC webhook (P1-1)
+    pending_alerts = pipeline_context.get("pending_alerts", [])
+    if pending_alerts:
+        brief["critical_alerts"] = pending_alerts
+        logger.warning(f"[market_brief] Injecting {len(pending_alerts)} pending critical alerts")
+
+    # P2-2: Scenario stress-test (run after market_brief to have current_weights)
+    scenario_result = await _run_scenario_analysis_if_enabled(current_weights)
+    if scenario_result:
+        brief["scenario_result"] = scenario_result
+        logger.info(f"[market_brief] Scenario analysis: {scenario_result.get('total_scenarios')} scenarios, most_severe={scenario_result.get('most_severe')}")
+
     # Inject historical memory context for downstream RESEARCHER
     from services.context_assembler import assemble_memory_context
     memory_context = await assemble_memory_context()
@@ -295,6 +307,25 @@ async def _read_ticker_news(
         per_ticker[t] = per_ticker[t][:5]
 
     return per_ticker, hard_risks_map
+
+
+# ─────────────────────────────── P2-2: Scenario Analysis ──────────────────────
+
+
+async def _run_scenario_analysis_if_enabled(
+    current_weights: dict[str, float],
+    scenario: str = "all",
+) -> dict | None:
+    """Run scenario stress-test if there are meaningful equity positions."""
+    try:
+        equity_sum = sum(w for t, w in current_weights.items() if t != "CASH" and w > 0)
+        if equity_sum < 0.10:  # skip if less than 10% equity
+            return None
+        from services.scenario_analyst import run_scenario_analysis
+        return await run_scenario_analysis(current_weights, scenario=scenario)
+    except Exception as e:
+        logger.warning(f"[market_brief] scenario analysis failed: {e}")
+        return None
 
 
 # ═══════════════════════════════════════════════════════════════

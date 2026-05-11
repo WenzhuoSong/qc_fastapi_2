@@ -48,7 +48,7 @@ from db.session          import AsyncSessionLocal
 from db.queries          import get_system_config, upsert_system_config
 from db.models           import AgentAnalysis, AgentStepLog, ExecutionLog
 from tools.notify_tools  import tool_send_telegram
-from services.proposal   import save_pending_proposal
+from services.proposal   import save_pending_proposal, validate_proposal_still_relevant
 from config              import get_settings
 
 logger   = logging.getLogger("qc_fastapi_2.pipeline")
@@ -388,11 +388,12 @@ async def _guard_and_config(trigger: str) -> dict | None:
     Returns None to signal skip (paused / MANUAL mode).
     """
     async with AsyncSessionLocal() as db:
-        paused_cfg    = await get_system_config(db, "trading_paused")
-        risk_cfg      = await get_system_config(db, "risk_params")
-        auth_cfg      = await get_system_config(db, "authorization_mode")
-        circuit_cfg   = await get_system_config(db, "circuit_state")
-        active_cfg    = await get_system_config(db, "active_strategy")
+        paused_cfg      = await get_system_config(db, "trading_paused")
+        risk_cfg        = await get_system_config(db, "risk_params")
+        auth_cfg        = await get_system_config(db, "authorization_mode")
+        circuit_cfg     = await get_system_config(db, "circuit_state")
+        active_cfg      = await get_system_config(db, "active_strategy")
+        alerts_cfg      = await get_system_config(db, "pending_critical_alerts")
 
     paused = bool((paused_cfg.value if paused_cfg else {}).get("paused", False))
     if paused:
@@ -409,6 +410,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
     active_name = (active_cfg.value if active_cfg else {"value": "momentum_lite_v1"}).get(
         "value", "momentum_lite_v1"
     )
+    pending_alerts = (alerts_cfg.value if alerts_cfg else {}).get("alerts", []) or []
 
     params_key = f"strategy_{active_name}_params"
     async with AsyncSessionLocal() as db:
@@ -418,14 +420,15 @@ async def _guard_and_config(trigger: str) -> dict | None:
     override_mode = "DEFENSIVE" if circuit in ("ALERT", "DEFENSIVE") else None
 
     return {
-        "trigger":         trigger,
-        "plan_id":         f"P-{datetime.utcnow().strftime('%Y%m%d-%H%M')}",
-        "auth_mode":       auth_mode,
-        "circuit_state":   circuit,
-        "override_mode":   override_mode,
-        "risk_params":     risk_params,
-        "active_strategy": active_name,
-        "strategy_params": strategy_params,
+        "trigger":           trigger,
+        "plan_id":           f"P-{datetime.utcnow().strftime('%Y%m%d-%H%M')}",
+        "auth_mode":         auth_mode,
+        "circuit_state":     circuit,
+        "override_mode":     override_mode,
+        "risk_params":       risk_params,
+        "active_strategy":   active_name,
+        "strategy_params":   strategy_params,
+        "pending_alerts":    pending_alerts,
     }
 
 
@@ -795,6 +798,12 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     )
     dur_risk = int((time.time() - t0) * 1000)
     approved = bool(risk_out.get("approved", False))
+
+    # P1-1: Clear pending critical alerts after RISK MGR consumes them
+    if pipeline_context.get("pending_alerts"):
+        async with AsyncSessionLocal() as db:
+            await upsert_system_config(db, "pending_critical_alerts", {"alerts": []}, "pipeline")
+        logger.info("[pipeline] Cleared pending_critical_alerts after RISK MGR consumption")
     logger.info(
         f"Stage 6 RISK MGR done | approved={approved} "
         f"| n_actions={len(risk_out.get('rebalance_actions', []))} "
@@ -870,10 +879,27 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         await _send_semi_auto_proposal(pipeline_context, risk_out, comm_out, analysis_id)
         pipeline_status = "semi_auto_pending"
     elif auth_mode == "FULL_AUTO":
-        result = await run_executor_async(pipeline_context, risk_out, analysis_id)
-        await _save_execution(analysis_id, result)
-        logger.info(f"FULL_AUTO execution: {result.get('execution_status')}")
-        pipeline_status = result.get("execution_status", "unknown")
+        # P2-1: Validate proposal still relevant before execution
+        from db.queries import get_latest_portfolio
+        async with AsyncSessionLocal() as db:
+            latest_portfolio = await get_latest_portfolio(db)
+        pending_for_val = {
+            "analysis_id": analysis_id,
+            "weights": risk_out.get("target_weights", {}),
+            "token": risk_out.get("approval_token", ""),
+        }
+        valid, reason = await validate_proposal_still_relevant(pending_for_val, latest_portfolio)
+        if not valid:
+            logger.warning(f"[pipeline] FULL_AUTO blocked by proposal invalidation: {reason}")
+            await tool_send_telegram(
+                {"text": f"⚠️ FULL_AUTO 跳过（{reason}），市场状态已变化"}
+            )
+            pipeline_status = f"skipped_invalidation_{reason}"
+        else:
+            result = await run_executor_async(pipeline_context, risk_out, analysis_id)
+            await _save_execution(analysis_id, result)
+            logger.info(f"FULL_AUTO execution: {result.get('execution_status')}")
+            pipeline_status = result.get("execution_status", "unknown")
     else:
         pipeline_status = "unknown_auth_mode"
 
@@ -897,6 +923,15 @@ async def _send_semi_auto_proposal(
     token   = risk_out.get("approval_token", "")
     expires = datetime.utcnow() + timedelta(minutes=settings.semi_auto_timeout_minutes)
 
+    # Store current portfolio value for P2-1 proposal invalidation
+    proposal_value = None
+    if risk_out.get("target_weights"):
+        from db.queries import get_latest_portfolio
+        async with AsyncSessionLocal() as db:
+            latest = await get_latest_portfolio(db)
+        if latest and latest.total_value:
+            proposal_value = float(latest.total_value)
+
     await save_pending_proposal({
         "analysis_id":        analysis_id,
         "weights":            weights,
@@ -904,6 +939,7 @@ async def _send_semi_auto_proposal(
         "expires_at":         expires.isoformat(),
         "status":             "pending",
         "estimated_cost_pct": cost,
+        "proposal_value":     proposal_value,
     })
 
     # Command hints are bound to pending state, so append only after proposal is saved.

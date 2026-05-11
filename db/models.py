@@ -283,3 +283,133 @@ class MemoryWeekly(Base):
     # Source records
     daily_count          = Column(Integer, default=0)                   # how many days have memory_daily this week
     source_daily_ids     = Column(JSONB, nullable=True)                 # memory_daily id list
+
+
+# ─────────────────────────────── Earnings Calendar ───────────────────────────────
+
+
+class EarningsCalendar(Base):
+    """
+    Tracks upcoming earnings release dates for ETF constituent stocks.
+    Written by services/earnings_tracker.py daily (morning_health after).
+    Used by RISK MGR hard_risk_filter and context_assembler.
+    """
+    __tablename__ = "earnings_calendar"
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    ticker          = Column(String(10), nullable=False, index=True)
+    company_name    = Column(String(100), nullable=True)
+    earnings_date   = Column(Date, nullable=False)
+    eps_estimate    = Column(Float, nullable=True)
+    eps_actual      = Column(Float, nullable=True)
+    revenue_estimate = Column(Float, nullable=True)
+    revenue_actual  = Column(Float, nullable=True)
+    is_confirmed    = Column(Boolean, default=False)    # confirmed by exchange
+    updated_at      = Column(DateTime, default=func.now(), onupdate=func.now())
+    created_at      = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("ticker", "earnings_date", name="uq_earnings_ticker_date"),
+    )
+
+
+# ─────────────────────────────── Macro Events Cache ───────────────────────────────
+
+
+class MacroEventsCache(Base):
+    """
+    Single-row rolling cache for economic calendar + Fed schedule.
+    Written daily by services/macro_watcher.py (morning_health after).
+    Read by context_assembler for injection into RESEARCHER prompt.
+    """
+    __tablename__ = "macro_events_cache"
+
+    id                  = Column(Integer, primary_key=True, default=1)   # single-row
+    economic_calendar   = Column(JSONB, nullable=True)    # Finnhub high-impact events
+    fed_schedule        = Column(JSONB, nullable=True)    # Fed meeting dates
+    cpi_schedule        = Column(JSONB, nullable=True)    # CPI release dates
+    nfp_schedule        = Column(JSONB, nullable=True)    # NFP release dates
+    pmi_schedule        = Column(JSONB, nullable=True)    # PMI release dates
+    next_fomc           = Column(Date, nullable=True)     # next Fed meeting date
+    next_cpi            = Column(Date, nullable=True)     # next CPI release date
+    market_watch        = Column(Text, nullable=True)     # LLM summary: key events this week
+    updated_at          = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+# ─────────────────────────────── Memory Monthly ───────────────────────────────
+
+
+class MemoryMonthly(Base):
+    """
+    Monthly market memory distilled from the month's MemoryWeekly records.
+    Written by cron/monthly_analyst.py on the last trading day of each month.
+
+    Captures: dominant regime, regime stability, macro themes, momentum effectiveness,
+    key lessons, and next-month outlook.
+    """
+    __tablename__ = "memory_monthly"
+
+    id                   = Column(BigInteger, primary_key=True, autoincrement=True)
+    month_start          = Column(Date, nullable=False, unique=True)   # first trading day of month
+    month_end            = Column(Date, nullable=False)              # last trading day of month
+    created_at           = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Monthly market summary (LLM distilled)
+    dominant_regime      = Column(String(50), nullable=False)
+    regime_stability     = Column(String(20))                         # stable / shifting / volatile
+    macro_themes          = Column(JSONB, nullable=True)                # ["Fed pivot", "Tech earnings"]
+    sector_rotation_summary = Column(Text, nullable=True)
+
+    # Strategy effectiveness
+    momentum_effectiveness = Column(String(20))                        # strong / moderate / weak / failed
+    key_lessons           = Column(JSONB, nullable=True)               # LLM-distilled lessons
+    signal_conflicts      = Column(JSONB, nullable=True)               # tickers with biggest disagreements
+
+    # Best/worst calls this month
+    best_calls            = Column(JSONB, nullable=True)
+    worst_calls           = Column(JSONB, nullable=True)
+
+    # Portfolio performance
+    monthly_return_pct    = Column(Float, nullable=True)
+    monthly_sharpe        = Column(Float, nullable=True)
+    max_drawdown_pct      = Column(Float, nullable=True)
+    execution_count       = Column(Integer, default=0)
+
+    # Next month outlook
+    next_month_watch      = Column(Text, nullable=True)
+    calendar_events       = Column(JSONB, nullable=True)             # important events next month
+
+    # Source records
+    weekly_count          = Column(Integer, default=0)                 # how many weeks this month
+    source_weekly_ids      = Column(JSONB, nullable=True)              # memory_weekly id list
+
+
+# ─────────────────────────────── Scenario Analysis ───────────────────────────────
+
+
+class ScenarioAnalysis(Base):
+    """
+    Stores scenario stress-test results for each pipeline run.
+    Written by services/scenario_analyst.py after Stage 1 (optional).
+    Read by RISK MGR overlay or RESEARCHER prompt injection.
+
+    P2-2: SCENARIO_ANALYST
+    """
+    __tablename__ = "scenario_analysis"
+
+    id                   = Column(BigInteger, primary_key=True, autoincrement=True)
+    analysis_id          = Column(BigInteger, ForeignKey("agent_analysis.id"), nullable=True, index=True)
+    created_at           = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Which scenario was analyzed
+    scenario_name        = Column(String(50), nullable=False)   # e.g. "supply_shock_oil" or "all"
+
+    # Scenario impact estimates
+    estimated_impact_pct = Column(Float, nullable=True)         # scenario下的组合预期变化
+    affected_tickers     = Column(JSONB, nullable=True)         # [ticker, ...] impacted
+    tilt_vector          = Column(JSONB, nullable=True)         # {ticker: strength} from transmission
+
+    # Confidence and source
+    confidence           = Column(String(20))                   # high/medium/low
+    source               = Column(String(30))                   # "transmission_pattern" / "llm_analysis"
+    notes                = Column(Text, nullable=True)

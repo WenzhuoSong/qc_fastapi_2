@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     # SEMI_AUTO 超时（分钟）
     semi_auto_timeout_minutes: int = 20
 
+    # Emergency 配置
+    emergency_auto_liquidate: bool = False  # 收到 emergency 包时是否自动清仓
+
+    # Proposal Invalidation 配置 (P2-1: 防 Panic)
+    proposal_invalidation_vix_threshold: float = 35.0       # VIX 超过此值则 proposal 作废
+    proposal_invalidation_portfolio_drift_threshold: float = 0.03  # 组合价值相对变化超过此值则 proposal 作废
+
     # 新闻 API
     finnhub_api_key: str = ""
     alphavantage_api_key: str = ""

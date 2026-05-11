@@ -10,8 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from db.session import get_db
-from db.models import QCSnapshot, PortfolioTimeseries, HoldingsFactor
-from db.queries import upsert_system_config
+from db.models import QCSnapshot, PortfolioTimeseries, HoldingsFactor, AlertLog, AgentAnalysis
+from db.queries import upsert_system_config, upsert_alert, get_recent_alerts
+from tools.notify_tools import tool_send_telegram
+from tools.qc_tools import tool_emergency_liquidate
 
 logger = logging.getLogger("qc_fastapi_2.webhook")
 settings = get_settings()
@@ -75,6 +77,10 @@ async def receive_qc_packet(
 
         if packet_type == "heartbeat":
             await _process_heartbeat(db, snapshot.id, payload)
+        elif packet_type == "alert":
+            await _process_alert(db, snapshot.id, payload)
+        elif packet_type == "emergency":
+            await _process_emergency(db, snapshot.id, payload)
 
         return JSONResponse({"status": "ok", "snapshot_id": snapshot.id})
 
@@ -127,3 +133,107 @@ async def _process_heartbeat(db: AsyncSession, snapshot_id: int, payload: dict):
         await upsert_system_config(db, "last_vix", {"value": float(vix)}, "webhook")
 
     await db.commit()
+
+
+async def _process_alert(db: AsyncSession, snapshot_id: int, payload: dict):
+    """
+    解析 alert packet，写入 alerts_log 表。
+    若有未处理的 critical alert，追加到 system_config.pending_critical_alerts。
+    """
+    alerts = payload.get("alerts", [])
+    if not alerts:
+        logger.warning(f"[ALERT] packet {snapshot_id} has no alerts array")
+        return
+
+    now = datetime.utcnow()
+    critical_alerts = []
+
+    for a in alerts:
+        alert_record = {
+            "snapshot_id":  snapshot_id,
+            "alert_id":     a.get("alert_id") or f"{snapshot_id}_{a.get('type', 'unknown')}",
+            "level":        a.get("level", "warning"),
+            "type":         a.get("type", "unknown"),
+            "message":      a.get("message", ""),
+            "ticker":       a.get("ticker"),
+            "value":        a.get("value"),
+            "threshold":    a.get("threshold"),
+            "triggered_at": now,
+            "is_handled":   False,
+        }
+        await upsert_alert(db, alert_record)
+        logger.info(f"[ALERT] {alert_record['level']} {alert_record['type']} {alert_record.get('ticker', '')}: {alert_record['message']}")
+
+        if alert_record["level"] == "critical":
+            critical_alerts.append({
+                "alert_id":    alert_record["alert_id"],
+                "type":        alert_record["type"],
+                "message":     alert_record["message"],
+                "ticker":      alert_record["ticker"],
+                "snapshot_id": snapshot_id,
+                "triggered_at": now.isoformat(),
+            })
+
+    if critical_alerts:
+        existing_cfg = await get_recent_alerts(db, hours=24, level="critical")
+        pending = [a for a in critical_alerts]
+        for ca in pending:
+            await upsert_system_config(db, "pending_critical_alerts", {"alerts": pending}, "webhook")
+        logger.warning(f"[ALERT] {len(critical_alerts)} critical alerts stored for downstream processing")
+
+
+async def _process_emergency(db: AsyncSession, snapshot_id: int, payload: dict):
+    """
+    处理 emergency packet：
+    1. 立即设置 circuit_state = ALERT
+    2. 发送 Telegram 紧急通知
+    3. 可选：自动清仓（由 emergency_auto_liquidate 配置控制）
+    4. 写入 AgentAnalysis 记录（trigger_type=emergency）
+    """
+    now = datetime.utcnow()
+    reason = payload.get("reason", "Unknown emergency")
+    details = payload.get("details", {})
+
+    # 1. 触发熔断
+    await upsert_system_config(db, "circuit_state", {"value": "ALERT"}, "webhook")
+    logger.critical(f"[EMERGENCY] circuit_state set to ALERT | reason={reason}")
+
+    # 2. 发送 Telegram 通知
+    urgency_emoji = "🚨" if payload.get("severity") == "critical" else "⚠️"
+    text = (
+        f"{urgency_emoji} <b>EMERGENCY PACKET RECEIVED</b>\n"
+        f"  Reason: {reason}\n"
+        f"  Snapshot: {snapshot_id}\n"
+        f"  Time: {now.strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+    )
+    if details:
+        text += f"  Details: {json.dumps(details, ensure_ascii=False)[:200]}\n"
+    if settings.emergency_auto_liquidate:
+        text += "  🔥 Auto-liquidate: <b>ENABLED</b>"
+    else:
+        text += "  🔒 Auto-liquidate: DISABLED (manual action required)"
+
+    await tool_send_telegram({"text": text})
+
+    # 3. 可选：自动清仓
+    if settings.emergency_auto_liquidate:
+        logger.warning("[EMERGENCY] emergency_auto_liquidate is True — executing liquidation")
+        result = await tool_emergency_liquidate({})
+        if result.get("success"):
+            logger.critical("[EMERGENCY] Emergency liquidation command sent successfully")
+            await tool_send_telegram({"text": "✅ 紧急清仓指令已发送"})
+        else:
+            logger.error(f"[EMERGENCY] Emergency liquidation failed: {result.get('error')}")
+            await tool_send_telegram({"text": f"❌ 紧急清仓失败: {result.get('error')}"})
+
+    # 4. 写入 AgentAnalysis 记录（供后续审计）
+    analysis = AgentAnalysis(
+        analyzed_at=now,
+        trigger_type="emergency",
+        snapshot_ids=[snapshot_id],
+        execution_status="emergency_triggered",
+        notes=f"Emergency packet received: {reason}",
+    )
+    db.add(analysis)
+    await db.commit()
+    logger.info(f"[EMERGENCY] AgentAnalysis record created: id={analysis.id}")

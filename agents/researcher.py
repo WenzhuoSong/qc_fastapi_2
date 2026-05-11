@@ -296,6 +296,9 @@ def _build_user_message(
         "From the above, output market_regime + macro_outlook + ticker_signals +\n"
         "cross_signal_insights. Analyze only — no trading decision. JSON only."
         + memory_section
+        + _build_earnings_section(memory_context)
+        + _build_macro_section(memory_context)
+        + _build_scenario_section(brief)
     )
 
 
@@ -629,3 +632,56 @@ def _degraded_report(quant_baseline: dict, error: str | None) -> dict:
         "low_confidence_reasons": [degraded_reason],
         "used_degraded_fallback": True,
     }
+
+
+# ── P1-3: Earnings + Macro Context Helpers ──────────────────────────────────────
+
+
+def _build_earnings_section(memory_context: dict) -> str:
+    """Build earnings context section for the RESEARCHER prompt."""
+    earnings_ctx = memory_context.get("earnings_context") or {}
+    if not earnings_ctx.get("has_earnings"):
+        return ""
+
+    return (
+        "\n\n## UPCOMING EARNINGS (next 7 days — factor into risk assessment)\n\n"
+        f"{earnings_ctx.get('earnings_prose', '')}\n\n"
+        "**Note**: Held positions with upcoming earnings may carry elevated risk. "
+        "Factor this into your ticker confidence assessments.\n"
+    )
+
+
+def _build_macro_section(memory_context: dict) -> str:
+    """Build macro events context section for the RESEARCHER prompt."""
+    macro_ctx = memory_context.get("macro_events_context") or {}
+    if not macro_ctx.get("has_data"):
+        return ""
+
+    parts = []
+    if macro_ctx.get("key_dates"):
+        parts.append(f"Key dates: {', '.join(macro_ctx['key_dates'])}")
+
+    events = macro_ctx.get("events", [])
+    if events:
+        event_lines = [f"  - [{e.get('impact', '?')}] {e.get('date', '')} {e.get('event', '')}" for e in events[:5]]
+        parts.append(f"Upcoming events:\n" + "\n".join(event_lines))
+
+    if not parts:
+        return ""
+
+    return (
+        "\n\n## IMPORTANT MACRO EVENTS (next 5 days)\n\n"
+        + "\n".join(parts) + "\n\n"
+        "**Note**: These events may affect market volatility and sector rotations. "
+        "Factor into your macro outlook and risk assessment.\n"
+    )
+
+
+def _build_scenario_section(brief: dict) -> str:
+    """Build scenario stress-test results section for the RESEARCHER prompt (P2-2)."""
+    scenario_result = brief.get("scenario_result")
+    if not scenario_result or not scenario_result.get("results"):
+        return ""
+
+    from services.scenario_analyst import build_scenario_context
+    return build_scenario_context(scenario_result)
