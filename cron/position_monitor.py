@@ -41,7 +41,7 @@ async def main() -> None:
         )
         await persist_position_alerts(all_alerts)
 
-        # Build Telegram message
+        # Build Telegram message — only for warning/critical alerts
         lines = [f"📊 持仓健康报告 | {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC\n"]
 
         if result["drift_alerts"]:
@@ -54,10 +54,20 @@ async def main() -> None:
             for a in result["holding_period_alerts"][:3]:
                 lines.append(f"  {a['ticker']}: {a['message']}")
 
-        if result["intraday_alerts"]:
-            lines.append(f"📈 高波动告警 ({len(result['intraday_alerts'])}):")
-            for a in result["intraday_alerts"][:3]:
+        # Intraday/ATR alerts only send to Telegram if severity >= warning
+        intraday_warn = [a for a in result["intraday_alerts"] if a.get("severity") in ("warning", "critical")]
+        if intraday_warn:
+            lines.append(f"📈 高波动告警 ({len(intraday_warn)}):")
+            for a in intraday_warn[:3]:
                 lines.append(f"  {a['ticker']}: {a['message']}")
+
+        # Only send if we have warning/critical content
+        has_warn = any(
+            result["drift_alerts"] or result["holding_period_alerts"] or intraday_warn
+        )
+        if not has_warn:
+            logger.info("[position_monitor] Only info-level alerts, skipping Telegram notification")
+            return
 
         if total > 10:
             lines.append(f"\n...共 {total} 项告警，详见 AlertLog")
