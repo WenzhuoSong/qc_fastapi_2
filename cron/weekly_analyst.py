@@ -71,6 +71,18 @@ async def main() -> None:
 
     logger.info(f"[WEEKLY_ANALYST] Processing week: {week_start} ~ {week_end}")
 
+    # Phase 3: Run DECAY_DETECTOR before LLM distillation
+    try:
+        from services.decay_detector import evaluate_decay_signal
+        decay_result = await evaluate_decay_signal()
+        logger.info(
+            f"[WEEKLY_ANALYST] DECAY_DETECTOR: "
+            f"strength={decay_result.decay_signal_strength}, "
+            f"recommendation={decay_result.recommendation}"
+        )
+    except Exception as e:
+        logger.warning(f"[WEEKLY_ANALYST] DECAY_DETECTOR failed: {e}")
+
     async with AsyncSessionLocal() as session:
         # 1. Read all MemoryDaily records for this week
         daily_memories = await _get_week_daily_memories(session, week_start, week_end)

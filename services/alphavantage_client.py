@@ -6,6 +6,7 @@ Alpha Vantage News Sentiment API 客户端。
 
 所有函数失败时返回空结果，保证上游 cron 不会崩溃。
 网络调用是同步 httpx，上游用 asyncio.to_thread 包装。
+Phase 3: HTTP calls use synchronous retry with exponential backoff for resilience.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import httpx
 
 from config import get_settings
 from services.finnhub_client import get_source_credibility
+from services.retry_protocol import HTTP_RETRY_CONFIGS, retry_sync
 
 logger = logging.getLogger("qc_fastapi_2.alphavantage")
 settings = get_settings()
@@ -32,6 +34,13 @@ _SENTIMENT_MAP: Dict[str, str] = {
     "Somewhat-Bearish":  "negative",
     "Bearish":           "negative",
 }
+
+
+def _fetch_with_retry(params: dict) -> httpx.Response:
+    """Synchronous HTTP GET with retry (called via asyncio.to_thread in pre_fetch_news)."""
+    def _call():
+        return httpx.get(_BASE, params=params, timeout=_TIMEOUT)
+    return retry_sync(_call, config=HTTP_RETRY_CONFIGS["alphavantage"], service_name="alphavantage")
 
 
 def fetch_ticker_news_av(tickers: List[str], limit: int = 50) -> List[dict]:
@@ -50,16 +59,12 @@ def fetch_ticker_news_av(tickers: List[str], limit: int = 50) -> List[dict]:
     tickers_str = ",".join(tickers)
 
     try:
-        resp = httpx.get(
-            _BASE,
-            params={
-                "function": "NEWS_SENTIMENT",
-                "tickers":  tickers_str,
-                "limit":    str(limit),
-                "apikey":   api_key,
-            },
-            timeout=_TIMEOUT,
-        )
+        resp = _fetch_with_retry({
+            "function": "NEWS_SENTIMENT",
+            "tickers":  tickers_str,
+            "limit":    str(limit),
+            "apikey":   api_key,
+        })
         data = resp.json()
 
         # Alpha Vantage 错误响应检查

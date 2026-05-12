@@ -40,12 +40,29 @@ async def main() -> None:
         mode    = (auth_cfg.value    if auth_cfg    else {}).get("value", "SEMI_AUTO")
         circuit = (circuit_cfg.value if circuit_cfg else {}).get("value", "CLOSED")
 
+        # Phase 3: Circuit breaker health check
+        try:
+            from services.circuit_breaker import CircuitBreakerMonitor
+            monitor = CircuitBreakerMonitor()
+            health = await monitor.run_health_check()
+        except Exception as e:
+            logger.warning(f"[morning_health] Circuit health check failed: {e}")
+            health = None
+
         # Build summary text
         summary_lines = [
             f"🧩 系统健康摘要 | {datetime.utcnow().strftime('%Y-%m-%d')}",
             f"  授权模式: {mode}",
             f"  熔断状态: {circuit}",
         ]
+
+        # Phase 3: Add circuit health issues to summary
+        if health and health.has_issues:
+            emoji_map = {"ALERT": "🟡", "DEFENSIVE": "🔴"}
+            circuit_emoji = emoji_map.get(health.current_state, "⚪")
+            summary_lines.append(f"{circuit_emoji} 熔断健康警告:")
+            for issue in health.issues:
+                summary_lines.append(f"  - {issue}")
 
         if macro_result.get("next_fomc"):
             summary_lines.append(f"  下次FOMC: {macro_result['next_fomc']}")

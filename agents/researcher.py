@@ -30,6 +30,141 @@ settings = get_settings()
 
 _client: AsyncOpenAI | None = None
 
+# ═══════════════════════════════════════════════════════════════
+# Decision Learning helpers (Phase C)
+# ═══════════════════════════════════════════════════════════════
+
+
+async def _retrieve_similar_cases_for_researcher(
+    quant_baseline: dict,
+    brief: dict,
+) -> list[dict]:
+    """Retrieve similar historical cases for the current regime + market conditions."""
+    try:
+        from services.similar_case_retrieval import get_similar_cases_for_researcher
+
+        regime = (quant_baseline.get("regime_result") or {}).get("regime", "")
+        if not regime:
+            return []
+
+        key_facts = brief.get("key_facts") or {}
+        market_conditions = {
+            "vix": None,
+            "drawdown_pct": key_facts.get("drawdown_pct"),
+            "breadth_pct": key_facts.get("breadth_pct"),
+        }
+
+        # Fetch VIX from system_config (same source as circuit_breaker uses)
+        try:
+            from db.session import AsyncSessionLocal
+            from db.queries import get_system_config
+
+            async with AsyncSessionLocal() as db:
+                vix_cfg = await get_system_config(db, "last_vix")
+            if vix_cfg:
+                market_conditions["vix"] = (
+                    float((vix_cfg.value or {}).get("value", 0) or 0) or None
+                )
+        except Exception:
+            pass
+
+        return await get_similar_cases_for_researcher(
+            regime, market_conditions, max_cases=5
+        )
+    except Exception as e:
+        logger.warning(
+            f"[RESEARCHER] similar_case_retrieval failed (non-fatal): {e}"
+        )
+        return []
+
+
+async def _read_calibration_bias() -> dict | None:
+    """Read researcher_confidence_bias from system_config."""
+    try:
+        from db.session import AsyncSessionLocal
+        from db.queries import get_system_config
+
+        async with AsyncSessionLocal() as db:
+            cfg = await get_system_config(db, "researcher_confidence_bias")
+        if not cfg or not cfg.value:
+            return None
+        val = cfg.value or {}
+        if val.get("sample_size", 0) < 10:
+            return None
+        return val
+    except Exception as e:
+        logger.warning(
+            f"[RESEARCHER] calibration bias read failed (non-fatal): {e}"
+        )
+        return None
+
+
+def _build_calibration_section(bias: dict | None) -> str:
+    """Build calibration guidance section for the RESEARCHER prompt."""
+    if not bias:
+        return ""
+
+    multipliers = bias.get("bias_multipliers", {})
+    accuracy = bias.get("per_level_accuracy", {})
+    sample = bias.get("sample_size", 0)
+    recs = bias.get("recommendations", [])
+    h = multipliers.get("high", 1.0)
+    m = multipliers.get("medium", 1.0)
+
+    if all(abs(x - 1.0) < 0.05 for x in [h, m, multipliers.get("low", 1.0)]):
+        return ""  # well-calibrated, no guidance needed
+
+    lines = [
+        "\n\n## HISTORICAL CONFIDENCE CALIBRATION "
+        f"(based on {sample} past decisions with known outcomes)",
+    ]
+
+    if h < 0.85:
+        lines.append(
+            f"- HIGH confidence: historically OVERCONFIDENT "
+            f"(actual accuracy {accuracy.get('high', 0):.0%}, expected 70%+). "
+            f"Consider reporting medium instead of high when in doubt."
+        )
+    elif h > 1.15:
+        lines.append(
+            f"- HIGH confidence: historically UNDERCONFIDENT "
+            f"(actual accuracy {accuracy.get('high', 0):.0%})."
+        )
+
+    if m < 0.85:
+        lines.append(
+            f"- MEDIUM confidence: historically OVERCONFIDENT "
+            f"(actual accuracy {accuracy.get('medium', 0):.0%}, expected 55%)."
+        )
+
+    if recs:
+        lines.append("Calibration summary: " + " | ".join(recs[:2]))
+
+    lines.append(
+        "Downstream PM uses your confidence to set max weight adjustments: "
+        "high=±5%, medium=±3%, low=±1%. Calibrate honestly."
+    )
+
+    return "\n".join(lines)
+
+
+def _build_similar_cases_section(cases: list[dict] | None) -> str:
+    """Build similar historical cases section for the RESEARCHER prompt."""
+    if not cases:
+        return ""
+    from services.similar_case_retrieval import format_cases_for_prompt
+
+    cases_text = format_cases_for_prompt(cases)
+    return (
+        "\n\n## SIMILAR HISTORICAL CASES (same regime, similar market conditions)\n"
+        "These past decisions were made in similar regimes and market conditions.\n"
+        "Use them to calibrate your confidence and identify recurring patterns.\n"
+        "Do not anchor on them — if current signals clearly differ, trust the current data.\n\n"
+        f"{cases_text}\n\n"
+        "**Interpretation**: DQS=decision quality score (0–100%). "
+        "High-DQS cases with correct direction are the most relevant reference points.\n"
+    )
+
 
 def _get_client() -> AsyncOpenAI:
     global _client
@@ -174,7 +309,13 @@ async def run_researcher_async(
     regime_result: dict | None = None,
 ) -> dict:
     """Stage 3: synthesize information from baseline + brief → research_report."""
-    user_payload = _build_user_message(brief, quant_baseline, regime_result)
+    # Phase C pre-steps: retrieve similar historical cases + read calibration bias
+    similar_cases = await _retrieve_similar_cases_for_researcher(quant_baseline, brief)
+    calibration_bias = await _read_calibration_bias()
+
+    user_payload = _build_user_message(
+        brief, quant_baseline, regime_result, similar_cases, calibration_bias
+    )
 
     client = _get_client()
     model  = settings.openai_model_heavy
@@ -235,6 +376,8 @@ def _build_user_message(
     brief: dict,
     quant_baseline: dict,
     regime_result: dict | None = None,
+    similar_cases: list[dict] | None = None,
+    calibration_bias: dict | None = None,
 ) -> str:
     prose     = brief.get("prose_summary") or "(none)"
     macro     = brief.get("macro_news_section") or "(none)"
@@ -295,6 +438,8 @@ def _build_user_message(
         "## Your task\n"
         "From the above, output market_regime + macro_outlook + ticker_signals +\n"
         "cross_signal_insights. Analyze only — no trading decision. JSON only."
+        + _build_calibration_section(calibration_bias)
+        + _build_similar_cases_section(similar_cases)
         + memory_section
         + _build_earnings_section(memory_context)
         + _build_macro_section(memory_context)

@@ -49,6 +49,17 @@ class Settings(BaseSettings):
     proposal_invalidation_vix_threshold: float = 35.0       # VIX 超过此值则 proposal 作废
     proposal_invalidation_portfolio_drift_threshold: float = 0.03  # 组合价值相对变化超过此值则 proposal 作废
 
+    # Circuit Breaker 配置 (Phase 3)
+    vix_alert_threshold: float = 30.0              # VIX > 此值 → ALERT
+    vix_defensive_threshold: float = 40.0          # VIX > 此值 → DEFENSIVE
+    drawdown_alert_threshold: float = 0.10         # 回撤 > 此值 → ALERT (10%)
+    rejection_window_hours: int = 2                # 连续拒绝计数时间窗口（小时）
+    rejection_count_threshold: int = 3             # 超过此数量拒绝 → ALERT
+    llm_failure_window_hours: int = 1               # LLM失败率统计时间窗口（小时）
+    llm_failure_rate_threshold: float = 0.50       # LLM失败率超过此值 → ALERT (50%)
+    circuit_cooldown_minutes: int = 30             # ALERT 自动恢复冷却时间（分钟）
+    persistent_alert_hours: int = 2                 # ALERT 持续超过此时长 → 自动升级 DEFENSIVE
+
     # 新闻 API
     finnhub_api_key: str = ""
     alphavantage_api_key: str = ""

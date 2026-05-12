@@ -8,11 +8,14 @@ a warning. The pipeline never fails due to tracking issues.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable, Awaitable
 
 import wandb
 
 from config import get_settings
+
+if TYPE_CHECKING:
+    from services.circuit_breaker import CircuitTransition, TriggerResult
 
 logger = logging.getLogger("qc_fastapi_2.tracking.wandb_client")
 settings = get_settings()
@@ -151,3 +154,64 @@ class PipelineRunTracker:
             logger.info(f"[Tracker] W&B run {self._run.name} ended: {execution_status}")
         except Exception as e:
             logger.warning(f"[Tracker] end_run failed: {e}")
+
+    # ── Phase D: Circuit + Retry telemetry ─────────────────────────────────
+
+    def log_circuit_transition(self, transition: "CircuitTransition") -> None:
+        """Log circuit breaker state transition as W&B config + metric."""
+        if self._disabled or self._run is None:
+            return
+        try:
+            self._run.config["circuit_from_state"]       = transition.from_state.value
+            self._run.config["circuit_to_state"]         = transition.to_state.value
+            self._run.config["circuit_primary_trigger"]   = transition.primary_trigger
+            self._run.config["circuit_reason"]           = (transition.reason or "")[:200]
+            self._run.log({
+                "circuit_escalated": int(
+                    transition.to_state.value in ("ALERT", "DEFENSIVE")
+                )
+            })
+        except Exception as e:
+            logger.warning(f"[Tracker] log_circuit_transition failed: {e}")
+
+    def log_trigger_results(self, trigger_results: "list[TriggerResult]") -> None:
+        """Log per-trigger metric values from circuit breaker evaluation."""
+        if self._disabled or self._run is None:
+            return
+        try:
+            log_dict: dict[str, Any] = {}
+            for tr in trigger_results:
+                if isinstance(tr.value, (int, float)):
+                    log_dict[f"trigger_{tr.name}_value"] = tr.value
+                    log_dict[f"trigger_{tr.name}_fired"] = int(tr.triggered)
+            if log_dict:
+                self._run.log(log_dict)
+        except Exception as e:
+            logger.warning(f"[Tracker] log_trigger_results failed: {e}")
+
+    def log_retry_event(
+        self,
+        service_name: str,
+        attempt: int,
+        error_type: str,
+    ) -> None:
+        """Log a retry/degraded-fallback event. Accumulates per-service counts."""
+        if self._disabled or self._run is None:
+            return
+        try:
+            counter_key = f"retry_{service_name}_attempts"
+            existing = self._run.summary.get(counter_key, 0)
+            self._run.summary[counter_key] = existing + 1
+            self._run.log({f"retry_{service_name}_attempt": attempt})
+            self._run.config[f"retry_{service_name}_last_error"] = error_type[:80]
+        except Exception as e:
+            logger.warning(f"[Tracker] log_retry_event failed: {e}")
+
+    def make_retry_callback(
+        self,
+        service_name: str,
+    ) -> Callable[[int, Exception], Awaitable[None]]:
+        """Return an async on_retry callback suitable for with_retry(on_retry=...)."""
+        async def _cb(attempt: int, error: Exception) -> None:
+            self.log_retry_event(service_name, attempt, type(error).__name__)
+        return _cb

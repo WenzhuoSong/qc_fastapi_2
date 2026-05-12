@@ -161,11 +161,11 @@ async def validate_proposal_still_relevant(
         except (TypeError, ValueError):
             pass
 
-    # 3. Circuit state check
+    # 3. Circuit state check (Phase 3: also blocks DEFENSIVE)
     async with AsyncSessionLocal() as db:
         circuit_cfg = await get_system_config(db, "circuit_state")
     circuit = (circuit_cfg.value if circuit_cfg else {}).get("value", "CLOSED")
-    if circuit == "ALERT":
-        return False, "circuit_alert"
+    if circuit in ("ALERT", "DEFENSIVE"):
+        return False, f"circuit_{circuit.lower()}"
 
     return True, "valid"

@@ -385,8 +385,9 @@ def _build_disagreement_map_for_pm(
 async def _guard_and_config(trigger: str) -> dict | None:
     """
     Read system config, build pipeline_context.
-    Returns None to signal skip (paused / MANUAL mode).
+    Returns None to signal skip (paused / MANUAL mode / circuit ALERT).
     """
+    # Read config (circuit state read separately below for trigger evaluation)
     async with AsyncSessionLocal() as db:
         paused_cfg      = await get_system_config(db, "trading_paused")
         risk_cfg        = await get_system_config(db, "risk_params")
@@ -406,7 +407,25 @@ async def _guard_and_config(trigger: str) -> dict | None:
         return None
 
     risk_params = (risk_cfg.value if risk_cfg else {}) or {}
-    circuit     = (circuit_cfg.value if circuit_cfg else {"value": "CLOSED"}).get("value", "CLOSED")
+
+    # ── Phase 3: Circuit state — circuit is already evaluated at pipeline entry ─
+    # circuit_cfg.value may be stale; we use it as fallback only
+    circuit = (circuit_cfg.value if circuit_cfg else {"value": "CLOSED"}).get("value", "CLOSED")
+
+    # Phase 3: In FULL_AUTO with circuit ALERT/DEFENSIVE, alert instead of running
+    if auth_mode == "FULL_AUTO" and circuit in ("ALERT", "DEFENSIVE"):
+        from tools.notify_tools import tool_send_telegram
+        emoji = "🟡" if circuit == "ALERT" else "🔴"
+        await tool_send_telegram({
+            "text": (
+                f"{emoji} FULL_AUTO: Circuit={circuit} is open. "
+                f"Pipeline paused for {circuit}. "
+                f"Reply /confirm to override or /reset_circuit once resolved."
+            )
+        })
+        logger.warning(f"[pipeline] FULL_AUTO blocked by circuit={circuit}")
+        return None
+
     active_name = (active_cfg.value if active_cfg else {"value": "momentum_lite_v1"}).get(
         "value", "momentum_lite_v1"
     )
@@ -489,6 +508,20 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     synthesizer_out_for_tracker: dict | None = None
     risk_out_for_tracker: dict | None = None
     pipeline_status = "unknown"
+
+    # ── Phase 3: Circuit Breaker — evaluate triggers before pipeline runs ───────
+    from services.circuit_breaker import evaluate_and_apply
+    try:
+        transition = await evaluate_and_apply()
+        if transition:
+            logger.info(
+                f"[circuit_breaker] pre-pipeline transition: "
+                f"{transition.from_state.value} → {transition.to_state.value} | {transition.reason}"
+            )
+            tracker.log_circuit_transition(transition)
+            tracker.log_trigger_results(transition.all_trigger_results)
+    except Exception as e:
+        logger.warning(f"[circuit_breaker] trigger evaluation failed: {e}")
 
     # Stage 0: guard + config
     pipeline_context = await _guard_and_config(trigger)
@@ -591,6 +624,12 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         n_ticker_signals=len(research_report.get("ticker_signals", [])),
         degraded=research_report.get("used_degraded_fallback", False))
 
+    # Phase 3: Record LLM failure for circuit breaker monitoring
+    if research_report.get("used_degraded_fallback", False):
+        from services.circuit_breaker import record_stage_failure
+        await record_stage_failure("researcher")
+        tracker.log_retry_event("researcher", 1, "degraded_fallback")
+
     # Task 7: Extract researcher_signals for downstream confidence-based clipping
     researcher_signals: dict = research_report.get("ticker_signals_dict") or {}
 
@@ -633,6 +672,16 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         tokens_bear=bear_draft.get("_token_usage"),
         bull_failed=bull_draft.get("failed", False),
         bear_failed=bear_draft.get("failed", False))
+
+    # Phase 3: Record LLM failures for circuit breaker monitoring
+    if bull_draft.get("failed", False) or bear_draft.get("failed", False):
+        from services.circuit_breaker import record_stage_failure
+        if bull_draft.get("failed"):
+            await record_stage_failure("bull_researcher")
+            tracker.log_retry_event("bull_researcher", 1, "degraded_fallback")
+        if bear_draft.get("failed"):
+            await record_stage_failure("bear_researcher")
+            tracker.log_retry_event("bear_researcher", 1, "degraded_fallback")
 
     # Stage 4c: cross-examination (Bull sees Bear draft, Bear sees Bull draft; parallel)
     t_ce = time.time()
@@ -714,6 +763,12 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         n_adjustments=len(synthesizer_out.get("weight_adjustments", [])),
         degraded=synthesizer_out.get("used_degraded_fallback", False))
     synthesizer_out_for_tracker = synthesizer_out
+
+    # Phase 3: Record LLM failure for circuit breaker monitoring
+    if synthesizer_out.get("used_degraded_fallback", False):
+        from services.circuit_breaker import record_stage_failure
+        await record_stage_failure("synthesizer")
+        tracker.log_retry_event("synthesizer", 1, "degraded_fallback")
 
     # ── Stage 5 Task 5: CoT reasoning_chain extraction + consistency validation ──
     reasoning_chain = synthesizer_out.get("reasoning_chain") or {}
@@ -799,6 +854,11 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     dur_risk = int((time.time() - t0) * 1000)
     approved = bool(risk_out.get("approved", False))
 
+    # Phase 3: Record rejection for circuit breaker monitoring
+    if not approved:
+        from services.circuit_breaker import record_rejection_event
+        await record_rejection_event(analysis_id)
+
     # P1-1: Clear pending critical alerts after RISK MGR consumes them
     if pipeline_context.get("pending_alerts"):
         async with AsyncSessionLocal() as db:
@@ -868,6 +928,12 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     tracker.log_stage_metrics("8_communicator", dur_comm,
         used_fallback=comm_out.get("used_fallback", False))
 
+    # Phase 3: Record LLM failure for circuit breaker monitoring (communicator uses LLM + fallback)
+    if comm_out.get("used_fallback", False):
+        from services.circuit_breaker import record_stage_failure
+        await record_stage_failure("communicator")
+        tracker.log_retry_event("communicator", 1, "degraded_fallback")
+
     # Stage 9: Branch execution
     auth_mode = pipeline_context["auth_mode"]
 
@@ -896,10 +962,26 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             )
             pipeline_status = f"skipped_invalidation_{reason}"
         else:
-            result = await run_executor_async(pipeline_context, risk_out, analysis_id)
-            await _save_execution(analysis_id, result)
-            logger.info(f"FULL_AUTO execution: {result.get('execution_status')}")
-            pipeline_status = result.get("execution_status", "unknown")
+            # Phase 3: Re-check circuit state — could have escalated during pipeline run
+            circuit = pipeline_context.get("circuit_state", "CLOSED")
+            if circuit in ("ALERT", "DEFENSIVE"):
+                # Circuit opened mid-pipeline — store as pending, alert human
+                await _send_semi_auto_proposal(pipeline_context, risk_out, comm_out, analysis_id)
+                pipeline_status = f"full_auto_circuit_{circuit.lower()}"
+                emoji = "🟡" if circuit == "ALERT" else "🔴"
+                await tool_send_telegram({
+                    "text": (
+                        f"{emoji} FULL_AUTO: Circuit={circuit} opened during pipeline run. "
+                        f"Proposal stored as pending. "
+                        f"Reply /confirm to execute or /reset_circuit once resolved."
+                    )
+                })
+                logger.warning(f"[pipeline] FULL_AUTO: circuit opened mid-pipeline, stored pending")
+            else:
+                result = await run_executor_async(pipeline_context, risk_out, analysis_id)
+                await _save_execution(analysis_id, result)
+                logger.info(f"FULL_AUTO execution: {result.get('execution_status')}")
+                pipeline_status = result.get("execution_status", "unknown")
     else:
         pipeline_status = "unknown_auth_mode"
 

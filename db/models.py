@@ -239,6 +239,9 @@ class MemoryDaily(Base):
     agent_analysis_id     = Column(BigInteger, ForeignKey("agent_analysis.id"), nullable=True)
     raw_researcher_output = Column(JSONB, nullable=True)          # full researcher output snapshot
 
+    # Phase 3: Structured decision context (written by decision_memory.py)
+    decision             = Column(JSONB, nullable=True)          # structured decision record
+
 
 class MemoryWeekly(Base):
     """

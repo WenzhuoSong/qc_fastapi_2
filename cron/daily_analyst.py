@@ -4,6 +4,10 @@ cron/daily_analyst.py
 Runs each trading day at 16:45 ET (after post_market_report).
 Reads the day's latest AgentAnalysis record, uses GPT-4o-mini to distill
 it into a structured daily memory, and upserts memory_daily.
+
+Phase 3 additions:
+- Calls write_decision_context() to write structured decision record
+- Calls calibrate_decisions() for the previous trading day (next-day backfill)
 """
 
 import asyncio
@@ -71,6 +75,49 @@ async def main() -> None:
     today = date.today()
     logger.info(f"[DAILY_ANALYST] Starting processing for {today}")
 
+    # Phase 3: Backfill DQS for yesterday (must run before calibrate_decisions)
+    yesterday = today - __import__("datetime").timedelta(days=1)
+    try:
+        from services.decision_memory import (
+            read_decision_context,
+            compute_decision_quality_score,
+            backfill_decision_quality,
+        )
+        yesterday_ctx = await read_decision_context(yesterday)
+        if yesterday_ctx:
+            portfolio_ret = await _get_yesterday_portfolio_return(yesterday)
+            spy_ret = await _get_yesterday_spy_return(yesterday)
+            dqs = compute_decision_quality_score(
+                recommended_stance=yesterday_ctx.get("recommended_stance"),
+                portfolio_return_pct=portfolio_ret,
+                spy_return_pct=spy_ret,
+                researcher_confidence=yesterday_ctx.get("researcher_confidence"),
+                execution_happened=bool(yesterday_ctx.get("execution_happened", False)),
+            )
+            if dqs is not None:
+                await backfill_decision_quality(
+                    trading_date=yesterday,
+                    decision_quality_score=dqs,
+                    portfolio_return_pct=portfolio_ret,
+                )
+                await _write_dqs_to_memory_daily_column(yesterday, dqs, portfolio_ret)
+                logger.info(f"[DAILY_ANALYST] DQS backfill: {yesterday} DQS={dqs:.3f}")
+        else:
+            logger.info(f"[DAILY_ANALYST] No decision context for {yesterday}, skipping DQS backfill")
+    except Exception as e:
+        logger.warning(f"[DAILY_ANALYST] DQS backfill failed: {e}")
+
+    # Phase 3: Run DECISION_CALIBRATOR for the previous trading day (next-day backfill)
+    try:
+        from services.decision_calibrator import calibrate_decisions
+        calib_result = await calibrate_decisions(trading_date=yesterday)
+        logger.info(
+            f"[DAILY_ANALYST] DECISION_CALIBRATOR: "
+            f"bias={calib_result.bias_multipliers}, samples={calib_result.sample_size}"
+        )
+    except Exception as e:
+        logger.warning(f"[DAILY_ANALYST] DECISION_CALIBRATOR failed: {e}")
+
     async with AsyncSessionLocal() as session:
         # 1. Read the day's latest AgentAnalysis
         analysis = await _get_latest_analysis_today(session, today)
@@ -95,7 +142,85 @@ async def main() -> None:
             session, today, analysis, portfolio, memory_data, existing, execution_happened
         )
 
+        # Phase 3: Write structured decision context
+        try:
+            from services.decision_memory import write_decision_context as _write_decision
+            await _write_decision(
+                analysis_id=analysis.id,
+                trading_date=today,
+                regime=memory_data.get("regime_assessment", "unknown"),
+                weights_used=_get_weights_used(analysis),
+                rationale=memory_data.get("macro_narrative", ""),
+                outcome={"portfolio_return_pct": None, "decision_quality_score": None},
+                execution_happened=execution_happened,
+                researcher_confidence=_get_researcher_confidence(analysis),
+                recommended_stance=memory_data.get("recommended_stance"),
+            )
+        except Exception as e:
+            logger.warning(f"[DAILY_ANALYST] write_decision_context failed: {e}")
+
     logger.info(f"[DAILY_ANALYST] Memory write complete for {today}")
+
+
+# ── Phase 3 Helpers ────────────────────────────────────────────────────────────
+
+
+def _get_weights_used(analysis) -> dict:
+    """Extract target_weights from risk_output for decision_memory."""
+    risk_out = analysis.risk_output or {}
+    return risk_out.get("target_weights", {}) or {}
+
+
+def _get_researcher_confidence(analysis) -> str | None:
+    """Extract researcher confidence level from researcher's output."""
+    researcher_out = analysis.researcher_output or {}
+    market_judgment = researcher_out.get("market_judgment") or {}
+    return market_judgment.get("confidence")
+
+
+# ── DQS Backfill Helpers ────────────────────────────────────────────────────────
+
+
+async def _get_yesterday_portfolio_return(target_date: date) -> float | None:
+    """Get portfolio daily return for target_date from PortfolioTimeseries."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(PortfolioTimeseries.daily_pnl_pct)
+            .where(func.date(PortfolioTimeseries.recorded_at) == target_date)
+            .order_by(PortfolioTimeseries.recorded_at.desc())
+            .limit(1)
+        )
+        row = result.scalar_one_or_none()
+    return float(row) if row is not None else None
+
+
+async def _get_yesterday_spy_return(target_date: date) -> float | None:
+    """Get SPY return for target_date from MemoryDaily."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(MemoryDaily.spy_return_pct)
+            .where(MemoryDaily.trading_date == target_date)
+        )
+        row = result.scalar_one_or_none()
+    return float(row) if row is not None else None
+
+
+async def _write_dqs_to_memory_daily_column(
+    trading_date: date,
+    dqs: float,
+    portfolio_return_pct: float | None,
+) -> None:
+    """Write DQS to the flat MemoryDaily column (calibrator reads this, not JSONB)."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(MemoryDaily).where(MemoryDaily.trading_date == trading_date)
+        )
+        row = result.scalar_one_or_none()
+        if row:
+            row.decision_quality_score = dqs
+            if portfolio_return_pct is not None:
+                row.portfolio_return_pct = portfolio_return_pct
+            await session.commit()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

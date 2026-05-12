@@ -343,6 +343,62 @@ curl "https://api.telegram.org/bot{TOKEN}/setWebhook?url=https://{RAILWAY_DOMAIN
 ✅ Stage 6→7 Regime Hard Constraint Validation：apply_regime_constraints() 在 RISK MGR 通过后做最终兜底校验（权益上限 + 现金下限 + 新仓硬上限），clip 后值写回 risk_out 再流向 EXECUTOR
 ✅ Researcher confidence 体系：overall_confidence + low_confidence_reasons + macro_outlook.data_quality/data_gaps + ticker_signals_dict[ticker].confidence + confidence_drivers.supporting_count/conflicting_signals
 
+### Phase 3 Scope
+
+**Safety Layer:**
+✅ 4-state circuit breaker (`services/circuit_breaker.py`) — 5 trigger monitors:
+  - VIX > 30 → ALERT, VIX > 40 → DEFENSIVE
+  - Portfolio drawdown > 10% → ALERT
+  - > 3 consecutive RISK MGR rejections in 2h → ALERT
+  - > 50% LLM stage failures in 1h → ALERT
+  - ALERT persisted > 2h → auto-escalate to DEFENSIVE
+✅ Structured retry protocol (`services/retry_protocol.py`) — exponential backoff per service:
+  - Finnhub (3 attempts, 2s base), AlphaVantage (2 attempts, 5s base), RSS (2 attempts, 1s base)
+✅ Pipeline integration: circuit evaluation at pipeline entry, FULL_AUTO circuit-aware blocking, LLM failure/rejection recording
+✅ `/reset_circuit` Telegram command for human manual reset
+✅ Circuit health check in morning_health cron
+
+**Circuit state transitions:**
+- CLOSED → ALERT: any trigger condition fires
+- ALERT → DEFENSIVE: escalation trigger OR ALERT persists > 2h
+- ALERT → CLOSED: all triggers clear + 30 min cooldown
+- DEFENSIVE → ALERT: trigger de-escalates (VIX/drawdown recover)
+- Any → CLOSED: human command only (`/reset_circuit`)
+
+**Key new services:**
+- `services/circuit_breaker.py` — `CircuitBreakerMonitor`, `CircuitState`, `CircuitTransition`, `TriggerResult`
+- `services/retry_protocol.py` — `RetryConfig`, `with_retry()`, `retry_sync()`, `HTTP_RETRY_CONFIGS`
+
+**Config changes (config.py):**
+- `vix_alert_threshold`, `vix_defensive_threshold`, `drawdown_alert_threshold`
+- `rejection_window_hours`, `rejection_count_threshold`
+- `llm_failure_window_hours`, `llm_failure_rate_threshold`
+- `circuit_cooldown_minutes`, `persistent_alert_hours`
+
+**Strategy Iteration:**
+✅ DECAY_DETECTOR (`services/decay_detector.py`) — monitors 5 decay signals:
+  - Signal accuracy: decision_quality_score trend over 4-week rolling windows
+  - Momentum effectiveness: MemoryWeekly.momentum_effectiveness over 13 weeks
+  - Bull/Bear disagreement spike: cross_exam disagreement_count increase
+  - Regime stability: consecutive regime shifts ≥3/4 weeks
+  - RSI mean-reversion failure: high_vol regime + wrong-direction signals
+  - Aggregates into: `decay_signal_strength` (strong/moderate/weak/none)
+  - `recommendation = "strategy_refresh_recommendation"` when strength ≥ moderate
+✅ QUARTERLY_ANALYST (`agents/quarterly_analyst.py` + `cron/quarterly_analyst.py`):
+  - Runs first trading day of each quarter at 10:00 ET
+  - Reviews MemoryMonthly/MemoryWeekly/MemoryDaily + performance data
+  - Outputs `strategy_revision_v1` JSON to system_config with `status: "pending_approval"`
+  - Telegram alert with summary; human replies `/approve_strategy` or `/skip_strategy`
+✅ StrategyVersionApprovalFlow:
+  - `/approve_strategy`: reads revision, merges params into new version key, updates active_strategy, writes to `strategy_approved_history`
+  - `/skip_strategy`: marks revision as rejected
+  - New system_config keys: `strategy_revision_v1`, `strategy_approved_history`
+
+**New files for Phase B:**
+- `services/decay_detector.py` — `DecayDetector`, `evaluate_decay_signal()`
+- `agents/quarterly_analyst.py` — `run_quarterly_analyst()`
+- `cron/quarterly_analyst.py` — cron entry, first trading day of each quarter
+
 ### W&B Experiment Tracking
 
 **`tracking/` module**:
