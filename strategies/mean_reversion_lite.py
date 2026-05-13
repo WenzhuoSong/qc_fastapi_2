@@ -20,6 +20,8 @@ class MeanReversionLite(Strategy):
     name = "mean_reversion_lite"
     version = "1.0"
     description = "RSI/Bollinger mean-reversion strategy with volatility penalty"
+    required_fields = ("rsi_14", "bb_position", "hist_vol_20d", "mom_20d")
+    optional_fields = ("daily_return_pct",)
 
     DEFAULT_PARAMS: dict[str, Any] = {
         "w_rsi_oversold": 0.45,

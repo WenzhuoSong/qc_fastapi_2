@@ -245,9 +245,24 @@ ADD COLUMN IF NOT EXISTS daily_return_pct NUMERIC(8,6);
 strategies/
 ├── base.py              # Strategy ABC + ScoredTicker dataclass
 ├── momentum_lite.py     # MomentumLiteV1 (default)
+├── dual_momentum.py     # Relative/absolute momentum rotation
+├── mean_reversion_lite.py # RSI/Bollinger mean reversion
+├── low_vol_factor.py    # Low-vol + long momentum confirmation
+├── risk_parity_lite.py  # Inverse-volatility allocation benchmark
+├── equal_weight.py      # Equal-weight benchmark
 ├── defensive_adjust.py  # Regime-based defense matrix + rebalance helpers
 └── __init__.py          # STRATEGY_REGISTRY + get_strategy()
 ```
+
+Every strategy declares a data contract:
+
+- `required_fields`: fields that must exist on enough holdings before scoring
+- `optional_fields`: useful fields that are not hard blockers
+- `min_required_coverage`: minimum universe coverage, default 70%
+
+Playground checks this contract before running each strategy. If data is
+missing, the strategy is marked `data_ready=false`, reports missing fields, and
+is excluded from consensus weights.
 
 **Current default — `MomentumLiteV1`:**
 5-factor composite score:
@@ -265,9 +280,10 @@ score-weighted (70%) blended with inverse-vol (30%), capped by
 **Adding a new strategy:**
 
 1. Create `strategies/my_strategy.py` subclassing `Strategy`.
-2. Register in `STRATEGY_REGISTRY`.
-3. Insert `strategy_<name>_params` via `db/seed.py`.
-4. Switch active strategy by updating `system_config.active_strategy`.
+2. Define `required_fields` / `optional_fields`.
+3. Register in `STRATEGY_REGISTRY`.
+4. Insert `strategy_<name>_params` via `db/seed.py` if it should be tunable.
+5. Switch active strategy by updating `system_config.active_strategy`.
 
 ## Setup
 

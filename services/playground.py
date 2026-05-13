@@ -29,8 +29,11 @@ settings = get_settings()
 
 DEFAULT_PLAYGROUND_STRATEGIES = [
     "momentum_lite_v1",
+    "dual_momentum_rotation",
     "mean_reversion_lite",
     "low_vol_factor",
+    "risk_parity_lite",
+    "equal_weight_benchmark",
 ]
 
 
@@ -45,6 +48,8 @@ class StrategyResult:
     expected_turnover_pct: float
     estimated_cost_pct: float
     regime_fit: str
+    data_ready: bool
+    data_readiness: dict[str, Any]
 
 
 @dataclass
@@ -177,8 +182,13 @@ def _run_one_strategy(
     current_weights: dict[str, float],
 ) -> StrategyResult:
     strategy = get_strategy(name)
-    scored = strategy.score(holdings, context)
-    weights = strategy.optimize(scored, context)
+    readiness = strategy.data_readiness(holdings)
+    if readiness.get("ready"):
+        scored = strategy.score(holdings, context)
+        weights = strategy.optimize(scored, context)
+    else:
+        scored = []
+        weights = {"CASH": 1.0}
     actions = compute_rebalance_actions(weights, current_weights, threshold=1e-9)
     turnover = sum(abs(float(a["weight_delta"])) for a in actions) / 2.0
     return StrategyResult(
@@ -191,16 +201,22 @@ def _run_one_strategy(
         expected_turnover_pct=round(turnover, 6),
         estimated_cost_pct=estimate_cost_pct(actions),
         regime_fit=_strategy_regime_fit(name, context.get("regime", "")),
+        data_ready=bool(readiness.get("ready")),
+        data_readiness={
+            **readiness,
+            "requirements": strategy.data_requirements(),
+        },
     )
 
 
 def compute_weight_divergence(results: list[StrategyResult], top_n: int = 10) -> list[dict[str, Any]]:
-    tickers = sorted({ticker for result in results for ticker in result.weights if ticker != "CASH"})
+    ready_results = [result for result in results if result.data_ready]
+    tickers = sorted({ticker for result in ready_results for ticker in result.weights if ticker != "CASH"})
     rows: list[dict[str, Any]] = []
     for ticker in tickers:
         weights = {
             result.strategy_name: float(result.weights.get(ticker, 0.0))
-            for result in results
+            for result in ready_results
         }
         vals = list(weights.values())
         rows.append({
@@ -215,11 +231,12 @@ def compute_weight_divergence(results: list[StrategyResult], top_n: int = 10) ->
 
 
 def compute_consensus_weights(results: list[StrategyResult]) -> dict[str, float]:
-    if not results:
+    ready_results = [result for result in results if result.data_ready]
+    if not ready_results:
         return {"CASH": 1.0}
-    tickers = sorted({ticker for result in results for ticker in result.weights})
+    tickers = sorted({ticker for result in ready_results for ticker in result.weights})
     averaged = {
-        ticker: sum(float(result.weights.get(ticker, 0.0)) for result in results) / len(results)
+        ticker: sum(float(result.weights.get(ticker, 0.0)) for result in ready_results) / len(ready_results)
         for ticker in tickers
     }
     total = sum(averaged.values())
@@ -431,6 +448,12 @@ def _strategy_regime_fit(name: str, regime: str) -> str:
         return "strong" if regime in ("mean_reverting", "high_vol") else "medium"
     if name == "low_vol_factor":
         return "strong" if regime in ("defensive", "high_vol", "trending_bear") else "medium"
+    if name == "dual_momentum_rotation":
+        return "strong" if regime in ("trending_bull", "trending_bear") else "medium"
+    if name == "risk_parity_lite":
+        return "strong" if regime in ("high_vol", "defensive") else "medium"
+    if name == "equal_weight_benchmark":
+        return "benchmark"
     return "unknown"
 
 

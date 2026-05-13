@@ -53,8 +53,11 @@ _DEFAULTS = {
         "lookback_days": 30,
         "strategies": [
             "momentum_lite_v1",
+            "dual_momentum_rotation",
             "mean_reversion_lite",
             "low_vol_factor",
+            "risk_parity_lite",
+            "equal_weight_benchmark",
         ],
     },
 }

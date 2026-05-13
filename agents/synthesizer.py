@@ -390,6 +390,8 @@ def _build_playground_section(playground_bundle: dict | None) -> str:
             {
                 "strategy_name": item.get("strategy_name"),
                 "regime_fit": item.get("regime_fit"),
+                "data_ready": item.get("data_ready"),
+                "missing_fields": (item.get("data_readiness") or {}).get("missing_fields"),
                 "weights": item.get("weights"),
                 "selected_tickers": item.get("selected_tickers"),
                 "expected_turnover_pct": item.get("expected_turnover_pct"),

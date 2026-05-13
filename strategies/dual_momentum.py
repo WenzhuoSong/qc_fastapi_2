@@ -1,107 +1,96 @@
 """
-LowVolFactor v1.0
+DualMomentumRotation v1.0
 
-Lightweight sandbox strategy for the Playground. It prefers low realized
-volatility, low ATR, and stable positive long-term momentum.
+Mainstream ETF rotation strategy: rank by absolute/relative momentum and hold
+the strongest names only when momentum is positive. Otherwise leave capital in
+CASH. This is intentionally simple and deterministic for Playground research.
 """
 from __future__ import annotations
 
-import logging
 import statistics
 from typing import Any
 
 from strategies.base import ScoredTicker, Strategy
 
-logger = logging.getLogger("qc_fastapi_2.strategy.low_vol_factor")
 
-
-class LowVolFactor(Strategy):
-    name = "low_vol_factor"
+class DualMomentumRotation(Strategy):
+    name = "dual_momentum_rotation"
     version = "1.0"
-    description = "Low-volatility factor strategy with long-momentum confirmation"
-    required_fields = ("hist_vol_20d", "atr_pct", "mom_252d")
-    optional_fields = ("beta_vs_spy", "unrealized_pnl_pct", "daily_return_pct")
+    description = "Relative and absolute momentum ETF rotation"
+    required_fields = ("mom_60d", "mom_252d", "hist_vol_20d")
+    optional_fields = ("mom_20d", "daily_return_pct")
 
     DEFAULT_PARAMS: dict[str, Any] = {
-        "w_hist_vol": 0.40,
-        "w_atr": 0.25,
-        "w_beta": 0.15,
-        "w_mom_252d": 0.15,
-        "w_drawdown_proxy": 0.05,
+        "w_mom_60d": 0.35,
+        "w_mom_252d": 0.55,
+        "w_low_vol": 0.10,
         "zscore_clip": 3.0,
-        "max_holdings": 8,
+        "max_holdings": 5,
+        "absolute_momentum_floor": 0.0,
     }
 
     def __init__(self, params: dict[str, Any] | None = None):
         super().__init__({**self.DEFAULT_PARAMS, **(params or {})})
 
     def score(self, holdings: list[dict], context: dict[str, Any]) -> list[ScoredTicker]:
-        required = ("hist_vol_20d", "atr_pct", "mom_252d")
         valid = [
             h for h in holdings
-            if h.get("ticker") and all(h.get(field) is not None for field in required)
+            if h.get("ticker")
+            and h.get("mom_60d") is not None
+            and h.get("mom_252d") is not None
+            and h.get("hist_vol_20d") is not None
         ]
         if not valid:
-            logger.warning("low_vol_factor: no tickers with complete factor data")
             return []
 
         p = self.params
         clip = float(p["zscore_clip"])
-        z_hist_vol = _zscore([-float(h["hist_vol_20d"]) for h in valid], clip)
-        z_atr = _zscore([-float(h["atr_pct"]) for h in valid], clip)
-        z_beta = _zscore([-float(h.get("beta_vs_spy") or 1.0) for h in valid], clip)
+        z_mom60 = _zscore([float(h["mom_60d"]) for h in valid], clip)
         z_mom252 = _zscore([float(h["mom_252d"]) for h in valid], clip)
-        z_pnl = _zscore([float(h.get("unrealized_pnl_pct") or 0.0) for h in valid], clip)
+        z_low_vol = _zscore([-float(h["hist_vol_20d"]) for h in valid], clip)
 
         scored: list[ScoredTicker] = []
         for i, h in enumerate(valid):
             score = (
-                float(p["w_hist_vol"]) * z_hist_vol[i]
-                + float(p["w_atr"]) * z_atr[i]
-                + float(p["w_beta"]) * z_beta[i]
+                float(p["w_mom_60d"]) * z_mom60[i]
                 + float(p["w_mom_252d"]) * z_mom252[i]
-                + float(p["w_drawdown_proxy"]) * z_pnl[i]
+                + float(p["w_low_vol"]) * z_low_vol[i]
             )
             scored.append(ScoredTicker(
                 ticker=h["ticker"],
                 score=score,
                 factor_breakdown={
-                    "z_hist_vol": round(z_hist_vol[i], 4),
-                    "z_atr": round(z_atr[i], 4),
-                    "z_beta": round(z_beta[i], 4),
+                    "z_mom_60d": round(z_mom60[i], 4),
                     "z_mom_252d": round(z_mom252[i], 4),
-                    "z_unrealized_pnl": round(z_pnl[i], 4),
+                    "z_low_vol": round(z_low_vol[i], 4),
                 },
                 raw_factors={
-                    "hist_vol_20d": float(h["hist_vol_20d"]),
-                    "atr_pct": float(h["atr_pct"]),
-                    "beta_vs_spy": float(h.get("beta_vs_spy") or 1.0),
+                    "mom_60d": float(h["mom_60d"]),
                     "mom_252d": float(h["mom_252d"]),
-                    "unrealized_pnl_pct": float(h.get("unrealized_pnl_pct") or 0.0),
+                    "hist_vol_20d": float(h["hist_vol_20d"]),
                 },
             ))
-
         scored.sort(key=lambda item: item.score, reverse=True)
         return scored
 
     def optimize(self, scored: list[ScoredTicker], context: dict[str, Any]) -> dict[str, float]:
         if not scored:
             return {"CASH": 1.0}
-
         risk = context.get("risk_params", {})
         max_pos = float(risk.get("max_single_position", 0.20))
         min_cash = float(risk.get("min_cash_pct", 0.05))
-        n = max(3, min(int(self.params["max_holdings"]), len(scored)))
-        selected = [s for s in scored[:n] if s.score > 0]
+        floor = float(self.params["absolute_momentum_floor"])
+        selected = [
+            item for item in scored
+            if float(item.raw_factors.get("mom_252d") or 0.0) > floor
+        ][:max(1, int(self.params["max_holdings"]))]
         if not selected:
             return {"CASH": 1.0}
 
-        inv_vol = {
-            s.ticker: 1.0 / max(float(s.raw_factors.get("hist_vol_20d") or 0.15), 0.05)
-            for s in selected
-        }
-        total = sum(inv_vol.values())
-        raw = {ticker: value / total for ticker, value in inv_vol.items()}
+        min_score = min(item.score for item in selected)
+        shifted = {item.ticker: item.score - min_score + 0.1 for item in selected}
+        total = sum(shifted.values())
+        raw = {ticker: value / total for ticker, value in shifted.items()}
         capped = {ticker: min(weight, max_pos) for ticker, weight in raw.items()}
         capped_total = sum(capped.values())
         equity_budget = min(capped_total, 1.0 - min_cash)

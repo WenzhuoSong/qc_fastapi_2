@@ -32,9 +32,63 @@ class Strategy(ABC):
     name: str = ""
     version: str = "1.0"
     description: str = ""
+    required_fields: tuple[str, ...] = ()
+    optional_fields: tuple[str, ...] = ()
+    min_required_coverage: float = 0.70
 
     def __init__(self, params: dict[str, Any] | None = None):
         self.params = params or {}
+
+    def data_requirements(self) -> dict[str, Any]:
+        return {
+            "required_fields": list(self.required_fields),
+            "optional_fields": list(self.optional_fields),
+            "min_required_coverage": self.min_required_coverage,
+        }
+
+    def data_readiness(self, holdings: list[dict]) -> dict[str, Any]:
+        valid_holdings = [
+            h for h in holdings
+            if h.get("ticker") and str(h.get("ticker")).upper() != "CASH"
+        ]
+        if not self.required_fields:
+            return {
+                "ready": True,
+                "coverage": 1.0,
+                "missing_fields": [],
+                "field_coverage": {},
+                "eligible_tickers": [h.get("ticker") for h in valid_holdings],
+            }
+        if not valid_holdings:
+            return {
+                "ready": False,
+                "coverage": 0.0,
+                "missing_fields": list(self.required_fields),
+                "field_coverage": {},
+                "eligible_tickers": [],
+            }
+
+        field_coverage: dict[str, float] = {}
+        missing_fields: list[str] = []
+        for field in self.required_fields:
+            covered = sum(1 for h in valid_holdings if h.get(field) is not None)
+            coverage = covered / len(valid_holdings)
+            field_coverage[field] = round(coverage, 4)
+            if coverage < self.min_required_coverage:
+                missing_fields.append(field)
+
+        eligible = [
+            h.get("ticker") for h in valid_holdings
+            if all(h.get(field) is not None for field in self.required_fields)
+        ]
+        aggregate = min(field_coverage.values()) if field_coverage else 1.0
+        return {
+            "ready": aggregate >= self.min_required_coverage,
+            "coverage": round(aggregate, 4),
+            "missing_fields": missing_fields,
+            "field_coverage": field_coverage,
+            "eligible_tickers": eligible,
+        }
 
     @abstractmethod
     def score(

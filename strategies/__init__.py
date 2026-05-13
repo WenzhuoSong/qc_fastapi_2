@@ -8,6 +8,9 @@ from strategies.base import Strategy, ScoredTicker
 from strategies.momentum_lite import MomentumLiteV1
 from strategies.mean_reversion_lite import MeanReversionLite
 from strategies.low_vol_factor import LowVolFactor
+from strategies.equal_weight import EqualWeightBenchmark
+from strategies.risk_parity_lite import RiskParityLite
+from strategies.dual_momentum import DualMomentumRotation
 from strategies.defensive_adjust import (
     defensive_adjust,
     compute_rebalance_actions,
@@ -20,6 +23,9 @@ STRATEGY_REGISTRY: dict[str, type[Strategy]] = {
     "momentum_lite_v1": MomentumLiteV1,
     "mean_reversion_lite": MeanReversionLite,
     "low_vol_factor": LowVolFactor,
+    "dual_momentum_rotation": DualMomentumRotation,
+    "risk_parity_lite": RiskParityLite,
+    "equal_weight_benchmark": EqualWeightBenchmark,
 }
 
 

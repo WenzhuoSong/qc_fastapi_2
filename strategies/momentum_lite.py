@@ -27,6 +27,8 @@ class MomentumLiteV1(Strategy):
     name = "momentum_lite_v1"
     version = "1.0"
     description = "5因子动量 + 波动率调整的 ETF 策略"
+    required_fields = ("mom_20d", "mom_60d", "mom_252d", "rsi_14", "atr_pct")
+    optional_fields = ("hist_vol_20d", "beta_vs_spy", "daily_return_pct")
 
     DEFAULT_PARAMS: dict[str, Any] = {
         # 因子权重（总和 = 1.0）
