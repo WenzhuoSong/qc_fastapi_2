@@ -186,7 +186,7 @@ def _run_one_strategy(
         strategy_version=strategy.version,
         description=strategy.description,
         weights=weights,
-        score_breakdown=[_score_to_dict(item) for item in scored[:10]],
+        score_breakdown=[_score_to_dict(item) for item in scored],
         selected_tickers=[ticker for ticker, weight in weights.items() if ticker != "CASH" and weight > 0.01],
         expected_turnover_pct=round(turnover, 6),
         estimated_cost_pct=estimate_cost_pct(actions),
@@ -257,8 +257,10 @@ def _compute_replay_metrics(
         position_counts: list[int] = []
         cash_weights: list[float] = []
         score_leaders: list[str] = []
+        strategy_returns: list[float] = []
+        ic_values: list[float] = []
 
-        for snapshot in snapshots:
+        for idx, snapshot in enumerate(snapshots):
             brief = _brief_from_snapshot(snapshot)
             holdings = brief.get("holdings") or []
             if not holdings:
@@ -286,15 +288,43 @@ def _compute_replay_metrics(
             if result.score_breakdown:
                 score_leaders.append(result.score_breakdown[0]["ticker"])
 
+            if idx + 1 < len(snapshots):
+                next_returns = _extract_daily_returns(snapshots[idx + 1].get("holdings") or [])
+                if next_returns:
+                    strategy_returns.append(
+                        sum(float(weights.get(ticker, 0.0)) * ret for ticker, ret in next_returns.items())
+                    )
+                    score_by_ticker = {
+                        item["ticker"]: float(item["score"])
+                        for item in result.score_breakdown
+                    }
+                    common = [ticker for ticker in score_by_ticker if ticker in next_returns]
+                    if len(common) >= 3:
+                        ic = _correlation(
+                            [score_by_ticker[ticker] for ticker in common],
+                            [next_returns[ticker] for ticker in common],
+                        )
+                        if ic is not None:
+                            ic_values.append(ic)
+
         metrics[name] = {
             "avg_turnover": round(_avg(turnovers), 6) if turnovers else None,
             "max_turnover": round(max(turnovers), 6) if turnovers else None,
             "avg_position_count": round(_avg(position_counts), 2) if position_counts else None,
             "avg_cash_weight": round(_avg(cash_weights), 4) if cash_weights else None,
             "top_signal_leaders": _top_counts(score_leaders, limit=5),
-            "sharpe": None,
-            "ic": None,
-            "metric_notes": "Sharpe/IC require per-ticker forward returns; current QC snapshots expose portfolio PnL only.",
+            "sharpe": _annualized_sharpe(strategy_returns),
+            "ic": round(_avg(ic_values), 4) if ic_values else None,
+            "hit_rate": round(
+                sum(1 for value in strategy_returns if value > 0) / len(strategy_returns),
+                4,
+            ) if strategy_returns else None,
+            "n_forward_return_samples": len(strategy_returns),
+            "metric_notes": (
+                "Uses next heartbeat daily_return_pct as forward return proxy."
+                if strategy_returns
+                else "Sharpe/IC require per-ticker daily_return_pct from QC heartbeat schema_version >= 1.1."
+            ),
         }
     return metrics
 
@@ -319,6 +349,22 @@ def _extract_current_weights(holdings: list[dict]) -> dict[str, float]:
             out[ticker] = float(h.get("weight_current") or 0.0)
         except (TypeError, ValueError):
             out[ticker] = 0.0
+    return out
+
+
+def _extract_daily_returns(holdings: list[dict]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for h in holdings:
+        ticker = (h.get("ticker") or "").upper().strip()
+        if not ticker:
+            continue
+        value = h.get("daily_return_pct")
+        if value is None:
+            value = h.get("return_1d")
+        try:
+            out[ticker] = float(value)
+        except (TypeError, ValueError):
+            continue
     return out
 
 
@@ -416,6 +462,32 @@ def _turnover(left: dict[str, float], right: dict[str, float]) -> float:
 def _avg(values: list[float | int]) -> float:
     clean = [float(v) for v in values if v is not None and not math.isnan(float(v))]
     return sum(clean) / len(clean) if clean else 0.0
+
+
+def _annualized_sharpe(returns: list[float]) -> float | None:
+    clean = [float(v) for v in returns if v is not None and not math.isnan(float(v))]
+    if len(clean) < 2:
+        return None
+    mean = sum(clean) / len(clean)
+    variance = sum((value - mean) ** 2 for value in clean) / (len(clean) - 1)
+    std = math.sqrt(variance)
+    if std <= 1e-12:
+        return None
+    return round((mean / std) * math.sqrt(252), 4)
+
+
+def _correlation(left: list[float], right: list[float]) -> float | None:
+    if len(left) != len(right) or len(left) < 2:
+        return None
+    mean_left = sum(left) / len(left)
+    mean_right = sum(right) / len(right)
+    num = sum((l - mean_left) * (r - mean_right) for l, r in zip(left, right))
+    den_left = math.sqrt(sum((l - mean_left) ** 2 for l in left))
+    den_right = math.sqrt(sum((r - mean_right) ** 2 for r in right))
+    denom = den_left * den_right
+    if denom <= 1e-12:
+        return None
+    return num / denom
 
 
 def _top_counts(values: list[str], limit: int) -> list[dict[str, Any]]:

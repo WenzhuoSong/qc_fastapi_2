@@ -61,6 +61,7 @@ asyncpg cross-event-loop issues by giving every job a fresh event loop.
 Stage 0   guard_and_config     Python    config / pause / lock
 Stage 1   market_brief         Python    snapshot + news → brief (no weights)
 Stage 2   quant_baseline       Python    pure-math scoring → base_weights
+Stage 2c  playground           Python    multi-strategy comparison bundle (advisory)
 Stage 3   RESEARCHER           LLM       base + brief → research_report (info synthesis only)
 Stage 4a  BULL RESEARCHER      LLM       research_report → bull arguments (parallel)
 Stage 4b  BEAR RESEARCHER      LLM       research_report → bear arguments (parallel)
@@ -100,6 +101,15 @@ context is deliberately neutral — regime judgment happens downstream.
 Output: `base_weights` + `scoring_breakdown` + `ranking_summary`. The
 baseline is "the Python quant researcher's best guess if it only saw the
 numbers."
+
+**Stage 2c — `playground`** (Python, advisory only)
+Runs traditional strategy variants (`momentum_lite_v1`,
+`mean_reversion_lite`, `low_vol_factor`) and builds a comparison bundle:
+strategy weights, largest divergences, consensus weights, turnover, Sharpe,
+IC, and hit-rate when QC heartbeat schema `1.1` provides per-ticker
+`daily_return_pct`. This bundle is injected into the Synthesizer prompt as
+research context only; it does not bypass Risk Manager, Position Manager, or
+execution gates.
 
 **Stage 3 — `RESEARCHER`** (LLM, gpt-4o)
 The chief market analyst. **Only analyzes, does not decide weights.**
@@ -214,6 +224,22 @@ affect the others or the main pipeline.
 `strategies/__init__.py` holds a registry dict mapping strategy name to
 a `Strategy` subclass. The active strategy is stored in
 `system_config.active_strategy` and can be switched at runtime.
+
+## Manual Migrations
+
+Schema changes are tracked as explicit SQL files under `db/migrations/`.
+When `db/models.py` changes, add a matching idempotent SQL migration and run it
+manually before deploying code that depends on the new field. Current examples:
+
+```sql
+ALTER TABLE memory_daily
+ADD COLUMN IF NOT EXISTS decision JSONB;
+
+ALTER TABLE holdings_factors
+ADD COLUMN IF NOT EXISTS price NUMERIC(15,4),
+ADD COLUMN IF NOT EXISTS close_price NUMERIC(15,4),
+ADD COLUMN IF NOT EXISTS daily_return_pct NUMERIC(8,6);
+```
 
 ```
 strategies/

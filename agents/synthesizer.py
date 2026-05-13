@@ -127,6 +127,7 @@ You receive:
   · Stage 3 research_report (authoritative data)
   · Stage 2 base_weights (quantitative baseline)
   · Bull draft + Bear draft + cross-examination rebuttals (who attacked whom)
+  · Optional Strategy Playground comparison bundle (traditional strategies; advisory only)
 
 【How to judge】
     · Anchor evidence in research_report (ticker_signals, macro_outlook). Do not invent facts.
@@ -140,6 +141,7 @@ You receive:
     · Single name ≤ max_single_position; respect min_cash_pct
     · Typical deviation from base_weights ±5%; up to ±10% only with explicit justification in weight_adjustments.reason
     · If Bull/Bear confidences are both middling and close, set uncertainty_flag=true and prefer conservative weights
+    · Strategy Playground may guide strategy selection/blending, but never overrides hard risk constraints.
 
 【regime (exactly one of 6)】
     bull_trend / bull_weak / neutral / bear_weak / bear_trend / high_vol
@@ -200,6 +202,7 @@ async def run_synthesizer_async(
     risk_params: dict,
     regime_result: dict | None = None,
     debate_summary: dict | None = None,   # NEW: structured disagreement_map for PM injection
+    playground_bundle: dict | None = None,
 ) -> dict:
     """
     Stage 5: arbitrate Bull/Bear → adjusted_weights.
@@ -220,6 +223,8 @@ async def run_synthesizer_async(
         regime_result = None
     if debate_summary is not None and not isinstance(debate_summary, dict):
         debate_summary = None
+    if playground_bundle is not None and not isinstance(playground_bundle, dict):
+        playground_bundle = None
 
     max_single_position = float(risk_params.get("max_single_position", 0.20))
 
@@ -228,6 +233,7 @@ async def run_synthesizer_async(
     user_payload = _build_user_message(
         research_report, bull_output, bear_output, base_weights, risk_params, regime_result,
         debate_summary=debate_summary,
+        playground_bundle=playground_bundle,
     )
 
     client = _get_client()
@@ -304,6 +310,7 @@ def _build_user_message(
     risk_params: dict,
     regime_result: dict | None = None,
     debate_summary: dict | None = None,   # NEW: structured disagreement_map
+    playground_bundle: dict | None = None,
 ) -> str:
     max_pos = float(risk_params.get("max_single_position", 0.20))
     min_cash = float(risk_params.get("min_cash_pct", 0.05))
@@ -334,12 +341,15 @@ def _build_user_message(
         f"{json.dumps(bear_output, ensure_ascii=False, indent=2)}\n\n"
         "## Base weights (Stage 2 baseline — you allocate)\n"
         f"{json.dumps(base_weights, ensure_ascii=False, indent=2)}\n\n"
+        f"{_build_playground_section(playground_bundle)}"
         "## Constraints\n"
         f"max_single_position = {max_pos}\n"
         f"min_cash_pct = {min_cash}\n\n"
         "## Your task (PM)\n"
         "Output final adjusted_weights + decision_rationale + market_judgment + recommended_stance + "
-        "weight_adjustments + consensus/divergence + key_events + debate_resolution. JSON only."
+        "weight_adjustments + consensus/divergence + key_events + debate_resolution. "
+        "If Strategy Playground is present, also include playground_strategy_assessment with "
+        "selected_strategy, blend_weights, and reasoning. JSON only."
     )
 
     # ── Inject Structured Disagreement Map ──────────────────────
@@ -367,6 +377,37 @@ def _build_user_message(
             )
 
     return user_payload
+
+
+def _build_playground_section(playground_bundle: dict | None) -> str:
+    if not playground_bundle:
+        return ""
+
+    compact = {
+        "regime_label": playground_bundle.get("regime_label"),
+        "regime_confidence": playground_bundle.get("regime_confidence"),
+        "strategies": [
+            {
+                "strategy_name": item.get("strategy_name"),
+                "regime_fit": item.get("regime_fit"),
+                "weights": item.get("weights"),
+                "selected_tickers": item.get("selected_tickers"),
+                "expected_turnover_pct": item.get("expected_turnover_pct"),
+                "estimated_cost_pct": item.get("estimated_cost_pct"),
+            }
+            for item in (playground_bundle.get("strategies") or [])
+        ],
+        "largest_divergences": (playground_bundle.get("divergence_map") or [])[:5],
+        "consensus_weights": playground_bundle.get("consensus_weights"),
+    }
+    return (
+        "## Strategy Playground comparison bundle (advisory only)\n"
+        "This compares traditional strategy outputs. You may choose a single strategy, "
+        "blend, consensus, or reject all if current evidence is weak. Do not treat this "
+        "as execution authority; final weights must still obey all constraints and stay "
+        "near Stage 2 base_weights unless evidence is strong.\n"
+        f"{json.dumps(compact, ensure_ascii=False, indent=2)}\n\n"
+    )
 
 
 def _collect_allowed_tickers(brief: dict, base_weights: dict) -> set[str]:
@@ -533,6 +574,11 @@ def _normalize(
         "used_degraded_fallback": False,
         # Extra (Communicator; not consumed by Risk MGR)
         "debate_summary":      debate_summary,
+        "playground_strategy_assessment": (
+            out.get("playground_strategy_assessment")
+            if isinstance(out.get("playground_strategy_assessment"), dict)
+            else {}
+        ),
         # Task 5: Chain-of-Thought reasoning chain
         "reasoning_chain":     reasoning_chain,
     }

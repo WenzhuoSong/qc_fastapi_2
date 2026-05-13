@@ -45,6 +45,7 @@ from agents.executor         import run_executor_async
 from services.market_brief    import build_market_brief
 from services.quant_baseline  import run_quant_baseline_async
 from services.position_manager import apply_position_constraints
+from services.playground      import run_playground
 from strategies              import compute_rebalance_actions, estimate_cost_pct
 from tracking.wandb_client   import PipelineRunTracker
 from db.session          import AsyncSessionLocal
@@ -604,6 +605,25 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             duration_ms=0,
         )
 
+    # Stage 2c: Strategy Playground comparison bundle (advisory only)
+    playground_bundle = None
+    try:
+        playground_brief = {**brief, "risk_params": pipeline_context.get("risk_params", {})}
+        playground_bundle_obj = await run_playground(playground_brief)
+        playground_bundle = playground_bundle_obj.to_dict()
+        await _save_step_log(
+            analysis_id, "2c_playground", "strategy_playground",
+            input_data={"strategies": [s["strategy_name"] for s in playground_bundle.get("strategies", [])]},
+            output_data=playground_bundle,
+            duration_ms=0,
+        )
+        logger.info(
+            f"Stage 2c Playground done | strategies={len(playground_bundle.get('strategies', []))} "
+            f"| divergences={len(playground_bundle.get('divergence_map', []))}"
+        )
+    except Exception as e:
+        logger.warning(f"Stage 2c Playground skipped: {e}")
+
     # Stage 3: RESEARCHER (LLM) -- info synthesis (analysis only, no decisions)
     t0 = time.time()
     research_report = await run_researcher_async(
@@ -740,6 +760,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         research_report, bull_output, bear_output,
         base_weights, brief, risk_params, regime_result,
         debate_summary=debate_summary_for_pm,
+        playground_bundle=playground_bundle,
     )
     dur_synth = int((time.time() - t0) * 1000)
     logger.info(
@@ -758,6 +779,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             "bear_stance": bear_output.get("stance"),
             "bear_confidence": bear_output.get("confidence"),
             "regime": regime_result.get("regime") if regime_result else None,
+            "playground_consensus_weights": (playground_bundle or {}).get("consensus_weights"),
         },
         output_data=synthesizer_out,
         duration_ms=dur_synth,
