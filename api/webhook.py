@@ -35,7 +35,7 @@ async def receive_qc_packet(
 ):
     """
     接收 QC 的 gzip 压缩 JSON 数据包
-    packet_type: heartbeat | alert | emergency
+    packet_type: heartbeat | daily_feature_snapshot | alert | emergency
     """
     try:
         # 读取原始 body 并解压
@@ -75,8 +75,8 @@ async def receive_qc_packet(
 
         logger.info(f"Received {packet_type} packet, snapshot_id={snapshot.id}, trading_date={trading_date}")
 
-        if packet_type == "heartbeat":
-            await _process_heartbeat(db, snapshot.id, payload)
+        if packet_type in ("heartbeat", "daily_feature_snapshot"):
+            await _process_market_snapshot(db, snapshot.id, payload)
         elif packet_type == "alert":
             await _process_alert(db, snapshot.id, payload)
         elif packet_type == "emergency":
@@ -89,11 +89,11 @@ async def receive_qc_packet(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-async def _process_heartbeat(db: AsyncSession, snapshot_id: int, payload: dict):
-    """解析 heartbeat payload，写入 portfolio_timeseries 和 holdings_factors。"""
+async def _process_market_snapshot(db: AsyncSession, snapshot_id: int, payload: dict):
+    """解析 market snapshot payload，写入 portfolio_timeseries 和 holdings_factors。"""
     now       = datetime.utcnow()
     portfolio = payload.get("portfolio", {})
-    holdings  = payload.get("holdings", [])
+    holdings  = payload.get("holdings") or payload.get("features", [])
 
     # portfolio_timeseries
     db.add(PortfolioTimeseries(
@@ -112,15 +112,25 @@ async def _process_heartbeat(db: AsyncSession, snapshot_id: int, payload: dict):
             snapshot_id        = snapshot_id,
             recorded_at        = now,
             ticker             = h.get("ticker"),
+            universe_role      = h.get("universe_role"),
             price              = h.get("price"),
             close_price        = h.get("close_price"),
+            open_price         = h.get("open_price") or h.get("open"),
+            high_price         = h.get("high_price") or h.get("high"),
+            low_price          = h.get("low_price") or h.get("low"),
+            volume             = h.get("volume"),
+            dollar_volume      = h.get("dollar_volume"),
             daily_return_pct   = h.get("daily_return_pct"),
+            return_5d          = h.get("return_5d"),
             weight_current     = h.get("weight_current"),
             weight_target      = h.get("weight_target"),
             weight_drift       = h.get("weight_drift"),
             mom_20d            = h.get("mom_20d"),
             mom_60d            = h.get("mom_60d"),
             mom_252d           = h.get("mom_252d"),
+            sma_20             = h.get("sma_20"),
+            sma_50             = h.get("sma_50"),
+            sma_200            = h.get("sma_200"),
             rsi_14             = h.get("rsi_14"),
             atr_pct            = h.get("atr_pct"),
             bb_position        = h.get("bb_position"),
