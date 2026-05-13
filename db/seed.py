@@ -46,6 +46,17 @@ _DEFAULTS = {
         "max_daily_trades": 5,
         "min_hold_days": 2,
     },
+
+    # Research-only strategy playground. No execution authority.
+    "playground_config": {
+        "enabled": True,
+        "lookback_days": 30,
+        "strategies": [
+            "momentum_lite_v1",
+            "mean_reversion_lite",
+            "low_vol_factor",
+        ],
+    },
 }
 
 

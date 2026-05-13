@@ -23,6 +23,7 @@ qc_fastapi_2/
 │   ├── pipeline.py         # run_full_pipeline (8-stage relay)
 │   ├── market_brief.py     # Stage 1: snapshot + news → brief
 │   ├── quant_baseline.py   # Stage 2: pure math → base_weights
+│   ├── playground.py       # Research-only multi-strategy sandbox
 │   ├── transmission.py     # Macro event → sector pattern library
 │   ├── finnhub_client.py   # Finnhub REST + credibility scoring
 │   ├── alphavantage_client.py # Alpha Vantage News Sentiment API
@@ -38,6 +39,7 @@ qc_fastapi_2/
 │   ├── pre_fetch_news.py   # Multi-source news → DB (Finnhub + AV + RSS)
 │   ├── hourly_analysis.py  # Main agent pipeline
 │   ├── pending_check.py    # SEMI_AUTO timeout handler
+│   ├── playground_analysis.py # Research-only strategy comparison
 │   ├── morning_health.py   # Pre-open health check
 │   └── post_market_report.py # Daily summary
 ├── api/             # FastAPI endpoints (webhook, command, status, telegram)
@@ -64,6 +66,7 @@ Stage 4a  BULL RESEARCHER      LLM       research_report → bull arguments (par
 Stage 4b  BEAR RESEARCHER      LLM       research_report → bear arguments (parallel)
 Stage 5   SYNTHESIZER          LLM       Bull/Bear arbitration → adjusted_weights
 Stage 6   RISK MGR             Python    transmission → defensive → hard_risk → 6 checks
+Stage 6.5 POSITION MANAGER     Python    quantity/frequency controls
 Stage 7   save_analysis        Python    INSERT INTO agent_analysis (4 cols)
 Stage 8   COMMUNICATOR         LLM+fb    Telegram card (5s timeout → Python fallback)
 Stage 9   branch               Python    rejected / SEMI_AUTO pending / FULL_AUTO execute
@@ -202,6 +205,7 @@ affect the others or the main pipeline.
 | `python -m cron.pre_fetch_news` | 09:50 / 11:50 / 13:50 | Multi-source news → DB (Finnhub + AV + RSS) |
 | `python -m cron.hourly_analysis` | 10:00–15:00 hourly | Full 10-stage pipeline |
 | `python -m cron.pending_check` | every 1 min | SEMI_AUTO timeout handler |
+| `python -m cron.playground_analysis` | after close | Research-only multi-strategy comparison |
 | `python -m cron.morning_health` | 09:00 | Pre-open health notification |
 | `python -m cron.post_market_report` | 16:35 | Daily report |
 
