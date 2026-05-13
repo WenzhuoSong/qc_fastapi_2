@@ -36,7 +36,9 @@ async def handle_telegram_command(text: str, from_chat_id: str) -> str:
         return await _cmd_approve_strategy()
     if cmd == "/skip_strategy":
         return await _cmd_skip_strategy()
-    return "未识别的指令。可用：/confirm /skip /pause /status /reset_circuit /approve_strategy /skip_strategy"
+    if cmd == "/config":
+        return await _cmd_config(text)
+    return "未识别的指令。可用：/confirm /skip /pause /status /reset_circuit /approve_strategy /skip_strategy /config"
 
 
 async def _cmd_confirm() -> str:
@@ -120,6 +122,66 @@ async def _cmd_reset_circuit() -> str:
     })
     logger.warning("[circuit_breaker] Circuit manually reset to CLOSED by human command")
     return "🟢 Circuit breaker reset to CLOSED. Pipeline will resume normal operation."
+
+
+async def _cmd_config(text: str) -> str:
+    """
+    Read/update whitelisted runtime config.
+
+    Usage:
+      /config
+      /config position_manager_config max_new_buys_per_cycle 2
+      /config pm max_turnover_per_cycle 0.25
+    """
+    allowed_keys = {
+        "max_new_buys_per_cycle",
+        "max_positions",
+        "max_single_trade_pct",
+        "max_turnover_per_cycle",
+        "max_daily_trades",
+        "min_hold_days",
+    }
+    parts = text.strip().split()
+
+    async with AsyncSessionLocal() as db:
+        cfg = await get_system_config(db, "position_manager_config")
+        current = (cfg.value if cfg else {}) or {}
+
+    if len(parts) == 1:
+        rows = [f"{k}: {current.get(k)}" for k in sorted(allowed_keys)]
+        return "⚙️ position_manager_config\n" + "\n".join(rows)
+
+    if len(parts) != 4 or parts[1] not in ("pm", "position_manager_config"):
+        return (
+            "用法：/config pm <key> <value>\n"
+            "可调 key: " + ", ".join(sorted(allowed_keys))
+        )
+
+    key = parts[2]
+    if key not in allowed_keys:
+        return f"❌ 不允许修改 {key}。可调 key: " + ", ".join(sorted(allowed_keys))
+
+    try:
+        value = _parse_config_value(parts[3])
+    except ValueError as e:
+        return f"❌ 参数无效：{e}"
+
+    updated = dict(current)
+    updated[key] = value
+    async with AsyncSessionLocal() as db:
+        await upsert_system_config(db, "position_manager_config", updated, "telegram_config")
+
+    return f"✅ 已更新 position_manager_config.{key} = {value}"
+
+
+def _parse_config_value(raw: str) -> int | float:
+    if "." in raw:
+        value = float(raw)
+    else:
+        value = int(raw)
+    if value < 0:
+        raise ValueError("value must be non-negative")
+    return value
 
 
 async def _cmd_approve_strategy() -> str:

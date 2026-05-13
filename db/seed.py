@@ -36,6 +36,16 @@ _DEFAULTS = {
         "max_holdings":    8,
         "vol_blend_alpha": 0.70,
     },
+
+    # Stage 6.5 Position Manager: quantity/frequency controls after Risk Manager
+    "position_manager_config": {
+        "max_new_buys_per_cycle": 3,
+        "max_positions": 12,
+        "max_single_trade_pct": 0.08,
+        "max_turnover_per_cycle": 0.30,
+        "max_daily_trades": 5,
+        "min_hold_days": 2,
+    },
 }
 
 

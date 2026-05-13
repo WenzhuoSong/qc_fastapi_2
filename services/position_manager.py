@@ -10,8 +10,9 @@ P1-2: POSITION_MANAGER
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, asdict
 from datetime import date, datetime
-from typing import Optional
+from typing import Optional, Any
 
 from sqlalchemy import select, desc
 
@@ -27,6 +28,302 @@ settings = get_settings()
 DEFAULT_DRIFT_THRESHOLD = 0.05      # 5% drift between target and current
 DEFAULT_MAX_HOLDING_DAYS = 60       # max days before flagging
 DEFAULT_ATR_THRESHOLD = 2.0         # 2x ATR for intraday move threshold
+
+
+@dataclass
+class PositionConstraints:
+    max_new_buys_per_cycle: int = 3
+    max_positions: int = 12
+    max_single_trade_pct: float = 0.08
+    max_turnover_per_cycle: float = 0.30
+    max_daily_trades: int = 5
+    min_hold_days: int = 2
+
+    @classmethod
+    def from_config(cls, cfg: dict[str, Any] | None) -> "PositionConstraints":
+        if not cfg:
+            return cls()
+        defaults = asdict(cls())
+        clean: dict[str, Any] = {}
+        for key, default in defaults.items():
+            value = cfg.get(key, default)
+            try:
+                clean[key] = int(value) if isinstance(default, int) else float(value)
+            except (TypeError, ValueError):
+                clean[key] = default
+        return cls(**clean)
+
+
+@dataclass
+class PositionManagerOutput:
+    adjusted_weights: dict[str, float]
+    violations: list[str]
+    trade_summary: dict[str, Any]
+    constraints: dict[str, Any]
+
+
+class PositionManager:
+    """
+    Pre-trade quantity/frequency control applied after Risk Manager.
+
+    It only makes target weights more conservative: blocked or clipped buy weight
+    is moved to CASH, young positions are protected from sells, and excessive
+    turnover is scaled toward the current portfolio.
+    """
+
+    trade_threshold = 0.01
+
+    def apply(
+        self,
+        target_weights: dict[str, float],
+        current_holdings: dict[str, float],
+        constraints: PositionConstraints | None = None,
+        holdings_meta: list[dict] | None = None,
+    ) -> PositionManagerOutput:
+        constraints = constraints or PositionConstraints()
+        current = _clean_weights(current_holdings)
+        target = _clean_weights(target_weights)
+        target.setdefault("CASH", 0.0)
+
+        violations: list[str] = []
+        hold_days = _extract_hold_days(holdings_meta or [])
+
+        # Protect young positions from sells before applying buy/turnover caps.
+        for ticker, cur_w in current.items():
+            if ticker == "CASH" or cur_w <= self.trade_threshold:
+                continue
+            tgt_w = target.get(ticker, 0.0)
+            if tgt_w < cur_w - self.trade_threshold:
+                days = hold_days.get(ticker)
+                if days is not None and days < constraints.min_hold_days:
+                    freed_delta = cur_w - tgt_w
+                    target[ticker] = cur_w
+                    target["CASH"] = max(target.get("CASH", 0.0) - freed_delta, 0.0)
+                    violations.append(
+                        f"min_hold_days:{ticker} held {days}d < {constraints.min_hold_days}d, sell skipped"
+                    )
+
+        target = self._cap_new_buys(target, current, constraints, violations)
+        target = self._cap_position_count(target, current, constraints, violations)
+        target = self._cap_single_buys(target, current, constraints, violations)
+        target = self._cap_trade_count(target, current, constraints, violations)
+        target = self._cap_turnover(target, current, constraints, violations)
+
+        adjusted = _normalize_weights(target)
+        final_deltas = _weight_deltas(adjusted, current)
+        new_buys = [
+            t for t, d in final_deltas.items()
+            if t != "CASH" and d > self.trade_threshold and current.get(t, 0.0) <= self.trade_threshold
+        ]
+        buys = [t for t, d in final_deltas.items() if t != "CASH" and d > self.trade_threshold]
+        sells = [t for t, d in final_deltas.items() if t != "CASH" and d < -self.trade_threshold]
+        summary = {
+            "new_buys": len(new_buys),
+            "buy_trades": len(buys),
+            "sell_trades": len(sells),
+            "total_trades": len(buys) + len(sells),
+            "total_turnover": round(_turnover(adjusted, current), 6),
+            "position_count": _position_count(adjusted),
+        }
+
+        return PositionManagerOutput(
+            adjusted_weights=adjusted,
+            violations=violations,
+            trade_summary=summary,
+            constraints=asdict(constraints),
+        )
+
+    def _cap_new_buys(
+        self,
+        target: dict[str, float],
+        current: dict[str, float],
+        constraints: PositionConstraints,
+        violations: list[str],
+    ) -> dict[str, float]:
+        deltas = _weight_deltas(target, current)
+        new_positions = [
+            t for t, d in deltas.items()
+            if t != "CASH" and d > self.trade_threshold and current.get(t, 0.0) <= self.trade_threshold
+        ]
+        if len(new_positions) <= constraints.max_new_buys_per_cycle:
+            return target
+
+        keep = set(sorted(new_positions, key=lambda t: deltas[t], reverse=True)[:constraints.max_new_buys_per_cycle])
+        blocked = [t for t in new_positions if t not in keep]
+        out = dict(target)
+        freed = 0.0
+        for ticker in blocked:
+            old_target = out.get(ticker, 0.0)
+            replacement = current.get(ticker, 0.0)
+            freed += max(old_target - replacement, 0.0)
+            out[ticker] = replacement
+        out["CASH"] = out.get("CASH", 0.0) + freed
+        violations.append(f"new_buys_capped:{blocked}")
+        return out
+
+    def _cap_position_count(
+        self,
+        target: dict[str, float],
+        current: dict[str, float],
+        constraints: PositionConstraints,
+        violations: list[str],
+    ) -> dict[str, float]:
+        projected = [t for t, w in target.items() if t != "CASH" and w > self.trade_threshold]
+        if len(projected) <= constraints.max_positions:
+            return target
+
+        existing = {t for t, w in current.items() if t != "CASH" and w > self.trade_threshold}
+        if len(existing) >= constraints.max_positions:
+            violations.append(
+                f"position_count_exceeded:{len(projected)}>{constraints.max_positions}, existing positions preserved"
+            )
+            return target
+
+        new_projected = [t for t in projected if t not in existing]
+        slots = max(constraints.max_positions - len(existing), 0)
+        keep_new = set(sorted(new_projected, key=lambda t: target.get(t, 0.0), reverse=True)[:slots])
+        blocked = [t for t in new_projected if t not in keep_new]
+        out = dict(target)
+        freed = 0.0
+        for ticker in blocked:
+            freed += out.get(ticker, 0.0)
+            out[ticker] = 0.0
+        out["CASH"] = out.get("CASH", 0.0) + freed
+        violations.append(f"max_positions_capped:{blocked}")
+        return out
+
+    def _cap_single_buys(
+        self,
+        target: dict[str, float],
+        current: dict[str, float],
+        constraints: PositionConstraints,
+        violations: list[str],
+    ) -> dict[str, float]:
+        out = dict(target)
+        for ticker, delta in _weight_deltas(target, current).items():
+            if ticker == "CASH" or delta <= constraints.max_single_trade_pct:
+                continue
+            excess = delta - constraints.max_single_trade_pct
+            out[ticker] = current.get(ticker, 0.0) + constraints.max_single_trade_pct
+            out["CASH"] = out.get("CASH", 0.0) + excess
+            violations.append(
+                f"single_buy_capped:{ticker} {delta:.2%}->{constraints.max_single_trade_pct:.2%}"
+            )
+        return out
+
+    def _cap_turnover(
+        self,
+        target: dict[str, float],
+        current: dict[str, float],
+        constraints: PositionConstraints,
+        violations: list[str],
+    ) -> dict[str, float]:
+        turnover = _turnover(target, current)
+        if turnover <= constraints.max_turnover_per_cycle + 1e-9:
+            return target
+
+        scale = constraints.max_turnover_per_cycle / turnover if turnover > 0 else 1.0
+        out: dict[str, float] = {}
+        for ticker in set(target) | set(current):
+            out[ticker] = current.get(ticker, 0.0) + (target.get(ticker, 0.0) - current.get(ticker, 0.0)) * scale
+        violations.append(
+            f"turnover_scaled:{turnover:.2%}->{constraints.max_turnover_per_cycle:.2%}"
+        )
+        return out
+
+    def _cap_trade_count(
+        self,
+        target: dict[str, float],
+        current: dict[str, float],
+        constraints: PositionConstraints,
+        violations: list[str],
+    ) -> dict[str, float]:
+        deltas = _weight_deltas(target, current)
+        sells = [t for t, d in deltas.items() if t != "CASH" and d < -self.trade_threshold]
+        buys = [t for t, d in deltas.items() if t != "CASH" and d > self.trade_threshold]
+        total_trades = len(sells) + len(buys)
+        if total_trades <= constraints.max_daily_trades:
+            return target
+
+        if len(sells) >= constraints.max_daily_trades:
+            violations.append(
+                f"daily_trade_count_exceeded:{total_trades}>{constraints.max_daily_trades}, sell trades preserved"
+            )
+            return target
+
+        buy_slots = max(constraints.max_daily_trades - len(sells), 0)
+        keep_buys = set(sorted(buys, key=lambda t: deltas[t], reverse=True)[:buy_slots])
+        blocked = [t for t in buys if t not in keep_buys]
+        out = dict(target)
+        freed = 0.0
+        for ticker in blocked:
+            old_target = out.get(ticker, 0.0)
+            replacement = current.get(ticker, 0.0)
+            freed += max(old_target - replacement, 0.0)
+            out[ticker] = replacement
+        out["CASH"] = out.get("CASH", 0.0) + freed
+        violations.append(f"daily_trade_count_capped:{blocked}")
+        return out
+
+
+def apply_position_constraints(
+    target_weights: dict[str, float],
+    current_holdings: dict[str, float],
+    config: dict[str, Any] | None = None,
+    holdings_meta: list[dict] | None = None,
+) -> PositionManagerOutput:
+    constraints = PositionConstraints.from_config(config)
+    return PositionManager().apply(target_weights, current_holdings, constraints, holdings_meta)
+
+
+def _clean_weights(weights: dict[str, Any] | None) -> dict[str, float]:
+    cleaned: dict[str, float] = {}
+    for ticker, value in (weights or {}).items():
+        key = (ticker or "").upper().strip()
+        if not key:
+            continue
+        try:
+            cleaned[key] = max(float(value or 0.0), 0.0)
+        except (TypeError, ValueError):
+            cleaned[key] = 0.0
+    return cleaned
+
+
+def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
+    cleaned = _clean_weights(weights)
+    total = sum(cleaned.values())
+    if total <= 0:
+        return {"CASH": 1.0}
+    scaled = {ticker: weight / total for ticker, weight in cleaned.items()}
+    out = {ticker: round(weight, 4) for ticker, weight in scaled.items() if ticker != "CASH" and weight > 0}
+    out["CASH"] = round(max(1.0 - sum(out.values()), 0.0), 4)
+    return out
+
+
+def _weight_deltas(target: dict[str, float], current: dict[str, float]) -> dict[str, float]:
+    keys = set(target) | set(current)
+    return {ticker: float(target.get(ticker, 0.0)) - float(current.get(ticker, 0.0)) for ticker in keys}
+
+
+def _turnover(target: dict[str, float], current: dict[str, float]) -> float:
+    return sum(abs(delta) for delta in _weight_deltas(target, current).values()) / 2.0
+
+
+def _position_count(weights: dict[str, float]) -> int:
+    return sum(1 for ticker, weight in weights.items() if ticker != "CASH" and weight > PositionManager.trade_threshold)
+
+
+def _extract_hold_days(holdings_meta: list[dict]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for item in holdings_meta:
+        ticker = (item.get("ticker") or "").upper().strip()
+        if not ticker:
+            continue
+        try:
+            out[ticker] = int(item.get("holding_days"))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 async def run_position_health_check(

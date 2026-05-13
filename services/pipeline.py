@@ -12,6 +12,7 @@ Pipeline stages (10-stage Python-LLM-Python relay):
    4c. CROSS_EXAM           (LLM)      -- swap arguments, short rebuttals (parallel with opposite side)
     5. PM / SYNTHESIZER      (LLM)      -- sole adjusted_weights + decision_rationale
     6. RISK MGR              (Python)   -- overlays + 6 checks -> final target_weights + token
+    6.5 POSITION MANAGER     (Python)   -- quantity/frequency constraints -> adjusted target_weights
     7. _save_analysis        (Python)   -- write agent_analysis table
     8. COMMUNICATOR          (LLM+fb)   -- Telegram copy (degradable)
     9. Branch: rejected / SEMI_AUTO pending / FULL_AUTO execute
@@ -43,6 +44,8 @@ from agents.communicator     import run_communicator_async, append_command_hints
 from agents.executor         import run_executor_async
 from services.market_brief    import build_market_brief
 from services.quant_baseline  import run_quant_baseline_async
+from services.position_manager import apply_position_constraints
+from strategies              import compute_rebalance_actions, estimate_cost_pct
 from tracking.wandb_client   import PipelineRunTracker
 from db.session          import AsyncSessionLocal
 from db.queries          import get_system_config, upsert_system_config
@@ -395,6 +398,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         circuit_cfg     = await get_system_config(db, "circuit_state")
         active_cfg      = await get_system_config(db, "active_strategy")
         alerts_cfg      = await get_system_config(db, "pending_critical_alerts")
+        pm_cfg          = await get_system_config(db, "position_manager_config")
 
     paused = bool((paused_cfg.value if paused_cfg else {}).get("paused", False))
     if paused:
@@ -430,6 +434,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "value", "momentum_lite_v1"
     )
     pending_alerts = (alerts_cfg.value if alerts_cfg else {}).get("alerts", []) or []
+    position_manager_config = (pm_cfg.value if pm_cfg else {}) or {}
 
     params_key = f"strategy_{active_name}_params"
     async with AsyncSessionLocal() as db:
@@ -448,6 +453,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "active_strategy":   active_name,
         "strategy_params":   strategy_params,
         "pending_alerts":    pending_alerts,
+        "position_manager_config": position_manager_config,
     }
 
 
@@ -876,7 +882,6 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         output_data=risk_out,
         duration_ms=dur_risk,
     )
-    risk_out_for_tracker = risk_out
     tracker.log_stage_metrics("6_risk_mgr", dur_risk,
         risk_approved=bool(risk_out.get("approved")),
         n_actions=len(risk_out.get("rebalance_actions", [])),
@@ -902,6 +907,55 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             )
         else:
             logger.info("[Stage6→7] Regime weights within constraints, no clip needed")
+
+    # ── Stage 6.5: Position Manager quantity/frequency controls ───────────────
+    if risk_out.get("approved") and risk_out.get("target_weights"):
+        target_before_pm = risk_out.get("target_weights") or {}
+        pm_out = apply_position_constraints(
+            target_weights=target_before_pm,
+            current_holdings=brief.get("current_weights") or {},
+            config=pipeline_context.get("position_manager_config") or {},
+            holdings_meta=brief.get("holdings") or [],
+        )
+        risk_out["target_weights"] = pm_out.adjusted_weights
+        rebalance_threshold = float((pipeline_context.get("risk_params") or {}).get("rebalance_threshold", 0.02))
+        rebalance_actions = compute_rebalance_actions(
+            pm_out.adjusted_weights,
+            brief.get("current_weights") or {},
+            rebalance_threshold,
+        )
+        risk_out["rebalance_actions"] = rebalance_actions
+        risk_out["estimated_cost_pct"] = estimate_cost_pct(rebalance_actions)
+        risk_out["n_holdings"] = pm_out.trade_summary.get("position_count", risk_out.get("n_holdings"))
+        risk_out["position_manager"] = {
+            "violations": pm_out.violations,
+            "trade_summary": pm_out.trade_summary,
+            "constraints": pm_out.constraints,
+        }
+
+        if pm_out.violations:
+            logger.warning(
+                f"[Stage6.5] Position Manager adjusted weights | violations={pm_out.violations}"
+            )
+        else:
+            logger.info("[Stage6.5] Position Manager passed, no adjustment needed")
+
+        await _save_step_log(
+            analysis_id, "6c_position_manager", "position_manager",
+            input_data={
+                "target_weights_raw": target_before_pm,
+                "current_weights": brief.get("current_weights") or {},
+                "config": pipeline_context.get("position_manager_config") or {},
+            },
+            output_data={
+                "adjusted_weights": pm_out.adjusted_weights,
+                "violations": pm_out.violations,
+                "trade_summary": pm_out.trade_summary,
+            },
+            duration_ms=0,
+        )
+
+    risk_out_for_tracker = risk_out
 
     # Stage 7: Update analysis row (fill complete data)
     await _finalize_analysis(
