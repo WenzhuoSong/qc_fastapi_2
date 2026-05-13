@@ -53,7 +53,9 @@ async def _cmd_confirm() -> str:
     if not verify.get("valid"):
         return f"❌ Token {verify.get('reason')}，请等待下一次分析。"
 
-    result = await tool_send_weight_command({"weights": weights})
+    analysis_id = pending.get("analysis_id")
+    command_id = f"analysis_{analysis_id}" if analysis_id else None
+    result = await tool_send_weight_command({"weights": weights, "command_id": command_id})
     if result.get("success"):
         await mark_proposal_done(pending.get("analysis_id"), "executed_user_confirmed")
         return "✅ 已确认执行！"

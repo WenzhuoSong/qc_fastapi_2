@@ -39,11 +39,13 @@ async def tool_send_weight_command(inp: dict) -> dict:
     QC 算法 on_command(data) 会收到 command 字符串解析后的对象。
     """
     weights = inp.get("weights", {})
+    command_id = inp.get("command_id") or inp.get("analysis_id") or f"weights_{int(time.time())}"
     url = f"{settings.qc_api_url}/live/commands/create"
 
     command_payload = {
-        "target":  "SetWeights",
-        "weights": {k: v for k, v in weights.items() if k != "CASH"},
+        "target":     "SetWeights",
+        "command_id": command_id,
+        "weights":    {k: v for k, v in weights.items() if k != "CASH"},
     }
     body = {
         "projectId": int(settings.qc_project_id),
@@ -56,8 +58,11 @@ async def tool_send_weight_command(inp: dict) -> dict:
                 resp = await client.post(url, json=body, headers=_qc_auth_headers())
                 resp_json = resp.json() if resp.status_code == 200 else {}
                 if resp.status_code == 200 and resp_json.get("success", False):
-                    logger.info(f"SetWeights sent: {weights} | qc_response={resp_json}")
-                    return {"success": True, "response": resp_json}
+                    logger.info(
+                        f"SetWeights sent: command_id={command_id} "
+                        f"weights={weights} | qc_response={resp_json}"
+                    )
+                    return {"success": True, "response": resp_json, "command_id": command_id}
                 logger.warning(
                     f"QC API {resp.status_code}: {resp.text} "
                     f"(attempt {attempt})"

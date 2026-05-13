@@ -59,7 +59,8 @@ async def run_executor_async(
         return {"execution_status": "aborted_weight_overflow"}
 
     # Send weights
-    result = await tool_send_weight_command({"weights": weights})
+    command_id = f"analysis_{analysis_id}"
+    result = await tool_send_weight_command({"weights": weights, "command_id": command_id})
 
     if result.get("success"):
         msg = (
@@ -68,7 +69,11 @@ async def run_executor_async(
             + f"\nCost: {float(risk_out.get('estimated_cost_pct', 0) or 0):.2%}"
         )
         await tool_send_telegram({"text": msg})
-        return {"execution_status": "success", "weights_sent": weights}
+        return {
+            "execution_status": "success",
+            "weights_sent": weights,
+            "command_id": result.get("command_id", command_id),
+        }
 
     err = result.get("error", "unknown")
     await tool_send_telegram({"text": f"❌ Order failed: {err}\nPositions unchanged."})
