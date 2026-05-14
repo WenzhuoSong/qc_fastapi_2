@@ -8,6 +8,7 @@ import asyncio
 import logging
 from datetime import date, timedelta
 
+from services.cron_audit import audit_cron_run
 from services.pipeline import run_full_pipeline
 from tools.notify_tools import tool_send_telegram
 
@@ -51,9 +52,13 @@ async def _resolve_trigger() -> str:
 
 async def main() -> None:
     try:
-        trigger = await _resolve_trigger()
-        result = await run_full_pipeline(trigger=trigger)
-        logger.info(f"Pipeline result: {result}")
+        async with audit_cron_run("hourly_analysis") as audit:
+            trigger = await _resolve_trigger()
+            result = await run_full_pipeline(trigger=trigger)
+            if result.get("status", "").startswith("skipped"):
+                audit.mark_skipped(result.get("status"))
+            audit.set_summary(trigger=trigger, result=result)
+            logger.info(f"Pipeline result: {result}")
     except Exception as e:
         logger.exception("Hourly analysis FAILED")
         try:

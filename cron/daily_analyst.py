@@ -21,6 +21,7 @@ from sqlalchemy import select, func
 from config import get_settings
 from db.models import AgentAnalysis, ExecutionLog, MemoryDaily, PortfolioTimeseries
 from db.session import AsyncSessionLocal
+from services.cron_audit import audit_cron_run
 
 logging.basicConfig(
     level=logging.INFO,
@@ -71,6 +72,11 @@ Output the following JSON structure (all fields required; use null or empty arra
 
 
 async def main() -> None:
+    async with audit_cron_run("daily_analyst") as audit:
+        await _main_impl(audit)
+
+
+async def _main_impl(audit=None) -> None:
     """Main entry: distill today's memory and write to memory_daily."""
     today = date.today()
     logger.info(f"[DAILY_ANALYST] Starting processing for {today}")
@@ -123,6 +129,8 @@ async def main() -> None:
         analysis = await _get_latest_analysis_today(session, today)
         if not analysis:
             logger.warning(f"[DAILY_ANALYST] No pipeline records for {today}, skipping")
+            if audit:
+                audit.mark_skipped("no_pipeline_records")
             return
 
         # 2. Read the day's latest portfolio data (for VIX and SPY return)
@@ -141,6 +149,14 @@ async def main() -> None:
         await _upsert_memory_daily(
             session, today, analysis, portfolio, memory_data, existing, execution_happened
         )
+        if audit:
+            audit.add_rows(1)
+            audit.set_summary(
+                trading_date=today.isoformat(),
+                analysis_id=analysis.id,
+                execution_happened=execution_happened,
+                memory_existing=bool(existing),
+            )
 
         # Phase 3: Write structured decision context
         try:

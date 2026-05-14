@@ -26,3 +26,18 @@ ADD COLUMN IF NOT EXISTS price NUMERIC(15,4),
 ADD COLUMN IF NOT EXISTS close_price NUMERIC(15,4),
 ADD COLUMN IF NOT EXISTS daily_return_pct NUMERIC(8,6);
 ```
+
+```sql
+CREATE TABLE IF NOT EXISTS cron_run_log (
+    id BIGSERIAL PRIMARY KEY,
+    job_name VARCHAR(80) NOT NULL,
+    started_at TIMESTAMP NOT NULL DEFAULT now(),
+    finished_at TIMESTAMP,
+    status VARCHAR(20) NOT NULL DEFAULT 'running',
+    duration_ms INTEGER,
+    rows_written INTEGER DEFAULT 0,
+    summary JSONB,
+    error_message TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT now()
+);
+```

@@ -159,6 +159,21 @@ class ExecutionLog(Base):
     retry_count     = Column(Integer, default=0)
 
 
+class CronRunLog(Base):
+    __tablename__ = "cron_run_log"
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    job_name        = Column(String(80), nullable=False, index=True)
+    started_at      = Column(DateTime, nullable=False, default=func.now())
+    finished_at     = Column(DateTime)
+    status          = Column(String(20), nullable=False, default="running")  # running|success|failed|skipped
+    duration_ms     = Column(Integer)
+    rows_written    = Column(Integer, default=0)
+    summary         = Column(JSONB)
+    error_message   = Column(Text)
+    created_at      = Column(DateTime, nullable=False, default=func.now())
+
+
 # ─────────────────────────────── Agent Step Log ───────────────────────────────
 
 

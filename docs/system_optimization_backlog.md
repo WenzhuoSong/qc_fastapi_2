@@ -107,7 +107,7 @@ Resolution:
 
 ### 4. Cron run audit log
 
-Status: open
+Status: done
 
 Problem:
 There are many crons, but there is no unified table showing which jobs ran,
@@ -121,6 +121,14 @@ Acceptance criteria:
   rows written, and error message.
 - Morning or daily health report can summarize job health.
 - Failed jobs are visible without reading Railway logs.
+
+Resolution:
+- Added `cron_run_log` ORM model and manual migration SQL.
+- Added `services/cron_audit.py` with `audit_cron_run`.
+- Integrated audit logging into hourly analysis, daily analyst, playground
+  analysis, yfinance backfill, morning health, post-market report, and position
+  monitor.
+- Morning health now includes recent cron failures.
 
 ### 5. Memory feedback must affect behavior
 

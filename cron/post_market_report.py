@@ -8,6 +8,7 @@ import asyncio
 import logging
 
 from agents.reporter    import run_reporter_async
+from services.cron_audit import audit_cron_run
 from tools.notify_tools import tool_send_telegram
 
 logging.basicConfig(
@@ -19,8 +20,10 @@ logger = logging.getLogger("qc_fastapi_2.cron.report")
 
 async def main() -> None:
     try:
-        result = await run_reporter_async()
-        logger.info(f"Reporter result: {result}")
+        async with audit_cron_run("post_market_report") as audit:
+            result = await run_reporter_async()
+            audit.set_summary(result=result)
+            logger.info(f"Reporter result: {result}")
     except Exception as e:
         logger.exception("Post market report FAILED")
         try:

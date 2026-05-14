@@ -14,6 +14,7 @@ import logging
 
 from db.queries import get_system_config
 from db.session import AsyncSessionLocal
+from services.cron_audit import audit_cron_run
 from services.playground import generate_playground_report, run_playground_analysis
 from tools.notify_tools import tool_send_telegram
 
@@ -26,20 +27,28 @@ logger = logging.getLogger("qc_fastapi_2.cron.playground")
 
 async def main() -> None:
     try:
-        config = await _read_config()
-        if not config.get("enabled", True):
-            logger.info("Playground analysis disabled by config")
-            return
+        async with audit_cron_run("playground_analysis") as audit:
+            config = await _read_config()
+            if not config.get("enabled", True):
+                audit.mark_skipped("disabled_by_config")
+                logger.info("Playground analysis disabled by config")
+                return
 
-        days = int(config.get("lookback_days", 30))
-        strategies = config.get("strategies") or None
-        bundle = await run_playground_analysis(days=days, strategy_names=strategies)
-        report = await generate_playground_report(bundle)
-        result = await tool_send_telegram({"text": report, "parse_mode": "HTML"})
-        logger.info(
-            f"Playground sent={result.get('sent')} snapshots={bundle.snapshot_count} "
-            f"strategies={len(bundle.strategies)}"
-        )
+            days = int(config.get("lookback_days", 30))
+            strategies = config.get("strategies") or None
+            bundle = await run_playground_analysis(days=days, strategy_names=strategies)
+            report = await generate_playground_report(bundle)
+            result = await tool_send_telegram({"text": report, "parse_mode": "HTML"})
+            audit.set_summary(
+                sent=result.get("sent"),
+                snapshots=bundle.snapshot_count,
+                strategies=len(bundle.strategies),
+                data_gaps=len(bundle.data_gaps),
+            )
+            logger.info(
+                f"Playground sent={result.get('sent')} snapshots={bundle.snapshot_count} "
+                f"strategies={len(bundle.strategies)}"
+            )
     except Exception as exc:
         logger.exception("Playground analysis FAILED")
         try:
