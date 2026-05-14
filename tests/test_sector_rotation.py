@@ -9,8 +9,14 @@ openai_stub.AsyncOpenAI = object
 sys.modules.setdefault("openai", openai_stub)
 
 from services.market_brief import _merge_market_snapshots, _normalize_feature_snapshot
-from services.playground import _brief_from_snapshot, _dedupe_market_snapshots
+from services.playground import (
+    _brief_from_snapshot,
+    _compute_replay_metrics,
+    _dedupe_market_snapshots,
+    _merge_feature_map,
+)
 from services.sector_rotation import detect_sector_rotation, format_rotation_for_prompt
+from services.universe_policy import filter_tradable_research_rows
 
 
 class SectorRotationTests(unittest.TestCase):
@@ -104,6 +110,63 @@ class SectorRotationTests(unittest.TestCase):
         self.assertEqual(snapshots[0]["packet_type"], "daily_feature_snapshot")
         self.assertEqual(brief["holdings"][0]["return_5d"], 0.02)
         self.assertTrue(brief["sector_rotation"]["has_signal"])
+
+    def test_watchlist_and_leveraged_inverse_products_are_not_research_tradable(self):
+        rows = [
+            {"ticker": "SPY", "universe_role": "core"},
+            {"ticker": "DRAM", "universe_role": "watchlist"},
+            {"ticker": "SPXS", "universe_role": "watchlist"},
+            {"ticker": "SQQQ", "universe_role": "watchlist"},
+        ]
+
+        filtered = filter_tradable_research_rows(rows)
+
+        self.assertEqual([row["ticker"] for row in filtered], ["SPY"])
+
+    def test_yfinance_feature_map_fills_strategy_required_fields(self):
+        holdings = [{"ticker": "SPY", "mom_20d": None, "mom_60d": None, "mom_252d": None}]
+        feature_map = {
+            "SPY": {
+                "source": "yfinance",
+                "trading_date": "2026-05-13",
+                "close_price": 100,
+                "return_20d": 0.02,
+                "return_60d": 0.06,
+                "return_252d": 0.18,
+                "hist_vol_20d": 0.01,
+            }
+        }
+
+        enriched = _merge_feature_map(holdings, feature_map)
+
+        self.assertEqual(enriched[0]["mom_20d"], 0.02)
+        self.assertEqual(enriched[0]["mom_60d"], 0.06)
+        self.assertEqual(enriched[0]["mom_252d"], 0.18)
+        self.assertEqual(enriched[0]["hist_vol_20d"], 0.01)
+        self.assertEqual(enriched[0]["feature_sources"][0]["source"], "yfinance")
+
+    def test_replay_metrics_suppress_sharpe_until_enough_samples(self):
+        snapshots = []
+        for i in range(3):
+            snapshots.append({
+                "packet_type": "daily_feature_snapshot",
+                "features": [
+                    {
+                        "ticker": "SPY",
+                        "mom_20d": 0.02,
+                        "mom_60d": 0.03,
+                        "mom_252d": 0.10,
+                        "hist_vol_20d": 0.01,
+                        "daily_return_pct": 0.001,
+                    }
+                ],
+                "portfolio": {},
+            })
+
+        metrics = _compute_replay_metrics(snapshots, ["momentum_lite_v1"])
+
+        self.assertIsNone(metrics["momentum_lite_v1"]["sharpe"])
+        self.assertIn("suppressed", metrics["momentum_lite_v1"]["metric_notes"])
 
 
 if __name__ == "__main__":

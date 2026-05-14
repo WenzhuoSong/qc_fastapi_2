@@ -23,6 +23,7 @@ from db.models import QCSnapshot
 from db.session import AsyncSessionLocal
 from services.quant_baseline import classify_market_regime
 from services.sector_rotation import detect_sector_rotation
+from services.universe_policy import filter_tradable_research_rows
 from strategies import ScoredTicker, compute_rebalance_actions, estimate_cost_pct, get_strategy
 
 logger = logging.getLogger("qc_fastapi_2.playground")
@@ -76,6 +77,7 @@ async def run_playground(
     strategy_names: list[str] | None = None,
 ) -> PlaygroundBundle:
     holdings = brief.get("holdings") or []
+    holdings, enrichment = await _ensure_playground_features(holdings, strategy_names)
     portfolio = brief.get("portfolio") or {}
     current_weights = brief.get("current_weights") or _extract_current_weights(holdings)
     sector_rotation = brief.get("sector_rotation") or detect_sector_rotation(holdings)
@@ -107,7 +109,7 @@ async def run_playground(
         divergence_map=compute_weight_divergence(results),
         consensus_weights=compute_consensus_weights(results),
         replay_metrics={},
-        data_gaps=[],
+        data_gaps=enrichment.get("data_gaps", []),
     )
 
 
@@ -133,8 +135,67 @@ async def run_playground_analysis(
     bundle = await run_playground(latest_brief, strategy_names=strategy_names)
     bundle.snapshot_count = len(snapshots)
     bundle.replay_metrics = _compute_replay_metrics(snapshots, strategy_names or DEFAULT_PLAYGROUND_STRATEGIES)
-    bundle.data_gaps = _detect_data_gaps(snapshots)
+    bundle.data_gaps = list(dict.fromkeys((bundle.data_gaps or []) + _detect_data_gaps(snapshots)))
     return bundle
+
+
+async def _ensure_playground_features(
+    holdings: list[dict[str, Any]],
+    strategy_names: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """
+    Ensure strategy-required fields exist before comparison.
+
+    1. Enrich missing fields from market_daily_features, preferring yfinance.
+    2. If still missing, fetch yfinance immediately and persist it.
+    3. Return enriched holdings plus transparent data-gap/source notes.
+    """
+    clean_holdings = filter_tradable_research_rows(holdings)
+    tickers = sorted({(row.get("ticker") or "").upper().strip() for row in clean_holdings if row.get("ticker")})
+    if not tickers:
+        return clean_holdings, {"data_gaps": ["no tradable research tickers after universe filtering"]}
+
+    required_fields = _required_fields_for_strategies(strategy_names or DEFAULT_PLAYGROUND_STRATEGIES)
+    missing_before = _missing_required_by_ticker(clean_holdings, required_fields)
+    if not any(missing_before.values()):
+        return clean_holdings, {"data_gaps": []}
+
+    data_gaps: list[str] = []
+    enriched = clean_holdings
+
+    try:
+        from services.market_feature_store import latest_feature_map
+        async with AsyncSessionLocal() as db:
+            feature_map = await latest_feature_map(db, tickers=tickers, source="yfinance", max_age_days=14)
+        enriched = _merge_feature_map(enriched, feature_map)
+    except Exception as exc:
+        logger.warning("[playground] yfinance feature-store enrichment failed: %s", exc)
+        data_gaps.append(f"yfinance feature-store enrichment failed: {type(exc).__name__}")
+
+    missing_after_store = _missing_required_by_ticker(enriched, required_fields)
+    tickers_to_fetch = [ticker for ticker, fields in missing_after_store.items() if fields]
+    if tickers_to_fetch:
+        try:
+            from services.market_feature_store import upsert_market_daily_features
+            from services.yfinance_backfill import fetch_yfinance_feature_rows
+            fetched_rows = fetch_yfinance_feature_rows(tickers_to_fetch, lookback_days=420)
+            latest_rows = _latest_rows_by_ticker(fetched_rows)
+            if latest_rows:
+                async with AsyncSessionLocal() as db:
+                    await upsert_market_daily_features(db, fetched_rows, source="yfinance")
+                enriched = _merge_feature_map(enriched, latest_rows)
+        except Exception as exc:
+            logger.warning("[playground] immediate yfinance enrichment failed: %s", exc)
+            data_gaps.append(f"immediate yfinance enrichment failed: {type(exc).__name__}")
+
+    missing_after = _missing_required_by_ticker(enriched, required_fields)
+    still_missing = {ticker: fields for ticker, fields in missing_after.items() if fields}
+    if still_missing:
+        data_gaps.append(f"strategy-required fields still missing after yfinance enrichment: {still_missing}")
+    else:
+        data_gaps.append("missing strategy fields filled from yfinance research feature layer")
+
+    return enriched, {"data_gaps": data_gaps}
 
 
 async def generate_playground_report(bundle: PlaygroundBundle) -> str:
@@ -210,6 +271,96 @@ def _run_one_strategy(
             "requirements": strategy.data_requirements(),
         },
     )
+
+
+def _required_fields_for_strategies(strategy_names: list[str]) -> set[str]:
+    required: set[str] = set()
+    for name in strategy_names:
+        try:
+            required.update(get_strategy(name).required_fields)
+        except Exception as exc:
+            logger.warning("[playground] could not read requirements for %s: %s", name, exc)
+    return required
+
+
+def _missing_required_by_ticker(
+    holdings: list[dict[str, Any]],
+    required_fields: set[str],
+) -> dict[str, list[str]]:
+    if not required_fields:
+        return {}
+    out: dict[str, list[str]] = {}
+    for row in holdings:
+        ticker = (row.get("ticker") or "").upper().strip()
+        if not ticker:
+            continue
+        missing = [field for field in sorted(required_fields) if row.get(field) is None]
+        if missing:
+            out[ticker] = missing
+    return out
+
+
+def _merge_feature_map(
+    holdings: list[dict[str, Any]],
+    feature_map: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not feature_map:
+        return holdings
+    enriched: list[dict[str, Any]] = []
+    for row in holdings:
+        ticker = (row.get("ticker") or "").upper().strip()
+        feature = feature_map.get(ticker) or {}
+        mapped = _feature_row_to_holding_fields(feature)
+        merged = dict(row)
+        filled_fields: list[str] = []
+        for key, value in mapped.items():
+            if value is not None and merged.get(key) is None:
+                merged[key] = value
+                filled_fields.append(key)
+        if filled_fields:
+            sources = list(merged.get("feature_sources") or [])
+            sources.append({
+                "source": feature.get("source", "yfinance"),
+                "filled_fields": sorted(filled_fields),
+                "trading_date": feature.get("trading_date"),
+            })
+            merged["feature_sources"] = sources
+        enriched.append(merged)
+    return enriched
+
+
+def _feature_row_to_holding_fields(feature: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "price": feature.get("close_price") or feature.get("adj_close_price"),
+        "close_price": feature.get("close_price") or feature.get("adj_close_price"),
+        "open_price": feature.get("open_price"),
+        "high_price": feature.get("high_price"),
+        "low_price": feature.get("low_price"),
+        "volume": feature.get("volume"),
+        "dollar_volume": feature.get("dollar_volume"),
+        "daily_return_pct": feature.get("return_1d"),
+        "return_1d": feature.get("return_1d"),
+        "return_5d": feature.get("return_5d"),
+        "mom_20d": feature.get("return_20d"),
+        "mom_60d": feature.get("return_60d"),
+        "mom_252d": feature.get("return_252d"),
+        "sma_20": feature.get("sma_20"),
+        "sma_50": feature.get("sma_50"),
+        "sma_200": feature.get("sma_200"),
+        "hist_vol_20d": feature.get("hist_vol_20d"),
+    }
+
+
+def _latest_rows_by_ticker(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        ticker = (row.get("ticker") or "").upper().strip()
+        if not ticker:
+            continue
+        current = latest.get(ticker)
+        if current is None or str(row.get("trading_date")) > str(current.get("trading_date")):
+            latest[ticker] = row
+    return latest
 
 
 def compute_weight_divergence(results: list[StrategyResult], top_n: int = 10) -> list[dict[str, Any]]:
@@ -328,23 +479,26 @@ def _compute_replay_metrics(
                         if ic is not None:
                             ic_values.append(ic)
 
+        enough_samples = len(strategy_returns) >= 10
         metrics[name] = {
             "avg_turnover": round(_avg(turnovers), 6) if turnovers else None,
             "max_turnover": round(max(turnovers), 6) if turnovers else None,
             "avg_position_count": round(_avg(position_counts), 2) if position_counts else None,
             "avg_cash_weight": round(_avg(cash_weights), 4) if cash_weights else None,
             "top_signal_leaders": _top_counts(score_leaders, limit=5),
-            "sharpe": _annualized_sharpe(strategy_returns),
-            "ic": round(_avg(ic_values), 4) if ic_values else None,
+            "sharpe": _annualized_sharpe(strategy_returns) if enough_samples else None,
+            "ic": round(_avg(ic_values), 4) if enough_samples and ic_values else None,
             "hit_rate": round(
                 sum(1 for value in strategy_returns if value > 0) / len(strategy_returns),
                 4,
-            ) if strategy_returns else None,
+            ) if enough_samples else None,
             "n_forward_return_samples": len(strategy_returns),
             "metric_notes": (
-                "Uses next heartbeat daily_return_pct as forward return proxy."
+                "Uses one daily market snapshot per trading date as forward return proxy."
+                if enough_samples
+                else f"Sharpe/IC/hit-rate suppressed until >=10 forward-return samples; current={len(strategy_returns)}."
                 if strategy_returns
-                else "Sharpe/IC require per-ticker daily_return_pct from QC heartbeat schema_version >= 1.1."
+                else "Sharpe/IC require per-ticker daily_return_pct or return_1d from daily market snapshots."
             ),
         }
     return metrics
@@ -362,7 +516,7 @@ def _brief_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 def _snapshot_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
-    return snapshot.get("holdings") or snapshot.get("features") or []
+    return filter_tradable_research_rows(snapshot.get("holdings") or snapshot.get("features") or [])
 
 
 def _dedupe_market_snapshots(rows: list[QCSnapshot]) -> list[dict[str, Any]]:
@@ -414,10 +568,12 @@ def _extract_daily_returns(holdings: list[dict]) -> dict[str, float]:
 def _detect_data_gaps(snapshots: list[dict[str, Any]]) -> list[str]:
     gaps: list[str] = []
     if len(snapshots) < 10:
-        gaps.append(f"only {len(snapshots)} heartbeat snapshots in lookback window")
-    sample_holdings = [h for s in snapshots for h in (s.get("holdings") or [])]
+        gaps.append(f"only {len(snapshots)} daily market snapshots in lookback window")
+    sample_holdings = [h for s in snapshots for h in _snapshot_rows(s)]
     if sample_holdings and not any("daily_return_pct" in h or "return_1d" in h for h in sample_holdings):
         gaps.append("per-ticker forward returns missing; Sharpe/IC not computed")
+    if any(s.get("packet_type") == "heartbeat" for s in snapshots):
+        gaps.append("some replay rows use heartbeat fallback; prefer daily_feature_snapshot for cleaner daily metrics")
     return gaps
 
 

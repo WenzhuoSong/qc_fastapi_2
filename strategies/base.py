@@ -6,6 +6,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+from services.universe_policy import is_tradable_research_row
+
 
 @dataclass
 class ScoredTicker:
@@ -49,7 +51,7 @@ class Strategy(ABC):
     def data_readiness(self, holdings: list[dict]) -> dict[str, Any]:
         valid_holdings = [
             h for h in holdings
-            if h.get("ticker") and str(h.get("ticker")).upper() != "CASH"
+            if is_tradable_research_row(h)
         ]
         if not self.required_fields:
             return {

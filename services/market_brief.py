@@ -27,6 +27,7 @@ from constants import RISK_ON_SECTORS, RISK_OFF_SECTORS
 from db.models import MacroNewsCache, QCSnapshot, TickerNewsLibrary
 from db.session import AsyncSessionLocal
 from services.sector_rotation import detect_sector_rotation, format_rotation_for_prompt
+from services.universe_policy import filter_tradable_research_rows
 
 logger = logging.getLogger("qc_fastapi_2.market_brief")
 
@@ -53,7 +54,8 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
     }
     """
     snapshot = await _read_latest_market_snapshot()
-    holdings = (snapshot.get("holdings") or snapshot.get("features") or []) if snapshot else []
+    raw_holdings = (snapshot.get("holdings") or snapshot.get("features") or []) if snapshot else []
+    holdings = filter_tradable_research_rows(raw_holdings)
     portfolio = (snapshot.get("portfolio") or {}) if snapshot else {}
 
     current_weights = _extract_current_weights(holdings)
@@ -77,6 +79,7 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
         "per_ticker_news":    per_ticker_news,
         "hard_risks_map":     hard_risks_map,
         "holdings":           holdings,
+        "watchlist_holdings":  [h for h in raw_holdings if h not in holdings],
         "current_weights":    current_weights,
         "portfolio":          portfolio,
         "news_context":       news_context,
