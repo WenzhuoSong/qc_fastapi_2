@@ -44,6 +44,7 @@ class StrategyResult:
     strategy_name: str
     strategy_version: str
     description: str
+    strategy_card: dict[str, Any]
     weights: dict[str, float]
     score_breakdown: list[dict[str, Any]]
     selected_tickers: list[str]
@@ -52,6 +53,9 @@ class StrategyResult:
     regime_fit: str
     data_ready: bool
     data_readiness: dict[str, Any]
+    data_quality: dict[str, Any]
+    risk_profile: dict[str, Any]
+    agent_interpretation: dict[str, Any]
 
 
 @dataclass
@@ -204,7 +208,12 @@ async def generate_playground_report(bundle: PlaygroundBundle) -> str:
         return "🧪 <b>Playground Sandbox</b>\nNo QC snapshots available, skipped."
 
     prompt = {
-        "task": "Analyze this strategy comparison bundle for a research-only trading sandbox. No execution is allowed.",
+        "task": (
+            "Analyze this strategy comparison bundle for a research-only trading sandbox. "
+            "No execution is allowed. Use the embedded English strategy_card and "
+            "agent_interpretation fields to understand each strategy's meaning, regime fit, "
+            "failure modes, and how downstream agents should use it."
+        ),
         "output_language": "Chinese",
         "required_sections": [
             "best_strategy_or_blend",
@@ -212,6 +221,11 @@ async def generate_playground_report(bundle: PlaygroundBundle) -> str:
             "turnover_and_cost_risk",
             "data_gaps",
             "next_research_actions",
+        ],
+        "review_rules": [
+            "Do not choose a strategy solely because it has the highest replay Sharpe.",
+            "Check regime compatibility, data quality, yfinance-filled fields, turnover, and macro/news consistency.",
+            "Explicitly mention if a strategy should be discounted due to its failure modes.",
         ],
         "bundle": data,
     }
@@ -259,6 +273,7 @@ def _run_one_strategy(
         strategy_name=name,
         strategy_version=strategy.version,
         description=strategy.description,
+        strategy_card=strategy.strategy_card(),
         weights=weights,
         score_breakdown=[_score_to_dict(item) for item in scored],
         selected_tickers=[ticker for ticker, weight in weights.items() if ticker != "CASH" and weight > 0.01],
@@ -270,6 +285,9 @@ def _run_one_strategy(
             **readiness,
             "requirements": strategy.data_requirements(),
         },
+        data_quality=_build_data_quality(readiness, holdings, strategy.required_fields),
+        risk_profile=_build_risk_profile(weights, turnover, estimate_cost_pct(actions)),
+        agent_interpretation=_build_agent_interpretation(strategy, scored, weights, context, readiness),
     )
 
 
@@ -361,6 +379,98 @@ def _latest_rows_by_ticker(rows: list[dict[str, Any]]) -> dict[str, dict[str, An
         if current is None or str(row.get("trading_date")) > str(current.get("trading_date")):
             latest[ticker] = row
     return latest
+
+
+def _build_data_quality(
+    readiness: dict[str, Any],
+    holdings: list[dict[str, Any]],
+    required_fields: tuple[str, ...],
+) -> dict[str, Any]:
+    filled_by_source: dict[str, set[str]] = {}
+    for row in holdings:
+        for source_info in row.get("feature_sources") or []:
+            source = str(source_info.get("source") or "unknown")
+            fields = set(source_info.get("filled_fields") or [])
+            if required_fields:
+                fields = fields & set(required_fields)
+            filled_by_source.setdefault(source, set()).update(fields)
+    return {
+        "ready": bool(readiness.get("ready")),
+        "coverage": readiness.get("coverage"),
+        "missing_fields": readiness.get("missing_fields") or [],
+        "field_coverage": readiness.get("field_coverage") or {},
+        "filled_by_source": {
+            source: sorted(fields)
+            for source, fields in sorted(filled_by_source.items())
+            if fields
+        },
+    }
+
+
+def _build_risk_profile(
+    weights: dict[str, float],
+    turnover: float,
+    estimated_cost: float,
+) -> dict[str, Any]:
+    non_cash = {ticker: float(weight) for ticker, weight in weights.items() if ticker != "CASH" and weight > 0}
+    max_single = max(non_cash.values()) if non_cash else 0.0
+    concentration = "low"
+    if max_single >= 0.20 or len(non_cash) <= 3:
+        concentration = "high"
+    elif max_single >= 0.12 or len(non_cash) <= 6:
+        concentration = "medium"
+    return {
+        "turnover": round(turnover, 6),
+        "estimated_cost": estimated_cost,
+        "position_count": len(non_cash),
+        "max_single_weight": round(max_single, 6),
+        "cash_weight": round(float(weights.get("CASH", 0.0)), 6),
+        "concentration": concentration,
+    }
+
+
+def _build_agent_interpretation(
+    strategy,
+    scored: list[ScoredTicker],
+    weights: dict[str, float],
+    context: dict[str, Any],
+    readiness: dict[str, Any],
+) -> dict[str, Any]:
+    selected = [ticker for ticker, weight in weights.items() if ticker != "CASH" and weight > 0.01]
+    top_scores = [item.ticker for item in scored[:3]]
+    if not readiness.get("ready"):
+        what = "The strategy is not data-ready and should not influence allocation."
+    elif selected:
+        what = f"The strategy favors {', '.join(selected[:5])} based on its {strategy.family} logic."
+    else:
+        what = "The strategy finds no sufficiently attractive non-cash allocation."
+
+    invalidate = _strategy_invalidation_hint(strategy.family, context.get("regime"))
+    return {
+        "what_it_is_saying": what,
+        "top_score_tickers": top_scores,
+        "how_to_use": strategy.agent_guidance or "Use this as one advisory signal, not as an execution instruction.",
+        "what_would_invalidate_it": invalidate,
+        "agent_checks": [
+            "Do not select a strategy solely because its replay Sharpe is highest.",
+            "Check whether its regime assumptions match current market regime and sector rotation.",
+            "Check data quality, especially fields filled by yfinance rather than QC snapshots.",
+            "Check turnover and estimated cost before giving it decision weight.",
+            "Compare top picks against macro, news, risk, and position-manager constraints.",
+        ],
+    }
+
+
+def _strategy_invalidation_hint(family: str, regime: str | None) -> str:
+    if family == "mean_reversion":
+        return "Invalidated if downside momentum persists, volatility expands, or macro/news risk keeps deteriorating."
+    if family in ("trend_following", "dual_momentum"):
+        return "Invalidated if leadership reverses, breadth weakens, or the market shifts into choppy mean reversion."
+    if family == "defensive_factor":
+        return "Invalidated if breadth and cyclical leadership improve enough to make defensive assets opportunity-costly."
+    if family == "risk_budgeting":
+        return "Invalidated as an alpha view if expected-return evidence strongly favors a specific leadership theme."
+    return f"Validate against current regime={regime or 'unknown'}, rotation, macro/news risk, and execution constraints."
 
 
 def compute_weight_divergence(results: list[StrategyResult], top_n: int = 10) -> list[dict[str, Any]]:

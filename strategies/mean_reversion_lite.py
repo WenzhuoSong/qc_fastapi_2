@@ -22,6 +22,17 @@ class MeanReversionLite(Strategy):
     description = "RSI/Bollinger mean-reversion strategy with volatility penalty"
     required_fields = ("rsi_14", "bb_position", "hist_vol_20d", "mom_20d")
     optional_fields = ("daily_return_pct",)
+    family = "mean_reversion"
+    core_idea = "Looks for short-term oversold ETFs using RSI, lower Bollinger-band position, and short momentum reversal, while penalizing high volatility."
+    best_regimes = ("mean_reverting", "range_bound", "high_vol_stabilizing")
+    bad_regimes = ("trending_bear", "crash_breakdown", "persistent_trend")
+    signals_used = ("rsi_14", "bb_position", "hist_vol_20d", "mom_20d")
+    failure_modes = (
+        "Can catch falling knives during persistent selloffs.",
+        "Oversold signals may fail when macro stress is still expanding.",
+        "High turnover can make costs more important than raw signal rank.",
+    )
+    agent_guidance = "Treat as a tactical rebound signal; require macro, news, and risk confirmation before trusting it against a strong trend."
 
     DEFAULT_PARAMS: dict[str, Any] = {
         "w_rsi_oversold": 0.45,

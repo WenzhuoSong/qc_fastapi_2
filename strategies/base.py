@@ -37,6 +37,13 @@ class Strategy(ABC):
     required_fields: tuple[str, ...] = ()
     optional_fields: tuple[str, ...] = ()
     min_required_coverage: float = 0.70
+    family: str = "benchmark"
+    core_idea: str = ""
+    best_regimes: tuple[str, ...] = ()
+    bad_regimes: tuple[str, ...] = ()
+    signals_used: tuple[str, ...] = ()
+    failure_modes: tuple[str, ...] = ()
+    agent_guidance: str = ""
 
     def __init__(self, params: dict[str, Any] | None = None):
         self.params = params or {}
@@ -46,6 +53,22 @@ class Strategy(ABC):
             "required_fields": list(self.required_fields),
             "optional_fields": list(self.optional_fields),
             "min_required_coverage": self.min_required_coverage,
+        }
+
+    def strategy_card(self) -> dict[str, Any]:
+        """Compact English description for downstream agents."""
+        return {
+            "name": self.name,
+            "version": self.version,
+            "family": self.family,
+            "description": self.description,
+            "core_idea": self.core_idea,
+            "best_regimes": list(self.best_regimes),
+            "bad_regimes": list(self.bad_regimes),
+            "signals_used": list(self.signals_used),
+            "failure_modes": list(self.failure_modes),
+            "agent_guidance": self.agent_guidance,
+            "data_requirements": self.data_requirements(),
         }
 
     def data_readiness(self, holdings: list[dict]) -> dict[str, Any]:

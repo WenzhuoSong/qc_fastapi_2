@@ -14,6 +14,7 @@ from services.playground import (
     _compute_replay_metrics,
     _dedupe_market_snapshots,
     _merge_feature_map,
+    _run_one_strategy,
 )
 from services.sector_rotation import detect_sector_rotation, format_rotation_for_prompt
 from services.universe_policy import filter_tradable_research_rows
@@ -167,6 +168,40 @@ class SectorRotationTests(unittest.TestCase):
 
         self.assertIsNone(metrics["momentum_lite_v1"]["sharpe"])
         self.assertIn("suppressed", metrics["momentum_lite_v1"]["metric_notes"])
+
+    def test_strategy_result_includes_agent_consumable_explanation(self):
+        holdings = [
+            {
+                "ticker": "SPY",
+                "mom_20d": 0.02,
+                "mom_60d": 0.05,
+                "mom_252d": 0.12,
+                "rsi_14": 55,
+                "atr_pct": 0.011,
+                "hist_vol_20d": 0.14,
+            },
+            {
+                "ticker": "QQQ",
+                "mom_20d": 0.04,
+                "mom_60d": 0.08,
+                "mom_252d": 0.20,
+                "rsi_14": 68,
+                "atr_pct": 0.018,
+                "hist_vol_20d": 0.22,
+            },
+        ]
+        context = {
+            "regime": "trending_bull",
+            "risk_params": {"max_single_position": 0.20, "min_cash_pct": 0.05},
+        }
+
+        result = _run_one_strategy("momentum_lite_v1", holdings, context, {})
+
+        self.assertIn("strategy_card", result.__dict__)
+        self.assertEqual(result.strategy_card["family"], "trend_following")
+        self.assertTrue(result.agent_interpretation["agent_checks"])
+        self.assertIn("turnover", result.risk_profile)
+        self.assertTrue(result.data_quality["ready"])
 
 
 if __name__ == "__main__":

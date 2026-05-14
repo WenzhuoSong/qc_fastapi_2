@@ -29,6 +29,17 @@ class MomentumLiteV1(Strategy):
     description = "5因子动量 + 波动率调整的 ETF 策略"
     required_fields = ("mom_20d", "mom_60d", "mom_252d", "rsi_14", "atr_pct")
     optional_fields = ("hist_vol_20d", "beta_vs_spy", "daily_return_pct")
+    family = "trend_following"
+    core_idea = "Ranks ETFs by multi-horizon momentum, penalizes overbought RSI and high ATR, then blends score weights with inverse-volatility sizing."
+    best_regimes = ("trending_bull", "bull_trend", "steady_risk_on")
+    bad_regimes = ("mean_reverting", "crash_breakdown", "sharp_policy_reversal")
+    signals_used = ("mom_20d", "mom_60d", "mom_252d", "rsi_14", "atr_pct")
+    failure_modes = (
+        "Can buy late after extended moves when momentum is already crowded.",
+        "Can lag fast reversals because long-horizon momentum changes slowly.",
+        "Technical strength can conflict with macro or hard-news risk.",
+    )
+    agent_guidance = "Use as the primary trend signal only when regime evidence supports persistence; discount it in choppy or news-driven reversal conditions."
 
     DEFAULT_PARAMS: dict[str, Any] = {
         # 因子权重（总和 = 1.0）

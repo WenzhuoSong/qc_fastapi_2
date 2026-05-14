@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from strategies.base import ScoredTicker, Strategy
+from services.universe_policy import is_tradable_research_row
 
 
 class EqualWeightBenchmark(Strategy):
@@ -17,6 +18,17 @@ class EqualWeightBenchmark(Strategy):
     description = "Equal-weight benchmark across the ETF universe"
     required_fields: tuple[str, ...] = ()
     optional_fields = ("daily_return_pct",)
+    family = "benchmark"
+    core_idea = "Equally weights the eligible ETF universe with a cash floor and position cap."
+    best_regimes = ("benchmarking", "broad_participation")
+    bad_regimes = ("narrow_leadership", "high_dispersion", "risk_off")
+    signals_used = ()
+    failure_modes = (
+        "Ignores valuation, trend, volatility, and news.",
+        "Can dilute leadership when only a few sectors are working.",
+        "Can own weak assets simply because they are in the universe.",
+    )
+    agent_guidance = "Use only as a benchmark for breadth and diversification; do not treat it as an alpha signal."
 
     DEFAULT_PARAMS: dict[str, Any] = {
         "max_holdings": 12,
@@ -28,7 +40,7 @@ class EqualWeightBenchmark(Strategy):
     def score(self, holdings: list[dict], context: dict[str, Any]) -> list[ScoredTicker]:
         valid = [
             h for h in holdings
-            if h.get("ticker") and str(h.get("ticker")).upper() != "CASH"
+            if is_tradable_research_row(h)
         ]
         return [
             ScoredTicker(

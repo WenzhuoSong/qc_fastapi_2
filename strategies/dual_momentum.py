@@ -19,6 +19,17 @@ class DualMomentumRotation(Strategy):
     description = "Relative and absolute momentum ETF rotation"
     required_fields = ("mom_60d", "mom_252d", "hist_vol_20d")
     optional_fields = ("mom_20d", "daily_return_pct")
+    family = "dual_momentum"
+    core_idea = "Ranks ETFs by relative momentum but only holds names with positive absolute momentum; otherwise leaves capital in cash."
+    best_regimes = ("trending_bull", "sector_rotation", "persistent_relative_strength")
+    bad_regimes = ("mean_reverting", "violent_whipsaw", "sideways_chop")
+    signals_used = ("mom_60d", "mom_252d", "hist_vol_20d")
+    failure_modes = (
+        "Can whipsaw when leadership changes rapidly.",
+        "May move to cash after losses because absolute momentum is lagging.",
+        "Can miss early reversals before medium and long momentum confirm.",
+    )
+    agent_guidance = "Use as a clean leadership detector; confirm that selected ETFs also fit current macro, news, and rotation evidence."
 
     DEFAULT_PARAMS: dict[str, Any] = {
         "w_mom_60d": 0.35,

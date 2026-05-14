@@ -18,6 +18,17 @@ class RiskParityLite(Strategy):
     description = "Inverse-volatility risk parity allocation"
     required_fields = ("hist_vol_20d",)
     optional_fields = ("atr_pct", "daily_return_pct")
+    family = "risk_budgeting"
+    core_idea = "Allocates more weight to lower-volatility ETFs to create a simple volatility-budgeted benchmark."
+    best_regimes = ("uncertain", "mixed_rotation", "risk_management_focus")
+    bad_regimes = ("strong_single-theme_trend", "volatility_regime_break")
+    signals_used = ("hist_vol_20d",)
+    failure_modes = (
+        "Ignores expected return and may overweight low-volatility laggards.",
+        "Backward-looking volatility can underestimate newly emerging risks.",
+        "Can look stable while missing the actual market leadership theme.",
+    )
+    agent_guidance = "Use as a neutral risk-budget benchmark, not as a directional alpha signal."
 
     DEFAULT_PARAMS: dict[str, Any] = {
         "max_holdings": 10,

@@ -63,6 +63,16 @@ class StrategyRegistryTest(unittest.TestCase):
             self.assertIn("required_fields", req)
             self.assertIn("min_required_coverage", req)
 
+    def test_all_registered_strategies_have_english_strategy_cards(self):
+        for name in STRATEGY_REGISTRY:
+            strategy = get_strategy(name)
+            card = strategy.strategy_card()
+            self.assertEqual(card["name"], strategy.name)
+            self.assertTrue(card["family"])
+            self.assertTrue(card["core_idea"])
+            self.assertTrue(card["agent_guidance"])
+            self.assertIsInstance(card["failure_modes"], list)
+
     def test_registered_strategies_produce_normalized_weights_with_sample_data(self):
         context = {
             "risk_params": {"max_single_position": 0.20, "min_cash_pct": 0.05},

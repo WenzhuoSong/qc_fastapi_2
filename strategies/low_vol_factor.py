@@ -21,6 +21,17 @@ class LowVolFactor(Strategy):
     description = "Low-volatility factor strategy with long-momentum confirmation"
     required_fields = ("hist_vol_20d", "atr_pct", "mom_252d")
     optional_fields = ("beta_vs_spy", "unrealized_pnl_pct", "daily_return_pct")
+    family = "defensive_factor"
+    core_idea = "Prefers ETFs with lower realized volatility, lower ATR, and positive long-term momentum as a defensive quality tilt."
+    best_regimes = ("defensive", "high_vol", "late_cycle", "risk_off_rotation")
+    bad_regimes = ("strong_risk_on", "speculative_melt_up", "early_cycle_reacceleration")
+    signals_used = ("hist_vol_20d", "atr_pct", "mom_252d", "beta_vs_spy", "unrealized_pnl_pct")
+    failure_modes = (
+        "Can underperform when high-beta sectors lead a broad risk-on rally.",
+        "Low volatility can be backward-looking and slow to adapt after regime shifts.",
+        "May crowd into defensive assets just as risk appetite recovers.",
+    )
+    agent_guidance = "Use as a capital-preservation anchor; do not overrule strong breadth and rotation evidence with this strategy alone."
 
     DEFAULT_PARAMS: dict[str, Any] = {
         "w_hist_vol": 0.40,
