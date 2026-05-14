@@ -22,6 +22,7 @@ from config import get_settings
 from db.models import QCSnapshot
 from db.session import AsyncSessionLocal
 from services.quant_baseline import classify_market_regime
+from services.sector_rotation import detect_sector_rotation
 from strategies import ScoredTicker, compute_rebalance_actions, estimate_cost_pct, get_strategy
 
 logger = logging.getLogger("qc_fastapi_2.playground")
@@ -77,6 +78,7 @@ async def run_playground(
     holdings = brief.get("holdings") or []
     portfolio = brief.get("portfolio") or {}
     current_weights = brief.get("current_weights") or _extract_current_weights(holdings)
+    sector_rotation = brief.get("sector_rotation") or detect_sector_rotation(holdings)
     spy_holding = next((h for h in holdings if (h.get("ticker") or "").upper() == "SPY"), {})
     regime = classify_market_regime(portfolio, spy_holding)
     context = {
@@ -87,6 +89,7 @@ async def run_playground(
         "direction_bias": _direction_bias_for_regime(regime.regime.value),
         "risk_params": brief.get("risk_params") or {},
         "current_weights": current_weights,
+        "sector_rotation": sector_rotation,
     }
 
     names = strategy_names or DEFAULT_PLAYGROUND_STRATEGIES
@@ -253,12 +256,12 @@ async def _read_recent_snapshots(days: int) -> list[dict[str, Any]]:
         result = await db.execute(
             select(QCSnapshot)
             .where(QCSnapshot.received_at >= cutoff)
-            .where(QCSnapshot.packet_type == "heartbeat")
+            .where(QCSnapshot.packet_type.in_(("daily_feature_snapshot", "heartbeat")))
             .order_by(desc(QCSnapshot.received_at))
-            .limit(90)
+            .limit(180)
         )
         rows = result.scalars().all()
-    snapshots = [row.raw_payload or {} for row in rows]
+    snapshots = _dedupe_market_snapshots(rows)
     snapshots.reverse()
     return snapshots
 
@@ -293,6 +296,7 @@ def _compute_replay_metrics(
                 "direction_bias": _direction_bias_for_regime(regime.regime.value),
                 "risk_params": {},
                 "current_weights": brief.get("current_weights") or {},
+                "sector_rotation": brief.get("sector_rotation") or {},
             }
             result = _run_one_strategy(name, holdings, context, previous_weights.get(name, {}))
             weights = result.weights
@@ -306,7 +310,7 @@ def _compute_replay_metrics(
                 score_leaders.append(result.score_breakdown[0]["ticker"])
 
             if idx + 1 < len(snapshots):
-                next_returns = _extract_daily_returns(snapshots[idx + 1].get("holdings") or [])
+                next_returns = _extract_daily_returns(_snapshot_rows(snapshots[idx + 1]))
                 if next_returns:
                     strategy_returns.append(
                         sum(float(weights.get(ticker, 0.0)) * ret for ticker, ret in next_returns.items())
@@ -347,13 +351,35 @@ def _compute_replay_metrics(
 
 
 def _brief_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
-    holdings = snapshot.get("holdings") or []
+    holdings = _snapshot_rows(snapshot)
     return {
         "holdings": holdings,
         "portfolio": snapshot.get("portfolio") or {},
         "current_weights": _extract_current_weights(holdings),
         "risk_params": {},
+        "sector_rotation": detect_sector_rotation(holdings),
     }
+
+
+def _snapshot_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    return snapshot.get("holdings") or snapshot.get("features") or []
+
+
+def _dedupe_market_snapshots(rows: list[QCSnapshot]) -> list[dict[str, Any]]:
+    """
+    Keep one market snapshot per trading day, preferring daily_feature_snapshot
+    over heartbeat because it has richer raw features for replay.
+    """
+    by_date: dict[str, tuple[int, dict[str, Any]]] = {}
+    priority = {"heartbeat": 1, "daily_feature_snapshot": 2}
+    for row in rows:
+        payload = row.raw_payload or {}
+        key = str(row.trading_date or payload.get("trading_date") or row.received_at.date())
+        score = priority.get(row.packet_type, 0)
+        existing = by_date.get(key)
+        if existing is None or score > existing[0]:
+            by_date[key] = (score, payload)
+    return [payload for _, payload in by_date.values()]
 
 
 def _extract_current_weights(holdings: list[dict]) -> dict[str, float]:

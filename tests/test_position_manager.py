@@ -17,7 +17,7 @@ def _install_import_stubs() -> None:
     sys.modules.setdefault("db.session", session)
 
     models = types.ModuleType("db.models")
-    for name in ("HoldingsFactor", "QCSnapshot", "AlertLog"):
+    for name in ("HoldingsFactor", "QCSnapshot", "AlertLog", "MacroNewsCache", "TickerNewsLibrary"):
         setattr(models, name, type(name, (), {}))
     sys.modules.setdefault("db.models", models)
 

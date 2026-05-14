@@ -26,6 +26,7 @@ from sqlalchemy import desc, select
 from constants import RISK_ON_SECTORS, RISK_OFF_SECTORS
 from db.models import MacroNewsCache, QCSnapshot, TickerNewsLibrary
 from db.session import AsyncSessionLocal
+from services.sector_rotation import detect_sector_rotation, format_rotation_for_prompt
 
 logger = logging.getLogger("qc_fastapi_2.market_brief")
 
@@ -51,8 +52,8 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
         news_context:        dict,         # structured news (Phase 2 addition)
     }
     """
-    snapshot = await _read_latest_snapshot()
-    holdings = (snapshot.get("holdings") or []) if snapshot else []
+    snapshot = await _read_latest_market_snapshot()
+    holdings = (snapshot.get("holdings") or snapshot.get("features") or []) if snapshot else []
     portfolio = (snapshot.get("portfolio") or {}) if snapshot else {}
 
     current_weights = _extract_current_weights(holdings)
@@ -64,8 +65,9 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
     per_ticker_news, hard_risks_map = await _read_ticker_news(tickers_of_interest)
 
     key_facts = _compute_key_facts(holdings, portfolio)
+    sector_rotation = detect_sector_rotation(holdings)
 
-    prose = _build_prose(key_facts, holdings)
+    prose = _build_prose(key_facts, holdings, sector_rotation)
 
     brief = {
         "prose_summary":      prose,
@@ -78,6 +80,8 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
         "current_weights":    current_weights,
         "portfolio":          portfolio,
         "news_context":       news_context,
+        "sector_rotation":    sector_rotation,
+        "sector_rotation_section": format_rotation_for_prompt(sector_rotation),
     }
 
     # Inject pending critical alerts from QC webhook (P1-1)
@@ -111,18 +115,76 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
 # Snapshot
 # ═══════════════════════════════════════════════════════════════
 
-async def _read_latest_snapshot() -> dict | None:
-    """Read latest heartbeat snapshot's raw_payload."""
+async def _read_latest_market_snapshot() -> dict | None:
+    """
+    Read latest heartbeat and enrich it with latest daily feature snapshot.
+
+    Heartbeat is the source of truth for live portfolio weights; daily feature
+    snapshot is the richer source for OHLCV and rotation/replay fields.
+    """
     async with AsyncSessionLocal() as db:
-        stmt = (
+        heartbeat_stmt = (
             select(QCSnapshot)
+            .where(QCSnapshot.packet_type == "heartbeat")
             .order_by(desc(QCSnapshot.received_at))
             .limit(1)
         )
-        row = (await db.execute(stmt)).scalar_one_or_none()
-    if not row:
+        feature_stmt = (
+            select(QCSnapshot)
+            .where(QCSnapshot.packet_type == "daily_feature_snapshot")
+            .order_by(desc(QCSnapshot.received_at))
+            .limit(1)
+        )
+        heartbeat_row = (await db.execute(heartbeat_stmt)).scalar_one_or_none()
+        feature_row = (await db.execute(feature_stmt)).scalar_one_or_none()
+
+    heartbeat_payload = (heartbeat_row.raw_payload or {}) if heartbeat_row else {}
+    feature_payload = (feature_row.raw_payload or {}) if feature_row else {}
+
+    if not heartbeat_payload and not feature_payload:
         return None
-    return row.raw_payload or {}
+    if not heartbeat_payload:
+        return _normalize_feature_snapshot(feature_payload)
+    if not feature_payload:
+        return heartbeat_payload
+    return _merge_market_snapshots(heartbeat_payload, feature_payload)
+
+
+def _normalize_feature_snapshot(snapshot: dict) -> dict:
+    """Use features as holdings when only a daily feature snapshot exists."""
+    out = dict(snapshot)
+    if not out.get("holdings") and out.get("features"):
+        out["holdings"] = out.get("features") or []
+    return out
+
+
+def _merge_market_snapshots(heartbeat: dict, feature_snapshot: dict) -> dict:
+    """Overlay richer daily feature fields onto live heartbeat holdings."""
+    merged = dict(heartbeat)
+    feature_rows = feature_snapshot.get("features") or feature_snapshot.get("holdings") or []
+    features_by_ticker = {
+        (row.get("ticker") or "").upper().strip(): row
+        for row in feature_rows
+        if row.get("ticker")
+    }
+
+    enriched_holdings = []
+    for row in heartbeat.get("holdings") or []:
+        ticker = (row.get("ticker") or "").upper().strip()
+        feature_row = features_by_ticker.get(ticker) or {}
+        enriched_holdings.append({**feature_row, **row})
+
+    heartbeat_tickers = {
+        (row.get("ticker") or "").upper().strip()
+        for row in heartbeat.get("holdings") or []
+    }
+    for ticker, feature_row in features_by_ticker.items():
+        if ticker and ticker not in heartbeat_tickers:
+            enriched_holdings.append(feature_row)
+
+    merged["holdings"] = enriched_holdings
+    merged["latest_feature_snapshot_at"] = feature_snapshot.get("timestamp_utc")
+    return merged
 
 
 def _extract_current_weights(holdings: list[dict]) -> dict[str, float]:
@@ -400,7 +462,7 @@ def _compute_key_facts(holdings: list[dict], portfolio: dict) -> dict[str, Any]:
 # Prose
 # ═══════════════════════════════════════════════════════════════
 
-def _build_prose(key_facts: dict, holdings: list[dict]) -> str:
+def _build_prose(key_facts: dict, holdings: list[dict], sector_rotation: dict | None = None) -> str:
     """Translate key_facts into human-readable prose."""
     parts: list[str] = []
 
@@ -424,6 +486,14 @@ def _build_prose(key_facts: dict, holdings: list[dict]) -> str:
     if risk_score is not None:
         bias = "risk-on" if risk_score > 0.005 else ("risk-off" if risk_score < -0.005 else "balanced")
         parts.append(f"Style rotation {bias} ({risk_score:+.2%}).")
+
+    if sector_rotation and sector_rotation.get("has_signal"):
+        label = sector_rotation.get("rotation_label")
+        leaders = [row.get("ticker") for row in (sector_rotation.get("leaders") or [])[:3]]
+        laggards = [row.get("ticker") for row in (sector_rotation.get("laggards") or [])[:3]]
+        parts.append(
+            f"Sector rotation {label}; leaders {' '.join(leaders)}, laggards {' '.join(laggards)}."
+        )
 
     dd = key_facts.get("drawdown_pct")
     if dd is not None:

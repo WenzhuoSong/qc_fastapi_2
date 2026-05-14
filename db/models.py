@@ -81,6 +81,38 @@ class HoldingsFactor(Base):
     holding_days   = Column(Integer)
 
 
+class MarketDailyFeature(Base):
+    __tablename__ = "market_daily_features"
+    __table_args__ = (
+        UniqueConstraint("trading_date", "ticker", "source", name="uq_market_daily_feature_date_ticker_source"),
+    )
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    trading_date    = Column(Date, nullable=False)
+    ticker          = Column(String(20), nullable=False)
+    source          = Column(String(30), nullable=False, default="yfinance")
+    open_price      = Column(Numeric(15, 4))
+    high_price      = Column(Numeric(15, 4))
+    low_price       = Column(Numeric(15, 4))
+    close_price     = Column(Numeric(15, 4))
+    adj_close_price = Column(Numeric(15, 4))
+    volume          = Column(BigInteger)
+    dollar_volume   = Column(Numeric(20, 2))
+    return_1d       = Column(Numeric(8, 6))
+    return_5d       = Column(Numeric(8, 6))
+    return_20d      = Column(Numeric(8, 6))
+    return_60d      = Column(Numeric(8, 6))
+    return_252d     = Column(Numeric(8, 6))
+    sma_20          = Column(Numeric(15, 4))
+    sma_50          = Column(Numeric(15, 4))
+    sma_200         = Column(Numeric(15, 4))
+    hist_vol_20d    = Column(Numeric(8, 6))
+    data_quality_flag = Column(String(40), default="ok")
+    raw_payload     = Column(JSONB)
+    created_at      = Column(DateTime, nullable=False, default=func.now())
+    updated_at      = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+
 class AlertLog(Base):
     __tablename__ = "alerts_log"
     id           = Column(BigInteger, primary_key=True, autoincrement=True)

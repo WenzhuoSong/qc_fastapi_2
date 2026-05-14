@@ -91,7 +91,10 @@ Python f-string fallback; not on the correctness path) adds 1 more.
 **Stage 1 — `market_brief`** (Python)
 Reads latest `QCSnapshot` + `MacroNewsCache` (1 row) + `TickerNewsLibrary`
 (48h window), computes `key_facts` (breadth, SPY mom, avg ATR,
-risk_on_score, drawdown, top5/bottom5 momentum), builds a prose summary.
+risk_on_score, drawdown, top5/bottom5 momentum), enriches heartbeat rows with
+the latest `daily_feature_snapshot`, computes `sector_rotation`, and builds a
+prose summary. Rotation output includes `rotation_label`, leaders/laggards,
+sector/factor ranks, and `risk_appetite_score`.
 Output: `brief` dict. No weights.
 
 **Stage 2 — `quant_baseline`** (Python)
@@ -106,8 +109,9 @@ numbers."
 Runs traditional strategy variants (`momentum_lite_v1`,
 `mean_reversion_lite`, `low_vol_factor`) and builds a comparison bundle:
 strategy weights, largest divergences, consensus weights, turnover, Sharpe,
-IC, and hit-rate when QC heartbeat schema `1.1` provides per-ticker
-`daily_return_pct`. This bundle is injected into the Synthesizer prompt as
+IC, and hit-rate when QC snapshots provide per-ticker `daily_return_pct`.
+Replay prefers `daily_feature_snapshot` over heartbeat for richer features.
+This bundle is injected into the Synthesizer prompt as
 research context only; it does not bypass Risk Manager, Position Manager, or
 execution gates.
 
@@ -207,7 +211,7 @@ affect the others or the main pipeline.
 
 ## Cron Jobs
 
-**5 standalone processes**, each `python -m cron.<name>` with its own
+**Standalone processes**, each `python -m cron.<name>` with its own
 `asyncio.run()`. Configure as Railway cron services:
 
 | Entry | Schedule (ET) | Purpose |
@@ -216,6 +220,7 @@ affect the others or the main pipeline.
 | `python -m cron.hourly_analysis` | 10:00–15:00 hourly | Full 10-stage pipeline |
 | `python -m cron.pending_check` | every 1 min | SEMI_AUTO timeout handler |
 | `python -m cron.playground_analysis` | after close | Research-only multi-strategy comparison |
+| `python -m cron.yfinance_backfill` | after close | Research/backfill OHLCV feature store, no execution authority |
 | `python -m cron.morning_health` | 09:00 | Pre-open health notification |
 | `python -m cron.post_market_report` | 16:35 | Daily report |
 
@@ -254,6 +259,34 @@ ADD COLUMN IF NOT EXISTS sma_200 NUMERIC(15,4);
 
 ALTER TABLE qc_snapshots
 ALTER COLUMN packet_type TYPE VARCHAR(40);
+
+CREATE TABLE IF NOT EXISTS market_daily_features (
+    id BIGSERIAL PRIMARY KEY,
+    trading_date DATE NOT NULL,
+    ticker VARCHAR(20) NOT NULL,
+    source VARCHAR(30) NOT NULL DEFAULT 'yfinance',
+    open_price NUMERIC(15,4),
+    high_price NUMERIC(15,4),
+    low_price NUMERIC(15,4),
+    close_price NUMERIC(15,4),
+    adj_close_price NUMERIC(15,4),
+    volume BIGINT,
+    dollar_volume NUMERIC(20,2),
+    return_1d NUMERIC(8,6),
+    return_5d NUMERIC(8,6),
+    return_20d NUMERIC(8,6),
+    return_60d NUMERIC(8,6),
+    return_252d NUMERIC(8,6),
+    sma_20 NUMERIC(15,4),
+    sma_50 NUMERIC(15,4),
+    sma_200 NUMERIC(15,4),
+    hist_vol_20d NUMERIC(8,6),
+    data_quality_flag VARCHAR(40) DEFAULT 'ok',
+    raw_payload JSONB,
+    created_at TIMESTAMP DEFAULT now() NOT NULL,
+    updated_at TIMESTAMP DEFAULT now() NOT NULL,
+    CONSTRAINT uq_market_daily_feature_date_ticker_source UNIQUE (trading_date, ticker, source)
+);
 ```
 
 ```
@@ -351,8 +384,14 @@ Idempotent — existing keys are left untouched.
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-The web service only serves webhooks. All scheduled work runs via the 5
+The web service only serves webhooks. All scheduled work runs via the
 cron services above.
+
+Optional yfinance backfill controls:
+
+- `YFINANCE_BACKFILL_DAYS` — default `420`
+- `YFINANCE_BATCH_SIZE` — default `30`
+- `YFINANCE_TICKERS` — optional comma-separated override; empty means resolved ETF universe
 
 ## API Endpoints
 
@@ -390,7 +429,7 @@ cron services above.
 ✅ SEMI_AUTO authorization with Telegram integration
 ✅ Deterministic approval-token issuance with one-shot consume
 ✅ 6 quantitative risk checks with per-check actuals
-✅ Railway cron services (5 processes, no in-process scheduler)
+✅ Railway cron services (no in-process scheduler)
 ✅ PostgreSQL with async SQLAlchemy + asyncpg
 ✅ QC webhook receiver with gzip decompression + HMAC-authenticated
    command posting

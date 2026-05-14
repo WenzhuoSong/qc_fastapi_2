@@ -272,6 +272,7 @@ async def run_quant_baseline_async(
         return _empty_output("no_holdings")
 
     risk_params = pipeline_context.get("risk_params") or {}
+    sector_rotation = brief.get("sector_rotation") or {}
 
     # ── Regime classification (must precede layered signal computation) ──
     portfolio = brief.get("portfolio") or {}
@@ -356,6 +357,7 @@ async def run_quant_baseline_async(
             "strategy_used":    "layered_momentum_v1",
             "strategy_version": "1.0",
             "params_used":      {},
+            "sector_rotation":  sector_rotation,
         },
     }
 
