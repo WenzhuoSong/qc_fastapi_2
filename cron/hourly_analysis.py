@@ -58,7 +58,7 @@ async def main() -> None:
         logger.exception("Hourly analysis FAILED")
         try:
             await tool_send_telegram(
-                {"text": f"🚨 小时分析异常: {e}", "parse_mode": ""}
+                {"text": f"🚨 Hourly analysis failed: {e}", "parse_mode": ""}
             )
         except Exception:
             pass

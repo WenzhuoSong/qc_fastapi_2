@@ -443,9 +443,9 @@ def classify_market_regime(
                 "allow_new_positions":  False,
                 "max_single_position":  0.12,
                 "llm_instruction": (
-                    "当前组合回撤超过10%，系统处于防御模式。"
-                    "你的分析必须以降低风险为第一优先级，不得建议增加权益持仓。"
-                    "任何新开仓建议将被系统自动拒绝。"
+                    "Portfolio drawdown exceeds 10%; the system is in defensive mode. "
+                    "Risk reduction is the top priority. Do not recommend increasing equity exposure. "
+                    "Any new-position recommendation will be rejected by system guardrails."
                 ),
             },
             reasoning=f"Drawdown {drawdown:.1%} > 10%, defensive mode activated",
@@ -465,9 +465,9 @@ def classify_market_regime(
                 "max_single_position":  0.15,
                 "prefer_hedges":        True,
                 "llm_instruction": (
-                    f"市场处于高波动状态（VIX={vix}, SPY ATR={spy_atr_pct:.2%}）。"
-                    "分析时需优先考虑对冲资产（GLD/TLT/BND/IEF），降低进攻性持仓。"
-                    "动量信号的可靠性在高波动期显著降低，请相应调低置信度。"
+                    f"The market is in a high-volatility state (VIX={vix}, SPY ATR={spy_atr_pct:.2%}). "
+                    "Prioritize hedge assets (GLD/TLT/BND/IEF) and reduce aggressive exposure. "
+                    "Momentum signals are less reliable in high-volatility regimes; lower confidence accordingly."
                 ),
             },
             reasoning=f"High vol: VIX={vix}, SPY ATR={spy_atr_pct:.2%}",
@@ -492,9 +492,9 @@ def classify_market_regime(
                 "allow_new_positions":  True,
                 "max_single_position":  0.20,
                 "llm_instruction": (
-                    "市场处于趋势上涨状态，动量信号可信度高。"
-                    "可适度增加进攻性持仓（XLK/XLY/QQQ/IWM），"
-                    "但需警惕 RSI 超买风险。"
+                    "The market is in an uptrend and momentum signals have higher reliability. "
+                    "Moderate increases to offensive exposure (XLK/XLY/QQQ/IWM) may be considered, "
+                    "but monitor RSI overbought risk."
                 ),
             },
             reasoning=f"Bull trend: mom20={spy_mom_20d:.2%}, mom60={spy_mom_60d:.2%}, RSI={spy_rsi:.1f}",
@@ -519,9 +519,9 @@ def classify_market_regime(
                 "max_single_position":  0.15,
                 "prefer_hedges":        True,
                 "llm_instruction": (
-                    "市场处于趋势下跌状态。不得建议增加权益持仓，"
-                    "应优先考虑减仓至防御性资产（GLD/TLT/BND）。"
-                    "动量追涨策略在此环境下失效，请忽略短期反弹信号。"
+                    "The market is in a downtrend. Do not recommend increasing equity exposure. "
+                    "Prioritize reducing risk toward defensive assets (GLD/TLT/BND). "
+                    "Momentum-chasing is unreliable here; discount short-term rebound signals."
                 ),
             },
             reasoning=f"Bear trend: mom20={spy_mom_20d:.2%}, mom60={spy_mom_60d:.2%}, RSI={spy_rsi:.1f}",
@@ -538,9 +538,8 @@ def classify_market_regime(
             "allow_new_positions":  True,
             "max_single_position":  0.18,
             "llm_instruction": (
-                "市场处于震荡均值回归状态，趋势信号可靠性低。"
-                "建议保持接近 base_weights 的保守配置，"
-                "避免根据短期动量做大幅调整。"
+                "The market is in a choppy mean-reverting regime, so trend signals have lower reliability. "
+                "Stay close to base_weights with conservative adjustments and avoid large moves based on short-term momentum."
             ),
         },
         reasoning="No clear trend, mean-reverting regime",

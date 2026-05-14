@@ -214,7 +214,7 @@ async def generate_playground_report(bundle: PlaygroundBundle) -> str:
             "agent_interpretation fields to understand each strategy's meaning, regime fit, "
             "failure modes, and how downstream agents should use it."
         ),
-        "output_language": "Chinese",
+        "output_language": "English",
         "required_sections": [
             "best_strategy_or_blend",
             "key_divergences",

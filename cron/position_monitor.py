@@ -42,22 +42,22 @@ async def main() -> None:
         await persist_position_alerts(all_alerts)
 
         # Build Telegram message — only for warning/critical alerts
-        lines = [f"📊 持仓健康报告 | {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC\n"]
+        lines = [f"📊 Position health report | {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC\n"]
 
         if result["drift_alerts"]:
-            lines.append(f"🚨 Drift 告警 ({len(result['drift_alerts'])}):")
+            lines.append(f"🚨 Drift alerts ({len(result['drift_alerts'])}):")
             for a in result["drift_alerts"][:3]:
                 lines.append(f"  {a['ticker']}: {a['message']}")
 
         if result["holding_period_alerts"]:
-            lines.append(f"⏰ 持仓期限告警 ({len(result['holding_period_alerts'])}):")
+            lines.append(f"⏰ Holding-period alerts ({len(result['holding_period_alerts'])}):")
             for a in result["holding_period_alerts"][:3]:
                 lines.append(f"  {a['ticker']}: {a['message']}")
 
         # Intraday/ATR alerts only send to Telegram if severity >= warning
         intraday_warn = [a for a in result["intraday_alerts"] if a.get("severity") in ("warning", "critical")]
         if intraday_warn:
-            lines.append(f"📈 高波动告警 ({len(intraday_warn)}):")
+            lines.append(f"📈 High-volatility alerts ({len(intraday_warn)}):")
             for a in intraday_warn[:3]:
                 lines.append(f"  {a['ticker']}: {a['message']}")
 
@@ -70,7 +70,7 @@ async def main() -> None:
             return
 
         if total > 10:
-            lines.append(f"\n...共 {total} 项告警，详见 AlertLog")
+            lines.append(f"\n...{total} total alerts; see AlertLog")
 
         await tool_send_telegram({"text": "\n".join(lines)})
         logger.info(f"[position_monitor] Done, {total} alerts")

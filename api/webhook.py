@@ -234,10 +234,10 @@ async def _process_emergency(db: AsyncSession, snapshot_id: int, payload: dict):
         result = await tool_emergency_liquidate({})
         if result.get("success"):
             logger.critical("[EMERGENCY] Emergency liquidation command sent successfully")
-            await tool_send_telegram({"text": "✅ 紧急清仓指令已发送"})
+            await tool_send_telegram({"text": "✅ Emergency liquidation command sent"})
         else:
             logger.error(f"[EMERGENCY] Emergency liquidation failed: {result.get('error')}")
-            await tool_send_telegram({"text": f"❌ 紧急清仓失败: {result.get('error')}"})
+            await tool_send_telegram({"text": f"❌ Emergency liquidation failed: {result.get('error')}"})
 
     # 4. 写入 AgentAnalysis 记录（供后续审计）
     analysis = AgentAnalysis(

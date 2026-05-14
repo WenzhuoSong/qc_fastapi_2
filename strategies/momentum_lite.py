@@ -26,7 +26,7 @@ logger = logging.getLogger("qc_fastapi_2.strategy.momentum_lite")
 class MomentumLiteV1(Strategy):
     name = "momentum_lite_v1"
     version = "1.0"
-    description = "5因子动量 + 波动率调整的 ETF 策略"
+    description = "Five-factor momentum ETF strategy with volatility-adjusted sizing"
     required_fields = ("mom_20d", "mom_60d", "mom_252d", "rsi_14", "atr_pct")
     optional_fields = ("hist_vol_20d", "beta_vs_spy", "daily_return_pct")
     family = "trend_following"

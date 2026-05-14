@@ -34,24 +34,23 @@ def _get_client() -> AsyncOpenAI:
 
 
 CONFIDENCE_ARBITRATION_RULES = """
-## 基于 Researcher Confidence 的权重调整上限
+## Weight adjustment limits based on Researcher confidence
 
-从 research_report.ticker_signals_dict 读取每个 ticker 的 confidence，
-并严格遵守以下调整幅度上限（相对 base_weight）：
+Read each ticker's confidence from research_report.ticker_signals_dict and
+strictly follow these maximum adjustment limits relative to base_weight:
 
-| Researcher Confidence | 最大权重调整幅度 |
+| Researcher Confidence | Max weight adjustment |
 |-----------------------|----------------|
 | high                  | ±5%            |
 | medium                | ±3%            |
 | low                   | ±1%            |
-| ticker 不在报告中     | ±1%（保守）    |
+| ticker absent from report | ±1% conservative |
 
-即使辩论中 Bull/Bear 双方均强烈建议大幅调整，
-如果 Researcher 对该 ticker 的 confidence = low，
-你也只能做 ±1% 的微调。
+Even if both Bull and Bear argue strongly for a larger adjustment, if the
+Researcher confidence for that ticker is low, you may only make a +/-1% minor adjustment.
 
-**在 step3_debate_arbitration 的每条记录里，
-必须填写 researcher_confidence 字段和实际使用的 max_delta。**
+Every item in step3_debate_arbitration must include researcher_confidence and
+the actual max_delta used.
 """
 
 SYNTHESIZER_COT_SCHEMA = """

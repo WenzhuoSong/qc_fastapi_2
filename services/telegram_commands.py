@@ -38,42 +38,42 @@ async def handle_telegram_command(text: str, from_chat_id: str) -> str:
         return await _cmd_skip_strategy()
     if cmd == "/config":
         return await _cmd_config(text)
-    return "未识别的指令。可用：/confirm /skip /pause /status /reset_circuit /approve_strategy /skip_strategy /config"
+    return "Unknown command. Available: /confirm /skip /pause /status /reset_circuit /approve_strategy /skip_strategy /config"
 
 
 async def _cmd_confirm() -> str:
     pending = await load_pending_proposal()
     if not pending or pending.get("status") != "pending":
-        return "当前没有待确认建议。"
+        return "No pending proposal."
 
     weights = pending.get("weights", {})
     token   = pending.get("token", "")
 
     verify = await tool_verify_approval_token({"token": token})
     if not verify.get("valid"):
-        return f"❌ Token {verify.get('reason')}，请等待下一次分析。"
+        return f"❌ Token {verify.get('reason')}. Please wait for the next analysis."
 
     analysis_id = pending.get("analysis_id")
     command_id = f"analysis_{analysis_id}" if analysis_id else None
     result = await tool_send_weight_command({"weights": weights, "command_id": command_id})
     if result.get("success"):
         await mark_proposal_done(pending.get("analysis_id"), "executed_user_confirmed")
-        return "✅ 已确认执行！"
-    return f"❌ 执行失败：{result.get('error')}"
+        return "✅ Execution confirmed."
+    return f"❌ Execution failed: {result.get('error')}"
 
 
 async def _cmd_skip() -> str:
     pending = await load_pending_proposal()
     if not pending or pending.get("status") != "pending":
-        return "当前没有待确认建议。"
+        return "No pending proposal."
     await mark_proposal_done(pending.get("analysis_id"), "skipped_by_user")
-    return "⏭️ 已跳过，本周期不操作。"
+    return "⏭️ Skipped. No action this cycle."
 
 
 async def _cmd_pause() -> str:
     async with AsyncSessionLocal() as db:
         await upsert_system_config(db, "authorization_mode", {"value": "MANUAL"}, "user")
-    return "⏸️ 已切换到 MANUAL 模式。将不再自动分析。\n/confirm resume 可恢复。"
+    return "⏸️ Switched to MANUAL mode. Automatic analysis is paused.\nUse /confirm resume to resume."
 
 
 async def _cmd_status() -> str:
@@ -87,11 +87,11 @@ async def _cmd_status() -> str:
     val     = float(latest.total_value or 0)          if latest else 0
     dd      = float(latest.current_drawdown_pct or 0) if latest else 0
     return (
-        f"📊 系统状态\n"
-        f"  授权模式: {mode}\n"
-        f"  熔断状态: {circuit}\n"
-        f"  净值: ${val:,.0f}\n"
-        f"  回撤: -{dd:.2%}"
+        f"📊 System status\n"
+        f"  Authorization mode: {mode}\n"
+        f"  Circuit state: {circuit}\n"
+        f"  Portfolio value: ${val:,.0f}\n"
+        f"  Drawdown: -{dd:.2%}"
     )
 
 
@@ -155,25 +155,25 @@ async def _cmd_config(text: str) -> str:
 
     if len(parts) != 4 or parts[1] not in ("pm", "position_manager_config"):
         return (
-            "用法：/config pm <key> <value>\n"
-            "可调 key: " + ", ".join(sorted(allowed_keys))
+            "Usage: /config pm <key> <value>\n"
+            "Allowed keys: " + ", ".join(sorted(allowed_keys))
         )
 
     key = parts[2]
     if key not in allowed_keys:
-        return f"❌ 不允许修改 {key}。可调 key: " + ", ".join(sorted(allowed_keys))
+        return f"❌ Cannot modify {key}。Allowed keys: " + ", ".join(sorted(allowed_keys))
 
     try:
         value = _parse_config_value(parts[3])
     except ValueError as e:
-        return f"❌ 参数无效：{e}"
+        return f"❌ Invalid parameter: {e}"
 
     updated = dict(current)
     updated[key] = value
     async with AsyncSessionLocal() as db:
         await upsert_system_config(db, "position_manager_config", updated, "telegram_config")
 
-    return f"✅ 已更新 position_manager_config.{key} = {value}"
+    return f"✅ Updated position_manager_config.{key} = {value}"
 
 
 def _parse_config_value(raw: str) -> int | float:
@@ -198,15 +198,15 @@ async def _cmd_approve_strategy() -> str:
         revision_cfg = await get_system_config(db, "strategy_revision_v1")
 
     if not revision_cfg:
-        return "ℹ️ 没有待审批的策略调整建议。"
+        return "ℹ️ No pending strategy revision."
 
     revision = revision_cfg.value or {}
     status = revision.get("status", "")
 
     if status not in ("pending_approval", ""):
         return (
-            f"ℹ️ 策略建议状态为 {status}，无法审批。"
-            f"请等待新的季度审查。"
+            f"ℹ️ Strategy revision status is {status}. It cannot be approved."
+            f"Please wait for the next quarterly review."
         )
 
     strategy_rev = revision.get("strategy_revision_v1", {})
@@ -216,7 +216,7 @@ async def _cmd_approve_strategy() -> str:
         # No changes recommended but human wants to override — apply anyway
         param_changes = strategy_rev.get("parameter_changes", {})
         if not param_changes:
-            return "⚠️ 策略未推荐任何更改，无需审批。"
+            return "⚠️ No strategy changes were recommended; approval is not needed."
 
     param_changes = strategy_rev.get("parameter_changes", {})
     regime_overrides = strategy_rev.get("regime_overrides", {})
@@ -277,7 +277,7 @@ async def _cmd_approve_strategy() -> str:
     # Notify via Telegram
     await tool_send_telegram({
         "text": (
-            f"✅ 策略调整已审批并应用！\n"
+            f"✅ Strategy revision approved and applied!\n"
             f"Version: {new_version}\n"
             f"Changes: {strategy_rev.get('change_summary', 'N/A')}\n"
             f"Parameters updated: {list(param_changes.keys())}\n"
@@ -290,7 +290,7 @@ async def _cmd_approve_strategy() -> str:
         f"{param_changes.keys()} — applied by human"
     )
     return (
-        f"✅ 策略调整已审批并应用！\n"
+        f"✅ Strategy revision approved and applied!\n"
         f"Version: {new_version}\n"
         f"Changes: {strategy_rev.get('change_summary', 'N/A')}\n"
         f"Updated params: {list(param_changes.keys())}"
@@ -305,13 +305,13 @@ async def _cmd_skip_strategy() -> str:
         revision_cfg = await get_system_config(db, "strategy_revision_v1")
 
     if not revision_cfg:
-        return "ℹ️ 没有待审批的策略调整建议。"
+        return "ℹ️ No pending strategy revision."
 
     revision = revision_cfg.value or {}
     status = revision.get("status", "")
 
     if status not in ("pending_approval", ""):
-        return f"ℹ️ 策略建议状态为 {status}，无法跳过。"
+        return f"ℹ️ Strategy revision status is {status}. It cannot be skipped."
 
     revision["status"] = "rejected"
     revision["rejected_at"] = datetime.utcnow().isoformat()
@@ -321,7 +321,7 @@ async def _cmd_skip_strategy() -> str:
         await upsert_system_config(db, "strategy_revision_v1", revision, "human_telegram")
 
     await tool_send_telegram({
-        "text": "⏭️ 策略调整建议已跳过。当前提名策略保持不变。"
+        "text": "⏭️ Strategy revision skipped. The current nominated strategy remains unchanged."
     })
     logger.info("[STRATEGY_APPROVAL] Rejected by human via /skip_strategy")
-    return "⏭️ 策略调整建议已跳过。当前提名策略保持不变。"
+    return "⏭️ Strategy revision skipped. The current nominated strategy remains unchanged."

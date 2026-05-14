@@ -174,7 +174,7 @@ def _get_client() -> AsyncOpenAI:
 
 
 RESEARCHER_OUTPUT_SCHEMA = """
-你必须以如下 JSON 格式输出（严格 JSON，无前缀）：
+You must output strict JSON in the following schema. Do not include any prefix, markdown, or prose outside JSON.
 
 {
   "market_regime": {
@@ -182,22 +182,22 @@ RESEARCHER_OUTPUT_SCHEMA = """
                   "mean_reverting" | "defensive",
     "confidence": "high" | "medium" | "low",
     "alignment_with_quant": "agree" | "disagree" | "partial",
-    "disagreement_reason": null | "说明为何与系统 regime 判断不同（如填写则必须具体）"
+    "disagreement_reason": null | "specific reason if you disagree with the system regime"
   },
 
   "macro_outlook": {
-    "summary": "宏观环境一句话概述（50字以内）",
+    "summary": "one-sentence macro summary, <= 25 words",
     "confidence": "high" | "medium" | "low",
     "key_drivers": [
       {
-        "driver": "驱动因素名称",
+        "driver": "driver name",
         "direction": "positive" | "negative" | "neutral",
         "time_horizon": "immediate" | "short_term" | "medium_term",
         "confidence": "high" | "medium" | "low"
       }
     ],
     "data_quality": "fresh" | "stale" | "missing",
-    "data_gaps": ["缺失数据说明，如有"]
+    "data_gaps": ["data gap description, if any"]
   },
 
   "ticker_signals": {
@@ -211,15 +211,15 @@ RESEARCHER_OUTPUT_SCHEMA = """
       },
       "confidence_drivers": {
         "supporting_count": <int>,
-        "conflicting_signals": ["具体冲突说明（如有）"]
+        "conflicting_signals": ["specific conflicting signals, if any"]
       },
-      "note": null | "补充说明（20字以内，仅在特殊情况填写）"
+      "note": null | "short note, only when needed"
     }
   },
 
   "cross_signal_insights": [
     {
-      "insight": "跨资产/跨板块洞察（40字以内）",
+      "insight": "cross-asset or cross-sector insight, <= 25 words",
       "confidence": "high" | "medium" | "low",
       "affected_tickers": ["TICKER1", "TICKER2"],
       "actionable": true | false
@@ -227,42 +227,41 @@ RESEARCHER_OUTPUT_SCHEMA = """
   ],
 
   "overall_confidence": "high" | "medium" | "low",
-  "low_confidence_reasons": ["原因1（如 overall_confidence = low）"]
+  "low_confidence_reasons": ["reason if overall_confidence is low"]
 }
 
-confidence 评定规则：
-- high:   多个独立信号一致，数据新鲜（<4h），无重大矛盾
-- medium: 部分信号一致，或数据轻微 stale（4-12h），或存在小冲突
-- low:    信号矛盾，数据 stale（>12h），或信息严重缺失
+Confidence rules:
+- high: multiple independent signals agree, data is fresh (<4h), and there are no major contradictions.
+- medium: some signals agree, data is mildly stale (4-12h), or there are minor conflicts.
+- low: signals conflict, data is stale (>12h), or important information is missing.
 
-ticker_signals 只包含你有实质性判断的 ticker（有新闻或量化异常），
-其他 ticker 不要填写（保持 null 比写 neutral 更诚实）。
+Only include tickers where you have a substantive view based on news, macro, or quant anomalies.
+For other tickers, omit the entry rather than manufacturing a neutral signal.
 """
 
 RESEARCHER_CONFIDENCE_INSTRUCTION = """
-## 关于 confidence 的重要说明
+## Important confidence instructions
 
-你的 confidence 评分将被下游 PM agent 直接使用：
-- confidence=high 的 ticker_signals → PM 可据此调整权重 ±5%
-- confidence=medium 的 ticker_signals → PM 限制调整幅度 ±3%
-- confidence=low 的 ticker_signals → PM 倾向保持 base_weight，仅微调 ±1%
+Your confidence score is used directly by the downstream PM agent:
+- ticker_signals with confidence=high allow PM weight adjustments up to +/-5%.
+- ticker_signals with confidence=medium allow PM weight adjustments up to +/-3%.
+- ticker_signals with confidence=low allow only minor adjustments up to +/-1%.
 
-因此，不要为了显得有价值而虚报 high confidence。
-宁可报 low confidence + 诚实的 data_gaps，
-也不要在信息不足时假装确定。
+Do not inflate confidence to appear useful. It is better to report low confidence
+with honest data_gaps than to pretend certainty when information is insufficient.
 """
 
 SYSTEM_PROMPT = """You are the chief market analyst (Stage 3 RESEARCHER) for a quantitative trading system.
 
-【Your place in the pipeline】
+Your place in the pipeline:
     Upstream Stage 2 is the Python quant baseline (base_weights, scoring_breakdown).
     Downstream Stage 4a/4b are Bull/Bear; they build long/short arguments from your report.
 
-【Task — analyze only, no decision】
+Task - analyze only, no decision:
     Combine quant factors + news + macro + calendar into structured signal assessments per ticker.
     Do not output position weights; output an objective market analysis report only.
 
-【Output rules】
+Output rules:
 1. market_regime: current regime and confidence
 2. macro_outlook: macro summary + upcoming key events
 3. ticker_signals: quant + news combined signal per meaningful ticker

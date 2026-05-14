@@ -25,7 +25,7 @@ async def main() -> None:
         logger.exception("Post market report FAILED")
         try:
             await tool_send_telegram(
-                {"text": f"🚨 日报生成异常: {e}", "parse_mode": ""}
+                {"text": f"🚨 Post-market report failed: {e}", "parse_mode": ""}
             )
         except Exception:
             pass

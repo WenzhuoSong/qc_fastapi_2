@@ -1034,7 +1034,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         if not valid:
             logger.warning(f"[pipeline] FULL_AUTO blocked by proposal invalidation: {reason}")
             await tool_send_telegram(
-                {"text": f"⚠️ FULL_AUTO 跳过（{reason}），市场状态已变化"}
+                {"text": f"⚠️ FULL_AUTO skipped ({reason}); market state changed"}
             )
             pipeline_status = f"skipped_invalidation_{reason}"
         else:

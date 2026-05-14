@@ -83,13 +83,13 @@ async def check_and_handle_timeout() -> dict:
 
     if vix > 30:
         await mark_proposal_done(analysis_id, "skipped_timeout_vix")
-        await tool_send_telegram({"text": f"⚠️ 建议超时，VIX={vix:.1f}>30，自动跳过"})
+        await tool_send_telegram({"text": f"⚠️ Proposal timed out; VIX={vix:.1f}>30, auto-skipped"})
         return {"action": "skipped_vix"}
 
     if est_cost > max_cost_pct:
         await mark_proposal_done(analysis_id, "skipped_timeout_cost")
         await tool_send_telegram(
-            {"text": f"⚠️ 建议超时，成本{est_cost:.2%}>{max_cost_pct:.2%}，自动跳过"}
+            {"text": f"⚠️ Proposal timed out; estimated cost {est_cost:.2%}>{max_cost_pct:.2%}, auto-skipped"}
         )
         return {"action": "skipped_cost"}
 
@@ -101,7 +101,7 @@ async def check_and_handle_timeout() -> dict:
     if not valid:
         await mark_proposal_done(analysis_id, f"skipped_invalidation_{reason}")
         await tool_send_telegram(
-            {"text": f"⚠️ 建议作废（{reason}），不执行原计划"}
+            {"text": f"⚠️ Proposal invalidated ({reason}); original plan will not execute"}
         )
         return {"action": f"skipped_invalidation_{reason}"}
 
@@ -109,19 +109,19 @@ async def check_and_handle_timeout() -> dict:
     if not verify.get("valid"):
         await mark_proposal_done(analysis_id, f"aborted_token_{verify.get('reason')}")
         await tool_send_telegram(
-            {"text": f"⚠️ 超时自动执行失败：token {verify.get('reason')}"}
+            {"text": f"⚠️ Timed-out auto-execution failed: token {verify.get('reason')}"}
         )
         return {"action": "token_invalid"}
 
     result = await tool_send_weight_command({"weights": weights})
     if result.get("success"):
         await mark_proposal_done(analysis_id, "executed_timeout_auto")
-        await tool_send_telegram({"text": "⏱️ 超时自动执行成功"})
+        await tool_send_telegram({"text": "⏱️ Timed-out auto-execution succeeded"})
         return {"action": "executed"}
 
     await mark_proposal_done(analysis_id, "failed_timeout_auto")
     await tool_send_telegram(
-        {"text": f"❌ 超时自动执行失败: {result.get('error')}"}
+        {"text": f"❌ Timed-out auto-execution failed: {result.get('error')}"}
     )
     return {"action": "failed"}
 
