@@ -1,0 +1,242 @@
+# System Optimization Backlog
+
+This document tracks the main open issues found in the current trading system
+review. Use it as the working backlog for step-by-step optimization.
+
+## Current System Assessment
+
+The system has evolved into a runnable research-oriented trading pipeline:
+
+1. QuantConnect sends live portfolio snapshots and richer daily feature snapshots.
+2. The backend stores QC snapshots, holdings factors, yfinance research features,
+   news cache, analysis records, execution logs, and memory records.
+3. The main pipeline builds a market brief, runs quant baselines and strategy
+   playground, asks agents to analyze and arbitrate, then applies deterministic
+   risk and position controls.
+4. Daily and sandbox crons are beginning to create historical memory and strategy
+   comparison reports.
+
+The remaining risk is not lack of agents. The main risk is incomplete closure of
+data quality, replay validity, runtime auditability, and memory feedback.
+
+## P0 Issues
+
+### 1. Synthesizer market_judgment schema mismatch
+
+Status: done
+
+Problem:
+The Synthesizer prompt schema describes `market_judgment` as a string enum, but
+the parser expects a dict with `regime`, `adjusted_confidence`, and
+`uncertainty_flag`. If the LLM follows the schema literally, the parser falls
+back to neutral values and may weaken downstream Risk Manager regime overlays.
+
+Optimization:
+Unify the prompt schema and parser contract. `market_judgment` should be a
+structured object.
+
+Acceptance criteria:
+- Synthesizer output schema requires `market_judgment.regime`,
+  `market_judgment.adjusted_confidence`, and
+  `market_judgment.uncertainty_flag`.
+- Unit test covers string-style malformed output and valid dict-style output.
+- Risk Manager receives the intended regime instead of defaulting to neutral.
+
+Resolution:
+- Updated Synthesizer output schema to require structured `market_judgment`.
+- Added validation that rejects string-style `market_judgment`.
+- Added contract tests in `tests/test_synthesizer_contract.py`.
+
+### 2. Strategy feature contract
+
+Status: done
+
+Problem:
+Strategies declare `required_fields`, but the system does not yet provide a
+single feature-contract verdict showing which fields are available, missing,
+stale, or yfinance-filled for each strategy.
+
+Optimization:
+Create a strategy feature contract layer that reports field coverage, freshness,
+source, and readiness before strategy scoring.
+
+Acceptance criteria:
+- Each strategy exposes required and optional fields in a machine-readable
+  contract.
+- Playground and main pipeline can produce a per-strategy readiness verdict.
+- Agent-facing bundles include data source and freshness notes.
+- Strategies with insufficient required data cannot influence allocation.
+
+Resolution:
+- Added `services/strategy_feature_contract.py`.
+- Playground now attaches `feature_contract` to every strategy result.
+- Strategies with missing or stale required fields are forced to CASH and cannot
+  influence allocation.
+- Synthesizer compact Playground input includes feature-contract verdict and
+  `can_influence_allocation`.
+- Added tests in `tests/test_strategy_feature_contract.py`.
+
+### 3. Playground replay metric guardrails
+
+Status: done
+
+Problem:
+Playground reports can overstate performance when sample size is low or forward
+return proxies are sparse. Sharpe can look unrealistically high and mislead the
+LLM even when the strategy is not statistically validated.
+
+Optimization:
+Add strict sample gates and conservative report language for Sharpe, IC,
+hit-rate, and strategy selection.
+
+Acceptance criteria:
+- Sharpe, IC, and hit-rate are suppressed below the configured sample threshold.
+- Report prompt explicitly forbids selecting a strategy based on low-sample
+  metrics.
+- Strategy comparison bundle exposes `n_forward_return_samples` and
+  `metric_reliability`.
+- Telegram report clearly labels low-confidence metrics.
+
+Resolution:
+- Added replay sample thresholds and structured `metric_reliability`.
+- Added `selection_guardrail` to each strategy replay metric block.
+- Playground LLM review rules now treat non-high reliability metrics as weak
+  evidence.
+- Fallback Telegram report now includes metric reliability.
+- Added tests for replay metric suppression and reliability boundaries.
+
+### 4. Cron run audit log
+
+Status: open
+
+Problem:
+There are many crons, but there is no unified table showing which jobs ran,
+whether they succeeded, how many rows they wrote, and the latest healthy time.
+
+Optimization:
+Add a `cron_run_log` table and a small helper used by all important cron jobs.
+
+Acceptance criteria:
+- Each important cron writes job name, start time, finish time, status, duration,
+  rows written, and error message.
+- Morning or daily health report can summarize job health.
+- Failed jobs are visible without reading Railway logs.
+
+### 5. Memory feedback must affect behavior
+
+Status: open
+
+Problem:
+`memory_daily`, decision context, DQS, and calibration exist, but memory is still
+closer to an enriched log than a complete behavior-calibration system.
+
+Optimization:
+Make decision quality affect at least Researcher confidence and Playground
+strategy weighting before it affects execution.
+
+Acceptance criteria:
+- DQS updates `researcher_confidence_bias` once enough samples exist.
+- Researcher prompt includes calibration only when sample size is sufficient.
+- Playground or Synthesizer discounts strategies that historically underperform
+  in similar regimes.
+- Memory feedback is advisory first and cannot bypass Risk Manager.
+
+## P1 Issues
+
+### 6. Field provenance and freshness
+
+Status: open
+
+Problem:
+Downstream agents need to know whether fields came from QC live snapshots, QC
+daily snapshots, yfinance backfill, or stale caches.
+
+Optimization:
+Add provenance metadata to feature merging and agent bundles.
+
+Acceptance criteria:
+- Key fields include source and as-of date where practical.
+- yfinance-filled fields are visible in Playground data quality.
+- Stale fields are tagged and reduce readiness/confidence.
+
+### 7. Execution audit depth
+
+Status: open
+
+Problem:
+Risk-approved target weights and actual execution outcome are not fully tied
+together at order level. Position Manager max daily trades is based on proposed
+actions, not actual same-day order count.
+
+Optimization:
+Improve execution audit and connect it to Position Manager.
+
+Acceptance criteria:
+- Execution log can distinguish proposed, sent, accepted, rejected, and filled
+  actions where data is available.
+- Position Manager can read today's actual execution count.
+- Daily Analyst can compare intended vs executed weights.
+
+### 8. Strategy health and decay detection
+
+Status: open
+
+Problem:
+Strategies can generate weights, but the system lacks a stable health profile
+per strategy across regimes.
+
+Optimization:
+Track strategy health by regime and detect performance decay.
+
+Acceptance criteria:
+- Store rolling IC, hit-rate, turnover, drawdown, and sample size per strategy.
+- Decay detector flags strategy/regime pairs with worsening behavior.
+- Parameter adjustment suggestions remain approval-only.
+
+## P2 Issues
+
+### 9. Market Brief responsibility boundaries
+
+Status: open
+
+Problem:
+Market Brief currently merges snapshots, news, memory, sector rotation, and
+scenario analysis. It works, but can become hard to reason about.
+
+Optimization:
+Keep Market Brief as the assembler, but move specialized feature/provenance
+logic into smaller helpers.
+
+Acceptance criteria:
+- Market Brief remains readable and mostly orchestration-oriented.
+- Snapshot merge, feature provenance, memory context, and scenario context each
+  have isolated helpers.
+
+### 10. Operational health report
+
+Status: open
+
+Problem:
+The system sends several reports, but there is not yet a concise daily
+operations report covering data freshness, cron health, feature coverage, and
+pipeline status.
+
+Optimization:
+Add one operational report that summarizes whether the system is healthy enough
+to trust today's analysis.
+
+Acceptance criteria:
+- Report includes latest QC heartbeat, latest daily feature snapshot, latest
+  yfinance backfill, latest news cache, latest memory write, and failed crons.
+- Report is short enough for Telegram.
+- Report distinguishes research degradation from execution-blocking issues.
+
+## Suggested Execution Order
+
+1. Fix Synthesizer `market_judgment` schema mismatch.
+2. Add strategy feature contract and readiness verdict.
+3. Harden Playground replay metric guardrails.
+4. Add cron run audit log.
+5. Connect DQS/calibration to agent behavior more explicitly.
+6. Improve execution audit and Position Manager actual daily trade awareness.
+7. Build strategy health and decay detection.

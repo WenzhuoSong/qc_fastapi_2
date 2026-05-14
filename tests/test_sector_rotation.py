@@ -8,12 +8,40 @@ openai_stub = types.ModuleType("openai")
 openai_stub.AsyncOpenAI = object
 sys.modules.setdefault("openai", openai_stub)
 
+config_stub = types.ModuleType("config")
+config_stub.get_settings = lambda: SimpleNamespace(
+    openai_api_key="test",
+    openai_model="test-model",
+)
+sys.modules.setdefault("config", config_stub)
+
+try:
+    import sqlalchemy  # noqa: F401
+except ImportError:
+    sqlalchemy_stub = types.ModuleType("sqlalchemy")
+    sqlalchemy_stub.select = lambda *args, **kwargs: None
+    sqlalchemy_stub.desc = lambda *args, **kwargs: None
+    sys.modules.setdefault("sqlalchemy", sqlalchemy_stub)
+
+    sys.modules.setdefault("db", types.ModuleType("db"))
+
+    session_stub = types.ModuleType("db.session")
+    session_stub.AsyncSessionLocal = object
+    session_stub.Base = object
+    sys.modules.setdefault("db.session", session_stub)
+
+    models_stub = types.ModuleType("db.models")
+    for name in ("MacroNewsCache", "QCSnapshot", "TickerNewsLibrary"):
+        setattr(models_stub, name, type(name, (), {}))
+    sys.modules.setdefault("db.models", models_stub)
+
 from services.market_brief import _merge_market_snapshots, _normalize_feature_snapshot
 from services.playground import (
     _brief_from_snapshot,
     _compute_replay_metrics,
     _dedupe_market_snapshots,
     _merge_feature_map,
+    _replay_metric_reliability,
     _run_one_strategy,
 )
 from services.sector_rotation import detect_sector_rotation, format_rotation_for_prompt
@@ -167,7 +195,37 @@ class SectorRotationTests(unittest.TestCase):
         metrics = _compute_replay_metrics(snapshots, ["momentum_lite_v1"])
 
         self.assertIsNone(metrics["momentum_lite_v1"]["sharpe"])
+        self.assertEqual(
+            metrics["momentum_lite_v1"]["metric_reliability"]["level"],
+            "insufficient",
+        )
+        self.assertEqual(
+            metrics["momentum_lite_v1"]["selection_guardrail"],
+            "Do not select this strategy based on replay performance; sample size is insufficient.",
+        )
         self.assertIn("suppressed", metrics["momentum_lite_v1"]["metric_notes"])
+
+    def test_replay_metric_reliability_boundaries(self):
+        insufficient = _replay_metric_reliability(
+            sample_count=9,
+            ic_sample_count=9,
+            strategy_ready_samples=9,
+        )
+        medium = _replay_metric_reliability(
+            sample_count=12,
+            ic_sample_count=3,
+            strategy_ready_samples=12,
+        )
+        high = _replay_metric_reliability(
+            sample_count=31,
+            ic_sample_count=10,
+            strategy_ready_samples=31,
+        )
+
+        self.assertEqual(insufficient["level"], "insufficient")
+        self.assertEqual(medium["level"], "medium")
+        self.assertIn("ic_samples", medium["reasons"][0])
+        self.assertEqual(high["level"], "high")
 
     def test_strategy_result_includes_agent_consumable_explanation(self):
         holdings = [

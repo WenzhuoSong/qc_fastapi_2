@@ -105,7 +105,11 @@ SYNTHESIZER_COT_SCHEMA = """
 
   "decision_rationale": "human-readable decision summary (≤100 chars)",
 
-  "market_judgment": "bullish" | "cautious_bullish" | "neutral" | "cautious_bearish" | "bearish"
+  "market_judgment": {
+    "regime": "bull_trend" | "bull_weak" | "neutral" | "bear_weak" | "bear_trend" | "high_vol",
+    "adjusted_confidence": <float between 0.0 and 1.0>,
+    "uncertainty_flag": true | false
+  }
 }
 
 Rules:
@@ -391,6 +395,8 @@ def _build_playground_section(playground_bundle: dict | None) -> str:
                 "regime_fit": item.get("regime_fit"),
                 "data_ready": item.get("data_ready"),
                 "missing_fields": (item.get("data_readiness") or {}).get("missing_fields"),
+                "feature_contract_verdict": (item.get("feature_contract") or {}).get("verdict"),
+                "can_influence_allocation": (item.get("feature_contract") or {}).get("can_influence_allocation"),
                 "weights": item.get("weights"),
                 "selected_tickers": item.get("selected_tickers"),
                 "expected_turnover_pct": item.get("expected_turnover_pct"),
@@ -435,6 +441,7 @@ def _validate(out: dict) -> None:
         "reasoning_chain",
         "adjusted_weights",
         "decision_rationale",
+        "market_judgment",
     ]
     missing = [k for k in required if k not in out]
     if missing:
@@ -460,6 +467,15 @@ def _validate(out: dict) -> None:
     weights = out.get("adjusted_weights")
     if not isinstance(weights, dict) or not weights:
         raise ValueError("adjusted_weights must be a non-empty dict")
+
+    market_judgment = out.get("market_judgment")
+    if not isinstance(market_judgment, dict):
+        raise ValueError(
+            f"market_judgment must be dict, got {type(market_judgment).__name__}"
+        )
+    for key in ("regime", "adjusted_confidence", "uncertainty_flag"):
+        if key not in market_judgment:
+            raise ValueError(f"market_judgment missing field: {key}")
 
 
 def _normalize(

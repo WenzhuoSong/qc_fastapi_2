@@ -23,6 +23,7 @@ from db.models import QCSnapshot
 from db.session import AsyncSessionLocal
 from services.quant_baseline import classify_market_regime
 from services.sector_rotation import detect_sector_rotation
+from services.strategy_feature_contract import build_strategy_feature_contract
 from services.universe_policy import filter_tradable_research_rows
 from strategies import ScoredTicker, compute_rebalance_actions, estimate_cost_pct, get_strategy
 
@@ -37,6 +38,9 @@ DEFAULT_PLAYGROUND_STRATEGIES = [
     "risk_parity_lite",
     "equal_weight_benchmark",
 ]
+
+MIN_REPLAY_SAMPLES_FOR_PERFORMANCE = 10
+MIN_REPLAY_SAMPLES_FOR_STRONG_EVIDENCE = 30
 
 
 @dataclass
@@ -53,6 +57,7 @@ class StrategyResult:
     regime_fit: str
     data_ready: bool
     data_readiness: dict[str, Any]
+    feature_contract: dict[str, Any]
     data_quality: dict[str, Any]
     risk_profile: dict[str, Any]
     agent_interpretation: dict[str, Any]
@@ -224,6 +229,8 @@ async def generate_playground_report(bundle: PlaygroundBundle) -> str:
         ],
         "review_rules": [
             "Do not choose a strategy solely because it has the highest replay Sharpe.",
+            "Treat any replay metric with metric_reliability.level != high as weak evidence.",
+            "If n_forward_return_samples is below the stated minimum, explicitly say performance metrics are not reliable yet.",
             "Check regime compatibility, data quality, yfinance-filled fields, turnover, and macro/news consistency.",
             "Explicitly mention if a strategy should be discounted due to its failure modes.",
         ],
@@ -261,7 +268,8 @@ def _run_one_strategy(
 ) -> StrategyResult:
     strategy = get_strategy(name)
     readiness = strategy.data_readiness(holdings)
-    if readiness.get("ready"):
+    feature_contract = build_strategy_feature_contract(strategy, holdings)
+    if readiness.get("ready") and feature_contract.get("can_influence_allocation"):
         scored = strategy.score(holdings, context)
         weights = strategy.optimize(scored, context)
     else:
@@ -285,9 +293,12 @@ def _run_one_strategy(
             **readiness,
             "requirements": strategy.data_requirements(),
         },
+        feature_contract=feature_contract,
         data_quality=_build_data_quality(readiness, holdings, strategy.required_fields),
         risk_profile=_build_risk_profile(weights, turnover, estimate_cost_pct(actions)),
-        agent_interpretation=_build_agent_interpretation(strategy, scored, weights, context, readiness),
+        agent_interpretation=_build_agent_interpretation(
+            strategy, scored, weights, context, readiness, feature_contract
+        ),
     )
 
 
@@ -435,11 +446,14 @@ def _build_agent_interpretation(
     weights: dict[str, float],
     context: dict[str, Any],
     readiness: dict[str, Any],
+    feature_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     selected = [ticker for ticker, weight in weights.items() if ticker != "CASH" and weight > 0.01]
     top_scores = [item.ticker for item in scored[:3]]
-    if not readiness.get("ready"):
-        what = "The strategy is not data-ready and should not influence allocation."
+    contract = feature_contract or {}
+    if not readiness.get("ready") or not contract.get("can_influence_allocation", True):
+        verdict = contract.get("verdict") or "not_data_ready"
+        what = f"The strategy is not data-ready ({verdict}) and should not influence allocation."
     elif selected:
         what = f"The strategy favors {', '.join(selected[:5])} based on its {strategy.family} logic."
     else:
@@ -458,6 +472,8 @@ def _build_agent_interpretation(
             "Check turnover and estimated cost before giving it decision weight.",
             "Compare top picks against macro, news, risk, and position-manager constraints.",
         ],
+        "feature_contract_verdict": contract.get("verdict"),
+        "can_influence_allocation": contract.get("can_influence_allocation"),
     }
 
 
@@ -589,7 +605,13 @@ def _compute_replay_metrics(
                         if ic is not None:
                             ic_values.append(ic)
 
-        enough_samples = len(strategy_returns) >= 10
+        sample_count = len(strategy_returns)
+        enough_samples = sample_count >= MIN_REPLAY_SAMPLES_FOR_PERFORMANCE
+        reliability = _replay_metric_reliability(
+            sample_count=sample_count,
+            ic_sample_count=len(ic_values),
+            strategy_ready_samples=len(position_counts),
+        )
         metrics[name] = {
             "avg_turnover": round(_avg(turnovers), 6) if turnovers else None,
             "max_turnover": round(max(turnovers), 6) if turnovers else None,
@@ -602,16 +624,62 @@ def _compute_replay_metrics(
                 sum(1 for value in strategy_returns if value > 0) / len(strategy_returns),
                 4,
             ) if enough_samples else None,
-            "n_forward_return_samples": len(strategy_returns),
+            "n_forward_return_samples": sample_count,
+            "n_ic_samples": len(ic_values),
+            "metric_reliability": reliability,
             "metric_notes": (
-                "Uses one daily market snapshot per trading date as forward return proxy."
-                if enough_samples
-                else f"Sharpe/IC/hit-rate suppressed until >=10 forward-return samples; current={len(strategy_returns)}."
+                "Replay metrics are high-reliability directional evidence, but still research-only."
+                if reliability["level"] == "high"
+                else "Replay metrics are usable but not decisive; require regime/data/risk confirmation."
+                if reliability["level"] == "medium"
+                else f"Sharpe/IC/hit-rate suppressed until >={MIN_REPLAY_SAMPLES_FOR_PERFORMANCE} forward-return samples; current={sample_count}."
                 if strategy_returns
                 else "Sharpe/IC require per-ticker daily_return_pct or return_1d from daily market snapshots."
             ),
+            "selection_guardrail": (
+                "May be considered as one input, never as execution authority."
+                if enough_samples
+                else "Do not select this strategy based on replay performance; sample size is insufficient."
+            ),
         }
     return metrics
+
+
+def _replay_metric_reliability(
+    *,
+    sample_count: int,
+    ic_sample_count: int,
+    strategy_ready_samples: int,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    if sample_count < MIN_REPLAY_SAMPLES_FOR_PERFORMANCE:
+        reasons.append(
+            f"forward_return_samples {sample_count} < minimum {MIN_REPLAY_SAMPLES_FOR_PERFORMANCE}"
+        )
+    if strategy_ready_samples < MIN_REPLAY_SAMPLES_FOR_PERFORMANCE:
+        reasons.append(
+            f"strategy_ready_samples {strategy_ready_samples} < minimum {MIN_REPLAY_SAMPLES_FOR_PERFORMANCE}"
+        )
+    if sample_count >= MIN_REPLAY_SAMPLES_FOR_STRONG_EVIDENCE and ic_sample_count >= MIN_REPLAY_SAMPLES_FOR_PERFORMANCE:
+        level = "high"
+    elif sample_count >= MIN_REPLAY_SAMPLES_FOR_PERFORMANCE:
+        level = "medium"
+        if ic_sample_count < MIN_REPLAY_SAMPLES_FOR_PERFORMANCE:
+            reasons.append(
+                f"ic_samples {ic_sample_count} < minimum {MIN_REPLAY_SAMPLES_FOR_PERFORMANCE}"
+            )
+    else:
+        level = "insufficient"
+
+    return {
+        "level": level,
+        "sample_count": sample_count,
+        "ic_sample_count": ic_sample_count,
+        "strategy_ready_samples": strategy_ready_samples,
+        "min_samples_for_metrics": MIN_REPLAY_SAMPLES_FOR_PERFORMANCE,
+        "min_samples_for_strong_evidence": MIN_REPLAY_SAMPLES_FOR_STRONG_EVIDENCE,
+        "reasons": reasons,
+    }
 
 
 def _brief_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -706,9 +774,11 @@ def _fallback_report(bundle: PlaygroundBundle, error: str | None = None) -> str:
         "<b>Strategy turnover</b>",
     ]
     for name, metrics in bundle.replay_metrics.items():
+        reliability = metrics.get("metric_reliability") or {}
         lines.append(
             f"- {name}: avg_turnover={metrics.get('avg_turnover')}, "
-            f"avg_cash={metrics.get('avg_cash_weight')}"
+            f"avg_cash={metrics.get('avg_cash_weight')}, "
+            f"reliability={reliability.get('level', 'unknown')}"
         )
     if bundle.divergence_map:
         lines.append("")
