@@ -9,6 +9,7 @@ P1-2: POSITION_MANAGER
 import asyncio
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from services.cron_audit import audit_cron_run
 from services.position_manager import (
@@ -22,6 +23,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger("qc_fastapi_2.cron.position_monitor")
+MARKET_TZ = ZoneInfo("America/New_York")
 
 
 async def main() -> None:
@@ -51,7 +53,8 @@ async def main() -> None:
             audit.add_rows(len(all_alerts))
 
             # Build Telegram message — only for warning/critical alerts
-            lines = [f"📊 Position health report | {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC\n"]
+            report_time = datetime.now(MARKET_TZ).strftime("%Y-%m-%d %H:%M %Z")
+            lines = [f"📊 Position health report | {report_time}\n"]
 
             if result["drift_alerts"]:
                 lines.append(f"🚨 Drift alerts ({len(result['drift_alerts'])}):")

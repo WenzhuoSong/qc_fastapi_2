@@ -14,12 +14,6 @@ import logging
 from datetime import date, timedelta
 from typing import Optional
 
-from sqlalchemy import select
-
-from db.session import AsyncSessionLocal
-from db.models import MacroEventsCache
-from services.finnhub_client import fetch_economic_calendar
-
 logger = logging.getLogger("qc_fastapi_2.macro_watcher")
 
 # Important macro event types to track and their keywords in Finnhub event names
@@ -42,6 +36,36 @@ def _classify_event(event: dict) -> Optional[str]:
     return None
 
 
+def _is_fomc_meeting_event(event: dict) -> bool:
+    """Return True only for actual FOMC meetings, not minutes or speeches."""
+    name = (event.get("event") or "").lower()
+    meeting_terms = (
+        "fomc",
+        "federal open market committee",
+        "fed interest rate decision",
+        "federal funds rate",
+    )
+    if not any(term in name for term in meeting_terms):
+        return False
+    excluded_terms = (
+        "minutes",
+        "transcript",
+        "statement",
+        "press conference",
+        "speech",
+        "speaks",
+        "remarks",
+    )
+    if any(term in name for term in excluded_terms):
+        return False
+    return (
+        "meeting" in name
+        or "interest rate decision" in name
+        or "federal funds rate" in name
+        or name.strip() in {"fomc", "fomc meeting"}
+    )
+
+
 def _extract_date(event: dict) -> Optional[date]:
     """Extract date from Finnhub calendar event."""
     for field in ("datetime", "date", "time"):
@@ -61,11 +85,13 @@ def _extract_date(event: dict) -> Optional[date]:
     return None
 
 
-async def update_macro_events_cache(days_ahead: int = 14) -> dict:
+async def update_macro_events_cache(days_ahead: int = 60) -> dict:
     """
     Fetch economic calendar from Finnhub and update macro_events_cache.
     Returns {"events": N, "by_type": {...}, "next_fomc": date, "next_cpi": date}.
     """
+    from services.finnhub_client import fetch_economic_calendar
+
     loop = asyncio.get_event_loop()
     raw_events = await loop.run_in_executor(None, fetch_economic_calendar, days_ahead)
     if not raw_events:
@@ -83,7 +109,7 @@ async def update_macro_events_cache(days_ahead: int = 14) -> dict:
         evt_date = _extract_date(evt)
         if evt_type:
             by_type[evt_type].append(evt)
-            if evt_type == "fed" and evt_date:
+            if evt_type == "fed" and evt_date and _is_fomc_meeting_event(evt):
                 if next_fomc is None or evt_date < next_fomc:
                     next_fomc = evt_date
             if evt_type == "cpi" and evt_date:
@@ -91,6 +117,11 @@ async def update_macro_events_cache(days_ahead: int = 14) -> dict:
                     next_cpi = evt_date
         else:
             other.append(evt)
+
+    from sqlalchemy import select
+
+    from db.models import MacroEventsCache
+    from db.session import AsyncSessionLocal
 
     async with AsyncSessionLocal() as db:
         stmt = select(MacroEventsCache).where(MacroEventsCache.id == 1)
@@ -131,6 +162,11 @@ async def get_relevant_macro_events(days: int = 5) -> dict:
     Return relevant macro events for the next N days.
     Used by context_assembler to inject into RESEARCHER prompt.
     """
+    from sqlalchemy import select
+
+    from db.models import MacroEventsCache
+    from db.session import AsyncSessionLocal
+
     async with AsyncSessionLocal() as db:
         row = (await db.execute(
             select(MacroEventsCache).where(MacroEventsCache.id == 1)

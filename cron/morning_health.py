@@ -7,6 +7,7 @@ Railway cron entry: 开盘前系统健康播报 + P1-3 数据更新。
 import asyncio
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from db.session         import AsyncSessionLocal
 from db.queries         import get_system_config
@@ -24,6 +25,25 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger("qc_fastapi_2.cron.morning")
+
+MARKET_TZ = ZoneInfo("America/New_York")
+
+
+def _market_status_line(now: datetime | None = None) -> str:
+    """Format a short US market status line using New York time."""
+    market_now = now.astimezone(MARKET_TZ) if now else datetime.now(MARKET_TZ)
+    label = market_now.strftime("%Y-%m-%d %H:%M %Z")
+
+    if market_now.weekday() >= 5:
+        status = "US market closed"
+    elif market_now.hour < 9 or (market_now.hour == 9 and market_now.minute < 30):
+        status = "US market opens soon" if market_now.hour >= 6 else "US market premarket"
+    elif market_now.hour < 16:
+        status = "US market open"
+    else:
+        status = "US market closed"
+
+    return f"  {status} ({label})"
 
 
 async def main() -> None:
@@ -66,8 +86,9 @@ async def main() -> None:
             ][:3]
 
             # Build summary text
+            market_now = datetime.now(MARKET_TZ)
             summary_lines = [
-                f"🧩 System health summary | {datetime.utcnow().strftime('%Y-%m-%d')}",
+                f"🧩 System health summary | {market_now.strftime('%Y-%m-%d')}",
                 f"  Authorization mode: {mode}",
                 f"  Circuit state: {circuit}",
             ]
@@ -103,7 +124,7 @@ async def main() -> None:
             except Exception as e:
                 logger.warning(f"[morning_health] Operational health report failed: {e}")
 
-            summary_lines.append("  Market opens soon 🚀")
+            summary_lines.append(_market_status_line(market_now))
 
             await tool_send_telegram({
                 "text": "\n".join(summary_lines)

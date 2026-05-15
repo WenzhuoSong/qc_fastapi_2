@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 from services.operational_health import (
     _freshness_check,
+    _heartbeat_freshness_check,
     classify_operational_health,
     format_operational_health_report,
 )
@@ -57,6 +58,37 @@ class OperationalHealthTests(unittest.TestCase):
         self.assertIn("Ops health: research degraded", report)
         self.assertIn("YFinance backfill", report)
         self.assertLessEqual(len(report.splitlines()), 12)
+
+    def test_heartbeat_stale_is_not_blocking_during_opening_grace(self):
+        now = datetime(2026, 5, 15, 13, 31, 0)  # 09:31 ET
+
+        check = _heartbeat_freshness_check(
+            label="QC heartbeat",
+            timestamp=now - timedelta(hours=17.3),
+            now=now,
+            max_age_hours=2,
+            blocker=True,
+            missing_blocker=True,
+        )
+
+        self.assertEqual(check["state"], "ok")
+        self.assertFalse(check["blocking"])
+        self.assertEqual(check["reason"], "opening grace")
+
+    def test_heartbeat_stale_blocks_during_regular_market_hours(self):
+        now = datetime(2026, 5, 15, 15, 0, 0)  # 11:00 ET
+
+        check = _heartbeat_freshness_check(
+            label="QC heartbeat",
+            timestamp=now - timedelta(hours=3),
+            now=now,
+            max_age_hours=2,
+            blocker=True,
+            missing_blocker=True,
+        )
+
+        self.assertEqual(check["state"], "stale")
+        self.assertTrue(check["blocking"])
 
 
 if __name__ == "__main__":

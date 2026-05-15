@@ -1,8 +1,9 @@
 """Daily operational health summary."""
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 FRESHNESS_LIMITS_HOURS = {
@@ -12,6 +13,11 @@ FRESHNESS_LIMITS_HOURS = {
     "news_cache": 6,
     "memory_write": 36,
 }
+
+MARKET_TZ = ZoneInfo("America/New_York")
+MARKET_OPEN = time(9, 30)
+HEARTBEAT_STRICT_AFTER = time(10, 0)
+MARKET_CLOSE = time(16, 0)
 
 
 async def build_operational_health_snapshot() -> dict[str, Any]:
@@ -77,7 +83,7 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
 
     now = datetime.now(UTC).replace(tzinfo=None)
     checks = {
-        "qc_heartbeat": _freshness_check(
+        "qc_heartbeat": _heartbeat_freshness_check(
             label="QC heartbeat",
             timestamp=getattr(heartbeat, "received_at", None),
             now=now,
@@ -176,7 +182,7 @@ def format_operational_health_report(snapshot: dict[str, Any]) -> str:
     for key in ("qc_heartbeat", "daily_feature_snapshot", "yfinance_backfill", "news_cache", "memory_write"):
         check = checks.get(key) or {}
         age = check.get("age_hours")
-        age_text = "missing" if age is None else f"{age:.1f}h"
+        age_text = "never updated" if age is None else f"{age:.1f}h"
         lines.append(f"- {check.get('label', key)}: {check.get('state', 'unknown')} ({age_text})")
 
     pipeline = checks.get("pipeline_status") or {}
@@ -220,6 +226,48 @@ def _freshness_check(
         "reason": f"stale {age_hours:.1f}h > {max_age_hours}h" if stale else "fresh",
         "blocking": blocker and stale,
     }
+
+
+def _heartbeat_freshness_check(
+    *,
+    label: str,
+    timestamp: Any,
+    now: datetime,
+    max_age_hours: int,
+    blocker: bool,
+    missing_blocker: bool,
+) -> dict[str, Any]:
+    check = _freshness_check(
+        label=label,
+        timestamp=timestamp,
+        now=now,
+        max_age_hours=max_age_hours,
+        blocker=blocker,
+        missing_blocker=missing_blocker,
+    )
+    if check.get("state") == "ok":
+        return check
+
+    market_now = now.replace(tzinfo=UTC).astimezone(MARKET_TZ)
+    market_time = market_now.time()
+    in_strict_market = (
+        market_now.weekday() < 5
+        and HEARTBEAT_STRICT_AFTER <= market_time <= MARKET_CLOSE
+    )
+    if in_strict_market:
+        return check
+
+    if market_now.weekday() >= 5 or market_time > MARKET_CLOSE or market_time < MARKET_OPEN:
+        reason = "market closed"
+    else:
+        reason = "opening grace"
+    check.update({
+        "state": "ok",
+        "reason": reason,
+        "blocking": False,
+        "market_status": reason,
+    })
+    return check
 
 
 def _cron_to_dict(row: Any) -> dict[str, Any]:
