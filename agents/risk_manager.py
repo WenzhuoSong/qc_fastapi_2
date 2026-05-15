@@ -597,7 +597,8 @@ def apply_style_constraints(
     """
     style = decision_style or {}
     pre = _normalize_weights(target_weights)
-    if not style:
+    scorecard_turnover_limit = _effective_turnover_limit({}, market_scorecard)
+    if not style and scorecard_turnover_limit is None:
         return {
             "applied": False,
             "target_weights_pre_style_clip": pre,
@@ -631,7 +632,7 @@ def apply_style_constraints(
     max_new_buys = _optional_int(limits.get("max_new_buys_per_cycle"))
     max_single_trade = _optional_float(limits.get("max_single_trade_pct"))
     max_buy_trade = _optional_float(limits.get("max_buy_trade_pct"))
-    max_turnover = _optional_float(limits.get("max_turnover_per_cycle"))
+    max_turnover = _effective_turnover_limit(limits, market_scorecard)
     min_cash_add = _optional_float(limits.get("min_cash_floor_addition")) or 0.0
     max_multiplier = _optional_float(limits.get("max_adjustment_multiplier"))
     scorecard_delta = _optional_float((market_scorecard or {}).get("max_adjustment_from_base"))
@@ -731,12 +732,14 @@ def _check_style_compliance(
     decision_style: dict[str, Any] | None,
     market_scorecard: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if not decision_style:
+    scorecard_turnover_limit = _effective_turnover_limit({}, market_scorecard)
+    if not decision_style and scorecard_turnover_limit is None:
         return {"compliant": True, "violations": [], "checked": False}
 
     clean = _clean_weight_map(weights)
     base = _clean_weight_map(base_weights)
     current = _clean_weight_map(current_weights)
+    decision_style = decision_style or {}
     limits = decision_style.get("style_limits") or {}
     violations: list[str] = []
 
@@ -748,7 +751,7 @@ def _check_style_compliance(
     max_new_buys = _optional_int(limits.get("max_new_buys_per_cycle"))
     max_single_trade = _optional_float(limits.get("max_single_trade_pct"))
     max_buy_trade = _optional_float(limits.get("max_buy_trade_pct"))
-    max_turnover = _optional_float(limits.get("max_turnover_per_cycle"))
+    max_turnover = _effective_turnover_limit(limits, market_scorecard)
     min_cash_add = _optional_float(limits.get("min_cash_floor_addition")) or 0.0
     max_multiplier = _optional_float(limits.get("max_adjustment_multiplier"))
     scorecard_delta = _optional_float((market_scorecard or {}).get("max_adjustment_from_base"))
@@ -791,6 +794,16 @@ def _check_style_compliance(
         "violations": violations,
         "checked": True,
     }
+
+
+def _effective_turnover_limit(
+    limits: dict[str, Any] | None,
+    market_scorecard: dict[str, Any] | None,
+) -> float | None:
+    style_turnover = _optional_float((limits or {}).get("max_turnover_per_cycle"))
+    scorecard_turnover = _optional_float((market_scorecard or {}).get("max_turnover_per_cycle"))
+    candidates = [v for v in (style_turnover, scorecard_turnover) if v is not None]
+    return min(candidates) if candidates else None
 
 
 def _cap_style_new_buys(

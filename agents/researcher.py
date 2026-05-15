@@ -430,6 +430,10 @@ def _build_user_message(
         "explain any disagreement and cannot ignore data-quality or permission warnings.\n\n"
         "## Evidence bundle summary\n"
         f"{json.dumps(_compact_evidence_bundle(evidence_bundle), ensure_ascii=False, indent=2)}\n\n"
+        "Use strategy_use_summary and strategy_confidence as structured strategy evidence. "
+        "primary/advisory strategies may support confidence; watch_only/ignore strategies "
+        "must not be treated as action signals. Reason codes explain why a strategy is "
+        "discounted or usable.\n\n"
         "## Structured news evidence (deterministic action-bias layer)\n"
         f"{json.dumps(_compact_news_evidence(news_evidence), ensure_ascii=False, indent=2)}\n\n"
         "## Decision style (deterministic analysis/execution style)\n"
@@ -497,9 +501,31 @@ def _compact_evidence_bundle(bundle: dict) -> dict:
             "data_quality": (bundle.get("strategies") or {}).get("data_quality"),
             "consensus_top5": (bundle.get("strategies") or {}).get("consensus_top5") or [],
             "turnover_warnings": (bundle.get("strategies") or {}).get("turnover_warnings") or [],
+            "strategy_use_summary": (bundle.get("strategies") or {}).get("strategy_use_summary") or {},
+            "strategy_confidence": _compact_strategy_confidence(
+                (bundle.get("strategies") or {}).get("strategy_confidence") or {}
+            ),
         },
         "data_quality": bundle.get("data_quality") or {},
     }
+
+
+def _compact_strategy_confidence(confidence: dict) -> dict:
+    compact: dict[str, dict] = {}
+    for name, row in (confidence or {}).items():
+        if not isinstance(row, dict):
+            continue
+        compact[name] = {
+            "suggested_use": row.get("suggested_use"),
+            "confidence_score": row.get("confidence_score"),
+            "historical_reliability": row.get("historical_reliability"),
+            "historical_samples": row.get("historical_samples"),
+            "live_samples": row.get("live_samples"),
+            "regime_fit": row.get("regime_fit"),
+            "consensus_conflict": row.get("consensus_conflict"),
+            "reason_codes": row.get("reason_codes") or [],
+        }
+    return compact
 
 
 def _compact_news_evidence(news_evidence: dict) -> dict:

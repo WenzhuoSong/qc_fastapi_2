@@ -13,6 +13,7 @@ import logging
 import math
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
+from html import escape
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -89,6 +90,7 @@ class PlaygroundBundle:
 async def run_playground(
     brief: dict[str, Any],
     strategy_names: list[str] | None = None,
+    include_historical: bool = True,
 ) -> PlaygroundBundle:
     holdings = brief.get("holdings") or []
     holdings, enrichment = await _ensure_playground_features(holdings, strategy_names)
@@ -121,6 +123,28 @@ async def run_playground(
         for name in names
     ]
 
+    historical_snapshots: list[dict[str, Any]] = []
+    historical_metrics: dict[str, dict[str, Any]] = {}
+    strategy_confidence: dict[str, dict[str, Any]] = {}
+    data_gaps = list(enrichment.get("data_gaps", []))
+    if include_historical:
+        try:
+            historical_snapshots = await _read_yfinance_feature_snapshots(days=420)
+            historical_metrics = _compute_replay_metrics(historical_snapshots, names) if historical_snapshots else {}
+            data_gaps.extend(_detect_historical_data_gaps(historical_snapshots))
+        except Exception as exc:
+            logger.warning("[playground] historical replay for live bundle failed: %s", exc)
+            data_gaps.append(f"yfinance historical replay unavailable: {type(exc).__name__}")
+
+    consensus_weights = compute_consensus_weights(results)
+    strategy_confidence = _compute_strategy_confidence(
+        results,
+        {},
+        historical_metrics,
+        regime.regime.value,
+        consensus_weights,
+    ) if include_historical else {}
+
     return PlaygroundBundle(
         generated_at=datetime.utcnow().isoformat(),
         regime_label=regime.regime.value,
@@ -128,12 +152,12 @@ async def run_playground(
         snapshot_count=1,
         strategies=results,
         divergence_map=compute_weight_divergence(results),
-        consensus_weights=compute_consensus_weights(results),
+        consensus_weights=consensus_weights,
         replay_metrics={},
-        historical_replay_metrics={},
-        historical_snapshot_count=0,
-        strategy_confidence={},
-        data_gaps=enrichment.get("data_gaps", []),
+        historical_replay_metrics=historical_metrics,
+        historical_snapshot_count=len(historical_snapshots),
+        strategy_confidence=strategy_confidence,
+        data_gaps=list(dict.fromkeys(data_gaps)),
     )
 
 
@@ -147,7 +171,7 @@ async def run_playground_analysis(
     if not snapshots:
         if historical_snapshots:
             latest_brief = _brief_from_snapshot(historical_snapshots[-1])
-            bundle = await run_playground(latest_brief, strategy_names=strategy_names)
+            bundle = await run_playground(latest_brief, strategy_names=strategy_names, include_historical=False)
             bundle.snapshot_count = 0
             bundle.historical_snapshot_count = len(historical_snapshots)
             bundle.historical_replay_metrics = _compute_replay_metrics(historical_snapshots, names)
@@ -180,7 +204,7 @@ async def run_playground_analysis(
         )
 
     latest_brief = _brief_from_snapshot(snapshots[-1])
-    bundle = await run_playground(latest_brief, strategy_names=strategy_names)
+    bundle = await run_playground(latest_brief, strategy_names=strategy_names, include_historical=False)
     bundle.snapshot_count = len(snapshots)
     bundle.replay_metrics = _compute_replay_metrics(snapshots, names)
     bundle.historical_snapshot_count = len(historical_snapshots)
@@ -685,6 +709,12 @@ def _compute_strategy_confidence(
             "live_samples": live.get("n_forward_return_samples", 0),
             "regime_fit": result.regime_fit,
             "consensus_conflict": consensus_conflict,
+            "reason_codes": _strategy_confidence_reason_codes(
+                result,
+                hist,
+                live,
+                consensus_conflict,
+            ),
             "notes": _strategy_confidence_notes(result, hist, live, consensus_conflict),
         }
     return out
@@ -756,6 +786,55 @@ def _strategy_confidence_notes(
     if consensus_conflict:
         notes.append("live_consensus_conflicts_with_regime")
     return notes
+
+
+def _strategy_confidence_reason_codes(
+    result: StrategyResult,
+    hist_metrics: dict[str, Any],
+    live_metrics: dict[str, Any],
+    consensus_conflict: bool,
+) -> list[str]:
+    codes: list[str] = []
+    hist_level = (hist_metrics.get("metric_reliability") or {}).get("level")
+    live_level = (live_metrics.get("metric_reliability") or {}).get("level")
+    hist_samples = int(hist_metrics.get("n_forward_return_samples") or 0)
+    live_samples = int(live_metrics.get("n_forward_return_samples") or 0)
+    sharpe = hist_metrics.get("sharpe")
+
+    if not result.data_ready:
+        codes.append("data_not_ready")
+    if hist_level == "high" and hist_samples >= MIN_REPLAY_SAMPLES_FOR_STRONG_EVIDENCE:
+        codes.append("historical_strong")
+    elif hist_level in {"medium", "insufficient"}:
+        codes.append(f"historical_{hist_level}")
+    else:
+        codes.append("historical_missing")
+    if sharpe is not None:
+        try:
+            codes.append("historical_positive_sharpe" if float(sharpe) > 0 else "historical_nonpositive_sharpe")
+        except (TypeError, ValueError):
+            pass
+    if result.regime_fit == "strong":
+        codes.append("regime_fit_strong")
+    elif result.regime_fit in {"medium", "benchmark"}:
+        codes.append(f"regime_fit_{result.regime_fit}")
+    else:
+        codes.append("regime_fit_weak")
+    if live_level == "high":
+        codes.append("live_qc_supported")
+    elif live_samples > 0:
+        codes.append("live_qc_limited")
+    else:
+        codes.append("live_qc_missing")
+    if result.expected_turnover_pct > 0.50:
+        codes.append("high_turnover")
+    elif result.expected_turnover_pct > 0.20:
+        codes.append("moderate_turnover")
+    else:
+        codes.append("low_turnover")
+    if consensus_conflict:
+        codes.append("consensus_regime_conflict")
+    return list(dict.fromkeys(codes))
 
 
 async def _read_recent_snapshots(days: int) -> list[dict[str, Any]]:
@@ -1088,12 +1167,14 @@ def _detect_consensus_regime_conflicts(
 
 def _format_report_for_telegram(text: str, bundle: PlaygroundBundle) -> str:
     top = _top_weights(bundle.consensus_weights, n=5)
+    confidence_summary = _format_strategy_confidence_summary(bundle)
+    body = f"{confidence_summary}\n\n{text}" if confidence_summary else text
     return (
         "🧪 <b>Playground Sandbox</b>\n"
         f"Regime: {bundle.regime_label} ({bundle.regime_confidence}) | "
         f"QC snapshots={bundle.snapshot_count} | yfinance history={bundle.historical_snapshot_count}\n"
         f"Consensus top5: {top}\n\n"
-        f"{text}"
+        f"{body}"
     )
 
 
@@ -1103,9 +1184,11 @@ def _fallback_report(bundle: PlaygroundBundle, error: str | None = None) -> str:
         f"Regime: {bundle.regime_label} ({bundle.regime_confidence}) | "
         f"QC snapshots={bundle.snapshot_count} | yfinance history={bundle.historical_snapshot_count}",
         f"Consensus top5: {_top_weights(bundle.consensus_weights, n=5)}",
-        "",
-        "<b>QC Live Replay</b>",
     ]
+    confidence_summary = _format_strategy_confidence_summary(bundle)
+    if confidence_summary:
+        lines.extend(["", confidence_summary])
+    lines.extend(["", "<b>QC Live Replay</b>"])
     for name, metrics in bundle.replay_metrics.items():
         reliability = metrics.get("metric_reliability") or {}
         lines.append(
@@ -1138,6 +1221,51 @@ def _fallback_report(bundle: PlaygroundBundle, error: str | None = None) -> str:
     if error:
         lines.append(f"\nLLM report fallback: {error[:160]}")
     return "\n".join(lines)
+
+
+def _format_strategy_confidence_summary(bundle: PlaygroundBundle, limit: int = 4) -> str:
+    confidence = bundle.strategy_confidence or {}
+    if not confidence:
+        return ""
+    by_name = {result.strategy_name: result for result in bundle.strategies}
+    use_rank = {"primary": 0, "advisory": 1, "watch_only": 2, "ignore": 3}
+    rows = sorted(
+        confidence.values(),
+        key=lambda row: (
+            use_rank.get(str(row.get("suggested_use") or "watch_only"), 9),
+            -float(row.get("confidence_score") or 0.0),
+        ),
+    )
+    lines = ["<b>Strategy Confidence</b>"]
+    for row in rows[:limit]:
+        name = str(row.get("strategy_name") or "")
+        result = by_name.get(name)
+        metrics = (bundle.historical_replay_metrics or {}).get(name) or {}
+        confidence_score = _format_pct(row.get("confidence_score"))
+        historical = row.get("historical_reliability") or "unknown"
+        live_samples = int(row.get("live_samples") or 0)
+        hist_samples = int(row.get("historical_samples") or 0)
+        turnover = _format_pct(result.expected_turnover_pct if result else None)
+        sharpe = metrics.get("sharpe")
+        sharpe_text = f"{float(sharpe):.2f}" if sharpe is not None else "n/a"
+        codes = ", ".join((row.get("reason_codes") or row.get("notes") or [])[:4])
+        lines.append(
+            f"- {escape(name)}: use={escape(str(row.get('suggested_use') or 'unknown'))}, "
+            f"confidence={confidence_score}, hist={escape(str(historical))}/{hist_samples}, "
+            f"live_samples={live_samples}, sharpe={sharpe_text}, turnover={turnover}"
+        )
+        if codes:
+            lines.append(f"  reasons={escape(codes)}")
+    return "\n".join(lines)
+
+
+def _format_pct(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):.1%}"
+    except (TypeError, ValueError):
+        return "n/a"
 
 
 def _score_to_dict(item: ScoredTicker) -> dict[str, Any]:

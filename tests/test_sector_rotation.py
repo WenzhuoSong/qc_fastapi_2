@@ -42,10 +42,12 @@ from services.playground import (
     _compute_replay_metrics,
     _dedupe_market_snapshots,
     _feature_rows_to_snapshots,
+    _format_strategy_confidence_summary,
     _max_drawdown,
     _merge_feature_map,
     _replay_metric_reliability,
     _run_one_strategy,
+    PlaygroundBundle,
 )
 from services.sector_rotation import detect_sector_rotation, format_rotation_for_prompt
 from services.universe_policy import filter_tradable_research_rows
@@ -296,6 +298,75 @@ class SectorRotationTests(unittest.TestCase):
         self.assertGreater(row["historical_score"], row["live_fit_score"] - 0.3)
         self.assertIn(row["suggested_use"], {"advisory", "primary"})
         self.assertEqual(row["historical_reliability"], "high")
+        self.assertIn("historical_strong", row["reason_codes"])
+        self.assertIn("regime_fit_strong", row["reason_codes"])
+
+    def test_strategy_confidence_summary_is_structured_for_telegram(self):
+        holdings = [
+            {
+                "ticker": "SPY",
+                "mom_20d": 0.02,
+                "mom_60d": 0.05,
+                "mom_252d": 0.12,
+                "rsi_14": 55,
+                "atr_pct": 0.011,
+                "hist_vol_20d": 0.14,
+            },
+            {
+                "ticker": "QQQ",
+                "mom_20d": 0.04,
+                "mom_60d": 0.08,
+                "mom_252d": 0.20,
+                "rsi_14": 68,
+                "atr_pct": 0.018,
+                "hist_vol_20d": 0.22,
+            },
+        ]
+        result = _run_one_strategy(
+            "momentum_lite_v1",
+            holdings,
+            {"regime": "trending_bull", "risk_params": {"max_single_position": 0.2}},
+            {},
+        )
+        historical_metrics = {
+            "momentum_lite_v1": {
+                "metric_reliability": {"level": "high"},
+                "n_forward_return_samples": 100,
+                "sharpe": 1.2,
+                "hit_rate": 0.55,
+            }
+        }
+        confidence = _compute_strategy_confidence(
+            [result],
+            {"momentum_lite_v1": {"metric_reliability": {"level": "insufficient"}, "n_forward_return_samples": 3}},
+            historical_metrics,
+            "trending_bull",
+            {"SPY": 0.5, "QQQ": 0.3, "CASH": 0.2},
+        )
+        bundle = PlaygroundBundle(
+            generated_at="2026-05-15T00:00:00",
+            regime_label="trending_bull",
+            regime_confidence="medium",
+            snapshot_count=8,
+            strategies=[result],
+            divergence_map=[],
+            consensus_weights={"SPY": 0.5, "QQQ": 0.3, "CASH": 0.2},
+            replay_metrics={},
+            historical_replay_metrics=historical_metrics,
+            historical_snapshot_count=100,
+            strategy_confidence=confidence,
+            data_gaps=[],
+        )
+
+        summary = _format_strategy_confidence_summary(bundle)
+
+        self.assertIn("<b>Strategy Confidence</b>", summary)
+        self.assertIn("momentum_lite_v1", summary)
+        self.assertIn("use=", summary)
+        self.assertIn("hist=high/100", summary)
+        self.assertIn("live_samples=3", summary)
+        self.assertIn("sharpe=1.20", summary)
+        self.assertIn("historical_strong", summary)
 
     def test_replay_metric_reliability_boundaries(self):
         insufficient = _replay_metric_reliability(

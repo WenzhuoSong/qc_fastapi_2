@@ -164,6 +164,7 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
         "consensus_top5": _top_weights(playground.get("consensus_weights") or {}),
         "consensus_weights": playground.get("consensus_weights") or {},
         "strategy_confidence": playground.get("strategy_confidence") or {},
+        "strategy_use_summary": _strategy_use_summary(playground.get("strategy_confidence") or {}),
         "strategy_results": strategy_results,
         "turnover_warnings": turnover_warnings,
         "data_quality": data_quality,
@@ -207,9 +208,40 @@ def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
                 "historical_hit_rate": hist_metrics.get("hit_rate"),
                 "confidence_score": confidence_row.get("confidence_score"),
                 "suggested_use": confidence_row.get("suggested_use"),
+                "reason_codes": confidence_row.get("reason_codes") or [],
             }
         )
     return out
+
+
+def _strategy_use_summary(confidence: dict[str, Any]) -> dict[str, Any]:
+    summary = {
+        "primary": [],
+        "advisory": [],
+        "watch_only": [],
+        "ignore": [],
+    }
+    for name, row in confidence.items():
+        if not isinstance(row, dict):
+            continue
+        use = str(row.get("suggested_use") or "watch_only")
+        if use not in summary:
+            use = "watch_only"
+        summary[use].append({
+            "strategy_name": name,
+            "confidence_score": row.get("confidence_score"),
+            "reason_codes": row.get("reason_codes") or [],
+        })
+    for use in summary:
+        summary[use].sort(
+            key=lambda item: float(item.get("confidence_score") or 0.0),
+            reverse=True,
+        )
+    return {
+        **summary,
+        "actionable_count": len(summary["primary"]) + len(summary["advisory"]),
+        "best_actionable": (summary["primary"] or summary["advisory"] or [None])[0],
+    }
 
 
 def _build_memory_section(brief: dict[str, Any]) -> dict[str, Any]:

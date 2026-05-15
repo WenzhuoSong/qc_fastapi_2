@@ -168,6 +168,49 @@ class RiskStyleEnforcementTest(unittest.TestCase):
         self.assertTrue(any(v.startswith("style_turnover_scaled:") for v in out["violations"]))
         self.assertTrue(out["post_clip_compliance"]["compliant"])
 
+    def test_scorecard_turnover_limit_applies_without_style_limit(self):
+        out = apply_style_constraints(
+            target_weights={"AAA": 0.60, "CASH": 0.40},
+            base_weights={"AAA": 0.0, "CASH": 1.0},
+            current_weights={"AAA": 0.0, "CASH": 1.0},
+            market_scorecard={
+                "max_adjustment_from_base": 1.0,
+                "min_cash_weight": 0.0,
+                "max_turnover_per_cycle": 0.10,
+            },
+            decision_style={},
+        )
+
+        post = out["target_weights_post_style_clip"]
+        self.assertAlmostEqual(post["AAA"], 0.10, places=4)
+        self.assertAlmostEqual(post["CASH"], 0.90, places=4)
+        self.assertTrue(any(v.startswith("style_turnover_scaled:") for v in out["violations"]))
+        self.assertTrue(out["post_clip_compliance"]["compliant"])
+
+    def test_stricter_scorecard_turnover_wins_over_style_limit(self):
+        out = apply_style_constraints(
+            target_weights={"AAA": 0.60, "CASH": 0.40},
+            base_weights={"AAA": 0.0, "CASH": 1.0},
+            current_weights={"AAA": 0.0, "CASH": 1.0},
+            market_scorecard={
+                "max_adjustment_from_base": 1.0,
+                "min_cash_weight": 0.0,
+                "max_turnover_per_cycle": 0.10,
+            },
+            decision_style={
+                "analysis_style": "standard",
+                "trade_style": "step_in",
+                "style_limits": {
+                    "max_turnover_per_cycle": 0.25,
+                },
+            },
+        )
+
+        post = out["target_weights_post_style_clip"]
+        self.assertAlmostEqual(post["AAA"], 0.10, places=4)
+        self.assertAlmostEqual(post["CASH"], 0.90, places=4)
+        self.assertTrue(out["post_clip_compliance"]["compliant"])
+
     def test_cash_only_style_moves_all_equity_to_cash(self):
         out = apply_style_constraints(
             target_weights={"SPY": 0.4, "CASH": 0.6},

@@ -59,6 +59,7 @@ class EvidenceBundleTest(unittest.TestCase):
                 "momentum_lite_v1": {
                     "confidence_score": 0.72,
                     "suggested_use": "advisory",
+                    "reason_codes": ["historical_strong", "regime_fit_strong"],
                 }
             },
             "strategies": [
@@ -103,6 +104,15 @@ class EvidenceBundleTest(unittest.TestCase):
         self.assertEqual(
             bundle["strategies"]["strategy_results"][0]["suggested_use"],
             "advisory",
+        )
+        self.assertEqual(
+            bundle["strategies"]["strategy_results"][0]["reason_codes"],
+            ["historical_strong", "regime_fit_strong"],
+        )
+        self.assertEqual(bundle["strategies"]["strategy_use_summary"]["actionable_count"], 1)
+        self.assertEqual(
+            bundle["strategies"]["strategy_use_summary"]["best_actionable"]["strategy_name"],
+            "momentum_lite_v1",
         )
         self.assertIn("news_evidence", bundle)
         self.assertEqual(bundle["news_evidence"]["macro_news_score"]["overall_bias"], "positive")
