@@ -124,6 +124,12 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
             "strategy_results": [],
             "turnover_warnings": [],
             "data_quality": "missing",
+            "evidence_summary": {
+                "historical_evidence": "missing",
+                "live_fit": "insufficient",
+                "execution_permission": "blocked",
+                "summary_reasons": ["No recent Playground result available"],
+            },
             "warnings": [
                 "No recent Playground result available; strategy comparison cannot influence allocation"
             ],
@@ -165,6 +171,7 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
         "consensus_weights": playground.get("consensus_weights") or {},
         "strategy_confidence": playground.get("strategy_confidence") or {},
         "strategy_use_summary": _strategy_use_summary(playground.get("strategy_confidence") or {}),
+        "evidence_summary": playground.get("evidence_summary") or {},
         "strategy_results": strategy_results,
         "turnover_warnings": turnover_warnings,
         "data_quality": data_quality,

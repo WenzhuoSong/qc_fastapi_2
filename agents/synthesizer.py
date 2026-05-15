@@ -483,6 +483,7 @@ def _compact_evidence_bundle(bundle: dict) -> dict:
             "data_quality": (bundle.get("strategies") or {}).get("data_quality"),
             "consensus_top5": (bundle.get("strategies") or {}).get("consensus_top5") or [],
             "turnover_warnings": (bundle.get("strategies") or {}).get("turnover_warnings") or [],
+            "evidence_summary": (bundle.get("strategies") or {}).get("evidence_summary") or {},
             "strategy_use_summary": (bundle.get("strategies") or {}).get("strategy_use_summary") or {},
             "strategy_confidence": _compact_strategy_confidence(
                 (bundle.get("strategies") or {}).get("strategy_confidence") or {}

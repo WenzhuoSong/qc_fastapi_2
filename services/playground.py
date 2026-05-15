@@ -79,6 +79,7 @@ class PlaygroundBundle:
     historical_replay_metrics: dict[str, dict[str, Any]]
     historical_snapshot_count: int
     strategy_confidence: dict[str, dict[str, Any]]
+    evidence_summary: dict[str, Any]
     data_gaps: list[str]
 
     def to_dict(self) -> dict[str, Any]:
@@ -157,6 +158,14 @@ async def run_playground(
         historical_replay_metrics=historical_metrics,
         historical_snapshot_count=len(historical_snapshots),
         strategy_confidence=strategy_confidence,
+        evidence_summary=_build_playground_evidence_summary(
+            snapshot_count=1,
+            historical_snapshot_count=len(historical_snapshots),
+            replay_metrics={},
+            historical_replay_metrics=historical_metrics,
+            strategy_confidence=strategy_confidence,
+            data_gaps=data_gaps,
+        ),
         data_gaps=list(dict.fromkeys(data_gaps)),
     )
 
@@ -187,6 +196,14 @@ async def run_playground_analysis(
                 + ["no QC snapshots available; live fit uses latest yfinance historical row"]
                 + _detect_historical_data_gaps(historical_snapshots)
             ))
+            bundle.evidence_summary = _build_playground_evidence_summary(
+                snapshot_count=bundle.snapshot_count,
+                historical_snapshot_count=bundle.historical_snapshot_count,
+                replay_metrics=bundle.replay_metrics,
+                historical_replay_metrics=bundle.historical_replay_metrics,
+                strategy_confidence=bundle.strategy_confidence,
+                data_gaps=bundle.data_gaps,
+            )
             return bundle
         return PlaygroundBundle(
             generated_at=datetime.utcnow().isoformat(),
@@ -200,6 +217,12 @@ async def run_playground_analysis(
             historical_replay_metrics={},
             historical_snapshot_count=0,
             strategy_confidence={},
+            evidence_summary={
+                "historical_evidence": "missing",
+                "live_fit": "insufficient",
+                "execution_permission": "blocked",
+                "summary_reasons": ["no QC snapshots available", "no yfinance historical replay rows available"],
+            },
             data_gaps=["no QC snapshots available"],
         )
 
@@ -216,12 +239,28 @@ async def run_playground_analysis(
         bundle.regime_label,
         bundle.consensus_weights,
     )
+    bundle.evidence_summary = _build_playground_evidence_summary(
+        snapshot_count=bundle.snapshot_count,
+        historical_snapshot_count=bundle.historical_snapshot_count,
+        replay_metrics=bundle.replay_metrics,
+        historical_replay_metrics=bundle.historical_replay_metrics,
+        strategy_confidence=bundle.strategy_confidence,
+        data_gaps=bundle.data_gaps,
+    )
     bundle.data_gaps = list(dict.fromkeys(
         (bundle.data_gaps or [])
         + _detect_data_gaps(snapshots)
         + _detect_historical_data_gaps(historical_snapshots)
         + _detect_consensus_regime_conflicts(bundle.regime_label, bundle.consensus_weights)
     ))
+    bundle.evidence_summary = _build_playground_evidence_summary(
+        snapshot_count=bundle.snapshot_count,
+        historical_snapshot_count=bundle.historical_snapshot_count,
+        replay_metrics=bundle.replay_metrics,
+        historical_replay_metrics=bundle.historical_replay_metrics,
+        strategy_confidence=bundle.strategy_confidence,
+        data_gaps=bundle.data_gaps,
+    )
     return bundle
 
 
@@ -837,6 +876,155 @@ def _strategy_confidence_reason_codes(
     return list(dict.fromkeys(codes))
 
 
+def _build_playground_evidence_summary(
+    *,
+    snapshot_count: int,
+    historical_snapshot_count: int,
+    replay_metrics: dict[str, dict[str, Any]],
+    historical_replay_metrics: dict[str, dict[str, Any]],
+    strategy_confidence: dict[str, dict[str, Any]],
+    data_gaps: list[str],
+) -> dict[str, Any]:
+    historical = _historical_evidence_level(historical_snapshot_count, historical_replay_metrics)
+    live = _live_fit_level(snapshot_count, replay_metrics, strategy_confidence)
+    permission = _execution_permission_level(historical, live, strategy_confidence)
+    return {
+        "historical_evidence": historical["level"],
+        "historical_samples": historical["samples"],
+        "historical_reliability": historical["reliability"],
+        "live_fit": live["level"],
+        "live_samples": live["samples"],
+        "qc_snapshot_count": int(snapshot_count or 0),
+        "execution_permission": permission["level"],
+        "best_strategy": _best_strategy_summary(strategy_confidence),
+        "summary_reasons": list(dict.fromkeys(
+            historical["reasons"]
+            + live["reasons"]
+            + permission["reasons"]
+            + [str(gap) for gap in data_gaps[:3]]
+        )),
+    }
+
+
+def _historical_evidence_level(
+    historical_snapshot_count: int,
+    historical_replay_metrics: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    samples = max(
+        [int((row or {}).get("n_forward_return_samples") or 0) for row in historical_replay_metrics.values()]
+        or [0]
+    )
+    reliabilities = [
+        str(((row or {}).get("metric_reliability") or {}).get("level") or "unknown")
+        for row in historical_replay_metrics.values()
+    ]
+    reliability_rank = {"high": 3, "medium": 2, "insufficient": 1, "unknown": 0}
+    best_reliability = max(reliabilities or ["unknown"], key=lambda item: reliability_rank.get(item, 0))
+    reasons: list[str] = []
+    if samples >= MIN_REPLAY_SAMPLES_FOR_STRONG_EVIDENCE and best_reliability == "high":
+        level = "strong"
+        reasons.append(f"yfinance historical replay has {samples} forward samples")
+    elif samples >= MIN_REPLAY_SAMPLES_FOR_PERFORMANCE and best_reliability in {"high", "medium"}:
+        level = "medium"
+        reasons.append(f"yfinance historical replay has {samples} forward samples")
+    elif historical_snapshot_count > 0 or samples > 0:
+        level = "weak"
+        reasons.append(f"yfinance historical replay has limited samples ({samples})")
+    else:
+        level = "missing"
+        reasons.append("no yfinance historical replay evidence")
+    return {"level": level, "samples": samples, "reliability": best_reliability, "reasons": reasons}
+
+
+def _live_fit_level(
+    snapshot_count: int,
+    replay_metrics: dict[str, dict[str, Any]],
+    strategy_confidence: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    samples = max(
+        [int((row or {}).get("n_forward_return_samples") or 0) for row in replay_metrics.values()]
+        or [0]
+    )
+    rows = [row for row in strategy_confidence.values() if isinstance(row, dict)]
+    if any(bool(row.get("consensus_conflict")) for row in rows):
+        return {
+            "level": "conflicted",
+            "samples": samples,
+            "reasons": ["live consensus conflicts with current regime"],
+        }
+    if snapshot_count < 20 or samples < MIN_REPLAY_SAMPLES_FOR_PERFORMANCE:
+        return {
+            "level": "insufficient",
+            "samples": samples,
+            "reasons": [f"QC live replay has {snapshot_count} snapshots and {samples} forward samples"],
+        }
+    if any(row.get("suggested_use") in {"primary", "advisory"} for row in rows):
+        return {
+            "level": "aligned",
+            "samples": samples,
+            "reasons": ["QC live fit has actionable strategy support"],
+        }
+    return {
+        "level": "conflicted",
+        "samples": samples,
+        "reasons": ["QC live fit has no actionable strategy support"],
+    }
+
+
+def _execution_permission_level(
+    historical: dict[str, Any],
+    live: dict[str, Any],
+    strategy_confidence: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    rows = [row for row in strategy_confidence.values() if isinstance(row, dict)]
+    primary = [row for row in rows if row.get("suggested_use") == "primary"]
+    advisory = [row for row in rows if row.get("suggested_use") == "advisory"]
+    if not rows or (historical["level"] in {"missing", "weak"} and not primary and not advisory):
+        return {
+            "level": "blocked",
+            "reasons": ["no actionable strategy confidence"],
+        }
+    if live["level"] == "conflicted" or any(bool(row.get("consensus_conflict")) for row in rows):
+        return {
+            "level": "human_required",
+            "reasons": ["strategy evidence conflicts with live regime/consensus"],
+        }
+    if primary and historical["level"] == "strong" and live["level"] == "aligned":
+        return {
+            "level": "allowed",
+            "reasons": ["primary strategy has strong historical evidence and aligned live fit"],
+        }
+    if primary or advisory:
+        return {
+            "level": "advisory",
+            "reasons": ["strategy evidence is useful but not fully confirmed by live QC fit"],
+        }
+    return {
+        "level": "human_required",
+        "reasons": ["strategy confidence is watch-only"],
+    }
+
+
+def _best_strategy_summary(strategy_confidence: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    rows = [row for row in strategy_confidence.values() if isinstance(row, dict)]
+    if not rows:
+        return None
+    use_rank = {"primary": 0, "advisory": 1, "watch_only": 2, "ignore": 3}
+    best = sorted(
+        rows,
+        key=lambda row: (
+            use_rank.get(str(row.get("suggested_use") or "watch_only"), 9),
+            -float(row.get("confidence_score") or 0.0),
+        ),
+    )[0]
+    return {
+        "strategy_name": best.get("strategy_name"),
+        "suggested_use": best.get("suggested_use"),
+        "confidence_score": best.get("confidence_score"),
+        "reason_codes": best.get("reason_codes") or [],
+    }
+
+
 async def _read_recent_snapshots(days: int) -> list[dict[str, Any]]:
     cutoff = datetime.utcnow() - timedelta(days=days)
     async with AsyncSessionLocal() as db:
@@ -1167,8 +1355,10 @@ def _detect_consensus_regime_conflicts(
 
 def _format_report_for_telegram(text: str, bundle: PlaygroundBundle) -> str:
     top = _top_weights(bundle.consensus_weights, n=5)
+    evidence_summary = _format_evidence_summary(bundle.evidence_summary)
     confidence_summary = _format_strategy_confidence_summary(bundle)
-    body = f"{confidence_summary}\n\n{text}" if confidence_summary else text
+    structured_sections = "\n\n".join(section for section in (evidence_summary, confidence_summary) if section)
+    body = f"{structured_sections}\n\n{text}" if structured_sections else text
     return (
         "🧪 <b>Playground Sandbox</b>\n"
         f"Regime: {bundle.regime_label} ({bundle.regime_confidence}) | "
@@ -1185,6 +1375,9 @@ def _fallback_report(bundle: PlaygroundBundle, error: str | None = None) -> str:
         f"QC snapshots={bundle.snapshot_count} | yfinance history={bundle.historical_snapshot_count}",
         f"Consensus top5: {_top_weights(bundle.consensus_weights, n=5)}",
     ]
+    evidence_summary = _format_evidence_summary(bundle.evidence_summary)
+    if evidence_summary:
+        lines.extend(["", evidence_summary])
     confidence_summary = _format_strategy_confidence_summary(bundle)
     if confidence_summary:
         lines.extend(["", confidence_summary])
@@ -1221,6 +1414,32 @@ def _fallback_report(bundle: PlaygroundBundle, error: str | None = None) -> str:
     if error:
         lines.append(f"\nLLM report fallback: {error[:160]}")
     return "\n".join(lines)
+
+
+def _format_evidence_summary(summary: dict[str, Any] | None) -> str:
+    if not summary:
+        return ""
+    best = summary.get("best_strategy") or {}
+    best_text = ""
+    if best:
+        best_text = (
+            f"\nBest: {escape(str(best.get('strategy_name') or 'unknown'))} "
+            f"({escape(str(best.get('suggested_use') or 'unknown'))}, "
+            f"confidence={_format_pct(best.get('confidence_score'))})"
+        )
+    reasons = ", ".join(str(item) for item in (summary.get("summary_reasons") or [])[:3])
+    reason_text = f"\nWhy: {escape(reasons)}" if reasons else ""
+    return (
+        "<b>Evidence Summary</b>\n"
+        f"Historical evidence: {escape(str(summary.get('historical_evidence') or 'unknown'))} "
+        f"({int(summary.get('historical_samples') or 0)} samples, "
+        f"{escape(str(summary.get('historical_reliability') or 'unknown'))})\n"
+        f"Live fit: {escape(str(summary.get('live_fit') or 'unknown'))} "
+        f"(QC snapshots={int(summary.get('qc_snapshot_count') or 0)}, "
+        f"forward={int(summary.get('live_samples') or 0)})\n"
+        f"Execution permission: {escape(str(summary.get('execution_permission') or 'unknown'))}"
+        f"{best_text}{reason_text}"
+    )
 
 
 def _format_strategy_confidence_summary(bundle: PlaygroundBundle, limit: int = 4) -> str:

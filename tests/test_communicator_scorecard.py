@@ -53,6 +53,21 @@ class CommunicatorScorecardTest(unittest.TestCase):
                     "weighted_conviction": -0.42,
                     "style_limits": {"allow_new_positions": False},
                 },
+                "strategy_use_enforcement": {
+                    "applied": True,
+                    "violations": ["strategy_advisory_only:max_delta:SPY 60.00%->53.00%"],
+                    "strategy_use_summary": {
+                        "best_actionable": {
+                            "strategy_name": "momentum_lite_v1",
+                            "suggested_use": "advisory",
+                        }
+                    },
+                    "evidence_summary": {
+                        "historical_evidence": "strong",
+                        "live_fit": "insufficient",
+                        "execution_permission": "advisory",
+                    },
+                },
             },
             {
                 "market_judgment": {"regime": "bull_trend", "adjusted_confidence": 0.6},
@@ -93,6 +108,11 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertEqual(payload["news_evidence"]["overall_bias"], "negative")
         self.assertEqual(payload["decision_style"]["analysis_style"], "macro_defensive")
         self.assertEqual(payload["style_enforcement"]["violations"][0], "style_new_position_blocked:XLF 10.00%->0.00%")
+        self.assertEqual(payload["strategy_use_enforcement"]["evidence_summary"]["historical_evidence"], "strong")
+        self.assertEqual(
+            payload["strategy_use_enforcement"]["violations"][0],
+            "strategy_advisory_only:max_delta:SPY 60.00%->53.00%",
+        )
 
     def test_fallback_template_shows_scorecard_and_clipping(self):
         text = _fallback_template(
@@ -133,6 +153,20 @@ class CommunicatorScorecardTest(unittest.TestCase):
                 "style_enforcement": {
                     "violations": ["style_new_position_blocked:XLF 10.00%->0.00%"],
                 },
+                "strategy_use_enforcement": {
+                    "violations": ["strategy_advisory_only:max_delta:SPY 60.00%->53.00%"],
+                    "strategy_use_summary": {
+                        "best_actionable": {
+                            "strategy_name": "momentum_lite_v1",
+                            "suggested_use": "advisory",
+                        }
+                    },
+                    "evidence_summary": {
+                        "historical_evidence": "strong",
+                        "live_fit": "insufficient",
+                        "execution_permission": "advisory",
+                    },
+                },
             }
         )
 
@@ -146,6 +180,11 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("macro_defensive", text)
         self.assertIn("Style clipping", text)
         self.assertIn("style_new_position_blocked:XLF", text)
+        self.assertIn("Strategy-use clipping", text)
+        self.assertIn("historical=strong", text)
+        self.assertIn("live=insufficient", text)
+        self.assertIn("permission=advisory", text)
+        self.assertIn("strategy_advisory_only:max_delta:SPY", text)
         self.assertIn("/confirm", text)
 
     def test_rejected_fallback_shows_scorecard(self):

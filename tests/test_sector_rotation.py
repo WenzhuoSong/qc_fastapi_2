@@ -39,9 +39,11 @@ from services.market_snapshot_merge import _merge_market_snapshots, _normalize_f
 from services.playground import (
     _brief_from_snapshot,
     _compute_strategy_confidence,
+    _build_playground_evidence_summary,
     _compute_replay_metrics,
     _dedupe_market_snapshots,
     _feature_rows_to_snapshots,
+    _format_evidence_summary,
     _format_strategy_confidence_summary,
     _max_drawdown,
     _merge_feature_map,
@@ -355,6 +357,14 @@ class SectorRotationTests(unittest.TestCase):
             historical_replay_metrics=historical_metrics,
             historical_snapshot_count=100,
             strategy_confidence=confidence,
+            evidence_summary=_build_playground_evidence_summary(
+                snapshot_count=8,
+                historical_snapshot_count=100,
+                replay_metrics={},
+                historical_replay_metrics=historical_metrics,
+                strategy_confidence=confidence,
+                data_gaps=[],
+            ),
             data_gaps=[],
         )
 
@@ -367,6 +377,37 @@ class SectorRotationTests(unittest.TestCase):
         self.assertIn("live_samples=3", summary)
         self.assertIn("sharpe=1.20", summary)
         self.assertIn("historical_strong", summary)
+
+    def test_playground_evidence_summary_labels_historical_live_and_permission(self):
+        summary = _build_playground_evidence_summary(
+            snapshot_count=8,
+            historical_snapshot_count=100,
+            replay_metrics={},
+            historical_replay_metrics={
+                "momentum_lite_v1": {
+                    "metric_reliability": {"level": "high"},
+                    "n_forward_return_samples": 100,
+                }
+            },
+            strategy_confidence={
+                "momentum_lite_v1": {
+                    "strategy_name": "momentum_lite_v1",
+                    "suggested_use": "advisory",
+                    "confidence_score": 0.63,
+                    "consensus_conflict": False,
+                    "reason_codes": ["historical_strong", "live_qc_limited"],
+                }
+            },
+            data_gaps=[],
+        )
+
+        self.assertEqual(summary["historical_evidence"], "strong")
+        self.assertEqual(summary["live_fit"], "insufficient")
+        self.assertEqual(summary["execution_permission"], "advisory")
+        rendered = _format_evidence_summary(summary)
+        self.assertIn("Historical evidence: strong", rendered)
+        self.assertIn("Live fit: insufficient", rendered)
+        self.assertIn("Execution permission: advisory", rendered)
 
     def test_replay_metric_reliability_boundaries(self):
         insufficient = _replay_metric_reliability(

@@ -34,6 +34,7 @@ Hard format:
 - Include 5 blocks: long/short debate summary / market view / rebalance / risk result / command hints (only include command hints if approved is true)
 - Debate summary: Bull/Bear confidence and resolution (1–2 lines)
 - Include market scorecard condition, permission, data quality, and any clipping/blocking details when present
+- Include strategy-use evidence and strategy-use clipping/blocking details when present
 - Include news bias/confidence, analysis style, trade style, and style clipping/blocking details when present
 - Do not invent numbers — only repeat fields you are given
 - No graphical characters beyond emoji
@@ -124,6 +125,11 @@ def _build_payload(
     decision_style = pipeline_context.get("decision_style") or {}
     enforcement = risk_out.get("scorecard_enforcement") or {}
     style_enforcement = risk_out.get("style_enforcement") or {}
+    strategy_use_enforcement = (
+        researcher_out.get("strategy_use_enforcement")
+        or pipeline_context.get("strategy_use_enforcement")
+        or {}
+    )
     compliance = enforcement.get("post_clip_compliance") or {}
     style_compliance = style_enforcement.get("post_clip_compliance") or {}
     macro_news = news_evidence.get("macro_news_score") or {}
@@ -189,6 +195,14 @@ def _build_payload(
             "post_clip_compliant": style_compliance.get("compliant"),
             "one_way_tightening_ok": style_enforcement.get("one_way_tightening_ok"),
         },
+        "strategy_use_enforcement": {
+            "applied": strategy_use_enforcement.get("applied"),
+            "violations": strategy_use_enforcement.get("violations") or strategy_use_enforcement.get("clip_log") or [],
+            "strategy_use_summary": strategy_use_enforcement.get("strategy_use_summary") or {},
+            "evidence_summary": strategy_use_enforcement.get("evidence_summary") or {},
+            "pre_clip": strategy_use_enforcement.get("target_weights_pre_strategy_use_clip") or {},
+            "post_clip": strategy_use_enforcement.get("target_weights_post_strategy_use_clip") or {},
+        },
         "auth_mode":        pipeline_context.get("auth_mode", "SEMI_AUTO"),
         "timeout_minutes":  settings.semi_auto_timeout_minutes,
         "debate_summary":   debate,
@@ -211,6 +225,7 @@ def _fallback_template(p: dict) -> str:
     news = p.get("news_evidence") or {}
     style = p.get("decision_style") or {}
     style_enforcement = p.get("style_enforcement") or {}
+    strategy_use_enforcement = p.get("strategy_use_enforcement") or {}
 
     up, down = "\u25b2", "\u25bc"
 
@@ -235,6 +250,7 @@ def _fallback_template(p: dict) -> str:
     news_line = _format_news_line(news)
     style_line = _format_style_line(style)
     style_enforcement_line = _format_style_enforcement_line(style_enforcement)
+    strategy_use_line = _format_strategy_use_enforcement_line(strategy_use_enforcement)
 
     if not approved:
         reasons_text = "\n".join(f"  - {r}" for r in p["rejection_reasons"]) or "  - No reason provided"
@@ -249,6 +265,7 @@ def _fallback_template(p: dict) -> str:
             f"{scorecard_line}"
             f"{enforcement_line}"
             f"{style_enforcement_line}"
+            f"{strategy_use_line}"
             f"<b>Failed checks:</b>\n{reasons_text}\n\n"
             f"No execution this round — wait for the next analysis."
         )
@@ -283,6 +300,7 @@ def _fallback_template(p: dict) -> str:
         f"{scorecard_line}"
         f"{enforcement_line}"
         f"{style_enforcement_line}"
+        f"{strategy_use_line}"
         f"<b>Suggested actions</b>\n"
         f"{actions_str}\n\n"
         f"💰 Est. cost: {cost:.2%}\n"
@@ -361,6 +379,41 @@ def _format_style_enforcement_line(enforcement: dict) -> str:
     return (
         f"<b>Style clipping</b>\n"
         f"  {shown}{extra}\n\n"
+    )
+
+
+def _format_strategy_use_enforcement_line(enforcement: dict) -> str:
+    if not enforcement:
+        return ""
+    evidence = enforcement.get("evidence_summary") or {}
+    summary = enforcement.get("strategy_use_summary") or {}
+    violations = enforcement.get("violations") or []
+    best = evidence.get("best_strategy") or summary.get("best_actionable") or {}
+    evidence_bits = []
+    if evidence.get("historical_evidence"):
+        evidence_bits.append(f"historical={evidence.get('historical_evidence')}")
+    if evidence.get("live_fit"):
+        evidence_bits.append(f"live={evidence.get('live_fit')}")
+    if evidence.get("execution_permission"):
+        evidence_bits.append(f"permission={evidence.get('execution_permission')}")
+    if best:
+        evidence_bits.append(
+            f"best={best.get('strategy_name')}({best.get('suggested_use')})"
+        )
+
+    lines = []
+    if evidence_bits:
+        lines.append("  " + " | ".join(str(bit) for bit in evidence_bits))
+    if violations:
+        shown = "; ".join(str(v) for v in violations[:3])
+        extra = f" (+{len(violations) - 3} more)" if len(violations) > 3 else ""
+        lines.append(f"  clipped: {shown}{extra}")
+    if not lines:
+        return ""
+    return (
+        f"<b>Strategy-use clipping</b>\n"
+        + "\n".join(lines)
+        + "\n\n"
     )
 
 

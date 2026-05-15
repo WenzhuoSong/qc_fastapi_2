@@ -50,6 +50,7 @@ from services.evidence_bundle import build_evidence_bundle
 from services.market_scorecard import build_market_scorecard
 from services.news_evidence   import build_news_evidence
 from services.decision_style  import resolve_decision_style
+from services.strategy_use_constraints import apply_strategy_use_constraints
 from services.execution_audit import build_execution_audit_payload, count_today_actual_execution_actions
 from strategies              import compute_rebalance_actions, estimate_cost_pct
 from tracking.wandb_client   import PipelineRunTracker
@@ -984,6 +985,43 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             )
         else:
             logger.info("[Stage5→6] PM weights within constraints, no clip needed")
+
+        strategy_weights_clipped, strategy_clip_log = apply_strategy_use_constraints(
+            base_weights=base_weights,
+            adjusted_weights=synthesizer_out.get("adjusted_weights") or {},
+            strategy_evidence=(evidence_bundle.get("strategies") or {}),
+        )
+        synthesizer_out["adjusted_weights"] = strategy_weights_clipped
+        strategy_use_enforcement = {
+            "applied": bool(strategy_clip_log),
+            "violations": strategy_clip_log,
+            "clip_log": strategy_clip_log,
+            "strategy_use_summary": (evidence_bundle.get("strategies") or {}).get("strategy_use_summary") or {},
+            "evidence_summary": (evidence_bundle.get("strategies") or {}).get("evidence_summary") or {},
+            "target_weights_pre_strategy_use_clip": adjusted_weights_clipped,
+            "target_weights_post_strategy_use_clip": strategy_weights_clipped,
+        }
+        synthesizer_out["strategy_use_enforcement"] = strategy_use_enforcement
+        pipeline_context["strategy_use_enforcement"] = strategy_use_enforcement
+        if strategy_clip_log:
+            logger.warning(
+                "[Stage5→6] Strategy-use constraints clipped "
+                f"{len(strategy_clip_log)} items:\n" + "\n".join(strategy_clip_log)
+            )
+            await _save_step_log(
+                analysis_id, "5c_strategy_use_constraint", "strategy_use_constraint",
+                input_data={
+                    "adjusted_weights_after_pm_clip": adjusted_weights_clipped,
+                    "strategy_use_summary": strategy_use_enforcement["strategy_use_summary"],
+                },
+                output_data={
+                    "adjusted_weights_clipped": strategy_weights_clipped,
+                    "clip_log": strategy_clip_log,
+                },
+                duration_ms=0,
+            )
+        else:
+            logger.info("[Stage5→6] Strategy-use constraints passed, no clip needed")
 
     # Stage 6: RISK MGR (Python) —— overlays + 6 checks
     # synthesizer_out interface compatible with old researcher_out, Risk MGR unchanged

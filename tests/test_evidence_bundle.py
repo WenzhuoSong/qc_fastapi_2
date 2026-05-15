@@ -55,6 +55,11 @@ class EvidenceBundleTest(unittest.TestCase):
             "snapshot_count": 30,
             "historical_snapshot_count": 290,
             "consensus_weights": {"SPY": 0.2, "QQQ": 0.1, "CASH": 0.7},
+            "evidence_summary": {
+                "historical_evidence": "strong",
+                "live_fit": "insufficient",
+                "execution_permission": "advisory",
+            },
             "strategy_confidence": {
                 "momentum_lite_v1": {
                     "confidence_score": 0.72,
@@ -110,6 +115,8 @@ class EvidenceBundleTest(unittest.TestCase):
             ["historical_strong", "regime_fit_strong"],
         )
         self.assertEqual(bundle["strategies"]["strategy_use_summary"]["actionable_count"], 1)
+        self.assertEqual(bundle["strategies"]["evidence_summary"]["historical_evidence"], "strong")
+        self.assertEqual(bundle["strategies"]["evidence_summary"]["execution_permission"], "advisory")
         self.assertEqual(
             bundle["strategies"]["strategy_use_summary"]["best_actionable"]["strategy_name"],
             "momentum_lite_v1",
