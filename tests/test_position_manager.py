@@ -80,6 +80,24 @@ class PositionManagerTest(unittest.TestCase):
         self.assertEqual(out.trade_summary["total_trades"], 2)
         self.assertTrue(any(v.startswith("daily_trade_count_capped:") for v in out.violations))
 
+    def test_actual_daily_trades_reduce_remaining_trade_slots(self):
+        out = apply_position_constraints(
+            target_weights={"AAA": 0.10, "BBB": 0.09, "CASH": 0.81},
+            current_holdings={"CASH": 1.0},
+            config={
+                "max_new_buys_per_cycle": 10,
+                "max_single_trade_pct": 1.0,
+                "max_turnover_per_cycle": 1.0,
+                "max_daily_trades": 3,
+            },
+            actual_daily_trades=2,
+        )
+
+        held = [t for t, w in out.adjusted_weights.items() if t != "CASH" and w > 0.01]
+        self.assertEqual(held, ["AAA"])
+        self.assertEqual(out.trade_summary["actual_daily_trades_before_cycle"], 2)
+        self.assertTrue(any(v.startswith("daily_trade_count_capped:") for v in out.violations))
+
 
 if __name__ == "__main__":
     unittest.main()

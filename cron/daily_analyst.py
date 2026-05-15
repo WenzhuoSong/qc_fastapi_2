@@ -292,7 +292,7 @@ async def _check_execution_happened(session, today: date) -> bool:
     result = await session.execute(
         select(func.count(ExecutionLog.id))
         .where(func.date(ExecutionLog.executed_at) == today)
-        .where(ExecutionLog.status == "success")
+        .where(ExecutionLog.status.in_(("sent", "accepted", "filled", "success")))
     )
     count = result.scalar_one_or_none() or 0
     return count > 0

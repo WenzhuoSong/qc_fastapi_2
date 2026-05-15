@@ -46,6 +46,7 @@ from services.market_brief    import build_market_brief
 from services.quant_baseline  import run_quant_baseline_async
 from services.position_manager import apply_position_constraints
 from services.playground      import run_playground
+from services.execution_audit import build_execution_audit_payload, count_today_actual_execution_actions
 from strategies              import compute_rebalance_actions, estimate_cost_pct
 from tracking.wandb_client   import PipelineRunTracker
 from db.session          import AsyncSessionLocal
@@ -933,11 +934,13 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     # ── Stage 6.5: Position Manager quantity/frequency controls ───────────────
     if risk_out.get("approved") and risk_out.get("target_weights"):
         target_before_pm = risk_out.get("target_weights") or {}
+        actual_daily_trades = await count_today_actual_execution_actions()
         pm_out = apply_position_constraints(
             target_weights=target_before_pm,
             current_holdings=brief.get("current_weights") or {},
             config=pipeline_context.get("position_manager_config") or {},
             holdings_meta=brief.get("holdings") or [],
+            actual_daily_trades=actual_daily_trades,
         )
         risk_out["target_weights"] = pm_out.adjusted_weights
         rebalance_threshold = float((pipeline_context.get("risk_params") or {}).get("rebalance_threshold", 0.02))
@@ -968,6 +971,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 "target_weights_raw": target_before_pm,
                 "current_weights": brief.get("current_weights") or {},
                 "config": pipeline_context.get("position_manager_config") or {},
+                "actual_daily_trades": actual_daily_trades,
             },
             output_data={
                 "adjusted_weights": pm_out.adjusted_weights,
@@ -1100,6 +1104,20 @@ async def _send_semi_auto_proposal(
         "proposal_value":     proposal_value,
     })
 
+    await _save_execution(
+        analysis_id,
+        {
+            "execution_status": "proposed",
+            "execution_audit": build_execution_audit_payload(
+                action_status="proposed",
+                proposed_weights=weights,
+                rebalance_actions=risk_out.get("rebalance_actions") or [],
+                estimated_cost_pct=cost,
+                reason="semi_auto_pending_confirmation",
+            ),
+        },
+    )
+
     # Command hints are bound to pending state, so append only after proposal is saved.
     await tool_send_telegram({"text": append_command_hints(comm_out["text"])})
 
@@ -1146,11 +1164,18 @@ async def _finalize_analysis(
 
 
 async def _save_execution(analysis_id: int, result: dict) -> None:
+    audit_payload = result.get("execution_audit") or build_execution_audit_payload(
+        action_status=result.get("execution_status", "failed"),
+        sent_weights=result.get("weights_sent") or {},
+        command_id=result.get("command_id"),
+        reason=result.get("error"),
+    )
     async with AsyncSessionLocal() as db:
         db.add(ExecutionLog(
             analysis_id     = analysis_id,
             command_type    = "weight_adjustment",
-            command_payload = result.get("weights_sent", {}),
+            command_payload = audit_payload,
+            qc_response     = result.get("qc_response"),
             status          = result.get("execution_status", "unknown"),
         ))
         await db.commit()

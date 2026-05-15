@@ -79,6 +79,7 @@ class PositionManager:
         current_holdings: dict[str, float],
         constraints: PositionConstraints | None = None,
         holdings_meta: list[dict] | None = None,
+        actual_daily_trades: int = 0,
     ) -> PositionManagerOutput:
         constraints = constraints or PositionConstraints()
         current = _clean_weights(current_holdings)
@@ -106,7 +107,7 @@ class PositionManager:
         target = self._cap_new_buys(target, current, constraints, violations)
         target = self._cap_position_count(target, current, constraints, violations)
         target = self._cap_single_buys(target, current, constraints, violations)
-        target = self._cap_trade_count(target, current, constraints, violations)
+        target = self._cap_trade_count(target, current, constraints, violations, actual_daily_trades)
         target = self._cap_turnover(target, current, constraints, violations)
 
         adjusted = _normalize_weights(target)
@@ -124,6 +125,7 @@ class PositionManager:
             "total_trades": len(buys) + len(sells),
             "total_turnover": round(_turnover(adjusted, current), 6),
             "position_count": _position_count(adjusted),
+            "actual_daily_trades_before_cycle": actual_daily_trades,
         }
 
         return PositionManagerOutput(
@@ -237,21 +239,33 @@ class PositionManager:
         current: dict[str, float],
         constraints: PositionConstraints,
         violations: list[str],
+        actual_daily_trades: int = 0,
     ) -> dict[str, float]:
         deltas = _weight_deltas(target, current)
         sells = [t for t, d in deltas.items() if t != "CASH" and d < -self.trade_threshold]
         buys = [t for t, d in deltas.items() if t != "CASH" and d > self.trade_threshold]
         total_trades = len(sells) + len(buys)
-        if total_trades <= constraints.max_daily_trades:
+        remaining_daily_trades = max(constraints.max_daily_trades - max(actual_daily_trades, 0), 0)
+        if total_trades <= remaining_daily_trades:
             return target
 
-        if len(sells) >= constraints.max_daily_trades:
+        if remaining_daily_trades <= 0:
+            out = dict(target)
+            for ticker in buys:
+                out[ticker] = current.get(ticker, 0.0)
+            out["CASH"] = 1.0 - sum(w for t, w in out.items() if t != "CASH")
             violations.append(
-                f"daily_trade_count_exceeded:{total_trades}>{constraints.max_daily_trades}, sell trades preserved"
+                f"daily_trade_count_exhausted:{actual_daily_trades}>={constraints.max_daily_trades}"
+            )
+            return out
+
+        if len(sells) >= remaining_daily_trades:
+            violations.append(
+                f"daily_trade_count_exceeded:{total_trades}+{actual_daily_trades}>{constraints.max_daily_trades}, sell trades preserved"
             )
             return target
 
-        buy_slots = max(constraints.max_daily_trades - len(sells), 0)
+        buy_slots = max(remaining_daily_trades - len(sells), 0)
         keep_buys = set(sorted(buys, key=lambda t: deltas[t], reverse=True)[:buy_slots])
         blocked = [t for t in buys if t not in keep_buys]
         out = dict(target)
@@ -271,9 +285,16 @@ def apply_position_constraints(
     current_holdings: dict[str, float],
     config: dict[str, Any] | None = None,
     holdings_meta: list[dict] | None = None,
+    actual_daily_trades: int = 0,
 ) -> PositionManagerOutput:
     constraints = PositionConstraints.from_config(config)
-    return PositionManager().apply(target_weights, current_holdings, constraints, holdings_meta)
+    return PositionManager().apply(
+        target_weights,
+        current_holdings,
+        constraints,
+        holdings_meta,
+        actual_daily_trades=actual_daily_trades,
+    )
 
 
 def _clean_weights(weights: dict[str, Any] | None) -> dict[str, float]:

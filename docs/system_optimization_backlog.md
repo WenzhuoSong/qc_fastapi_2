@@ -194,7 +194,7 @@ Resolution:
 
 ### 7. Execution audit depth
 
-Status: open
+Status: done
 
 Problem:
 Risk-approved target weights and actual execution outcome are not fully tied
@@ -209,6 +209,20 @@ Acceptance criteria:
   actions where data is available.
 - Position Manager can read today's actual execution count.
 - Daily Analyst can compare intended vs executed weights.
+
+Resolution:
+- Added `services/execution_audit.py` for structured execution audit payloads
+  and same-day actual action counting from `execution_log`.
+- Semi-auto proposals now write `proposed` audit rows with intended weights,
+  rebalance actions, and estimated cost.
+- Full-auto executor now returns structured `accepted`, `rejected`, `failed`,
+  or `skipped` audit payloads with QC response details where available.
+- Position Manager now subtracts actual same-day execution actions before
+  applying `max_daily_trades`.
+- Daily Analyst treats accepted/sent/filled execution log rows as actual
+  execution activity.
+- Added tests in `tests/test_execution_audit.py` and expanded Position Manager
+  daily-trade coverage.
 
 ### 8. Strategy health and decay detection
 
