@@ -8,6 +8,7 @@ P1-2: POSITION_MANAGER
 """
 import asyncio
 import logging
+import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger("qc_fastapi_2.cron.position_monitor")
 MARKET_TZ = ZoneInfo("America/New_York")
+NOTIFY_HEALTHY = os.getenv("POSITION_MONITOR_NOTIFY_HEALTHY", "").lower() in {"1", "true", "yes"}
+
+
+def _healthy_message(result: dict) -> str:
+    report_time = datetime.now(MARKET_TZ).strftime("%Y-%m-%d %H:%M %Z")
+    return (
+        f"📊 Position health report | {report_time}\n\n"
+        "No actionable position alerts.\n"
+        f"Drift: {len(result.get('drift_alerts') or [])}, "
+        f"Holding-period: {len(result.get('holding_period_alerts') or [])}, "
+        f"Volatility: {len(result.get('intraday_alerts') or [])}"
+    )
 
 
 async def main() -> None:
@@ -41,6 +54,8 @@ async def main() -> None:
             total = result["total_alerts"]
             if total == 0:
                 logger.info("[position_monitor] All positions healthy")
+                if NOTIFY_HEALTHY:
+                    await tool_send_telegram({"text": _healthy_message(result)})
                 return
 
             # Persist to AlertLog
@@ -79,6 +94,8 @@ async def main() -> None:
             )
             if not has_warn:
                 logger.info("[position_monitor] Only info-level alerts, skipping Telegram notification")
+                if NOTIFY_HEALTHY:
+                    await tool_send_telegram({"text": _healthy_message(result)})
                 return
 
             if total > 10:
