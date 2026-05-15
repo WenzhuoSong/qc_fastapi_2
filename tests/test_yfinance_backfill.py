@@ -38,6 +38,9 @@ class YfinanceBackfillTest(unittest.TestCase):
         self.assertIsNotNone(last["return_252d"])
         self.assertIsNotNone(last["sma_200"])
         self.assertIsNotNone(last["hist_vol_20d"])
+        self.assertIsNotNone(last["rsi_14"])
+        self.assertIsNotNone(last["atr_pct"])
+        self.assertIsNotNone(last["bb_position"])
         self.assertGreater(last["dollar_volume"], 0)
 
     def test_missing_required_columns_returns_empty(self):

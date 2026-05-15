@@ -31,6 +31,9 @@ FEATURE_COLUMNS = [
     "sma_50",
     "sma_200",
     "hist_vol_20d",
+    "rsi_14",
+    "atr_pct",
+    "bb_position",
     "data_quality_flag",
     "raw_payload",
 ]
@@ -111,6 +114,42 @@ async def get_latest_feature_date(
     return result.scalar_one_or_none()
 
 
+async def get_latest_feature_state(
+    db: Any,
+    ticker: str,
+    source: str = "yfinance",
+) -> dict[str, Any]:
+    """Return latest stored row status for one ticker/source."""
+    from sqlalchemy import desc, select
+
+    from db.models import MarketDailyFeature
+
+    clean_ticker = (ticker or "").upper().strip()
+    if not clean_ticker:
+        return {"trading_date": None, "missing_fields": []}
+
+    row = (
+        await db.execute(
+            select(MarketDailyFeature)
+            .where(MarketDailyFeature.ticker == clean_ticker)
+            .where(MarketDailyFeature.source == source)
+            .order_by(desc(MarketDailyFeature.trading_date))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not row:
+        return {"trading_date": None, "missing_fields": []}
+
+    required_history_fields = ("rsi_14", "atr_pct", "bb_position")
+    return {
+        "trading_date": row.trading_date,
+        "missing_fields": [
+            field for field in required_history_fields
+            if getattr(row, field, None) is None
+        ],
+    }
+
+
 async def get_market_daily_feature_rows(
     db: Any,
     tickers: list[str],
@@ -187,6 +226,9 @@ def model_to_feature_dict(row: Any) -> dict[str, Any]:
         "sma_50": _float_or_none(row.sma_50),
         "sma_200": _float_or_none(row.sma_200),
         "hist_vol_20d": _float_or_none(row.hist_vol_20d),
+        "rsi_14": _float_or_none(row.rsi_14),
+        "atr_pct": _float_or_none(row.atr_pct),
+        "bb_position": _float_or_none(row.bb_position),
         "data_quality_flag": row.data_quality_flag,
     }
 

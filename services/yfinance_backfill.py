@@ -39,12 +39,16 @@ async def run_yfinance_backfill(
     empty_results: list[str] = []
 
     from db.session import AsyncSessionLocal
-    from services.market_feature_store import get_latest_feature_date, upsert_market_daily_features
+    from services.market_feature_store import get_latest_feature_state, upsert_market_daily_features
 
     for ticker in clean_tickers:
         try:
             async with AsyncSessionLocal() as db:
-                latest_date = await get_latest_feature_date(db, ticker, source=YFINANCE_SOURCE)
+                latest_state = await get_latest_feature_state(db, ticker, source=YFINANCE_SOURCE)
+            latest_date = latest_state.get("trading_date")
+            missing_history_fields = latest_state.get("missing_fields") or []
+            if missing_history_fields:
+                latest_date = None
 
             fetch_days = _lookback_days_for_ticker(latest_date, lookback_days)
             rows = fetch_yfinance_feature_rows([ticker], lookback_days=fetch_days)
@@ -54,7 +58,7 @@ async def run_yfinance_backfill(
                 logger.info(
                     "[yfinance_backfill] ticker=%s latest=%s fetch_days=%s rows=0",
                     ticker,
-                    latest_date,
+                    latest_state.get("trading_date"),
                     fetch_days,
                 )
                 continue
@@ -64,7 +68,7 @@ async def run_yfinance_backfill(
             total_rows += written
             if latest_date is None:
                 full_backfills += 1
-                mode = "full"
+                mode = "full" if not missing_history_fields else "full_refresh_missing_fields"
             else:
                 incremental_updates += 1
                 mode = "incremental"
@@ -190,6 +194,15 @@ def compute_feature_rows_from_frame(ticker: str, frame) -> list[dict[str, Any]]:
     df["sma_50"] = close.rolling(50).mean()
     df["sma_200"] = close.rolling(200).mean()
     df["hist_vol_20d"] = df["return_1d"].rolling(20).std()
+    df["rsi_14"] = _rsi(close, 14)
+    true_range = _true_range(df)
+    df["atr_pct"] = true_range.rolling(14).mean() / df["close"]
+    bb_mid = close.rolling(20).mean()
+    bb_std = close.rolling(20).std()
+    bb_upper = bb_mid + 2 * bb_std
+    bb_lower = bb_mid - 2 * bb_std
+    bb_width = bb_upper - bb_lower
+    df["bb_position"] = (close - bb_lower) / bb_width.replace(0, math.nan)
 
     rows: list[dict[str, Any]] = []
     for idx, row in df.iterrows():
@@ -217,6 +230,9 @@ def compute_feature_rows_from_frame(ticker: str, frame) -> list[dict[str, Any]]:
             "sma_50": _num(row.get("sma_50")),
             "sma_200": _num(row.get("sma_200")),
             "hist_vol_20d": _num(row.get("hist_vol_20d")),
+            "rsi_14": _num(row.get("rsi_14"), digits=2),
+            "atr_pct": _num(row.get("atr_pct")),
+            "bb_position": _num(row.get("bb_position"), digits=4),
             "data_quality_flag": quality,
             "raw_payload": {
                 "provider": YFINANCE_SOURCE,
@@ -257,6 +273,30 @@ def _int_or_none(value: Any) -> int | None:
     if math.isnan(value) or math.isinf(value):
         return None
     return int(value)
+
+
+def _rsi(close, period: int):
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    rs = avg_gain / avg_loss.replace(0, math.nan)
+    return 100 - (100 / (1 + rs))
+
+
+def _true_range(df):
+    high = df["high"]
+    low = df["low"]
+    prev_close = df["close"].shift(1)
+    ranges = [
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ]
+    import pandas as pd
+
+    return pd.concat(ranges, axis=1).max(axis=1)
 
 
 def _quality_flag(row: Any, close_price: float | None, volume: int | None) -> str:

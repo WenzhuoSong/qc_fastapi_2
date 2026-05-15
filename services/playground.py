@@ -19,7 +19,7 @@ from openai import AsyncOpenAI
 from sqlalchemy import desc, select
 
 from config import get_settings
-from db.models import QCSnapshot
+from db.models import MarketDailyFeature, QCSnapshot
 from db.session import AsyncSessionLocal
 from services.quant_baseline import classify_market_regime
 from services.sector_rotation import detect_sector_rotation
@@ -75,6 +75,8 @@ class PlaygroundBundle:
     divergence_map: list[dict[str, Any]]
     consensus_weights: dict[str, float]
     replay_metrics: dict[str, dict[str, Any]]
+    historical_replay_metrics: dict[str, dict[str, Any]]
+    historical_snapshot_count: int
     data_gaps: list[str]
 
     def to_dict(self) -> dict[str, Any]:
@@ -127,6 +129,8 @@ async def run_playground(
         divergence_map=compute_weight_divergence(results),
         consensus_weights=compute_consensus_weights(results),
         replay_metrics={},
+        historical_replay_metrics={},
+        historical_snapshot_count=0,
         data_gaps=enrichment.get("data_gaps", []),
     )
 
@@ -135,8 +139,22 @@ async def run_playground_analysis(
     days: int = 30,
     strategy_names: list[str] | None = None,
 ) -> PlaygroundBundle:
+    names = strategy_names or DEFAULT_PLAYGROUND_STRATEGIES
+    historical_snapshots = await _read_yfinance_feature_snapshots(days=max(days, 420))
     snapshots = await _read_recent_snapshots(days=days)
     if not snapshots:
+        if historical_snapshots:
+            latest_brief = _brief_from_snapshot(historical_snapshots[-1])
+            bundle = await run_playground(latest_brief, strategy_names=strategy_names)
+            bundle.snapshot_count = 0
+            bundle.historical_snapshot_count = len(historical_snapshots)
+            bundle.historical_replay_metrics = _compute_replay_metrics(historical_snapshots, names)
+            bundle.data_gaps = list(dict.fromkeys(
+                (bundle.data_gaps or [])
+                + ["no QC snapshots available; live fit uses latest yfinance historical row"]
+                + _detect_historical_data_gaps(historical_snapshots)
+            ))
+            return bundle
         return PlaygroundBundle(
             generated_at=datetime.utcnow().isoformat(),
             regime_label="unknown",
@@ -146,14 +164,22 @@ async def run_playground_analysis(
             divergence_map=[],
             consensus_weights={"CASH": 1.0},
             replay_metrics={},
+            historical_replay_metrics={},
+            historical_snapshot_count=0,
             data_gaps=["no QC snapshots available"],
         )
 
     latest_brief = _brief_from_snapshot(snapshots[-1])
     bundle = await run_playground(latest_brief, strategy_names=strategy_names)
     bundle.snapshot_count = len(snapshots)
-    bundle.replay_metrics = _compute_replay_metrics(snapshots, strategy_names or DEFAULT_PLAYGROUND_STRATEGIES)
-    bundle.data_gaps = list(dict.fromkeys((bundle.data_gaps or []) + _detect_data_gaps(snapshots)))
+    bundle.replay_metrics = _compute_replay_metrics(snapshots, names)
+    bundle.historical_snapshot_count = len(historical_snapshots)
+    bundle.historical_replay_metrics = _compute_replay_metrics(historical_snapshots, names) if historical_snapshots else {}
+    bundle.data_gaps = list(dict.fromkeys(
+        (bundle.data_gaps or [])
+        + _detect_data_gaps(snapshots)
+        + _detect_historical_data_gaps(historical_snapshots)
+    ))
     return bundle
 
 
@@ -226,11 +252,14 @@ async def generate_playground_report(bundle: PlaygroundBundle) -> str:
             "Analyze this strategy comparison bundle for a research-only trading sandbox. "
             "No execution is allowed. Use the embedded English strategy_card and "
             "agent_interpretation fields to understand each strategy's meaning, regime fit, "
-            "failure modes, and how downstream agents should use it."
+            "failure modes, and how downstream agents should use it. Distinguish yfinance "
+            "historical replay evidence from live QC snapshot evidence."
         ),
         "output_language": "English",
         "required_sections": [
             "best_strategy_or_blend",
+            "historical_replay_evidence",
+            "live_qc_fit",
             "key_divergences",
             "turnover_and_cost_risk",
             "data_gaps",
@@ -606,6 +635,78 @@ async def _read_recent_snapshots(days: int) -> list[dict[str, Any]]:
     return snapshots
 
 
+async def _read_yfinance_feature_snapshots(days: int) -> list[dict[str, Any]]:
+    cutoff = datetime.utcnow().date() - timedelta(days=days)
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(MarketDailyFeature)
+            .where(MarketDailyFeature.source == "yfinance")
+            .where(MarketDailyFeature.trading_date >= cutoff)
+            .order_by(MarketDailyFeature.trading_date, MarketDailyFeature.ticker)
+        )
+        rows = result.scalars().all()
+    return _feature_rows_to_snapshots(rows)
+
+
+def _feature_rows_to_snapshots(rows: list[Any]) -> list[dict[str, Any]]:
+    by_date: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        trading_date = row.trading_date.isoformat() if row.trading_date else None
+        if not trading_date:
+            continue
+        holding = _feature_model_to_holding(row)
+        by_date.setdefault(trading_date, []).append(holding)
+    return [
+        {
+            "packet_type": "yfinance_historical",
+            "trading_date": trading_date,
+            "features": holdings,
+            "holdings": holdings,
+            "portfolio": {},
+        }
+        for trading_date, holdings in sorted(by_date.items())
+        if holdings
+    ]
+
+
+def _feature_model_to_holding(row: Any) -> dict[str, Any]:
+    return {
+        "ticker": row.ticker,
+        "universe_role": "research",
+        "price": _float_or_none(row.close_price) or _float_or_none(row.adj_close_price),
+        "close_price": _float_or_none(row.close_price) or _float_or_none(row.adj_close_price),
+        "open_price": _float_or_none(row.open_price),
+        "high_price": _float_or_none(row.high_price),
+        "low_price": _float_or_none(row.low_price),
+        "volume": int(row.volume) if row.volume is not None else None,
+        "dollar_volume": _float_or_none(row.dollar_volume),
+        "daily_return_pct": _float_or_none(row.return_1d),
+        "return_1d": _float_or_none(row.return_1d),
+        "return_5d": _float_or_none(row.return_5d),
+        "mom_20d": _float_or_none(row.return_20d),
+        "mom_60d": _float_or_none(row.return_60d),
+        "mom_252d": _float_or_none(row.return_252d),
+        "sma_20": _float_or_none(row.sma_20),
+        "sma_50": _float_or_none(row.sma_50),
+        "sma_200": _float_or_none(row.sma_200),
+        "hist_vol_20d": _float_or_none(row.hist_vol_20d),
+        "rsi_14": _float_or_none(row.rsi_14),
+        "atr_pct": _float_or_none(row.atr_pct),
+        "bb_position": _float_or_none(row.bb_position),
+        "feature_sources": [{
+            "source": "yfinance_historical",
+            "trading_date": row.trading_date.isoformat() if row.trading_date else None,
+        }],
+    }
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _compute_replay_metrics(
     snapshots: list[dict[str, Any]],
     strategy_names: list[str],
@@ -819,11 +920,20 @@ def _detect_data_gaps(snapshots: list[dict[str, Any]]) -> list[str]:
     return gaps
 
 
+def _detect_historical_data_gaps(snapshots: list[dict[str, Any]]) -> list[str]:
+    if not snapshots:
+        return ["no yfinance historical replay rows available"]
+    if len(snapshots) < MIN_REPLAY_SAMPLES_FOR_STRONG_EVIDENCE:
+        return [f"only {len(snapshots)} yfinance historical replay rows available"]
+    return []
+
+
 def _format_report_for_telegram(text: str, bundle: PlaygroundBundle) -> str:
     top = _top_weights(bundle.consensus_weights, n=5)
     return (
         "🧪 <b>Playground Sandbox</b>\n"
-        f"Regime: {bundle.regime_label} ({bundle.regime_confidence}) | snapshots={bundle.snapshot_count}\n"
+        f"Regime: {bundle.regime_label} ({bundle.regime_confidence}) | "
+        f"QC snapshots={bundle.snapshot_count} | yfinance history={bundle.historical_snapshot_count}\n"
         f"Consensus top5: {top}\n\n"
         f"{text}"
     )
@@ -832,10 +942,11 @@ def _format_report_for_telegram(text: str, bundle: PlaygroundBundle) -> str:
 def _fallback_report(bundle: PlaygroundBundle, error: str | None = None) -> str:
     lines = [
         "🧪 <b>Playground Sandbox</b>",
-        f"Regime: {bundle.regime_label} ({bundle.regime_confidence}) | snapshots={bundle.snapshot_count}",
+        f"Regime: {bundle.regime_label} ({bundle.regime_confidence}) | "
+        f"QC snapshots={bundle.snapshot_count} | yfinance history={bundle.historical_snapshot_count}",
         f"Consensus top5: {_top_weights(bundle.consensus_weights, n=5)}",
         "",
-        "<b>Strategy turnover</b>",
+        "<b>QC Live Replay</b>",
     ]
     for name, metrics in bundle.replay_metrics.items():
         reliability = metrics.get("metric_reliability") or {}
@@ -844,6 +955,17 @@ def _fallback_report(bundle: PlaygroundBundle, error: str | None = None) -> str:
             f"avg_cash={metrics.get('avg_cash_weight')}, "
             f"reliability={reliability.get('level', 'unknown')}"
         )
+    if bundle.historical_replay_metrics:
+        lines.append("")
+        lines.append("<b>YFinance Historical Replay</b>")
+        for name, metrics in bundle.historical_replay_metrics.items():
+            reliability = metrics.get("metric_reliability") or {}
+            lines.append(
+                f"- {name}: sharpe={metrics.get('sharpe')}, "
+                f"hit_rate={metrics.get('hit_rate')}, "
+                f"avg_turnover={metrics.get('avg_turnover')}, "
+                f"reliability={reliability.get('level', 'unknown')}"
+            )
     if bundle.divergence_map:
         lines.append("")
         lines.append("<b>Largest divergences</b>")

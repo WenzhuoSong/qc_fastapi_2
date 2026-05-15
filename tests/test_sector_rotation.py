@@ -31,7 +31,7 @@ except ImportError:
     sys.modules.setdefault("db.session", session_stub)
 
     models_stub = types.ModuleType("db.models")
-    for name in ("MacroNewsCache", "QCSnapshot", "TickerNewsLibrary"):
+    for name in ("MacroNewsCache", "MarketDailyFeature", "QCSnapshot", "TickerNewsLibrary"):
         setattr(models_stub, name, type(name, (), {}))
     sys.modules.setdefault("db.models", models_stub)
 
@@ -40,6 +40,7 @@ from services.playground import (
     _brief_from_snapshot,
     _compute_replay_metrics,
     _dedupe_market_snapshots,
+    _feature_rows_to_snapshots,
     _max_drawdown,
     _merge_feature_map,
     _replay_metric_reliability,
@@ -212,6 +213,40 @@ class SectorRotationTests(unittest.TestCase):
             "Do not select this strategy based on replay performance; sample size is insufficient.",
         )
         self.assertIn("suppressed", metrics["momentum_lite_v1"]["metric_notes"])
+
+    def test_yfinance_feature_rows_build_historical_replay_snapshots(self):
+        rows = []
+        for day, ret in ((date(2026, 1, 2), 0.01), (date(2026, 1, 3), -0.002)):
+            rows.append(SimpleNamespace(
+                trading_date=day,
+                ticker="SPY",
+                open_price=100,
+                high_price=101,
+                low_price=99,
+                close_price=100,
+                adj_close_price=100,
+                volume=1000,
+                dollar_volume=100000,
+                return_1d=ret,
+                return_5d=0.02,
+                return_20d=0.03,
+                return_60d=0.06,
+                return_252d=0.12,
+                sma_20=99,
+                sma_50=98,
+                sma_200=95,
+                hist_vol_20d=0.01,
+                rsi_14=55,
+                atr_pct=0.012,
+                bb_position=0.55,
+            ))
+
+        snapshots = _feature_rows_to_snapshots(rows)
+
+        self.assertEqual(len(snapshots), 2)
+        self.assertEqual(snapshots[0]["packet_type"], "yfinance_historical")
+        self.assertEqual(snapshots[0]["holdings"][0]["mom_20d"], 0.03)
+        self.assertEqual(snapshots[0]["holdings"][0]["rsi_14"], 55.0)
 
     def test_replay_metric_reliability_boundaries(self):
         insufficient = _replay_metric_reliability(

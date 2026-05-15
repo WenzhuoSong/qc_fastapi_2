@@ -16,10 +16,9 @@ def _install_import_stubs() -> None:
     session.AsyncSessionLocal = object
     sys.modules.setdefault("db.session", session)
 
-    models = types.ModuleType("db.models")
+    models = sys.modules.setdefault("db.models", types.ModuleType("db.models"))
     for name in ("HoldingsFactor", "QCSnapshot", "AlertLog", "MacroNewsCache", "TickerNewsLibrary"):
         setattr(models, name, type(name, (), {}))
-    sys.modules.setdefault("db.models", models)
 
     queries = types.ModuleType("db.queries")
     queries.upsert_alert = lambda *args, **kwargs: None
