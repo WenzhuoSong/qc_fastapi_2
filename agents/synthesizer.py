@@ -517,6 +517,8 @@ def _build_playground_section(playground_bundle: dict | None) -> str:
     compact = {
         "regime_label": playground_bundle.get("regime_label"),
         "regime_confidence": playground_bundle.get("regime_confidence"),
+        "historical_snapshot_count": playground_bundle.get("historical_snapshot_count"),
+        "strategy_confidence": playground_bundle.get("strategy_confidence"),
         "strategies": [
             {
                 "strategy_name": item.get("strategy_name"),

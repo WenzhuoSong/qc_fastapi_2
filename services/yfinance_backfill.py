@@ -39,7 +39,14 @@ async def run_yfinance_backfill(
     empty_results: list[str] = []
 
     from db.session import AsyncSessionLocal
-    from services.market_feature_store import get_latest_feature_state, upsert_market_daily_features
+    from services.market_feature_store import (
+        ensure_market_daily_feature_schema,
+        get_latest_feature_state,
+        upsert_market_daily_features,
+    )
+
+    async with AsyncSessionLocal() as db:
+        await ensure_market_daily_feature_schema(db)
 
     for ticker in clean_tickers:
         try:
@@ -82,7 +89,7 @@ async def run_yfinance_backfill(
             )
         except Exception as exc:
             logger.warning("[yfinance_backfill] ticker failed ticker=%s error=%s", ticker, exc)
-            failures[ticker] = str(exc)
+            failures[ticker] = _short_error(exc)
 
     return {
         "status": "ok" if not failures else "partial",
@@ -94,6 +101,12 @@ async def run_yfinance_backfill(
         "failures": failures,
         "source": YFINANCE_SOURCE,
     }
+
+
+def _short_error(exc: Exception) -> str:
+    text = str(exc)
+    first_line = text.splitlines()[0] if text else type(exc).__name__
+    return first_line[:240]
 
 
 def _lookback_days_for_ticker(

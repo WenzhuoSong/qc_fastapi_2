@@ -53,7 +53,14 @@ class EvidenceBundleTest(unittest.TestCase):
             "regime_label": "trending_bull",
             "regime_confidence": "medium",
             "snapshot_count": 30,
+            "historical_snapshot_count": 290,
             "consensus_weights": {"SPY": 0.2, "QQQ": 0.1, "CASH": 0.7},
+            "strategy_confidence": {
+                "momentum_lite_v1": {
+                    "confidence_score": 0.72,
+                    "suggested_use": "advisory",
+                }
+            },
             "strategies": [
                 {
                     "strategy_name": "momentum_lite_v1",
@@ -67,6 +74,14 @@ class EvidenceBundleTest(unittest.TestCase):
                 "momentum_lite_v1": {
                     "n_forward_return_samples": 12,
                     "metric_reliability": {"level": "medium"},
+                }
+            },
+            "historical_replay_metrics": {
+                "momentum_lite_v1": {
+                    "n_forward_return_samples": 289,
+                    "metric_reliability": {"level": "high"},
+                    "sharpe": 1.55,
+                    "hit_rate": 0.52,
                 }
             },
         }
@@ -83,7 +98,12 @@ class EvidenceBundleTest(unittest.TestCase):
         self.assertTrue(bundle["strategies"]["playground_available"])
         self.assertEqual(bundle["strategies"]["snapshot_count"], 30)
         self.assertEqual(bundle["strategies"]["forward_return_samples"], 12)
-        self.assertEqual(bundle["strategies"]["data_quality"], "fresh")
+        self.assertEqual(bundle["strategies"]["historical_forward_return_samples"], 289)
+        self.assertEqual(bundle["strategies"]["data_quality"], "historical_supported")
+        self.assertEqual(
+            bundle["strategies"]["strategy_results"][0]["suggested_use"],
+            "advisory",
+        )
         self.assertIn("news_evidence", bundle)
         self.assertEqual(bundle["news_evidence"]["macro_news_score"]["overall_bias"], "positive")
         self.assertIn("ticker_news_scores", bundle["news_evidence"])

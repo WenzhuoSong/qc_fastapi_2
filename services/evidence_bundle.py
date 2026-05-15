@@ -130,7 +130,9 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
         }
 
     replay_metrics = playground.get("replay_metrics") or {}
+    historical_metrics = playground.get("historical_replay_metrics") or {}
     forward_samples = _max_forward_samples(replay_metrics)
+    historical_samples = _max_forward_samples(historical_metrics)
     strategy_results = _strategy_results(playground)
     max_turnover = max(
         [_to_float(item.get("turnover"), 0.0) for item in strategy_results] or [0.0]
@@ -144,6 +146,8 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
     data_quality = "fresh"
     if snapshot_count < 20 or forward_samples < 10:
         data_quality = "limited"
+    if historical_samples >= 30:
+        data_quality = "historical_supported"
     if not strategy_results:
         data_quality = "missing"
         warnings.append("Playground has no strategy results")
@@ -155,8 +159,11 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
         "regime_confidence": playground.get("regime_confidence"),
         "snapshot_count": snapshot_count,
         "forward_return_samples": forward_samples,
+        "historical_snapshot_count": int(_to_float(playground.get("historical_snapshot_count"), 0)),
+        "historical_forward_return_samples": historical_samples,
         "consensus_top5": _top_weights(playground.get("consensus_weights") or {}),
         "consensus_weights": playground.get("consensus_weights") or {},
+        "strategy_confidence": playground.get("strategy_confidence") or {},
         "strategy_results": strategy_results,
         "turnover_warnings": turnover_warnings,
         "data_quality": data_quality,
@@ -166,12 +173,16 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
 
 def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
     replay_metrics = playground.get("replay_metrics") or {}
+    historical_metrics = playground.get("historical_replay_metrics") or {}
+    confidence = playground.get("strategy_confidence") or {}
     out: list[dict[str, Any]] = []
     for item in playground.get("strategies") or []:
         if not isinstance(item, dict):
             continue
         name = item.get("strategy_name")
         metrics = replay_metrics.get(name) or {}
+        hist_metrics = historical_metrics.get(name) or {}
+        confidence_row = confidence.get(name) or {}
         risk_profile = item.get("risk_profile") or {}
         turnover = _to_float(
             risk_profile.get("turnover"),
@@ -190,6 +201,12 @@ def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
                 "selected_tickers": item.get("selected_tickers") or [],
                 "metric_reliability": metrics.get("metric_reliability") or {},
                 "n_forward_return_samples": metrics.get("n_forward_return_samples"),
+                "historical_metric_reliability": hist_metrics.get("metric_reliability") or {},
+                "historical_forward_return_samples": hist_metrics.get("n_forward_return_samples"),
+                "historical_sharpe": hist_metrics.get("sharpe"),
+                "historical_hit_rate": hist_metrics.get("hit_rate"),
+                "confidence_score": confidence_row.get("confidence_score"),
+                "suggested_use": confidence_row.get("suggested_use"),
             }
         )
     return out

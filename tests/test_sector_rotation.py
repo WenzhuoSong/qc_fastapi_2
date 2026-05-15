@@ -38,6 +38,7 @@ except ImportError:
 from services.market_snapshot_merge import _merge_market_snapshots, _normalize_feature_snapshot
 from services.playground import (
     _brief_from_snapshot,
+    _compute_strategy_confidence,
     _compute_replay_metrics,
     _dedupe_market_snapshots,
     _feature_rows_to_snapshots,
@@ -247,6 +248,54 @@ class SectorRotationTests(unittest.TestCase):
         self.assertEqual(snapshots[0]["packet_type"], "yfinance_historical")
         self.assertEqual(snapshots[0]["holdings"][0]["mom_20d"], 0.03)
         self.assertEqual(snapshots[0]["holdings"][0]["rsi_14"], 55.0)
+
+    def test_strategy_confidence_combines_historical_and_live_evidence(self):
+        holdings = [
+            {
+                "ticker": "SPY",
+                "mom_20d": 0.02,
+                "mom_60d": 0.05,
+                "mom_252d": 0.12,
+                "rsi_14": 55,
+                "atr_pct": 0.011,
+                "hist_vol_20d": 0.14,
+            },
+            {
+                "ticker": "QQQ",
+                "mom_20d": 0.04,
+                "mom_60d": 0.08,
+                "mom_252d": 0.20,
+                "rsi_14": 68,
+                "atr_pct": 0.018,
+                "hist_vol_20d": 0.22,
+            },
+        ]
+        result = _run_one_strategy(
+            "momentum_lite_v1",
+            holdings,
+            {"regime": "trending_bull", "risk_params": {"max_single_position": 0.2}},
+            {},
+        )
+
+        confidence = _compute_strategy_confidence(
+            [result],
+            {"momentum_lite_v1": {"metric_reliability": {"level": "insufficient"}, "n_forward_return_samples": 3}},
+            {
+                "momentum_lite_v1": {
+                    "metric_reliability": {"level": "high"},
+                    "n_forward_return_samples": 100,
+                    "sharpe": 1.2,
+                    "hit_rate": 0.55,
+                }
+            },
+            "trending_bull",
+            {"SPY": 0.5, "QQQ": 0.3, "CASH": 0.2},
+        )
+
+        row = confidence["momentum_lite_v1"]
+        self.assertGreater(row["historical_score"], row["live_fit_score"] - 0.3)
+        self.assertIn(row["suggested_use"], {"advisory", "primary"})
+        self.assertEqual(row["historical_reliability"], "high")
 
     def test_replay_metric_reliability_boundaries(self):
         insufficient = _replay_metric_reliability(

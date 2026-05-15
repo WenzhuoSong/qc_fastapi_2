@@ -38,6 +38,21 @@ FEATURE_COLUMNS = [
     "raw_payload",
 ]
 
+
+async def ensure_market_daily_feature_schema(db: Any) -> None:
+    """Apply lightweight feature-store columns needed by standalone cron jobs."""
+    from sqlalchemy import text
+
+    migrations = (
+        "ALTER TABLE market_daily_features ADD COLUMN IF NOT EXISTS rsi_14 NUMERIC(6,2)",
+        "ALTER TABLE market_daily_features ADD COLUMN IF NOT EXISTS atr_pct NUMERIC(8,6)",
+        "ALTER TABLE market_daily_features ADD COLUMN IF NOT EXISTS bb_position NUMERIC(6,4)",
+    )
+    for sql in migrations:
+        await db.execute(text(sql))
+    await db.commit()
+
+
 async def upsert_market_daily_features(
     db: Any,
     rows: list[dict[str, Any]],
