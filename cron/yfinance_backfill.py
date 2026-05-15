@@ -54,6 +54,9 @@ async def main() -> None:
             f"Status: {result.get('status')}\n"
             f"Tickers: {result.get('tickers', 0)}\n"
             f"Rows upserted: {result.get('rows_upserted', 0)}\n"
+            f"Full backfills: {result.get('full_backfills', 0)}\n"
+            f"Incremental updates: {result.get('incremental_updates', 0)}\n"
+            f"Empty results: {len(result.get('empty_results') or [])}\n"
             f"Failures: {len(failures)}"
         )
         if failures:

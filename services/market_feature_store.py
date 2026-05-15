@@ -11,12 +11,6 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import desc, select
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from db.models import MarketDailyFeature
-
 logger = logging.getLogger("qc_fastapi_2.market_feature_store")
 
 
@@ -41,13 +35,16 @@ FEATURE_COLUMNS = [
     "raw_payload",
 ]
 
-
 async def upsert_market_daily_features(
-    db: AsyncSession,
+    db: Any,
     rows: list[dict[str, Any]],
     source: str = "yfinance",
 ) -> int:
     """Upsert daily feature rows by (trading_date, ticker, source)."""
+    from sqlalchemy.dialects.postgresql import insert
+
+    from db.models import MarketDailyFeature
+
     if not rows:
         return 0
 
@@ -90,15 +87,43 @@ async def upsert_market_daily_features(
     return len(payloads)
 
 
+async def get_latest_feature_date(
+    db: Any,
+    ticker: str,
+    source: str = "yfinance",
+) -> date | None:
+    """Return the latest stored trading date for one ticker/source."""
+    from sqlalchemy import desc, select
+
+    from db.models import MarketDailyFeature
+
+    clean_ticker = (ticker or "").upper().strip()
+    if not clean_ticker:
+        return None
+
+    result = await db.execute(
+        select(MarketDailyFeature.trading_date)
+        .where(MarketDailyFeature.ticker == clean_ticker)
+        .where(MarketDailyFeature.source == source)
+        .order_by(desc(MarketDailyFeature.trading_date))
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_market_daily_feature_rows(
-    db: AsyncSession,
+    db: Any,
     tickers: list[str],
     start_date: date | None = None,
     end_date: date | None = None,
     source: str | None = None,
     limit: int | None = None,
-) -> list[MarketDailyFeature]:
+) -> list[Any]:
     """Read feature rows for research/replay consumers."""
+    from sqlalchemy import desc, select
+
+    from db.models import MarketDailyFeature
+
     clean_tickers = sorted({ticker.upper().strip() for ticker in tickers if ticker})
     if not clean_tickers:
         return []
@@ -119,7 +144,7 @@ async def get_market_daily_feature_rows(
 
 
 async def latest_feature_map(
-    db: AsyncSession,
+    db: Any,
     tickers: list[str],
     source: str | None = None,
     max_age_days: int = 10,
@@ -141,7 +166,7 @@ async def latest_feature_map(
     return latest
 
 
-def model_to_feature_dict(row: MarketDailyFeature) -> dict[str, Any]:
+def model_to_feature_dict(row: Any) -> dict[str, Any]:
     return {
         "ticker": row.ticker,
         "trading_date": row.trading_date.isoformat() if row.trading_date else None,

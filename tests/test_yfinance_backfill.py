@@ -1,11 +1,17 @@
 import unittest
+from datetime import date, timedelta
 
 try:
     import pandas as pd
 except ImportError:  # pragma: no cover - local minimal env may omit pandas
     pd = None
 
-from services.yfinance_backfill import compute_feature_rows_from_frame
+from services.yfinance_backfill import (
+    LOOKBACK_DAYS_DEFAULT,
+    _lookback_days_for_ticker,
+    _rows_needed_for_ticker,
+    compute_feature_rows_from_frame,
+)
 
 
 @unittest.skipIf(pd is None, "pandas not installed")
@@ -38,6 +44,32 @@ class YfinanceBackfillTest(unittest.TestCase):
         frame = pd.DataFrame({"Close": [1.0, 2.0]})
 
         self.assertEqual(compute_feature_rows_from_frame("SPY", frame), [])
+
+
+class YfinanceBackfillPlanningTest(unittest.TestCase):
+    def test_new_ticker_uses_full_lookback(self):
+        self.assertEqual(
+            _lookback_days_for_ticker(None, LOOKBACK_DAYS_DEFAULT),
+            LOOKBACK_DAYS_DEFAULT,
+        )
+
+    def test_existing_ticker_fetches_recent_gap_with_rolling_context(self):
+        latest = date.today() - timedelta(days=2)
+
+        self.assertEqual(_lookback_days_for_ticker(latest, 420), 289)
+
+    def test_existing_ticker_writes_only_gap_and_small_refresh_window(self):
+        latest = date(2026, 5, 10)
+        rows = [
+            {"trading_date": date(2026, 5, 1), "ticker": "SPY"},
+            {"trading_date": date(2026, 5, 7), "ticker": "SPY"},
+            {"trading_date": date(2026, 5, 10), "ticker": "SPY"},
+            {"trading_date": date(2026, 5, 11), "ticker": "SPY"},
+        ]
+
+        needed = _rows_needed_for_ticker(rows, latest)
+
+        self.assertEqual(needed, rows[1:])
 
 
 if __name__ == "__main__":

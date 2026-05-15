@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 logger = logging.getLogger("qc_fastapi_2.yfinance_backfill")
@@ -23,34 +23,99 @@ async def run_yfinance_backfill(
     lookback_days: int = LOOKBACK_DAYS_DEFAULT,
     batch_size: int = 30,
 ) -> dict[str, Any]:
-    """Download and store yfinance daily features for the requested tickers."""
+    """Download and store yfinance features one ticker at a time.
+
+    New tickers receive a full lookback. Existing tickers fetch enough recent
+    history to recompute rolling features, then only upsert the latest gap.
+    """
     clean_tickers = sorted({ticker.upper().strip() for ticker in tickers if ticker})
     if not clean_tickers:
         return {"status": "skipped", "reason": "no_tickers", "rows_upserted": 0}
 
     total_rows = 0
+    full_backfills = 0
+    incremental_updates = 0
     failures: dict[str, str] = {}
-    for idx in range(0, len(clean_tickers), batch_size):
-        batch = clean_tickers[idx: idx + batch_size]
+    empty_results: list[str] = []
+
+    from db.session import AsyncSessionLocal
+    from services.market_feature_store import get_latest_feature_date, upsert_market_daily_features
+
+    for ticker in clean_tickers:
         try:
-            rows = fetch_yfinance_feature_rows(batch, lookback_days=lookback_days)
-            from db.session import AsyncSessionLocal
-            from services.market_feature_store import upsert_market_daily_features
             async with AsyncSessionLocal() as db:
-                total_rows += await upsert_market_daily_features(db, rows, source=YFINANCE_SOURCE)
-            logger.info("[yfinance_backfill] batch=%s rows=%s", ",".join(batch), len(rows))
+                latest_date = await get_latest_feature_date(db, ticker, source=YFINANCE_SOURCE)
+
+            fetch_days = _lookback_days_for_ticker(latest_date, lookback_days)
+            rows = fetch_yfinance_feature_rows([ticker], lookback_days=fetch_days)
+            rows_to_write = _rows_needed_for_ticker(rows, latest_date)
+            if not rows_to_write:
+                empty_results.append(ticker)
+                logger.info(
+                    "[yfinance_backfill] ticker=%s latest=%s fetch_days=%s rows=0",
+                    ticker,
+                    latest_date,
+                    fetch_days,
+                )
+                continue
+
+            async with AsyncSessionLocal() as db:
+                written = await upsert_market_daily_features(db, rows_to_write, source=YFINANCE_SOURCE)
+            total_rows += written
+            if latest_date is None:
+                full_backfills += 1
+                mode = "full"
+            else:
+                incremental_updates += 1
+                mode = "incremental"
+            logger.info(
+                "[yfinance_backfill] ticker=%s mode=%s latest=%s fetch_days=%s rows=%s",
+                ticker,
+                mode,
+                latest_date,
+                fetch_days,
+                written,
+            )
         except Exception as exc:
-            logger.warning("[yfinance_backfill] batch failed tickers=%s error=%s", batch, exc)
-            for ticker in batch:
-                failures[ticker] = str(exc)
+            logger.warning("[yfinance_backfill] ticker failed ticker=%s error=%s", ticker, exc)
+            failures[ticker] = str(exc)
 
     return {
         "status": "ok" if not failures else "partial",
         "tickers": len(clean_tickers),
         "rows_upserted": total_rows,
+        "full_backfills": full_backfills,
+        "incremental_updates": incremental_updates,
+        "empty_results": empty_results,
         "failures": failures,
         "source": YFINANCE_SOURCE,
     }
+
+
+def _lookback_days_for_ticker(
+    latest_date: date | None,
+    full_lookback_days: int = LOOKBACK_DAYS_DEFAULT,
+) -> int:
+    if latest_date is None:
+        return max(int(full_lookback_days), 30)
+
+    days_since = max((date.today() - latest_date).days, 0)
+    rolling_context_days = 280
+    refresh_buffer_days = 7
+    return max(days_since + refresh_buffer_days + rolling_context_days, 30)
+
+
+def _rows_needed_for_ticker(
+    rows: list[dict[str, Any]],
+    latest_date: date | None,
+) -> list[dict[str, Any]]:
+    if latest_date is None:
+        return rows
+    cutoff = latest_date - timedelta(days=3)
+    return [
+        row for row in rows
+        if row.get("trading_date") and row["trading_date"] >= cutoff
+    ]
 
 
 def fetch_yfinance_feature_rows(
