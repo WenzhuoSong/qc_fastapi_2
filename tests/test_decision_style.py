@@ -162,6 +162,21 @@ class DecisionStyleTest(unittest.TestCase):
         self.assertLessEqual(resolved["style_limits"]["max_adjustment_multiplier"], 0.6)
         self.assertEqual(resolved["style_limits"]["min_cash_floor_addition"], 0.05)
 
+    def test_historical_supported_strategy_quality_does_not_trigger_limited_data_rule(self):
+        resolved = resolve_decision_style(
+            market_scorecard=_scorecard(data_quality="historical_supported"),
+            news_evidence=_news(),
+            strategy_evidence=_strategies(
+                data_quality="historical_supported",
+                snapshot_count=8,
+                forward_return_samples=3,
+                historical_forward_return_samples=289,
+                strategy_results=[{"name": "momentum", "turnover": 0.20}],
+            ),
+        )
+
+        self.assertNotIn("strategy_data_quality", resolved["triggered_style_rules"])
+
     def test_macro_negative_high_impact_triggers_macro_defensive(self):
         resolved = resolve_decision_style(
             market_scorecard=_scorecard(regime="range_bound", breadth="weak", risk_appetite="risk_off"),

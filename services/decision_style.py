@@ -385,7 +385,11 @@ def _strategy_rules(strategies: dict[str, Any]) -> list[dict[str, Any]]:
     data_quality = str(strategies.get("data_quality") or "").lower()
     snapshot_count = int(_safe_float(strategies.get("snapshot_count"), 999))
     forward_samples = int(_safe_float(strategies.get("forward_return_samples"), 999))
-    if data_quality in {"limited", "missing", "stale"} or snapshot_count < 20 or forward_samples < 10:
+    historical_supported = data_quality == "historical_supported"
+    if (
+        data_quality in {"limited", "missing", "stale"}
+        or ((snapshot_count < 20 or forward_samples < 10) and not historical_supported)
+    ):
         reason = f"Strategy evidence limited: snapshots={snapshot_count}, forward_samples={forward_samples}, data_quality={data_quality or 'unknown'}"
         rules.append(_limited_data_rule("strategy_data_quality", reason))
 
@@ -586,6 +590,8 @@ def _strategy_quality_ok(strategies: dict[str, Any]) -> bool:
     if not strategies:
         return True
     data_quality = str(strategies.get("data_quality") or "fresh").lower()
+    if data_quality == "historical_supported":
+        return True
     snapshots = int(_safe_float(strategies.get("snapshot_count"), 999))
     samples = int(_safe_float(strategies.get("forward_return_samples"), 999))
     return data_quality not in {"limited", "missing", "stale"} and snapshots >= 20 and samples >= 10

@@ -122,6 +122,36 @@ class MarketScorecardTest(unittest.TestCase):
         self.assertIn("bullish_but_mixed_rotation", scorecard["triggered_rules"])
         self.assertEqual(scorecard["investment_permission"], "small_overweight_only")
 
+    def test_advisory_only_strategy_confidence_caps_action(self):
+        evidence = fresh_evidence(
+            strategies={
+                "playground_available": True,
+                "snapshot_count": 8,
+                "forward_return_samples": 3,
+                "historical_forward_return_samples": 289,
+                "strategy_results": [
+                    {"strategy_name": "momentum_lite_v1", "turnover": 0.66}
+                ],
+                "strategy_confidence": {
+                    "momentum_lite_v1": {
+                        "confidence_score": 0.64,
+                        "suggested_use": "advisory",
+                        "consensus_conflict": True,
+                    }
+                },
+                "data_quality": "historical_supported",
+            },
+            data_quality={"overall": "historical_supported", "warnings": []},
+        )
+
+        scorecard = build_market_scorecard(evidence)
+
+        self.assertIn("strategy_consensus_regime_conflict", scorecard["triggered_rules"])
+        self.assertIn("strategy_advisory_only", scorecard["triggered_rules"])
+        self.assertEqual(scorecard["investment_permission"], "small_overweight_only")
+        self.assertLessEqual(scorecard["max_turnover_per_cycle"], 0.20)
+        self.assertTrue(scorecard["require_human_confirmation"])
+
     def test_high_volatility_sets_defensive_limits(self):
         evidence = fresh_evidence(market={"vix": 34.0, "avg_atr_pct": 0.014})
 

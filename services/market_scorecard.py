@@ -85,6 +85,7 @@ def build_market_scorecard(evidence_bundle: dict[str, Any] | None) -> dict[str, 
     triggered.extend(_volatility_rules(market))
     triggered.extend(_drawdown_rules(market))
     triggered.extend(_turnover_rules(strategies))
+    triggered.extend(_strategy_confidence_rules(strategies))
 
     resolved = resolve_conflicts(triggered)
     scorecard = {**base, **resolved}
@@ -320,6 +321,53 @@ def _turnover_rules(strategies: dict[str, Any]) -> list[dict[str, Any]]:
             "reasons": ["High-turnover strategy output limits action size"],
         }
     ]
+
+
+def _strategy_confidence_rules(strategies: dict[str, Any]) -> list[dict[str, Any]]:
+    confidence = strategies.get("strategy_confidence") or {}
+    if not isinstance(confidence, dict) or not confidence:
+        return []
+
+    rows = [row for row in confidence.values() if isinstance(row, dict)]
+    primary = [row for row in rows if row.get("suggested_use") == "primary"]
+    advisory = [row for row in rows if row.get("suggested_use") == "advisory"]
+    consensus_conflict = any(bool(row.get("consensus_conflict")) for row in rows)
+    best = max((_safe_float(row.get("confidence_score")) for row in rows), default=0.0)
+
+    rules: list[dict[str, Any]] = []
+    if consensus_conflict:
+        rules.append({
+            "name": "strategy_consensus_regime_conflict",
+            "investment_permission": "small_overweight_only",
+            "max_adjustment_from_base": 0.03,
+            "max_turnover_per_cycle": 0.20,
+            "require_human_confirmation": True,
+            "warnings": ["Strategy consensus conflicts with current regime; do not follow consensus weights directly"],
+            "reasons": ["Playground consensus is defensive while regime evidence is risk-on"],
+        })
+
+    if not primary and advisory:
+        rules.append({
+            "name": "strategy_advisory_only",
+            "investment_permission": "small_overweight_only",
+            "max_adjustment_from_base": 0.03,
+            "max_turnover_per_cycle": 0.20,
+            "require_human_confirmation": True,
+            "warnings": ["Best strategy confidence is advisory-only; use direction, not full target weights"],
+            "reasons": [f"No primary strategy confidence; best confidence={best:.2f}"],
+        })
+    elif not primary and not advisory:
+        rules.append({
+            "name": "no_actionable_strategy_confidence",
+            "investment_permission": "hold_or_trim",
+            "max_adjustment_from_base": 0.01,
+            "max_turnover_per_cycle": 0.10,
+            "require_human_confirmation": True,
+            "warnings": ["No strategy has actionable confidence"],
+            "reasons": [f"Best strategy confidence={best:.2f}"],
+        })
+
+    return rules
 
 
 def _market_condition(scorecard: dict[str, Any], regime: str, rotation_label: str) -> str:

@@ -276,6 +276,7 @@ async def generate_playground_report(bundle: PlaygroundBundle) -> str:
         "output_language": "English",
         "required_sections": [
             "best_strategy_or_blend",
+            "strategy_confidence_summary",
             "historical_replay_evidence",
             "live_qc_fit",
             "key_divergences",
@@ -289,6 +290,9 @@ async def generate_playground_report(bundle: PlaygroundBundle) -> str:
             "Evaluate bundle.historical_replay_metrics as yfinance historical replay evidence; if metric_reliability.level is high, do not call it sample-size insufficient.",
             "Treat any metric with metric_reliability.level != high as weak evidence.",
             "If n_forward_return_samples is below the stated minimum for a specific metric block, explicitly name whether that block is QC live replay or yfinance historical replay.",
+            "Use bundle.strategy_confidence as the primary summary for confidence_score and suggested_use.",
+            "Distinguish current expected_turnover_pct from historical replay avg_turnover; do not call historical avg_turnover high when it is below 0.20.",
+            "When discussing costs, format estimated_cost_pct and avg_turnover as percentages, not raw decimals.",
             "Check regime compatibility, data quality, yfinance-filled fields, turnover, and macro/news consistency.",
             "Discount strategies with weak memory_feedback in the same regime; this is advisory and cannot bypass Risk Manager.",
             "Explicitly mention if a strategy should be discounted due to its failure modes.",
