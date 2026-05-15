@@ -26,11 +26,9 @@ from sqlalchemy import desc, select
 from constants import RISK_ON_SECTORS, RISK_OFF_SECTORS
 from db.models import MacroNewsCache, QCSnapshot, TickerNewsLibrary
 from db.session import AsyncSessionLocal
-from services.feature_provenance import (
-    annotate_snapshot_row_provenance,
-    merge_feature_sources,
-    summarize_feature_provenance,
-)
+from services.feature_provenance import summarize_feature_provenance
+from services.market_brief_contexts import build_memory_context, build_scenario_context
+from services.market_snapshot_merge import merge_market_snapshots, normalize_feature_snapshot
 from services.sector_rotation import detect_sector_rotation, format_rotation_for_prompt
 from services.universe_policy import filter_tradable_research_rows
 
@@ -101,14 +99,13 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
         logger.warning(f"[market_brief] Injecting {len(pending_alerts)} pending critical alerts")
 
     # P2-2: Scenario stress-test (run after market_brief to have current_weights)
-    scenario_result = await _run_scenario_analysis_if_enabled(current_weights)
+    scenario_result = await build_scenario_context(current_weights)
     if scenario_result:
         brief["scenario_result"] = scenario_result
         logger.info(f"[market_brief] Scenario analysis: {scenario_result.get('total_scenarios')} scenarios, most_severe={scenario_result.get('most_severe')}")
 
     # Inject historical memory context for downstream RESEARCHER
-    from services.context_assembler import assemble_memory_context
-    memory_context = await assemble_memory_context()
+    memory_context = await build_memory_context()
     brief["memory_context"] = memory_context
 
     logger.info(
@@ -154,74 +151,10 @@ async def _read_latest_market_snapshot() -> dict | None:
     if not heartbeat_payload and not feature_payload:
         return None
     if not heartbeat_payload:
-        return _normalize_feature_snapshot(feature_payload)
+        return normalize_feature_snapshot(feature_payload)
     if not feature_payload:
         return heartbeat_payload
-    return _merge_market_snapshots(heartbeat_payload, feature_payload)
-
-
-def _normalize_feature_snapshot(snapshot: dict) -> dict:
-    """Use features as holdings when only a daily feature snapshot exists."""
-    out = dict(snapshot)
-    if not out.get("holdings") and out.get("features"):
-        as_of = out.get("timestamp_utc") or out.get("received_at") or out.get("trading_date")
-        trading_date = out.get("trading_date") or as_of
-        out["holdings"] = [
-            annotate_snapshot_row_provenance(
-                row,
-                source="qc_daily_snapshot",
-                as_of=as_of,
-                trading_date=trading_date,
-            )
-            for row in (out.get("features") or [])
-        ]
-    return out
-
-
-def _merge_market_snapshots(heartbeat: dict, feature_snapshot: dict) -> dict:
-    """Overlay richer daily feature fields onto live heartbeat holdings."""
-    merged = dict(heartbeat)
-    heartbeat_as_of = heartbeat.get("timestamp_utc") or heartbeat.get("received_at") or heartbeat.get("trading_date")
-    heartbeat_trading_date = heartbeat.get("trading_date") or heartbeat_as_of
-    feature_as_of = feature_snapshot.get("timestamp_utc") or feature_snapshot.get("received_at") or feature_snapshot.get("trading_date")
-    feature_trading_date = feature_snapshot.get("trading_date") or feature_as_of
-    feature_rows = feature_snapshot.get("features") or feature_snapshot.get("holdings") or []
-    features_by_ticker = {
-        (row.get("ticker") or "").upper().strip(): annotate_snapshot_row_provenance(
-            row,
-            source="qc_daily_snapshot",
-            as_of=feature_as_of,
-            trading_date=feature_trading_date,
-        )
-        for row in feature_rows
-        if row.get("ticker")
-    }
-
-    enriched_holdings = []
-    for row in heartbeat.get("holdings") or []:
-        ticker = (row.get("ticker") or "").upper().strip()
-        feature_row = features_by_ticker.get(ticker) or {}
-        live_row = annotate_snapshot_row_provenance(
-            row,
-            source="qc_heartbeat",
-            as_of=heartbeat_as_of,
-            trading_date=heartbeat_trading_date,
-        )
-        merged_row = {**feature_row, **live_row}
-        merged_row["feature_sources"] = merge_feature_sources(feature_row, live_row)
-        enriched_holdings.append(merged_row)
-
-    heartbeat_tickers = {
-        (row.get("ticker") or "").upper().strip()
-        for row in heartbeat.get("holdings") or []
-    }
-    for ticker, feature_row in features_by_ticker.items():
-        if ticker and ticker not in heartbeat_tickers:
-            enriched_holdings.append(feature_row)
-
-    merged["holdings"] = enriched_holdings
-    merged["latest_feature_snapshot_at"] = feature_snapshot.get("timestamp_utc")
-    return merged
+    return merge_market_snapshots(heartbeat_payload, feature_payload)
 
 
 def _extract_current_weights(holdings: list[dict]) -> dict[str, float]:
@@ -406,25 +339,6 @@ async def _read_ticker_news(
         per_ticker[t] = per_ticker[t][:5]
 
     return per_ticker, hard_risks_map
-
-
-# ─────────────────────────────── P2-2: Scenario Analysis ──────────────────────
-
-
-async def _run_scenario_analysis_if_enabled(
-    current_weights: dict[str, float],
-    scenario: str = "all",
-) -> dict | None:
-    """Run scenario stress-test if there are meaningful equity positions."""
-    try:
-        equity_sum = sum(w for t, w in current_weights.items() if t != "CASH" and w > 0)
-        if equity_sum < 0.10:  # skip if less than 10% equity
-            return None
-        from services.scenario_analyst import run_scenario_analysis
-        return await run_scenario_analysis(current_weights, scenario=scenario)
-    except Exception as e:
-        logger.warning(f"[market_brief] scenario analysis failed: {e}")
-        return None
 
 
 # ═══════════════════════════════════════════════════════════════

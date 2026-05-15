@@ -14,6 +14,10 @@ from tools.notify_tools import tool_send_telegram
 from services.cron_audit import audit_cron_run, read_recent_cron_runs
 from services.earnings_tracker import update_earnings_calendar
 from services.macro_watcher import update_macro_events_cache
+from services.operational_health import (
+    build_operational_health_snapshot,
+    format_operational_health_report,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -85,6 +89,19 @@ async def main() -> None:
                 summary_lines.append(f"  Next FOMC: {macro_result['next_fomc']}")
             if macro_result.get("next_cpi"):
                 summary_lines.append(f"  Next CPI: {macro_result['next_cpi']}")
+
+            try:
+                ops_snapshot = await build_operational_health_snapshot()
+                summary_lines.append("")
+                summary_lines.append(format_operational_health_report(ops_snapshot))
+                audit.set_summary(
+                    **(audit.summary or {}),
+                    ops_overall=ops_snapshot.get("overall"),
+                    ops_execution_blockers=len(ops_snapshot.get("execution_blockers") or []),
+                    ops_research_degradations=len(ops_snapshot.get("research_degradations") or []),
+                )
+            except Exception as e:
+                logger.warning(f"[morning_health] Operational health report failed: {e}")
 
             summary_lines.append("  Market opens soon 🚀")
 

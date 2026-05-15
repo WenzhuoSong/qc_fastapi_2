@@ -16,6 +16,7 @@ from db.queries import get_system_config
 from db.session import AsyncSessionLocal
 from services.cron_audit import audit_cron_run
 from services.playground import generate_playground_report, run_playground_analysis
+from services.strategy_health import persist_strategy_health_profiles
 from tools.notify_tools import tool_send_telegram
 
 logging.basicConfig(
@@ -37,6 +38,7 @@ async def main() -> None:
             days = int(config.get("lookback_days", 30))
             strategies = config.get("strategies") or None
             bundle = await run_playground_analysis(days=days, strategy_names=strategies)
+            health = await persist_strategy_health_profiles(bundle.to_dict())
             report = await generate_playground_report(bundle)
             result = await tool_send_telegram({"text": report, "parse_mode": "HTML"})
             audit.set_summary(
@@ -44,6 +46,7 @@ async def main() -> None:
                 snapshots=bundle.snapshot_count,
                 strategies=len(bundle.strategies),
                 data_gaps=len(bundle.data_gaps),
+                strategy_health_flags=len(health.get("decay_flags") or []),
             )
             logger.info(
                 f"Playground sent={result.get('sent')} snapshots={bundle.snapshot_count} "

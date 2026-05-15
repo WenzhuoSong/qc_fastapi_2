@@ -680,6 +680,7 @@ def _compute_replay_metrics(
             "max_turnover": round(max(turnovers), 6) if turnovers else None,
             "avg_position_count": round(_avg(position_counts), 2) if position_counts else None,
             "avg_cash_weight": round(_avg(cash_weights), 4) if cash_weights else None,
+            "max_drawdown_pct": _max_drawdown(strategy_returns) if enough_samples else None,
             "top_signal_leaders": _top_counts(score_leaders, limit=5),
             "sharpe": _annualized_sharpe(strategy_returns) if enough_samples else None,
             "ic": round(_avg(ic_values), 4) if enough_samples and ic_values else None,
@@ -910,6 +911,21 @@ def _turnover(left: dict[str, float], right: dict[str, float]) -> float:
 def _avg(values: list[float | int]) -> float:
     clean = [float(v) for v in values if v is not None and not math.isnan(float(v))]
     return sum(clean) / len(clean) if clean else 0.0
+
+
+def _max_drawdown(returns: list[float]) -> float | None:
+    clean = [float(v) for v in returns if v is not None and not math.isnan(float(v))]
+    if not clean:
+        return None
+    equity = 1.0
+    peak = 1.0
+    max_dd = 0.0
+    for ret in clean:
+        equity *= 1.0 + ret
+        peak = max(peak, equity)
+        if peak > 0:
+            max_dd = max(max_dd, (peak - equity) / peak)
+    return round(max_dd, 6)
 
 
 def _annualized_sharpe(returns: list[float]) -> float | None:

@@ -3,6 +3,7 @@ import hashlib
 import logging
 import gzip
 import json
+import math
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends, Header, Request
 from fastapi.responses import JSONResponse
@@ -20,11 +21,58 @@ settings = get_settings()
 
 router = APIRouter(tags=["webhook"])
 
+_DECIMAL_RETURN_FIELDS = {
+    "daily_return_pct",
+    "return_5d",
+    "mom_20d",
+    "mom_60d",
+    "mom_252d",
+}
+
 
 def verify_auth(x_webhook_user: str = Header(None), x_webhook_secret: str = Header(None)):
     """验证 webhook 鉴权头"""
     if x_webhook_user != settings.webhook_user or x_webhook_secret != settings.webhook_secret:
         raise HTTPException(status_code=403, detail="Invalid credentials")
+
+
+def _numeric_or_none(row: dict, field: str, precision: int, scale: int, ticker: str | None = None):
+    """Return a DB-safe numeric value, dropping values outside NUMERIC precision."""
+    value = row.get(field)
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        logger.warning("[Webhook] invalid numeric %s.%s=%r", ticker or "?", field, value)
+        return None
+    if not math.isfinite(number):
+        logger.warning("[Webhook] non-finite numeric %s.%s=%r", ticker or "?", field, value)
+        return None
+
+    if field in _DECIMAL_RETURN_FIELDS and abs(number) >= 100:
+        number = number / 100.0
+        logger.warning(
+            "[Webhook] normalized legacy percent-point field %s.%s from %r to %r",
+            ticker or "?",
+            field,
+            value,
+            number,
+        )
+
+    rounded = round(number, scale)
+    max_abs = 10 ** (precision - scale)
+    if abs(rounded) >= max_abs:
+        logger.warning(
+            "[Webhook] out-of-range numeric dropped %s.%s=%r for NUMERIC(%s,%s)",
+            ticker or "?",
+            field,
+            value,
+            precision,
+            scale,
+        )
+        return None
+    return rounded
 
 
 @router.post("/webhook/qc")
@@ -108,35 +156,46 @@ async def _process_market_snapshot(db: AsyncSession, snapshot_id: int, payload: 
 
     # holdings_factors
     for h in holdings:
+        ticker = h.get("ticker")
+        open_price = _numeric_or_none(h, "open_price", 15, 4, ticker)
+        high_price = _numeric_or_none(h, "high_price", 15, 4, ticker)
+        low_price = _numeric_or_none(h, "low_price", 15, 4, ticker)
+        if open_price is None:
+            open_price = _numeric_or_none(h, "open", 15, 4, ticker)
+        if high_price is None:
+            high_price = _numeric_or_none(h, "high", 15, 4, ticker)
+        if low_price is None:
+            low_price = _numeric_or_none(h, "low", 15, 4, ticker)
+
         db.add(HoldingsFactor(
             snapshot_id        = snapshot_id,
             recorded_at        = now,
-            ticker             = h.get("ticker"),
+            ticker             = ticker,
             universe_role      = h.get("universe_role"),
-            price              = h.get("price"),
-            close_price        = h.get("close_price"),
-            open_price         = h.get("open_price") or h.get("open"),
-            high_price         = h.get("high_price") or h.get("high"),
-            low_price          = h.get("low_price") or h.get("low"),
+            price              = _numeric_or_none(h, "price", 15, 4, ticker),
+            close_price        = _numeric_or_none(h, "close_price", 15, 4, ticker),
+            open_price         = open_price,
+            high_price         = high_price,
+            low_price          = low_price,
             volume             = h.get("volume"),
-            dollar_volume      = h.get("dollar_volume"),
-            daily_return_pct   = h.get("daily_return_pct"),
-            return_5d          = h.get("return_5d"),
-            weight_current     = h.get("weight_current"),
-            weight_target      = h.get("weight_target"),
-            weight_drift       = h.get("weight_drift"),
-            mom_20d            = h.get("mom_20d"),
-            mom_60d            = h.get("mom_60d"),
-            mom_252d           = h.get("mom_252d"),
-            sma_20             = h.get("sma_20"),
-            sma_50             = h.get("sma_50"),
-            sma_200            = h.get("sma_200"),
-            rsi_14             = h.get("rsi_14"),
-            atr_pct            = h.get("atr_pct"),
-            bb_position        = h.get("bb_position"),
-            hist_vol_20d       = h.get("hist_vol_20d"),
-            beta_vs_spy        = h.get("beta_vs_spy"),
-            unrealized_pnl_pct = h.get("unrealized_pnl_pct"),
+            dollar_volume      = _numeric_or_none(h, "dollar_volume", 20, 2, ticker),
+            daily_return_pct   = _numeric_or_none(h, "daily_return_pct", 8, 6, ticker),
+            return_5d          = _numeric_or_none(h, "return_5d", 8, 6, ticker),
+            weight_current     = _numeric_or_none(h, "weight_current", 6, 4, ticker),
+            weight_target      = _numeric_or_none(h, "weight_target", 6, 4, ticker),
+            weight_drift       = _numeric_or_none(h, "weight_drift", 6, 4, ticker),
+            mom_20d            = _numeric_or_none(h, "mom_20d", 8, 6, ticker),
+            mom_60d            = _numeric_or_none(h, "mom_60d", 8, 6, ticker),
+            mom_252d           = _numeric_or_none(h, "mom_252d", 8, 6, ticker),
+            sma_20             = _numeric_or_none(h, "sma_20", 15, 4, ticker),
+            sma_50             = _numeric_or_none(h, "sma_50", 15, 4, ticker),
+            sma_200            = _numeric_or_none(h, "sma_200", 15, 4, ticker),
+            rsi_14             = _numeric_or_none(h, "rsi_14", 6, 2, ticker),
+            atr_pct            = _numeric_or_none(h, "atr_pct", 8, 6, ticker),
+            bb_position        = _numeric_or_none(h, "bb_position", 6, 4, ticker),
+            hist_vol_20d       = _numeric_or_none(h, "hist_vol_20d", 8, 6, ticker),
+            beta_vs_spy        = _numeric_or_none(h, "beta_vs_spy", 6, 4, ticker),
+            unrealized_pnl_pct = _numeric_or_none(h, "unrealized_pnl_pct", 8, 6, ticker),
             holding_days       = h.get("holding_days"),
         ))
 

@@ -32,7 +32,7 @@ from typing import Optional
 from sqlalchemy import select, func
 
 from db.session import AsyncSessionLocal
-from db.models import MemoryDaily, MemoryWeekly, AgentStepLog
+from db.models import MemoryDaily, MemoryWeekly, AgentStepLog, SystemConfig
 from tools.notify_tools import tool_send_telegram
 
 logger = logging.getLogger("qc_fastapi_2.decay_detector")
@@ -85,6 +85,10 @@ class DecayDetector:
         # Signal 4: Regime stability collapse
         regime_trend = await self._check_regime_stability()
         signals.append(regime_trend)
+
+        # Signal 5: Per-strategy health profile decay
+        strategy_health = await self._check_strategy_health_profiles()
+        signals.append(strategy_health)
 
         # Aggregate signals
         return self._aggregate_signals(signals)
@@ -313,6 +317,36 @@ class DecayDetector:
             ),
         }
 
+    async def _check_strategy_health_profiles(self) -> dict:
+        """Check per-strategy/regime health profiles written by Playground."""
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(SystemConfig).where(SystemConfig.key == "strategy_health_profiles")
+            )
+            cfg = result.scalar_one_or_none()
+
+        if not cfg or not cfg.value:
+            return {
+                "signal": "strategy_health_decay",
+                "triggered": False,
+                "details": "no strategy health profiles",
+            }
+
+        decay_flags = (cfg.value or {}).get("decay_flags") or []
+        triggered = bool(decay_flags)
+        return {
+            "signal": "strategy_health_decay",
+            "triggered": triggered,
+            "decay_flags": decay_flags,
+            "approval_required": True,
+            "details": (
+                f"{len(decay_flags)} strategy/regime decay flags detected; "
+                "parameter changes require approval"
+                if triggered
+                else "no strategy/regime health decay flags"
+            ),
+        }
+
     # ── Aggregation ─────────────────────────────────────────────────────────
 
     def _aggregate_signals(self, signals: list[dict]) -> DecayResult:
@@ -349,6 +383,11 @@ class DecayDetector:
                 affected_regimes.append("signal_conflict_increase")
             elif s.get("signal") == "regime_stability":
                 affected_regimes.append("regime_instability")
+            elif s.get("signal") == "strategy_health_decay":
+                affected_regimes.extend(
+                    f"{flag.get('strategy_name')}:{flag.get('regime')}"
+                    for flag in (s.get("decay_flags") or [])[:5]
+                )
 
         # Momentum trend direction
         mom_signal = next((s for s in signals if s.get("signal") == "momentum_trend"), None)

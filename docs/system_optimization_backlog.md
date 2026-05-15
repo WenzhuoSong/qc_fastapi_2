@@ -226,7 +226,7 @@ Resolution:
 
 ### 8. Strategy health and decay detection
 
-Status: open
+Status: done
 
 Problem:
 Strategies can generate weights, but the system lacks a stable health profile
@@ -240,11 +240,22 @@ Acceptance criteria:
 - Decay detector flags strategy/regime pairs with worsening behavior.
 - Parameter adjustment suggestions remain approval-only.
 
+Resolution:
+- Added `services/strategy_health.py` to maintain rolling per-strategy/per-regime
+  health profiles in `system_config.strategy_health_profiles`.
+- Playground replay metrics now include max drawdown when sample gates pass.
+- Playground analysis cron persists rolling IC, hit-rate, turnover, drawdown,
+  sample size, and reliability for each strategy/regime profile.
+- Decay Detector now reads strategy health profiles and flags decaying
+  strategy/regime pairs.
+- Parameter suggestions are stored as approval-only recommendations and are not
+  auto-applied.
+
 ## P2 Issues
 
 ### 9. Market Brief responsibility boundaries
 
-Status: open
+Status: done
 
 Problem:
 Market Brief currently merges snapshots, news, memory, sector rotation, and
@@ -259,9 +270,21 @@ Acceptance criteria:
 - Snapshot merge, feature provenance, memory context, and scenario context each
   have isolated helpers.
 
+Resolution:
+- Added `services/market_snapshot_merge.py` for daily feature snapshot
+  normalization and heartbeat/daily snapshot merging.
+- Added `services/market_brief_contexts.py` for scenario and memory context
+  assembly with graceful degradation.
+- Market Brief now imports specialized helpers and remains focused on
+  orchestrating snapshot, news, quant facts, rotation, provenance, scenario, and
+  memory assembly.
+- Feature provenance remains isolated in `services/feature_provenance.py`.
+- Added tests in `tests/test_market_brief_contexts.py` and updated snapshot
+  merge tests to target the helper module directly.
+
 ### 10. Operational health report
 
-Status: open
+Status: done
 
 Problem:
 The system sends several reports, but there is not yet a concise daily
@@ -277,6 +300,16 @@ Acceptance criteria:
   yfinance backfill, latest news cache, latest memory write, and failed crons.
 - Report is short enough for Telegram.
 - Report distinguishes research degradation from execution-blocking issues.
+
+Resolution:
+- Added `services/operational_health.py` to collect freshness and cron health
+  into one operational snapshot.
+- Morning health now appends a concise operational health report covering QC
+  heartbeat, daily feature snapshot, yfinance backfill, news cache, memory
+  write, pipeline status, and recent failed crons.
+- The report classifies stale/missing execution-critical data separately from
+  research degradation.
+- Added tests in `tests/test_operational_health.py`.
 
 ## Suggested Execution Order
 

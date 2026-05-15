@@ -35,11 +35,12 @@ except ImportError:
         setattr(models_stub, name, type(name, (), {}))
     sys.modules.setdefault("db.models", models_stub)
 
-from services.market_brief import _merge_market_snapshots, _normalize_feature_snapshot
+from services.market_snapshot_merge import _merge_market_snapshots, _normalize_feature_snapshot
 from services.playground import (
     _brief_from_snapshot,
     _compute_replay_metrics,
     _dedupe_market_snapshots,
+    _max_drawdown,
     _merge_feature_map,
     _replay_metric_reliability,
     _run_one_strategy,
@@ -233,6 +234,9 @@ class SectorRotationTests(unittest.TestCase):
         self.assertEqual(medium["level"], "medium")
         self.assertIn("ic_samples", medium["reasons"][0])
         self.assertEqual(high["level"], "high")
+
+    def test_max_drawdown_tracks_peak_to_trough_loss(self):
+        self.assertAlmostEqual(_max_drawdown([0.10, -0.05, -0.05, 0.02]), 0.0975)
 
     def test_strategy_result_includes_agent_consumable_explanation(self):
         holdings = [
