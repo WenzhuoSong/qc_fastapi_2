@@ -388,13 +388,7 @@ async def check_position_drift(
     Compare target_weights vs current_weights.
     Alert if |target - current| > threshold for any held position.
     """
-    async with AsyncSessionLocal() as db:
-        stmt = (
-            select(HoldingsFactor)
-            .order_by(desc(HoldingsFactor.recorded_at))
-            .limit(50)
-        )
-        rows = (await db.execute(stmt)).scalars().all()
+    snapshot, rows = await _latest_heartbeat_holdings()
 
     if not rows:
         return []
@@ -440,15 +434,15 @@ async def check_holding_periods(
     Scan holdings for positions held longer than max_days.
     Suggests review or rebalancing.
     """
-    async with AsyncSessionLocal() as db:
-        stmt = (
-            select(HoldingsFactor)
-            .order_by(desc(HoldingsFactor.recorded_at))
-            .limit(50)
-        )
-        rows = (await db.execute(stmt)).scalars().all()
+    snapshot, rows = await _latest_heartbeat_holdings()
 
     if not rows:
+        return []
+    if not _holding_days_are_trusted(snapshot):
+        logger.info(
+            "[position_manager] holding-period alerts skipped: heartbeat schema_version=%s",
+            getattr(snapshot, "schema_version", None),
+        )
         return []
 
     latest_by_ticker: dict[str, HoldingsFactor] = {}
@@ -488,13 +482,7 @@ async def check_intraday_moves(
     Detect large intraday moves based on ATR%.
     Requires holdings_factors to have atr_pct populated from QC data.
     """
-    async with AsyncSessionLocal() as db:
-        stmt = (
-            select(HoldingsFactor)
-            .order_by(desc(HoldingsFactor.recorded_at))
-            .limit(50)
-        )
-        rows = (await db.execute(stmt)).scalars().all()
+    snapshot, rows = await _latest_heartbeat_holdings()
 
     if not rows:
         return []
@@ -509,6 +497,9 @@ async def check_intraday_moves(
         if not h.atr_pct:
             continue
         try:
+            current_weight = float(h.weight_current or 0)
+            if current_weight <= 0.01:
+                continue
             atr = abs(float(h.atr_pct))
             # Large move = > atr_threshold x ATR (typically 2x ATR = significant move)
             # Note: actual daily return would need to come from portfolio_timeseries
@@ -520,7 +511,7 @@ async def check_intraday_moves(
                     "severity": "info" if atr < 0.05 else "warning",
                     "atr_pct": round(atr, 4),
                     "atr_threshold": atr_threshold,
-                    "current_weight": round(float(h.weight_current or 0), 4),
+                    "current_weight": round(current_weight, 4),
                     "message": (
                         f"{ticker} ATR {atr:.2%} elevated "
                         f"(threshold {atr_threshold:.1f}x). Volatility elevated."
@@ -530,6 +521,37 @@ async def check_intraday_moves(
             continue
 
     return alerts
+
+
+async def _latest_heartbeat_holdings() -> tuple[QCSnapshot | None, list[HoldingsFactor]]:
+    """Return holdings rows attached to the latest heartbeat snapshot only."""
+    async with AsyncSessionLocal() as db:
+        snapshot = (
+            await db.execute(
+                select(QCSnapshot)
+                .where(QCSnapshot.packet_type == "heartbeat")
+                .order_by(desc(QCSnapshot.received_at))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if not snapshot:
+            return None, []
+        rows = (
+            await db.execute(
+                select(HoldingsFactor)
+                .where(HoldingsFactor.snapshot_id == snapshot.id)
+            )
+        ).scalars().all()
+    return snapshot, list(rows)
+
+
+def _holding_days_are_trusted(snapshot: QCSnapshot | None) -> bool:
+    """Schema 1.3 holding_days was polluted by QC warm-up history replay."""
+    version = getattr(snapshot, "schema_version", None)
+    try:
+        return float(str(version)) >= 1.4
+    except (TypeError, ValueError):
+        return False
 
 
 async def persist_position_alerts(alerts: list[dict], source: str = "position_monitor") -> None:

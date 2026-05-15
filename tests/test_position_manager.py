@@ -32,10 +32,20 @@ def _install_import_stubs() -> None:
 
 _install_import_stubs()
 
-from services.position_manager import apply_position_constraints  # noqa: E402
+from services.position_manager import apply_position_constraints, _holding_days_are_trusted  # noqa: E402
 
 
 class PositionManagerTest(unittest.TestCase):
+    def test_holding_days_schema_gate_rejects_warmup_polluted_version(self):
+        snapshot = types.SimpleNamespace(schema_version="1.3")
+
+        self.assertFalse(_holding_days_are_trusted(snapshot))
+
+    def test_holding_days_schema_gate_accepts_fixed_version(self):
+        snapshot = types.SimpleNamespace(schema_version="1.4")
+
+        self.assertTrue(_holding_days_are_trusted(snapshot))
+
     def test_min_hold_days_preserves_young_sell(self):
         out = apply_position_constraints(
             target_weights={"AAA": 0.0, "CASH": 1.0},
