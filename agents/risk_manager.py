@@ -93,6 +93,12 @@ async def run_risk_manager_async(
         or brief.get("market_scorecard")
         or {}
     )
+    decision_style = (
+        pipeline_context.get("decision_style")
+        or brief.get("decision_style")
+        or (brief.get("evidence_bundle") or {}).get("decision_style")
+        or {}
+    )
     evidence_bundle = brief.get("evidence_bundle") or {}
 
     # ═══ 3-layer overlay chain ═══
@@ -146,6 +152,20 @@ async def run_risk_manager_async(
             "[RiskMgr] scorecard constraints adjusted target weights | "
             f"violations={scorecard_enforcement['violations']}"
         )
+    style_enforcement = apply_style_constraints(
+        target_weights=target_weights,
+        base_weights=quant_baseline.get("base_weights") or {},
+        current_weights=current_weights,
+        decision_style=decision_style,
+        market_scorecard=market_scorecard,
+    )
+    target_weights = style_enforcement["target_weights_post_style_clip"]
+    if style_enforcement["violations"]:
+        overlays_applied.append("style_constraints")
+        logger.warning(
+            "[RiskMgr] style constraints adjusted target weights | "
+            f"violations={style_enforcement['violations']}"
+        )
 
     # ═══ rebalance_actions + cost ═══
     rebalance_threshold = float(risk_params.get("rebalance_threshold", 0.02))
@@ -170,6 +190,14 @@ async def run_risk_manager_async(
     }
     if not scorecard_check.get("compliant", True):
         reasons.extend(scorecard_check.get("violations") or [])
+    style_check = style_enforcement["post_clip_compliance"]
+    checks["style_ok"] = {
+        "pass": bool(style_check.get("compliant", True)),
+        "actual": style_check,
+        "threshold": "decision_style",
+    }
+    if not style_check.get("compliant", True):
+        reasons.extend(style_check.get("violations") or [])
 
     evidence_stale = bool(evidence_bundle and is_evidence_stale(evidence_bundle))
     if evidence_stale:
@@ -207,6 +235,7 @@ async def run_risk_manager_async(
         "failed_checks":       failed_checks,
         "n_holdings":          _count_non_cash(target_weights),
         "scorecard_enforcement": scorecard_enforcement,
+        "style_enforcement": style_enforcement,
         "reviewed_at":         datetime.utcnow().isoformat(),
     }
 
@@ -548,6 +577,289 @@ def _check_scorecard_compliance(
 
 
 # ═══════════════════════════════════════════════════════════════
+# Decision style hard constraints
+# ═══════════════════════════════════════════════════════════════
+
+
+def apply_style_constraints(
+    *,
+    target_weights: dict[str, float],
+    base_weights: dict[str, float],
+    current_weights: dict[str, float],
+    decision_style: dict[str, Any] | None,
+    market_scorecard: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Enforce Decision Style limits after scorecard clipping.
+
+    Style limits only tighten. Freed buy weight goes to CASH; sells are not
+    re-expanded into equity.
+    """
+    style = decision_style or {}
+    pre = _normalize_weights(target_weights)
+    if not style:
+        return {
+            "applied": False,
+            "target_weights_pre_style_clip": pre,
+            "target_weights_post_style_clip": pre,
+            "violations": [],
+            "clip_log": [],
+            "post_clip_compliance": _check_style_compliance(
+                pre, base_weights, current_weights, style, market_scorecard
+            ),
+            "one_way_tightening_ok": True,
+        }
+
+    base = _clean_weight_map(base_weights)
+    current = _clean_weight_map(current_weights)
+    work = _clean_weight_map(pre)
+    work.setdefault("CASH", 0.0)
+    limits = style.get("style_limits") or {}
+    clip_log: list[str] = []
+
+    trade_style = str(style.get("trade_style") or "")
+    if trade_style == "cash_only":
+        for ticker in list(work):
+            if ticker != "CASH" and work.get(ticker, 0.0) > 0:
+                clip_log.append(f"style_cash_only:{ticker} {work[ticker]:.2%}->0.00%")
+                work[ticker] = 0.0
+        work["CASH"] = 1.0
+        post = _cash_first_normalize(work)
+        return _style_enforcement_result(pre, post, base, current, style, market_scorecard, clip_log)
+
+    allow_new = bool(limits.get("allow_new_positions", True))
+    max_new_buys = _optional_int(limits.get("max_new_buys_per_cycle"))
+    max_single_trade = _optional_float(limits.get("max_single_trade_pct"))
+    max_buy_trade = _optional_float(limits.get("max_buy_trade_pct"))
+    max_turnover = _optional_float(limits.get("max_turnover_per_cycle"))
+    min_cash_add = _optional_float(limits.get("min_cash_floor_addition")) or 0.0
+    max_multiplier = _optional_float(limits.get("max_adjustment_multiplier"))
+    scorecard_delta = _optional_float((market_scorecard or {}).get("max_adjustment_from_base"))
+    style_delta = scorecard_delta * max_multiplier if scorecard_delta is not None and max_multiplier is not None else None
+    buy_cap = min(
+        [v for v in (max_single_trade, max_buy_trade) if v is not None],
+        default=None,
+    )
+
+    for ticker in list(work.keys()):
+        if ticker == "CASH":
+            continue
+        target = float(work.get(ticker, 0.0) or 0.0)
+        base_w = float(base.get(ticker, 0.0) or 0.0)
+        current_w = float(current.get(ticker, 0.0) or 0.0)
+        delta_from_current = target - current_w
+
+        if not allow_new and current_w <= 0.01 and base_w <= 0.01 and target > 0.01:
+            replacement = max(current_w, base_w)
+            work[ticker] = replacement
+            work["CASH"] += max(target - replacement, 0.0)
+            clip_log.append(f"style_new_position_blocked:{ticker} {target:.2%}->{replacement:.2%}")
+            target = work[ticker]
+            delta_from_current = target - current_w
+
+        if buy_cap is not None and delta_from_current > buy_cap + 1e-9:
+            clipped = current_w + buy_cap
+            work[ticker] = clipped
+            work["CASH"] += max(target - clipped, 0.0)
+            clip_log.append(f"style_buy_cap:{ticker} {delta_from_current:.2%}->{buy_cap:.2%}")
+            target = clipped
+
+        if style_delta is not None:
+            upper = base_w + style_delta
+            lower = max(base_w - style_delta, 0.0)
+            if target > upper:
+                work[ticker] = upper
+                work["CASH"] += target - upper
+                clip_log.append(f"style_max_delta:{ticker} {target:.2%}->{upper:.2%}")
+            elif target < lower:
+                needed = lower - target
+                available_cash = max(float(work.get("CASH", 0.0) or 0.0), 0.0)
+                add_back = min(needed, available_cash)
+                if add_back > 0:
+                    work[ticker] = target + add_back
+                    work["CASH"] = available_cash - add_back
+                    clip_log.append(f"style_sell_delta:{ticker} {target:.2%}->{work[ticker]:.2%}")
+
+    work = _cap_style_new_buys(work, current, max_new_buys, clip_log)
+    work = _cap_style_turnover(work, current, max_turnover, clip_log)
+
+    if min_cash_add > 0:
+        scorecard_cash = _optional_float((market_scorecard or {}).get("min_cash_weight")) or 0.0
+        cash_floor = min(1.0, scorecard_cash + min_cash_add)
+        cash = float(work.get("CASH", 0.0) or 0.0)
+        if cash < cash_floor - 1e-9:
+            shortfall = cash_floor - cash
+            equity = _equity_sum(work)
+            if equity > 0:
+                target_equity = max(equity - shortfall, 0.0)
+                scale = target_equity / equity if equity > 0 else 0.0
+                for ticker in list(work.keys()):
+                    if ticker != "CASH":
+                        work[ticker] *= scale
+                work["CASH"] = cash_floor
+                clip_log.append(f"style_min_cash:{cash:.2%}->{cash_floor:.2%}")
+
+    post = _cash_first_normalize(work)
+    return _style_enforcement_result(pre, post, base, current, style, market_scorecard, clip_log)
+
+
+def _style_enforcement_result(
+    pre: dict[str, float],
+    post: dict[str, float],
+    base: dict[str, float],
+    current: dict[str, float],
+    style: dict[str, Any],
+    scorecard: dict[str, Any] | None,
+    clip_log: list[str],
+) -> dict[str, Any]:
+    compliance = _check_style_compliance(post, base, current, style, scorecard)
+    return {
+        "applied": True,
+        "target_weights_pre_style_clip": pre,
+        "target_weights_post_style_clip": post,
+        "violations": clip_log,
+        "clip_log": clip_log,
+        "post_clip_compliance": compliance,
+        "one_way_tightening_ok": _one_way_tightening_ok(pre, post, scorecard),
+    }
+
+
+def _check_style_compliance(
+    weights: dict[str, float],
+    base_weights: dict[str, float],
+    current_weights: dict[str, float],
+    decision_style: dict[str, Any] | None,
+    market_scorecard: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not decision_style:
+        return {"compliant": True, "violations": [], "checked": False}
+
+    clean = _clean_weight_map(weights)
+    base = _clean_weight_map(base_weights)
+    current = _clean_weight_map(current_weights)
+    limits = decision_style.get("style_limits") or {}
+    violations: list[str] = []
+
+    trade_style = str(decision_style.get("trade_style") or "")
+    if trade_style == "cash_only" and _equity_sum(clean) > 1e-6:
+        violations.append("cash_only trade style forbids non-cash exposure")
+
+    allow_new = bool(limits.get("allow_new_positions", True))
+    max_new_buys = _optional_int(limits.get("max_new_buys_per_cycle"))
+    max_single_trade = _optional_float(limits.get("max_single_trade_pct"))
+    max_buy_trade = _optional_float(limits.get("max_buy_trade_pct"))
+    max_turnover = _optional_float(limits.get("max_turnover_per_cycle"))
+    min_cash_add = _optional_float(limits.get("min_cash_floor_addition")) or 0.0
+    max_multiplier = _optional_float(limits.get("max_adjustment_multiplier"))
+    scorecard_delta = _optional_float((market_scorecard or {}).get("max_adjustment_from_base"))
+    style_delta = scorecard_delta * max_multiplier if scorecard_delta is not None and max_multiplier is not None else None
+    buy_cap = min(
+        [v for v in (max_single_trade, max_buy_trade) if v is not None],
+        default=None,
+    )
+
+    new_buys = 0
+    for ticker, weight in clean.items():
+        if ticker == "CASH":
+            continue
+        base_w = float(base.get(ticker, 0.0) or 0.0)
+        current_w = float(current.get(ticker, 0.0) or 0.0)
+        delta_current = weight - current_w
+        if current_w <= 0.01 and base_w <= 0.01 and weight > 0.01:
+            new_buys += 1
+            if not allow_new:
+                violations.append(f"{ticker} new position blocked by style")
+        if buy_cap is not None and delta_current > buy_cap + 1e-6:
+            violations.append(f"{ticker} buy delta {delta_current:.2%} exceeds style cap {buy_cap:.2%}")
+        if style_delta is not None and abs(weight - base_w) > style_delta + 1e-6:
+            violations.append(f"{ticker} delta {(weight - base_w):.2%} exceeds style max {style_delta:.2%}")
+
+    if max_new_buys is not None and new_buys > max_new_buys:
+        violations.append(f"new buys {new_buys} exceeds style max {max_new_buys}")
+    if max_turnover is not None:
+        turnover = _turnover(clean, current)
+        if turnover > max_turnover + 1e-6:
+            violations.append(f"turnover {turnover:.2%} exceeds style max {max_turnover:.2%}")
+    if min_cash_add > 0:
+        cash_floor = min(1.0, (_optional_float((market_scorecard or {}).get("min_cash_weight")) or 0.0) + min_cash_add)
+        cash = float(clean.get("CASH", 0.0) or 0.0)
+        if cash < cash_floor - 1e-6:
+            violations.append(f"cash {cash:.2%} below style floor {cash_floor:.2%}")
+
+    return {
+        "compliant": not violations,
+        "violations": violations,
+        "checked": True,
+    }
+
+
+def _cap_style_new_buys(
+    weights: dict[str, float],
+    current: dict[str, float],
+    max_new_buys: int | None,
+    clip_log: list[str],
+) -> dict[str, float]:
+    if max_new_buys is None:
+        return weights
+    deltas = {ticker: weights.get(ticker, 0.0) - current.get(ticker, 0.0) for ticker in set(weights) | set(current)}
+    new_buys = [
+        ticker for ticker, delta in deltas.items()
+        if ticker != "CASH" and delta > 0.01 and current.get(ticker, 0.0) <= 0.01
+    ]
+    if len(new_buys) <= max_new_buys:
+        return weights
+    keep = set(sorted(new_buys, key=lambda ticker: deltas[ticker], reverse=True)[:max_new_buys])
+    out = dict(weights)
+    freed = 0.0
+    blocked = []
+    for ticker in new_buys:
+        if ticker in keep:
+            continue
+        old = out.get(ticker, 0.0)
+        replacement = current.get(ticker, 0.0)
+        freed += max(old - replacement, 0.0)
+        out[ticker] = replacement
+        blocked.append(ticker)
+    out["CASH"] = out.get("CASH", 0.0) + freed
+    clip_log.append(f"style_new_buys_capped:{blocked}")
+    return out
+
+
+def _cap_style_turnover(
+    weights: dict[str, float],
+    current: dict[str, float],
+    max_turnover: float | None,
+    clip_log: list[str],
+) -> dict[str, float]:
+    if max_turnover is None:
+        return weights
+    turnover = _turnover(weights, current)
+    if turnover <= max_turnover + 1e-9:
+        return weights
+    scale = max_turnover / turnover if turnover > 0 else 1.0
+    out: dict[str, float] = {}
+    for ticker in set(weights) | set(current):
+        out[ticker] = current.get(ticker, 0.0) + (weights.get(ticker, 0.0) - current.get(ticker, 0.0)) * scale
+    clip_log.append(f"style_turnover_scaled:{turnover:.2%}->{max_turnover:.2%}")
+    return out
+
+
+def _one_way_tightening_ok(
+    pre: dict[str, float],
+    post: dict[str, float],
+    scorecard: dict[str, Any] | None,
+) -> bool:
+    scorecard = scorecard or {}
+    max_equity = _optional_float(scorecard.get("max_equity_weight"))
+    min_cash = _optional_float(scorecard.get("min_cash_weight"))
+    if max_equity is not None and _equity_sum(post) > max_equity + 1e-6:
+        return False
+    if min_cash is not None and float(post.get("CASH", 0.0) or 0.0) < min_cash - 1e-6:
+        return False
+    return _equity_sum(post) <= _equity_sum(pre) + 1e-6 or not scorecard
+
+
+# ═══════════════════════════════════════════════════════════════
 # Six quantitative checks
 # ═══════════════════════════════════════════════════════════════
 
@@ -751,6 +1063,23 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _turnover(target: dict[str, float], current: dict[str, float]) -> float:
+    keys = set(target) | set(current)
+    return sum(
+        abs(float(target.get(t, 0.0) or 0.0) - float(current.get(t, 0.0) or 0.0))
+        for t in keys
+    ) / 2.0
 
 
 def _count_non_cash(weights: dict[str, float]) -> int:

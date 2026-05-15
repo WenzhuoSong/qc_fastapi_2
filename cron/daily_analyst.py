@@ -47,6 +47,9 @@ Please distill today's market memory based on the following analysis data.
 - Risk Approved: {risk_approved}
 - Execution Happened: {execution_happened}
 - Top 5 Target Weights: {top5_weights}
+- News Bias: {news_bias} (confidence: {news_confidence}, impact: {news_impact})
+- Decision Style: analysis={analysis_style}, trade={trade_style}
+- Style Enforcement: {style_enforcement_summary}
 
 ## Today's Market Data
 - Regime: {regime_label} (confidence: {regime_confidence})
@@ -63,7 +66,7 @@ Output the following JSON structure (all fields required; use null or empty arra
   "top3_underweight": [{{"ticker": "TLT", "weight": 0.05, "reason": "brief reason"}}],
   "recommended_stance": "buy|overweight|maintain|underweight|sell",
   "hard_risks_detected": ["description1", "description2"],
-  "learning_note": "≤80 chars, the single most important lesson or pattern worth remembering today"
+  "learning_note": "≤80 chars, include whether news/style constraints helped or blocked action when relevant"
 }}
 """
 
@@ -339,11 +342,35 @@ async def _extract_memory_with_llm(analysis: AgentAnalysis, portfolio, execution
     except (TypeError, ValueError):
         pass
 
+    style_compliance = synthesizer_out.get("style_compliance") or {}
+    risk_style = risk_out.get("style_enforcement") or {}
+    news_bias = style_compliance.get("news_bias_used") or "unknown"
+    news_confidence = "unknown"
+    news_impact = "unknown"
+    analysis_style = (
+        style_compliance.get("analysis_style_used")
+        or ((risk_style.get("decision_style") or {}).get("analysis_style"))
+        or "unknown"
+    )
+    trade_style = style_compliance.get("trade_style_used") or "unknown"
+    style_violations = risk_style.get("violations") or []
+    style_enforcement_summary = (
+        "; ".join(str(v) for v in style_violations[:3])
+        if style_violations
+        else "none"
+    )
+
     user_msg = DAILY_ANALYST_USER_TEMPLATE.format(
         researcher_summary=json.dumps(synthesizer_out, ensure_ascii=False)[:2000],
         risk_approved=analysis.risk_approved,
         execution_happened=execution_happened,
         top5_weights=top5_str,
+        news_bias=str(news_bias)[:200],
+        news_confidence=news_confidence,
+        news_impact=news_impact,
+        analysis_style=analysis_style,
+        trade_style=trade_style,
+        style_enforcement_summary=style_enforcement_summary[:300],
         regime_label=regime_label,
         regime_confidence=regime_confidence,
         vix=vix_str,

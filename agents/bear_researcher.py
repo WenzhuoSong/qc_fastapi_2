@@ -102,9 +102,16 @@ JSON only."""
 async def run_bear_researcher_async(
     research_report: dict,
     base_weights: dict,
+    news_evidence: dict | None = None,
+    decision_style: dict | None = None,
 ) -> dict:
     """Stage 4b draft: short-side arguments only (no weights)."""
-    user_payload = _build_user_message(research_report, base_weights)
+    user_payload = _build_user_message(
+        research_report,
+        base_weights,
+        news_evidence=news_evidence,
+        decision_style=decision_style,
+    )
 
     client = _get_client()
     model  = settings.openai_model_heavy
@@ -153,10 +160,23 @@ async def run_bear_researcher_async(
     return _degraded_output(last_error)
 
 
-def _build_user_message(research_report: dict, base_weights: dict) -> str:
+def _build_user_message(
+    research_report: dict,
+    base_weights: dict,
+    news_evidence: dict | None = None,
+    decision_style: dict | None = None,
+) -> str:
     return (
         "## Research Report\n"
         f"{json.dumps(research_report, ensure_ascii=False, indent=2)}\n\n"
+        "## Structured News Evidence\n"
+        f"{json.dumps(_compact_news_evidence(news_evidence or {}), ensure_ascii=False, indent=2)}\n\n"
+        "## Decision Style\n"
+        f"{json.dumps(decision_style or {}, ensure_ascii=False, indent=2)}\n\n"
+        "Use news action_bias and decision_style to calibrate confidence. "
+        "If trade_style is normal_rebalance or step_in, your risk case must distinguish "
+        "real blockers from ordinary uncertainty. Hard risk events and block_new_buy are "
+        "strong bearish evidence. Do not output weights.\n\n"
         "## Base weights (context only — do not output weights)\n"
         f"{json.dumps(base_weights, ensure_ascii=False, indent=2)}\n\n"
         "## Your task\n"
@@ -165,6 +185,23 @@ def _build_user_message(research_report: dict, base_weights: dict) -> str:
         "top_3_conviction, macro_headwinds, conflicting_signals. "
         "No portfolio weights. JSON only."
     )
+
+
+def _compact_news_evidence(news_evidence: dict) -> dict:
+    return {
+        "macro_news_score": news_evidence.get("macro_news_score") or {},
+        "hard_risk_events": news_evidence.get("hard_risk_events") or {},
+        "ticker_news_scores": {
+            ticker: {
+                "bias": item.get("bias"),
+                "confidence": item.get("confidence"),
+                "effective_credibility": item.get("effective_credibility"),
+                "action_bias": item.get("action_bias"),
+            }
+            for ticker, item in (news_evidence.get("ticker_news_scores") or {}).items()
+            if isinstance(item, dict)
+        },
+    }
 
 
 def _normalize(out: dict) -> dict:

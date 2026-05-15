@@ -117,6 +117,16 @@ SYNTHESIZER_COT_SCHEMA = """
     "data_quality_adjustment": "how data quality affected sizing",
     "why_this_trade_is_reasonable": "one sentence, <= 120 chars",
     "known_limitations": ["limitation or warning"]
+  },
+
+  "style_compliance": {
+    "analysis_style_used": "copy decision_style.analysis_style",
+    "trade_style_used": "copy decision_style.trade_style",
+    "style_limits_respected": true | false,
+    "news_bias_used": "summarize macro/ticker news action bias used",
+    "sizing_adjustment": "how style_limits affected sizing and turnover",
+    "blocked_or_clipped_actions": ["action blocked or clipped by style limits"],
+    "known_limitations": ["style/news limitation or warning"]
   }
 }
 
@@ -156,6 +166,10 @@ You receive:
     · Market Scorecard permissions are hard PM constraints. If market_scorecard says small_overweight_only,
       limited data, hold_or_trim, reduce_risk_only, or cash_only, your adjusted_weights must reflect that.
     · You must include scorecard_compliance and it must honestly explain how the final weights obey the scorecard.
+    · Decision Style is a hard PM interpretation/execution contract. It does not create weights, but its
+      style_limits must cap how aggressively you move from base_weights. Include style_compliance.
+    · Structured News Evidence action_bias is advisory evidence. News may confirm, block, or reduce a trade,
+      but news cannot directly create target weights.
 
 【regime (exactly one of 6)】
     bull_trend / bull_weak / neutral / bear_weak / bear_trend / high_vol
@@ -244,6 +258,8 @@ async def run_synthesizer_async(
 
     allowed_tickers = _collect_allowed_tickers(brief, base_weights)
     market_scorecard = brief.get("market_scorecard") or {}
+    news_evidence = brief.get("news_evidence") or (brief.get("evidence_bundle") or {}).get("news_evidence") or {}
+    decision_style = brief.get("decision_style") or (brief.get("evidence_bundle") or {}).get("decision_style") or {}
 
     user_payload = _build_user_message(
         research_report, bull_output, bear_output, base_weights, risk_params, regime_result,
@@ -251,6 +267,8 @@ async def run_synthesizer_async(
         playground_bundle=playground_bundle,
         market_scorecard=market_scorecard,
         evidence_bundle=brief.get("evidence_bundle") or {},
+        news_evidence=news_evidence,
+        decision_style=decision_style,
     )
 
     client = _get_client()
@@ -295,6 +313,7 @@ async def run_synthesizer_async(
                 bear_output=bear_output,
                 research_report=research_report,
                 market_scorecard=market_scorecard,
+                decision_style=decision_style,
             )
             result["_token_usage"] = {
                 "prompt_tokens": resp.usage.prompt_tokens,
@@ -331,6 +350,8 @@ def _build_user_message(
     playground_bundle: dict | None = None,
     market_scorecard: dict | None = None,
     evidence_bundle: dict | None = None,
+    news_evidence: dict | None = None,
+    decision_style: dict | None = None,
 ) -> str:
     max_pos = float(risk_params.get("max_single_position", 0.20))
     min_cash = float(risk_params.get("min_cash_pct", 0.05))
@@ -351,6 +372,8 @@ def _build_user_message(
 
     scorecard = market_scorecard or {}
     evidence = evidence_bundle or {}
+    news = news_evidence or evidence.get("news_evidence") or {}
+    style = decision_style or evidence.get("decision_style") or {}
     scorecard_block = ""
     if scorecard:
         scorecard_block = (
@@ -367,11 +390,32 @@ def _build_user_message(
             "## Evidence Bundle Summary\n"
             f"{json.dumps(_compact_evidence_bundle(evidence), ensure_ascii=False, indent=2)}\n\n"
         )
+    news_block = ""
+    if news:
+        news_block = (
+            "## Structured News Evidence\n"
+            f"{json.dumps(_compact_news_evidence(news), ensure_ascii=False, indent=2)}\n\n"
+            "Use action_bias deterministically: block_new_buy blocks new buys for that ticker, "
+            "reduce_or_wait argues against adding risk, confirm_existing_signal can only confirm "
+            "an existing quant signal, and allow_overweight still must obey scorecard/style limits.\n\n"
+        )
+    style_block = ""
+    if style:
+        style_block = (
+            "## Decision Style Contract\n"
+            f"{json.dumps(style, ensure_ascii=False, indent=2)}\n\n"
+            "You must obey style_limits. max_adjustment_multiplier tightens scorecard max deltas; "
+            "max_turnover_per_cycle and max_new_buys_per_cycle limit execution aggressiveness; "
+            "min_cash_floor_addition is additive to scorecard min_cash_weight. "
+            "Explain this in style_compliance.\n\n"
+        )
 
     user_payload = (
         f"{regime_block}"
         f"{scorecard_block}"
         f"{evidence_block}"
+        f"{news_block}"
+        f"{style_block}"
         "## Research report summary\n"
         f"market_regime: {json.dumps(regime, ensure_ascii=False)}\n"
         f"macro_outlook: {json.dumps(macro, ensure_ascii=False)}\n"
@@ -391,6 +435,9 @@ def _build_user_message(
         "weight_adjustments + consensus/divergence + key_events + debate_resolution. "
         "Include scorecard_compliance with scorecard_alignment, action_permission_used, "
         "data_quality_adjustment, why_this_trade_is_reasonable, and known_limitations. "
+        "Include style_compliance with analysis_style_used, trade_style_used, "
+        "style_limits_respected, news_bias_used, sizing_adjustment, "
+        "blocked_or_clipped_actions, and known_limitations. "
         "If Strategy Playground is present, also include playground_strategy_assessment with "
         "selected_strategy, blend_weights, discounted_strategies, and reasoning; respect "
         "memory_feedback discounts as advisory only. JSON only."
@@ -438,6 +485,28 @@ def _compact_evidence_bundle(bundle: dict) -> dict:
             "turnover_warnings": (bundle.get("strategies") or {}).get("turnover_warnings") or [],
         },
         "data_quality": bundle.get("data_quality") or {},
+    }
+
+
+def _compact_news_evidence(news_evidence: dict) -> dict:
+    ticker_scores = {}
+    for ticker, item in (news_evidence.get("ticker_news_scores") or {}).items():
+        if not isinstance(item, dict):
+            continue
+        ticker_scores[ticker] = {
+            "bias": item.get("bias"),
+            "confidence": item.get("confidence"),
+            "effective_credibility": item.get("effective_credibility"),
+            "market_impact": item.get("market_impact"),
+            "action_bias": item.get("action_bias"),
+            "supporting_items": (item.get("supporting_items") or [])[:3],
+            "conflicting_items": (item.get("conflicting_items") or [])[:2],
+        }
+    return {
+        "macro_news_score": news_evidence.get("macro_news_score") or {},
+        "ticker_news_scores": ticker_scores,
+        "hard_risk_events": news_evidence.get("hard_risk_events") or {},
+        "data_gaps": news_evidence.get("data_gaps") or [],
     }
 
 
@@ -503,6 +572,7 @@ def _validate(out: dict) -> None:
         "decision_rationale",
         "market_judgment",
         "scorecard_compliance",
+        "style_compliance",
     ]
     missing = [k for k in required if k not in out]
     if missing:
@@ -553,6 +623,23 @@ def _validate(out: dict) -> None:
         if key not in scorecard_compliance:
             raise ValueError(f"scorecard_compliance missing field: {key}")
 
+    style_compliance = out.get("style_compliance")
+    if not isinstance(style_compliance, dict):
+        raise ValueError(
+            f"style_compliance must be dict, got {type(style_compliance).__name__}"
+        )
+    for key in (
+        "analysis_style_used",
+        "trade_style_used",
+        "style_limits_respected",
+        "news_bias_used",
+        "sizing_adjustment",
+        "blocked_or_clipped_actions",
+        "known_limitations",
+    ):
+        if key not in style_compliance:
+            raise ValueError(f"style_compliance missing field: {key}")
+
 
 def _normalize(
     out: dict,
@@ -564,6 +651,7 @@ def _normalize(
     bear_output: dict,
     research_report: dict,
     market_scorecard: dict | None = None,
+    decision_style: dict | None = None,
 ) -> dict:
     # Defensive: guard against non-dict inputs leaking through (e.g., error strings)
     if not isinstance(bull_output, dict):
@@ -630,6 +718,12 @@ def _normalize(
         adjusted_weights=adjusted,
         market_scorecard=market_scorecard or {},
     )
+    style_compliance = _normalize_style_compliance(
+        out.get("style_compliance") or {},
+        base_weights=base_weights,
+        adjusted_weights=adjusted,
+        decision_style=decision_style or {},
+    )
 
     actual_adjustments = _compute_adjustments(base_weights, adjusted)
 
@@ -680,8 +774,106 @@ def _normalize(
             else {}
         ),
         "scorecard_compliance": scorecard_compliance,
+        "style_compliance": style_compliance,
         # Task 5: Chain-of-Thought reasoning chain
         "reasoning_chain":     reasoning_chain,
+    }
+
+
+def _normalize_style_compliance(
+    raw: dict,
+    *,
+    base_weights: dict,
+    adjusted_weights: dict,
+    decision_style: dict,
+) -> dict:
+    if not isinstance(raw, dict):
+        raw = {}
+    python_check = _check_style_weight_compliance(
+        base_weights=base_weights,
+        adjusted_weights=adjusted_weights,
+        decision_style=decision_style,
+    )
+    return {
+        "analysis_style_used": str(
+            raw.get("analysis_style_used")
+            or decision_style.get("analysis_style")
+            or "unknown"
+        )[:80],
+        "trade_style_used": str(
+            raw.get("trade_style_used")
+            or decision_style.get("trade_style")
+            or "unknown"
+        )[:80],
+        "style_limits_respected": bool(raw.get("style_limits_respected", python_check["compliant"])),
+        "news_bias_used": str(raw.get("news_bias_used") or "")[:300],
+        "sizing_adjustment": str(raw.get("sizing_adjustment") or "")[:300],
+        "blocked_or_clipped_actions": (
+            raw.get("blocked_or_clipped_actions")[:8]
+            if isinstance(raw.get("blocked_or_clipped_actions"), list)
+            else []
+        ),
+        "known_limitations": (
+            raw.get("known_limitations")[:8]
+            if isinstance(raw.get("known_limitations"), list)
+            else []
+        ),
+        "python_validation": python_check,
+        "style_non_compliant": not python_check["compliant"],
+    }
+
+
+def _check_style_weight_compliance(
+    *,
+    base_weights: dict,
+    adjusted_weights: dict,
+    decision_style: dict,
+) -> dict:
+    violations: list[str] = []
+    if not decision_style:
+        return {"compliant": True, "violations": [], "checked": False}
+
+    limits = decision_style.get("style_limits") or {}
+    max_multiplier = float(limits.get("max_adjustment_multiplier", 1.0) or 1.0)
+    max_new_buys = int(float(limits.get("max_new_buys_per_cycle", 999) or 999))
+    allow_new = bool(limits.get("allow_new_positions", True))
+    trade_style = str(decision_style.get("trade_style") or "")
+
+    max_delta = 0.05 * max_multiplier
+    new_buys = 0
+    for ticker in set(base_weights) | set(adjusted_weights):
+        if ticker == "CASH":
+            continue
+        base = float(base_weights.get(ticker, 0.0) or 0.0)
+        adjusted = float(adjusted_weights.get(ticker, 0.0) or 0.0)
+        delta = adjusted - base
+        if abs(delta) > max_delta + 1e-6:
+            violations.append(
+                f"{ticker} delta {delta:.2%} exceeds style max {max_delta:.2%}"
+            )
+        if base <= 0.01 and adjusted > 0.01:
+            new_buys += 1
+            if not allow_new:
+                violations.append(f"{ticker} new position blocked by style")
+
+    if new_buys > max_new_buys:
+        violations.append(f"new buys {new_buys} exceeds style max {max_new_buys}")
+    if trade_style == "cash_only":
+        equity = sum(float(v or 0.0) for t, v in adjusted_weights.items() if t != "CASH")
+        if equity > 1e-6:
+            violations.append("cash_only trade style forbids non-cash exposure")
+
+    return {
+        "compliant": not violations,
+        "violations": violations,
+        "checked": True,
+        "limits": {
+            "trade_style": trade_style,
+            "max_adjustment_multiplier": max_multiplier,
+            "max_delta_assumption": max_delta,
+            "max_new_buys_per_cycle": max_new_buys,
+            "allow_new_positions": allow_new,
+        },
     }
 
 
@@ -1019,6 +1211,17 @@ def _degraded_output(
             "known_limitations": [degraded_reason],
             "python_validation": {"compliant": True, "violations": [], "checked": False},
             "scorecard_non_compliant": False,
+        },
+        "style_compliance": {
+            "analysis_style_used": "degraded_fallback",
+            "trade_style_used": "hold_unless_strong",
+            "style_limits_respected": True,
+            "news_bias_used": "PM LLM failed; no discretionary news interpretation applied",
+            "sizing_adjustment": "using Stage 2 baseline weights",
+            "blocked_or_clipped_actions": [],
+            "known_limitations": [degraded_reason],
+            "python_validation": {"compliant": True, "violations": [], "checked": False},
+            "style_non_compliant": False,
         },
         # Task 5: Chain-of-Thought (degraded fallback)
         "reasoning_chain": {

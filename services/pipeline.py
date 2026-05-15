@@ -48,6 +48,8 @@ from services.position_manager import apply_position_constraints
 from services.playground      import run_playground
 from services.evidence_bundle import build_evidence_bundle
 from services.market_scorecard import build_market_scorecard
+from services.news_evidence   import build_news_evidence
+from services.decision_style  import resolve_decision_style
 from services.execution_audit import build_execution_audit_payload, count_today_actual_execution_actions
 from strategies              import compute_rebalance_actions, estimate_cost_pct
 from tracking.wandb_client   import PipelineRunTracker
@@ -628,21 +630,76 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         logger.warning(f"Stage 2c Playground skipped: {e}")
 
     # Stage 2d: Evidence bundle + market scorecard contracts (no execution effect yet)
+    try:
+        news_evidence = build_news_evidence(brief)
+    except Exception as e:
+        logger.warning(f"Stage 2d news evidence scoring failed; using fallback: {e}")
+        news_evidence = {
+            "macro_news_score": {
+                "overall_bias": "neutral",
+                "confidence": "low",
+                "dominant_themes": [],
+                "market_impact": "low",
+                "time_horizon": "medium_term",
+                "data_quality": "missing",
+                "warnings": [f"news evidence scoring failed: {e}"],
+            },
+            "ticker_news_scores": {},
+            "hard_risk_events": {},
+            "ignored_items": [],
+            "data_gaps": [f"news evidence scoring failed: {e}"],
+        }
     evidence_bundle = build_evidence_bundle(
         brief=brief,
         quant_baseline=quant_baseline,
         playground_bundle=playground_bundle,
+        news_evidence=news_evidence,
     )
     market_scorecard = build_market_scorecard(evidence_bundle)
+    try:
+        decision_style = resolve_decision_style(
+            market_scorecard=market_scorecard,
+            news_evidence=news_evidence,
+            strategy_evidence=evidence_bundle.get("strategies") or {},
+            config=pipeline_context.get("decision_style_config") or {},
+        )
+    except Exception as e:
+        logger.warning(f"Stage 2e decision style resolver failed; using fallback: {e}")
+        decision_style = {
+            "analysis_style": "balanced",
+            "trade_style": "hold_unless_strong",
+            "style_reason": f"Decision style resolver failed: {e}",
+            "style_limits": {
+                "max_adjustment_multiplier": 0.5,
+                "max_turnover_per_cycle": 0.10,
+                "max_single_trade_pct": 0.04,
+                "max_new_buys_per_cycle": 0,
+                "min_cash_floor_addition": 0.05,
+                "rebalance_threshold_boost": 0.02,
+                "allow_new_positions": False,
+                "prefer_hedges": False,
+                "sell_priority": False,
+            },
+            "dominant_style_constraint": "decision_style_resolver_failed",
+            "triggered_style_rules": ["decision_style_resolver_failed"],
+            "reasons": [f"Decision style resolver failed: {e}"],
+            "warnings": [f"Decision style resolver failed: {e}"],
+        }
+    evidence_bundle["decision_style"] = decision_style
     brief["evidence_bundle"] = evidence_bundle
     brief["market_scorecard"] = market_scorecard
+    brief["news_evidence"] = news_evidence
+    brief["decision_style"] = decision_style
     pipeline_context["market_scorecard"] = market_scorecard
+    pipeline_context["news_evidence"] = news_evidence
+    pipeline_context["decision_style"] = decision_style
     logger.info(
         "Stage 2d Evidence Scorecard done | "
         f"condition={market_scorecard.get('market_condition')} "
         f"| permission={market_scorecard.get('investment_permission')} "
         f"| data_quality={market_scorecard.get('data_quality')} "
-        f"| dominant={market_scorecard.get('dominant_constraint')}"
+        f"| dominant={market_scorecard.get('dominant_constraint')} "
+        f"| style={decision_style.get('analysis_style')}/{decision_style.get('trade_style')}"
     )
     await _save_step_log(
         analysis_id, "2d_evidence_scorecard", "evidence_scorecard",
@@ -653,7 +710,19 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         output_data={
             "evidence_bundle": evidence_bundle,
             "market_scorecard": market_scorecard,
+            "news_evidence": news_evidence,
         },
+        duration_ms=0,
+    )
+    await _save_step_log(
+        analysis_id, "2e_decision_style", "decision_style",
+        input_data={
+            "scorecard_permission": market_scorecard.get("investment_permission"),
+            "scorecard_condition": market_scorecard.get("market_condition"),
+            "news_macro_bias": (news_evidence.get("macro_news_score") or {}).get("overall_bias"),
+            "strategy_data_quality": (evidence_bundle.get("strategies") or {}).get("data_quality"),
+        },
+        output_data=decision_style,
         duration_ms=0,
     )
 
@@ -696,8 +765,18 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     base_weights = quant_baseline.get("base_weights", {})
     t0 = time.time()
     bull_draft, bear_draft = await asyncio.gather(
-        run_bull_researcher_async(research_report, base_weights),
-        run_bear_researcher_async(research_report, base_weights),
+        run_bull_researcher_async(
+            research_report,
+            base_weights,
+            news_evidence=news_evidence,
+            decision_style=decision_style,
+        ),
+        run_bear_researcher_async(
+            research_report,
+            base_weights,
+            news_evidence=news_evidence,
+            decision_style=decision_style,
+        ),
     )
     dur_draft = int((time.time() - t0) * 1000)
     logger.info(
@@ -967,10 +1046,14 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     if risk_out.get("approved") and risk_out.get("target_weights"):
         target_before_pm = risk_out.get("target_weights") or {}
         actual_daily_trades = await count_today_actual_execution_actions()
+        pm_config = _merge_position_style_config(
+            pipeline_context.get("position_manager_config") or {},
+            decision_style,
+        )
         pm_out = apply_position_constraints(
             target_weights=target_before_pm,
             current_holdings=brief.get("current_weights") or {},
-            config=pipeline_context.get("position_manager_config") or {},
+            config=pm_config,
             holdings_meta=brief.get("holdings") or [],
             actual_daily_trades=actual_daily_trades,
         )
@@ -1002,7 +1085,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             input_data={
                 "target_weights_raw": target_before_pm,
                 "current_weights": brief.get("current_weights") or {},
-                "config": pipeline_context.get("position_manager_config") or {},
+                "config": pm_config,
                 "actual_daily_trades": actual_daily_trades,
             },
             output_data={
@@ -1170,6 +1253,34 @@ async def _create_analysis_placeholder(trigger: str, pipeline_context: dict) -> 
         await db.commit()
         await db.refresh(row)
         return row.id
+
+
+def _merge_position_style_config(base_config: dict, decision_style: dict | None) -> dict:
+    """Convert decision style limits into Position Manager caps without loosening config."""
+    merged = dict(base_config or {})
+    limits = (decision_style or {}).get("style_limits") or {}
+    min_keys = {
+        "max_new_buys_per_cycle": int,
+        "max_single_trade_pct": float,
+        "max_turnover_per_cycle": float,
+    }
+    for key, caster in min_keys.items():
+        if key not in limits:
+            continue
+        try:
+            style_value = caster(limits[key])
+        except (TypeError, ValueError):
+            continue
+        if key not in merged:
+            merged[key] = style_value
+            continue
+        try:
+            merged[key] = min(caster(merged[key]), style_value)
+        except (TypeError, ValueError):
+            merged[key] = style_value
+    if limits.get("allow_new_positions") is False:
+        merged["max_new_buys_per_cycle"] = 0
+    return merged
 
 
 async def _finalize_analysis(

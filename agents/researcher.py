@@ -387,6 +387,8 @@ def _build_user_message(
     feature_provenance = brief.get("feature_provenance") or {}
     evidence_bundle = brief.get("evidence_bundle") or {}
     market_scorecard = brief.get("market_scorecard") or {}
+    news_evidence = brief.get("news_evidence") or evidence_bundle.get("news_evidence") or {}
+    decision_style = brief.get("decision_style") or evidence_bundle.get("decision_style") or {}
 
     base_weights    = quant_baseline.get("base_weights") or {}
     current_weights = brief.get("current_weights") or {}
@@ -428,6 +430,13 @@ def _build_user_message(
         "explain any disagreement and cannot ignore data-quality or permission warnings.\n\n"
         "## Evidence bundle summary\n"
         f"{json.dumps(_compact_evidence_bundle(evidence_bundle), ensure_ascii=False, indent=2)}\n\n"
+        "## Structured news evidence (deterministic action-bias layer)\n"
+        f"{json.dumps(_compact_news_evidence(news_evidence), ensure_ascii=False, indent=2)}\n\n"
+        "## Decision style (deterministic analysis/execution style)\n"
+        f"{json.dumps(decision_style, ensure_ascii=False, indent=2)}\n\n"
+        "Use decision_style to calibrate how strongly you interpret evidence. "
+        "Do not convert it into weights; only reflect it in confidence, data gaps, "
+        "and cross-signal insights.\n\n"
         "## Market technicals\n"
         f"{prose}\n\n"
         "## Quantitative facts\n"
@@ -455,8 +464,9 @@ def _build_user_message(
         "## Your task\n"
         "From the above, output market_regime + macro_outlook + ticker_signals +\n"
         "cross_signal_insights. Analyze only — no trading decision. Include scorecard "
-        "alignment or disagreement inside the relevant market_regime disagreement_reason, "
-        "macro_outlook data_gaps, and cross_signal_insights fields. JSON only."
+        "alignment or disagreement and decision_style effects inside the relevant "
+        "market_regime disagreement_reason, macro_outlook data_gaps, and "
+        "cross_signal_insights fields. JSON only."
         + _build_calibration_section(calibration_bias)
         + _build_similar_cases_section(similar_cases)
         + memory_section
@@ -489,6 +499,30 @@ def _compact_evidence_bundle(bundle: dict) -> dict:
             "turnover_warnings": (bundle.get("strategies") or {}).get("turnover_warnings") or [],
         },
         "data_quality": bundle.get("data_quality") or {},
+    }
+
+
+def _compact_news_evidence(news_evidence: dict) -> dict:
+    if not news_evidence:
+        return {}
+    ticker_scores = {}
+    for ticker, item in (news_evidence.get("ticker_news_scores") or {}).items():
+        if not isinstance(item, dict):
+            continue
+        ticker_scores[ticker] = {
+            "bias": item.get("bias"),
+            "confidence": item.get("confidence"),
+            "effective_credibility": item.get("effective_credibility"),
+            "market_impact": item.get("market_impact"),
+            "action_bias": item.get("action_bias"),
+            "supporting_items": (item.get("supporting_items") or [])[:3],
+            "conflicting_items": (item.get("conflicting_items") or [])[:2],
+        }
+    return {
+        "macro_news_score": news_evidence.get("macro_news_score") or {},
+        "ticker_news_scores": ticker_scores,
+        "hard_risk_events": news_evidence.get("hard_risk_events") or {},
+        "data_gaps": news_evidence.get("data_gaps") or [],
     }
 
 

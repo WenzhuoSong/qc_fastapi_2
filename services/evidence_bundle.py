@@ -10,6 +10,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from services.news_evidence import build_news_evidence
+
 
 DEFAULT_MAX_AGE_SECONDS = 1800
 
@@ -19,6 +21,7 @@ def build_evidence_bundle(
     brief: dict[str, Any] | None,
     quant_baseline: dict[str, Any] | None,
     playground_bundle: dict[str, Any] | None = None,
+    news_evidence: dict[str, Any] | None = None,
     max_age_seconds: int = DEFAULT_MAX_AGE_SECONDS,
 ) -> dict[str, Any]:
     brief = brief or {}
@@ -28,10 +31,12 @@ def build_evidence_bundle(
     market = _build_market_section(brief, quant)
     rotation = brief.get("sector_rotation") or {}
     news = _build_news_section(brief)
+    structured_news_evidence = news_evidence or build_news_evidence(brief)
     strategies = _build_strategy_section(playground)
     memory = _build_memory_section(brief)
     data_quality = _build_data_quality_section(
         news=news,
+        news_evidence=structured_news_evidence,
         strategies=strategies,
         memory=memory,
         brief=brief,
@@ -44,6 +49,7 @@ def build_evidence_bundle(
         "market": market,
         "rotation": rotation,
         "news": news,
+        "news_evidence": structured_news_evidence,
         "strategies": strategies,
         "memory": memory,
         "data_quality": data_quality,
@@ -204,12 +210,14 @@ def _build_memory_section(brief: dict[str, Any]) -> dict[str, Any]:
 def _build_data_quality_section(
     *,
     news: dict[str, Any],
+    news_evidence: dict[str, Any],
     strategies: dict[str, Any],
     memory: dict[str, Any],
     brief: dict[str, Any],
 ) -> dict[str, Any]:
     warnings: list[str] = []
     warnings.extend(news.get("warnings") or [])
+    warnings.extend(str(item) for item in news_evidence.get("data_gaps") or [])
     warnings.extend(str(item) for item in strategies.get("warnings") or [])
     warnings.extend(str(item) for item in memory.get("warnings") or [])
     if not brief.get("holdings"):
@@ -217,6 +225,7 @@ def _build_data_quality_section(
 
     levels = {
         str(news.get("data_quality") or "unknown"),
+        str((news_evidence.get("macro_news_score") or {}).get("data_quality") or "unknown"),
         str(strategies.get("data_quality") or "unknown"),
     }
     if "missing" in levels:

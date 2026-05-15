@@ -16,7 +16,7 @@ def _install_import_stubs() -> None:
 
 _install_import_stubs()
 
-from agents.risk_manager import apply_scorecard_constraints  # noqa: E402
+from agents.risk_manager import apply_scorecard_constraints, apply_style_constraints  # noqa: E402
 
 
 class RiskScorecardEnforcementTest(unittest.TestCase):
@@ -96,6 +96,92 @@ class RiskScorecardEnforcementTest(unittest.TestCase):
         post = out["target_weights_post_scorecard_clip"]
         self.assertAlmostEqual(post["SPY"], 0.53, places=4)
         self.assertAlmostEqual(post["CASH"], 0.47, places=4)
+        self.assertTrue(out["post_clip_compliance"]["compliant"])
+
+
+class RiskStyleEnforcementTest(unittest.TestCase):
+    def test_style_multiplier_tightens_scorecard_delta_and_adds_cash_floor(self):
+        out = apply_style_constraints(
+            target_weights={"SPY": 0.56, "CASH": 0.44},
+            base_weights={"SPY": 0.50, "CASH": 0.50},
+            current_weights={"SPY": 0.50, "CASH": 0.50},
+            market_scorecard={
+                "max_adjustment_from_base": 0.10,
+                "min_cash_weight": 0.20,
+            },
+            decision_style={
+                "analysis_style": "conservative",
+                "trade_style": "step_in",
+                "style_limits": {
+                    "max_adjustment_multiplier": 0.5,
+                    "min_cash_floor_addition": 0.10,
+                },
+            },
+        )
+
+        post = out["target_weights_post_style_clip"]
+        self.assertAlmostEqual(post["SPY"], 0.55, places=4)
+        self.assertGreaterEqual(post["CASH"], 0.30)
+        self.assertTrue(any(v.startswith("style_max_delta:SPY") for v in out["violations"]))
+        self.assertTrue(out["post_clip_compliance"]["compliant"])
+
+    def test_style_blocks_new_positions_and_caps_new_buys(self):
+        out = apply_style_constraints(
+            target_weights={"AAA": 0.10, "BBB": 0.09, "CASH": 0.81},
+            base_weights={"CASH": 1.0},
+            current_weights={"CASH": 1.0},
+            market_scorecard={"max_adjustment_from_base": 1.0, "min_cash_weight": 0.0},
+            decision_style={
+                "analysis_style": "macro_defensive",
+                "trade_style": "risk_reduce_fast",
+                "style_limits": {
+                    "allow_new_positions": False,
+                    "max_new_buys_per_cycle": 0,
+                },
+            },
+        )
+
+        post = out["target_weights_post_style_clip"]
+        self.assertEqual(post, {"CASH": 1.0})
+        self.assertTrue(any(v.startswith("style_new_position_blocked:AAA") for v in out["violations"]))
+        self.assertTrue(out["post_clip_compliance"]["compliant"])
+
+    def test_style_turnover_scales_toward_current(self):
+        out = apply_style_constraints(
+            target_weights={"AAA": 0.60, "CASH": 0.40},
+            base_weights={"AAA": 0.0, "CASH": 1.0},
+            current_weights={"AAA": 0.0, "CASH": 1.0},
+            market_scorecard={"max_adjustment_from_base": 1.0, "min_cash_weight": 0.0},
+            decision_style={
+                "analysis_style": "low_turnover",
+                "trade_style": "hold_unless_strong",
+                "style_limits": {
+                    "max_turnover_per_cycle": 0.20,
+                    "max_single_trade_pct": 1.0,
+                },
+            },
+        )
+
+        post = out["target_weights_post_style_clip"]
+        self.assertAlmostEqual(post["AAA"], 0.20, places=4)
+        self.assertAlmostEqual(post["CASH"], 0.80, places=4)
+        self.assertTrue(any(v.startswith("style_turnover_scaled:") for v in out["violations"]))
+        self.assertTrue(out["post_clip_compliance"]["compliant"])
+
+    def test_cash_only_style_moves_all_equity_to_cash(self):
+        out = apply_style_constraints(
+            target_weights={"SPY": 0.4, "CASH": 0.6},
+            base_weights={"SPY": 0.4, "CASH": 0.6},
+            current_weights={"SPY": 0.4, "CASH": 0.6},
+            market_scorecard={"min_cash_weight": 0.0},
+            decision_style={
+                "analysis_style": "macro_defensive",
+                "trade_style": "cash_only",
+                "style_limits": {},
+            },
+        )
+
+        self.assertEqual(out["target_weights_post_style_clip"], {"CASH": 1.0})
         self.assertTrue(out["post_clip_compliance"]["compliant"])
 
 

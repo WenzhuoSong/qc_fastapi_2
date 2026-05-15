@@ -84,6 +84,9 @@ class EvidenceBundleTest(unittest.TestCase):
         self.assertEqual(bundle["strategies"]["snapshot_count"], 30)
         self.assertEqual(bundle["strategies"]["forward_return_samples"], 12)
         self.assertEqual(bundle["strategies"]["data_quality"], "fresh")
+        self.assertIn("news_evidence", bundle)
+        self.assertEqual(bundle["news_evidence"]["macro_news_score"]["overall_bias"], "positive")
+        self.assertIn("ticker_news_scores", bundle["news_evidence"])
         self.assertEqual(bundle["data_quality"]["overall"], "fresh")
 
     def test_missing_playground_uses_fallback_and_marks_missing_quality(self):
@@ -105,6 +108,47 @@ class EvidenceBundleTest(unittest.TestCase):
         self.assertEqual(strategies["data_quality"], "missing")
         self.assertIn("No recent Playground result available", strategies["warnings"][0])
         self.assertEqual(bundle["data_quality"]["overall"], "missing")
+        self.assertEqual(bundle["news_evidence"]["macro_news_score"]["data_quality"], "limited")
+
+    def test_accepts_prebuilt_news_evidence(self):
+        prebuilt_news = {
+            "macro_news_score": {
+                "overall_bias": "negative",
+                "confidence": "high",
+                "dominant_themes": ["credit stress"],
+                "market_impact": "high",
+                "time_horizon": "intraday",
+                "data_quality": "fresh",
+                "warnings": [],
+            },
+            "ticker_news_scores": {
+                "XLF": {
+                    "bias": "negative",
+                    "action_bias": "block_new_buy",
+                    "effective_credibility": 0.9,
+                    "supporting_items": [],
+                    "conflicting_items": [],
+                }
+            },
+            "hard_risk_events": {"XLF": ["credit_stress"]},
+            "ignored_items": [],
+            "data_gaps": [],
+        }
+
+        bundle = build_evidence_bundle(
+            brief={
+                "key_facts": {},
+                "sector_rotation": {},
+                "news_context": {"macro_signals": [{"direction": "positive"}]},
+                "holdings": [{"ticker": "SPY"}],
+            },
+            quant_baseline={"regime_result": {"regime": "unknown", "confidence": "low"}},
+            playground_bundle=None,
+            news_evidence=prebuilt_news,
+        )
+
+        self.assertIs(bundle["news_evidence"], prebuilt_news)
+        self.assertEqual(bundle["news_evidence"]["macro_news_score"]["overall_bias"], "negative")
 
     def test_high_turnover_strategy_adds_warning(self):
         bundle = build_evidence_bundle(

@@ -62,6 +62,18 @@ def _valid_scorecard_compliance() -> dict:
     }
 
 
+def _valid_style_compliance() -> dict:
+    return {
+        "analysis_style_used": "balanced",
+        "trade_style_used": "normal_rebalance",
+        "style_limits_respected": True,
+        "news_bias_used": "positive macro news confirmed quant signal",
+        "sizing_adjustment": "normal sizing within style limits",
+        "blocked_or_clipped_actions": [],
+        "known_limitations": [],
+    }
+
+
 class SynthesizerContractTest(unittest.TestCase):
     def test_validate_rejects_string_market_judgment(self):
         with self.assertRaisesRegex(ValueError, "market_judgment must be dict"):
@@ -71,6 +83,7 @@ class SynthesizerContractTest(unittest.TestCase):
                 "decision_rationale": "test",
                 "market_judgment": "bullish",
                 "scorecard_compliance": _valid_scorecard_compliance(),
+                "style_compliance": _valid_style_compliance(),
             })
 
     def test_validate_rejects_missing_scorecard_compliance(self):
@@ -84,6 +97,21 @@ class SynthesizerContractTest(unittest.TestCase):
                     "adjusted_confidence": 0.74,
                     "uncertainty_flag": False,
                 },
+                "style_compliance": _valid_style_compliance(),
+            })
+
+    def test_validate_rejects_missing_style_compliance(self):
+        with self.assertRaisesRegex(ValueError, "style_compliance"):
+            _validate({
+                "reasoning_chain": _valid_reasoning_chain(),
+                "adjusted_weights": {"SPY": 0.8, "CASH": 0.2},
+                "decision_rationale": "test",
+                "market_judgment": {
+                    "regime": "bull_trend",
+                    "adjusted_confidence": 0.74,
+                    "uncertainty_flag": False,
+                },
+                "scorecard_compliance": _valid_scorecard_compliance(),
             })
 
     def test_normalize_preserves_structured_regime(self):
@@ -99,6 +127,7 @@ class SynthesizerContractTest(unittest.TestCase):
                     "uncertainty_flag": False,
                 },
                 "scorecard_compliance": _valid_scorecard_compliance(),
+                "style_compliance": _valid_style_compliance(),
             },
             base_weights={"SPY": 0.8, "CASH": 0.2},
             allowed_tickers={"SPY", "CASH"},
@@ -112,7 +141,9 @@ class SynthesizerContractTest(unittest.TestCase):
         self.assertEqual(out["market_judgment"]["adjusted_confidence"], 0.74)
         self.assertFalse(out["market_judgment"]["uncertainty_flag"])
         self.assertIn("scorecard_compliance", out)
+        self.assertIn("style_compliance", out)
         self.assertFalse(out["scorecard_compliance"]["scorecard_non_compliant"])
+        self.assertFalse(out["style_compliance"]["style_non_compliant"])
 
     def test_normalize_marks_scorecard_non_compliance(self):
         out = _normalize(
@@ -127,6 +158,7 @@ class SynthesizerContractTest(unittest.TestCase):
                     "uncertainty_flag": False,
                 },
                 "scorecard_compliance": _valid_scorecard_compliance(),
+                "style_compliance": _valid_style_compliance(),
             },
             base_weights={"SPY": 0.5, "CASH": 0.5},
             allowed_tickers={"SPY", "CASH"},
@@ -145,6 +177,43 @@ class SynthesizerContractTest(unittest.TestCase):
 
         compliance = out["scorecard_compliance"]
         self.assertTrue(compliance["scorecard_non_compliant"])
+        self.assertFalse(compliance["python_validation"]["compliant"])
+        self.assertTrue(compliance["python_validation"]["violations"])
+
+    def test_normalize_marks_style_non_compliance(self):
+        out = _normalize(
+            {
+                "reasoning_chain": _valid_reasoning_chain(),
+                "adjusted_weights": {"SPY": 0.8, "QQQ": 0.05, "CASH": 0.15},
+                "decision_rationale": "test",
+                "recommended_stance": "overweight",
+                "market_judgment": {
+                    "regime": "bull_trend",
+                    "adjusted_confidence": 0.74,
+                    "uncertainty_flag": False,
+                },
+                "scorecard_compliance": _valid_scorecard_compliance(),
+                "style_compliance": _valid_style_compliance(),
+            },
+            base_weights={"SPY": 0.7, "CASH": 0.3},
+            allowed_tickers={"SPY", "QQQ", "CASH"},
+            max_single_position=1.0,
+            bull_output={"overall_confidence": "high"},
+            bear_output={"overall_confidence": "low"},
+            research_report={},
+            decision_style={
+                "analysis_style": "conservative",
+                "trade_style": "step_in",
+                "style_limits": {
+                    "max_adjustment_multiplier": 0.6,
+                    "max_new_buys_per_cycle": 0,
+                    "allow_new_positions": False,
+                },
+            },
+        )
+
+        compliance = out["style_compliance"]
+        self.assertTrue(compliance["style_non_compliant"])
         self.assertFalse(compliance["python_validation"]["compliant"])
         self.assertTrue(compliance["python_validation"]["violations"])
 

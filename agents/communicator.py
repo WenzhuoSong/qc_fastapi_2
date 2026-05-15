@@ -34,6 +34,7 @@ Hard format:
 - Include 5 blocks: long/short debate summary / market view / rebalance / risk result / command hints (only include command hints if approved is true)
 - Debate summary: Bull/Bear confidence and resolution (1–2 lines)
 - Include market scorecard condition, permission, data quality, and any clipping/blocking details when present
+- Include news bias/confidence, analysis style, trade style, and style clipping/blocking details when present
 - Do not invent numbers — only repeat fields you are given
 - No graphical characters beyond emoji
 - CRITICAL: For SEMI_AUTO mode (when auth_mode == "SEMI_AUTO") AND approved is true, you MUST include clickable command options at the end: <b>/confirm</b>  <b>/skip</b>  <b>/pause</b>
@@ -119,8 +120,14 @@ def _build_payload(
     mj = researcher_out.get("market_judgment", {}) or {}
     debate = researcher_out.get("debate_summary") or {}
     scorecard = pipeline_context.get("market_scorecard") or {}
+    news_evidence = pipeline_context.get("news_evidence") or {}
+    decision_style = pipeline_context.get("decision_style") or {}
     enforcement = risk_out.get("scorecard_enforcement") or {}
+    style_enforcement = risk_out.get("style_enforcement") or {}
     compliance = enforcement.get("post_clip_compliance") or {}
+    style_compliance = style_enforcement.get("post_clip_compliance") or {}
+    macro_news = news_evidence.get("macro_news_score") or {}
+    synth_style = researcher_out.get("style_compliance") or {}
     return {
         "approved":         bool(risk_out.get("approved", False)),
         "regime":           mj.get("regime", "neutral"),
@@ -150,6 +157,38 @@ def _build_payload(
             "post_clip": enforcement.get("target_weights_post_scorecard_clip") or {},
             "post_clip_compliant": compliance.get("compliant"),
         },
+        "news_evidence": {
+            "overall_bias": macro_news.get("overall_bias"),
+            "confidence": macro_news.get("confidence"),
+            "market_impact": macro_news.get("market_impact"),
+            "data_quality": macro_news.get("data_quality"),
+            "hard_risk_events": news_evidence.get("hard_risk_events") or {},
+            "data_gaps": (news_evidence.get("data_gaps") or [])[:3],
+        },
+        "decision_style": {
+            "analysis_style": decision_style.get("analysis_style"),
+            "trade_style": decision_style.get("trade_style"),
+            "style_reason": decision_style.get("style_reason"),
+            "dominant_style_constraint": decision_style.get("dominant_style_constraint"),
+            "weighted_conviction": decision_style.get("weighted_conviction"),
+            "style_limits": decision_style.get("style_limits") or {},
+        },
+        "style_compliance": {
+            "analysis_style_used": synth_style.get("analysis_style_used"),
+            "trade_style_used": synth_style.get("trade_style_used"),
+            "news_bias_used": synth_style.get("news_bias_used"),
+            "sizing_adjustment": synth_style.get("sizing_adjustment"),
+            "blocked_or_clipped_actions": synth_style.get("blocked_or_clipped_actions") or [],
+            "style_non_compliant": synth_style.get("style_non_compliant"),
+        },
+        "style_enforcement": {
+            "applied": style_enforcement.get("applied"),
+            "violations": style_enforcement.get("violations") or [],
+            "pre_clip": style_enforcement.get("target_weights_pre_style_clip") or {},
+            "post_clip": style_enforcement.get("target_weights_post_style_clip") or {},
+            "post_clip_compliant": style_compliance.get("compliant"),
+            "one_way_tightening_ok": style_enforcement.get("one_way_tightening_ok"),
+        },
         "auth_mode":        pipeline_context.get("auth_mode", "SEMI_AUTO"),
         "timeout_minutes":  settings.semi_auto_timeout_minutes,
         "debate_summary":   debate,
@@ -169,6 +208,9 @@ def _fallback_template(p: dict) -> str:
     debate   = p.get("debate_summary") or {}
     scorecard = p.get("market_scorecard") or {}
     enforcement = p.get("scorecard_enforcement") or {}
+    news = p.get("news_evidence") or {}
+    style = p.get("decision_style") or {}
+    style_enforcement = p.get("style_enforcement") or {}
 
     up, down = "\u25b2", "\u25bc"
 
@@ -190,6 +232,9 @@ def _fallback_template(p: dict) -> str:
 
     scorecard_line = _format_scorecard_line(scorecard)
     enforcement_line = _format_enforcement_line(enforcement)
+    news_line = _format_news_line(news)
+    style_line = _format_style_line(style)
+    style_enforcement_line = _format_style_enforcement_line(style_enforcement)
 
     if not approved:
         reasons_text = "\n".join(f"  - {r}" for r in p["rejection_reasons"]) or "  - No reason provided"
@@ -199,8 +244,11 @@ def _fallback_template(p: dict) -> str:
             f"{debate_line}"
             f"🌡️ Regime: {regime}\n"
             f"📊 Stance: {stance}\n\n"
+            f"{news_line}"
+            f"{style_line}"
             f"{scorecard_line}"
             f"{enforcement_line}"
+            f"{style_enforcement_line}"
             f"<b>Failed checks:</b>\n{reasons_text}\n\n"
             f"No execution this round — wait for the next analysis."
         )
@@ -230,8 +278,11 @@ def _fallback_template(p: dict) -> str:
         f"{debate_line}"
         f"🌡️ Regime: {regime}\n"
         f"📊 Stance: {stance}\n\n"
+        f"{news_line}"
+        f"{style_line}"
         f"{scorecard_line}"
         f"{enforcement_line}"
+        f"{style_enforcement_line}"
         f"<b>Suggested actions</b>\n"
         f"{actions_str}\n\n"
         f"💰 Est. cost: {cost:.2%}\n"
@@ -268,6 +319,47 @@ def _format_enforcement_line(enforcement: dict) -> str:
     extra = f" (+{len(violations) - 3} more)" if len(violations) > 3 else ""
     return (
         f"<b>Risk clipping</b>\n"
+        f"  {shown}{extra}\n\n"
+    )
+
+
+def _format_news_line(news: dict) -> str:
+    if not news or not news.get("overall_bias"):
+        return ""
+    hard = news.get("hard_risk_events") or {}
+    hard_text = f" | hard_risk={','.join(sorted(hard.keys())[:3])}" if hard else ""
+    return (
+        f"<b>News evidence</b>\n"
+        f"  bias={news.get('overall_bias')} | confidence={news.get('confidence')} "
+        f"| impact={news.get('market_impact')} | data={news.get('data_quality')}"
+        f"{hard_text}\n\n"
+    )
+
+
+def _format_style_line(style: dict) -> str:
+    if not style or not style.get("analysis_style"):
+        return ""
+    reason = str(style.get("style_reason") or style.get("dominant_style_constraint") or "")[:90]
+    conviction = style.get("weighted_conviction")
+    conviction_text = f" | conviction={float(conviction):.2f}" if isinstance(conviction, (int, float)) else ""
+    return (
+        f"<b>Decision style</b>\n"
+        f"  analysis={style.get('analysis_style')} | trade={style.get('trade_style')}"
+        f"{conviction_text}\n"
+        f"  reason: {reason}\n\n"
+    )
+
+
+def _format_style_enforcement_line(enforcement: dict) -> str:
+    if not enforcement:
+        return ""
+    violations = enforcement.get("violations") or []
+    if not violations:
+        return ""
+    shown = "; ".join(str(v) for v in violations[:3])
+    extra = f" (+{len(violations) - 3} more)" if len(violations) > 3 else ""
+    return (
+        f"<b>Style clipping</b>\n"
         f"  {shown}{extra}\n\n"
     )
 

@@ -37,10 +37,34 @@ class CommunicatorScorecardTest(unittest.TestCase):
                     "require_human_confirmation": True,
                     "reasons": ["Only 7 snapshots"],
                 },
+                "news_evidence": {
+                    "macro_news_score": {
+                        "overall_bias": "negative",
+                        "confidence": "high",
+                        "market_impact": "high",
+                        "data_quality": "fresh",
+                    },
+                    "hard_risk_events": {"XLF": ["credit_stress"]},
+                },
+                "decision_style": {
+                    "analysis_style": "macro_defensive",
+                    "trade_style": "risk_reduce_fast",
+                    "style_reason": "credit stress blocks risk expansion",
+                    "weighted_conviction": -0.42,
+                    "style_limits": {"allow_new_positions": False},
+                },
             },
             {
                 "market_judgment": {"regime": "bull_trend", "adjusted_confidence": 0.6},
                 "recommended_stance": "overweight",
+                "style_compliance": {
+                    "analysis_style_used": "macro_defensive",
+                    "trade_style_used": "risk_reduce_fast",
+                    "news_bias_used": "negative high-impact news",
+                    "sizing_adjustment": "reduced risk",
+                    "blocked_or_clipped_actions": ["new buys blocked"],
+                    "style_non_compliant": False,
+                },
             },
             {
                 "approved": True,
@@ -53,11 +77,22 @@ class CommunicatorScorecardTest(unittest.TestCase):
                     "target_weights_post_scorecard_clip": {"SPY": 0.53, "CASH": 0.47},
                     "post_clip_compliance": {"compliant": True},
                 },
+                "style_enforcement": {
+                    "applied": True,
+                    "violations": ["style_new_position_blocked:XLF 10.00%->0.00%"],
+                    "target_weights_pre_style_clip": {"XLF": 0.1, "CASH": 0.9},
+                    "target_weights_post_style_clip": {"CASH": 1.0},
+                    "post_clip_compliance": {"compliant": True},
+                    "one_way_tightening_ok": True,
+                },
             },
         )
 
         self.assertEqual(payload["market_scorecard"]["market_condition"], "bullish_but_mixed")
         self.assertEqual(payload["scorecard_enforcement"]["violations"][0], "max_delta:SPY 70.00%->53.00%")
+        self.assertEqual(payload["news_evidence"]["overall_bias"], "negative")
+        self.assertEqual(payload["decision_style"]["analysis_style"], "macro_defensive")
+        self.assertEqual(payload["style_enforcement"]["violations"][0], "style_new_position_blocked:XLF 10.00%->0.00%")
 
     def test_fallback_template_shows_scorecard_and_clipping(self):
         text = _fallback_template(
@@ -82,6 +117,22 @@ class CommunicatorScorecardTest(unittest.TestCase):
                 "scorecard_enforcement": {
                     "violations": ["max_delta:SPY 70.00%->53.00%"],
                 },
+                "news_evidence": {
+                    "overall_bias": "negative",
+                    "confidence": "high",
+                    "market_impact": "high",
+                    "data_quality": "fresh",
+                    "hard_risk_events": {"XLF": ["credit_stress"]},
+                },
+                "decision_style": {
+                    "analysis_style": "macro_defensive",
+                    "trade_style": "risk_reduce_fast",
+                    "style_reason": "credit stress blocks risk expansion",
+                    "weighted_conviction": -0.42,
+                },
+                "style_enforcement": {
+                    "violations": ["style_new_position_blocked:XLF 10.00%->0.00%"],
+                },
             }
         )
 
@@ -89,6 +140,12 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("bullish_but_mixed", text)
         self.assertIn("Risk clipping", text)
         self.assertIn("max_delta:SPY", text)
+        self.assertIn("News evidence", text)
+        self.assertIn("bias=negative", text)
+        self.assertIn("Decision style", text)
+        self.assertIn("macro_defensive", text)
+        self.assertIn("Style clipping", text)
+        self.assertIn("style_new_position_blocked:XLF", text)
         self.assertIn("/confirm", text)
 
     def test_rejected_fallback_shows_scorecard(self):
@@ -111,10 +168,23 @@ class CommunicatorScorecardTest(unittest.TestCase):
                     "dominant_constraint": "stale_evidence",
                 },
                 "scorecard_enforcement": {},
+                "news_evidence": {
+                    "overall_bias": "neutral",
+                    "confidence": "low",
+                    "market_impact": "low",
+                    "data_quality": "stale",
+                },
+                "decision_style": {
+                    "analysis_style": "conservative",
+                    "trade_style": "hold_unless_strong",
+                    "style_reason": "stale data",
+                },
+                "style_enforcement": {},
             }
         )
 
         self.assertIn("Market scorecard", text)
+        self.assertIn("Decision style", text)
         self.assertIn("defensive_only", text)
         self.assertIn("Evidence bundle is stale", text)
         self.assertNotIn("/confirm", text)
