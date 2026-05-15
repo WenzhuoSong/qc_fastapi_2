@@ -60,6 +60,7 @@ class StrategyResult:
     feature_contract: dict[str, Any]
     data_quality: dict[str, Any]
     risk_profile: dict[str, Any]
+    memory_feedback: dict[str, Any]
     agent_interpretation: dict[str, Any]
 
 
@@ -104,8 +105,15 @@ async def run_playground(
     }
 
     names = strategy_names or DEFAULT_PLAYGROUND_STRATEGIES
+    memory_feedback = await _load_strategy_memory_feedback(regime.regime.value, names)
     results = [
-        _run_one_strategy(name, holdings, context, current_weights)
+        _run_one_strategy(
+            name,
+            holdings,
+            context,
+            current_weights,
+            memory_feedback=memory_feedback.get(name),
+        )
         for name in names
     ]
 
@@ -232,6 +240,7 @@ async def generate_playground_report(bundle: PlaygroundBundle) -> str:
             "Treat any replay metric with metric_reliability.level != high as weak evidence.",
             "If n_forward_return_samples is below the stated minimum, explicitly say performance metrics are not reliable yet.",
             "Check regime compatibility, data quality, yfinance-filled fields, turnover, and macro/news consistency.",
+            "Discount strategies with weak memory_feedback in the same regime; this is advisory and cannot bypass Risk Manager.",
             "Explicitly mention if a strategy should be discounted due to its failure modes.",
         ],
         "bundle": data,
@@ -265,6 +274,7 @@ def _run_one_strategy(
     holdings: list[dict],
     context: dict[str, Any],
     current_weights: dict[str, float],
+    memory_feedback: dict[str, Any] | None = None,
 ) -> StrategyResult:
     strategy = get_strategy(name)
     readiness = strategy.data_readiness(holdings)
@@ -296,10 +306,44 @@ def _run_one_strategy(
         feature_contract=feature_contract,
         data_quality=_build_data_quality(readiness, holdings, strategy.required_fields),
         risk_profile=_build_risk_profile(weights, turnover, estimate_cost_pct(actions)),
+        memory_feedback=memory_feedback or _neutral_memory_feedback(name, context.get("regime", "")),
         agent_interpretation=_build_agent_interpretation(
-            strategy, scored, weights, context, readiness, feature_contract
+            strategy, scored, weights, context, readiness, feature_contract, memory_feedback
         ),
     )
+
+
+async def _load_strategy_memory_feedback(
+    regime: str,
+    strategy_names: list[str],
+) -> dict[str, dict[str, Any]]:
+    try:
+        from services.memory_feedback import build_strategy_memory_feedback
+
+        return await build_strategy_memory_feedback(regime, strategy_names)
+    except Exception as exc:
+        logger.warning("[playground] strategy memory feedback failed: %s", exc)
+        return {
+            name: _neutral_memory_feedback(name, regime, "memory feedback unavailable")
+            for name in strategy_names
+        }
+
+
+def _neutral_memory_feedback(
+    strategy_name: str,
+    regime: str,
+    reason: str = "not evaluated",
+) -> dict[str, Any]:
+    return {
+        "strategy_name": strategy_name,
+        "regime": regime,
+        "sample_size": 0,
+        "avg_decision_quality_score": None,
+        "discount_multiplier": 1.0,
+        "confidence": "low",
+        "advisory_note": f"neutral memory feedback: {reason}",
+        "can_bypass_risk_manager": False,
+    }
 
 
 def _required_fields_for_strategies(strategy_names: list[str]) -> set[str]:
@@ -447,6 +491,7 @@ def _build_agent_interpretation(
     context: dict[str, Any],
     readiness: dict[str, Any],
     feature_contract: dict[str, Any] | None = None,
+    memory_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     selected = [ticker for ticker, weight in weights.items() if ticker != "CASH" and weight > 0.01]
     top_scores = [item.ticker for item in scored[:3]]
@@ -460,6 +505,8 @@ def _build_agent_interpretation(
         what = "The strategy finds no sufficiently attractive non-cash allocation."
 
     invalidate = _strategy_invalidation_hint(strategy.family, context.get("regime"))
+    memory = memory_feedback or _neutral_memory_feedback(strategy.name, context.get("regime", ""))
+    discount = float(memory.get("discount_multiplier") or 1.0)
     return {
         "what_it_is_saying": what,
         "top_score_tickers": top_scores,
@@ -469,11 +516,14 @@ def _build_agent_interpretation(
             "Do not select a strategy solely because its replay Sharpe is highest.",
             "Check whether its regime assumptions match current market regime and sector rotation.",
             "Check data quality, especially fields filled by yfinance rather than QC snapshots.",
+            "Check memory feedback; same-regime underperformance reduces advisory weight only.",
             "Check turnover and estimated cost before giving it decision weight.",
             "Compare top picks against macro, news, risk, and position-manager constraints.",
         ],
         "feature_contract_verdict": contract.get("verdict"),
         "can_influence_allocation": contract.get("can_influence_allocation"),
+        "memory_discount_multiplier": discount,
+        "memory_feedback_note": memory.get("advisory_note"),
     }
 
 
@@ -515,8 +565,19 @@ def compute_consensus_weights(results: list[StrategyResult]) -> dict[str, float]
     if not ready_results:
         return {"CASH": 1.0}
     tickers = sorted({ticker for result in ready_results for ticker in result.weights})
+    strategy_multipliers = {
+        result.strategy_name: max(0.0, float((result.memory_feedback or {}).get("discount_multiplier") or 1.0))
+        for result in ready_results
+    }
+    multiplier_total = sum(strategy_multipliers.values())
+    if multiplier_total <= 0:
+        strategy_multipliers = {result.strategy_name: 1.0 for result in ready_results}
+        multiplier_total = float(len(ready_results))
     averaged = {
-        ticker: sum(float(result.weights.get(ticker, 0.0)) for result in ready_results) / len(ready_results)
+        ticker: sum(
+            float(result.weights.get(ticker, 0.0)) * strategy_multipliers[result.strategy_name]
+            for result in ready_results
+        ) / multiplier_total
         for ticker in tickers
     }
     total = sum(averaged.values())

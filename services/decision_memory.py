@@ -101,6 +101,17 @@ async def write_decision_context(
             market_judgment = synthesizer_out.get("market_judgment") or {}
             uncertainty_flag = market_judgment.get("uncertainty_flag", False)
             key_events_list = synthesizer_out.get("key_events") or []
+            playground_assessment = synthesizer_out.get("playground_strategy_assessment") or {}
+            playground_selected_strategies: list[str] = []
+            if playground_assessment:
+                try:
+                    from services.memory_feedback import extract_playground_strategy_names
+
+                    playground_selected_strategies = extract_playground_strategy_names(
+                        playground_assessment
+                    )
+                except Exception:
+                    playground_selected_strategies = []
 
             # Extract regime confidence
             regime_confidence = None
@@ -127,6 +138,8 @@ async def write_decision_context(
                     "impact_bias": market_judgment.get("impact_bias"),
                     "uncertainty_flag": uncertainty_flag,
                 },
+                "playground_strategy_assessment": playground_assessment,
+                "playground_selected_strategies": playground_selected_strategies,
                 # outcome may have portfolio_return_pct and decision_quality_score
                 "outcome_portfolio_return_pct": outcome.get("portfolio_return_pct"),
                 "outcome_decision_quality_score": decision_quality,

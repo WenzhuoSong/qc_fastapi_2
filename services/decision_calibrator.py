@@ -95,7 +95,7 @@ class DecisionCalibrator:
                 f"[DECISION_CALIBRATOR] Only {len(records)} samples (need {MIN_SAMPLE_SIZE}), "
                 f"skipping calibration"
             )
-            return _degraded_result(f"insufficient_data_{len(records)}")
+            return _degraded_result(f"insufficient_data_{len(records)}", sample_size=len(records))
 
         # Group by researcher_confidence
         groups: dict[str, list[MemoryDaily]] = {level: [] for level in CONFIDENCE_LEVELS}
@@ -246,12 +246,12 @@ async def calibrate_decisions(trading_date: Optional[date] = None) -> Calibratio
     return await calibrator.calibrate_after_execution(trading_date=trading_date)
 
 
-def _degraded_result(reason: str) -> CalibrationResult:
+def _degraded_result(reason: str, sample_size: int = 0) -> CalibrationResult:
     return CalibrationResult(
         calibration_timestamp=datetime.utcnow().isoformat(),
         per_level_accuracy={"high": 0.0, "medium": 0.0, "low": 0.0},
         bias_multipliers={"high": 1.0, "medium": 1.0, "low": 1.0},
-        sample_size=0,
+        sample_size=sample_size,
         confidence="low",
         recommendations=[f"Calibration skipped: {reason}"],
     )

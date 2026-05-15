@@ -261,6 +261,54 @@ class SectorRotationTests(unittest.TestCase):
         self.assertIn("turnover", result.risk_profile)
         self.assertTrue(result.data_quality["ready"])
 
+    def test_playground_consensus_discounts_weak_memory_feedback(self):
+        holdings = [
+            {
+                "ticker": "SPY",
+                "mom_20d": 0.02,
+                "mom_60d": 0.05,
+                "mom_252d": 0.12,
+                "rsi_14": 55,
+                "atr_pct": 0.011,
+                "hist_vol_20d": 0.14,
+            },
+            {
+                "ticker": "QQQ",
+                "mom_20d": 0.04,
+                "mom_60d": 0.08,
+                "mom_252d": 0.20,
+                "rsi_14": 68,
+                "atr_pct": 0.018,
+                "hist_vol_20d": 0.22,
+            },
+        ]
+        context = {
+            "regime": "trending_bull",
+            "risk_params": {"max_single_position": 0.20, "min_cash_pct": 0.05},
+        }
+        strong = _run_one_strategy(
+            "momentum_lite_v1",
+            holdings,
+            context,
+            {},
+            memory_feedback={"discount_multiplier": 1.0, "advisory_note": "ok"},
+        )
+        weak = _run_one_strategy(
+            "equal_weight_benchmark",
+            holdings,
+            context,
+            {},
+            memory_feedback={"discount_multiplier": 0.5, "advisory_note": "discounted"},
+        )
+
+        from services.playground import compute_consensus_weights
+
+        consensus = compute_consensus_weights([strong, weak])
+
+        self.assertEqual(strong.memory_feedback["discount_multiplier"], 1.0)
+        self.assertEqual(weak.agent_interpretation["memory_discount_multiplier"], 0.5)
+        self.assertAlmostEqual(sum(consensus.values()), 1.0, places=4)
+
 
 if __name__ == "__main__":
     unittest.main()

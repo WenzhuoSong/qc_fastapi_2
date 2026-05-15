@@ -191,7 +191,23 @@ def _get_researcher_confidence(analysis) -> str | None:
     """Extract researcher confidence level from researcher's output."""
     researcher_out = analysis.researcher_output or {}
     market_judgment = researcher_out.get("market_judgment") or {}
-    return market_judgment.get("confidence")
+    raw = (
+        market_judgment.get("confidence")
+        or researcher_out.get("overall_confidence")
+        or (researcher_out.get("market_regime") or {}).get("confidence")
+    )
+    if raw in ("high", "medium", "low"):
+        return raw
+    adjusted = market_judgment.get("adjusted_confidence")
+    try:
+        score = float(adjusted)
+    except (TypeError, ValueError):
+        return None
+    if score >= 0.75:
+        return "high"
+    if score >= 0.45:
+        return "medium"
+    return "low"
 
 
 # ── DQS Backfill Helpers ────────────────────────────────────────────────────────

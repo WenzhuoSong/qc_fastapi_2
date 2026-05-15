@@ -132,7 +132,7 @@ Resolution:
 
 ### 5. Memory feedback must affect behavior
 
-Status: open
+Status: done
 
 Problem:
 `memory_daily`, decision context, DQS, and calibration exist, but memory is still
@@ -148,6 +148,20 @@ Acceptance criteria:
 - Playground or Synthesizer discounts strategies that historically underperform
   in similar regimes.
 - Memory feedback is advisory first and cannot bypass Risk Manager.
+
+Resolution:
+- Added `services/memory_feedback.py` to convert same-regime historical DQS into
+  conservative per-strategy advisory discounts.
+- Playground now attaches `memory_feedback` to each strategy result and weights
+  advisory consensus by each strategy's memory discount multiplier.
+- Synthesizer compact Playground input includes memory feedback, while retaining
+  Risk Manager as the hard execution gate.
+- Daily decision memory now stores Playground strategy assessment and extracted
+  selected strategy names for future feedback.
+- Fixed calibration bookkeeping to report insufficient sample counts accurately
+  and improved researcher-confidence extraction from the current synthesizer
+  schema.
+- Added tests in `tests/test_memory_feedback.py` and updated Playground tests.
 
 ## P1 Issues
 

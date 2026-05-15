@@ -352,7 +352,8 @@ def _build_user_message(
         "Output final adjusted_weights + decision_rationale + market_judgment + recommended_stance + "
         "weight_adjustments + consensus/divergence + key_events + debate_resolution. "
         "If Strategy Playground is present, also include playground_strategy_assessment with "
-        "selected_strategy, blend_weights, and reasoning. JSON only."
+        "selected_strategy, blend_weights, discounted_strategies, and reasoning; respect "
+        "memory_feedback discounts as advisory only. JSON only."
     )
 
     # ── Inject Structured Disagreement Map ──────────────────────
@@ -401,6 +402,7 @@ def _build_playground_section(playground_bundle: dict | None) -> str:
                 "selected_tickers": item.get("selected_tickers"),
                 "expected_turnover_pct": item.get("expected_turnover_pct"),
                 "estimated_cost_pct": item.get("estimated_cost_pct"),
+                "memory_feedback": item.get("memory_feedback"),
             }
             for item in (playground_bundle.get("strategies") or [])
         ],
