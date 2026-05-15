@@ -167,7 +167,7 @@ Resolution:
 
 ### 6. Field provenance and freshness
 
-Status: open
+Status: done
 
 Problem:
 Downstream agents need to know whether fields came from QC live snapshots, QC
@@ -180,6 +180,17 @@ Acceptance criteria:
 - Key fields include source and as-of date where practical.
 - yfinance-filled fields are visible in Playground data quality.
 - Stale fields are tagged and reduce readiness/confidence.
+
+Resolution:
+- Added `services/feature_provenance.py` for source/as-of annotations and
+  compact freshness summaries.
+- Market Brief now annotates QC heartbeat and QC daily snapshot fields with
+  provenance and exposes `feature_provenance` to downstream agents.
+- Researcher prompt includes a data provenance and freshness section.
+- Playground data quality includes provenance summaries, keeping yfinance-filled
+  and stale fields visible alongside existing strategy feature-contract gates.
+- Added tests in `tests/test_feature_provenance.py` and updated snapshot merge
+  provenance coverage.
 
 ### 7. Execution audit depth
 

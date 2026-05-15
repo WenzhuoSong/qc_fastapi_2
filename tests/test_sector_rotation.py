@@ -106,6 +106,8 @@ class SectorRotationTests(unittest.TestCase):
         self.assertEqual(xlk["weight_current"], 0.2)
         self.assertEqual(xlk["volume"], 123)
         self.assertEqual(xlk["mom_60d"], 0.01)
+        sources = {item["source"] for item in xlk["feature_sources"]}
+        self.assertEqual(sources, {"qc_heartbeat", "qc_daily_snapshot"})
         self.assertTrue(any(row["ticker"] == "XLP" for row in merged["holdings"]))
 
     def test_feature_snapshot_can_stand_alone_as_holdings(self):
@@ -113,7 +115,12 @@ class SectorRotationTests(unittest.TestCase):
 
         normalized = _normalize_feature_snapshot(payload)
 
-        self.assertEqual(normalized["holdings"], payload["features"])
+        self.assertEqual(normalized["holdings"][0]["ticker"], "XLK")
+        self.assertEqual(normalized["holdings"][0]["mom_60d"], 0.08)
+        self.assertEqual(
+            normalized["holdings"][0]["feature_sources"][0]["source"],
+            "qc_daily_snapshot",
+        )
 
     def test_playground_prefers_daily_feature_snapshot_for_same_day(self):
         heartbeat_row = SimpleNamespace(

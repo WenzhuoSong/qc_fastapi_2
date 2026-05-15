@@ -26,6 +26,11 @@ from sqlalchemy import desc, select
 from constants import RISK_ON_SECTORS, RISK_OFF_SECTORS
 from db.models import MacroNewsCache, QCSnapshot, TickerNewsLibrary
 from db.session import AsyncSessionLocal
+from services.feature_provenance import (
+    annotate_snapshot_row_provenance,
+    merge_feature_sources,
+    summarize_feature_provenance,
+)
 from services.sector_rotation import detect_sector_rotation, format_rotation_for_prompt
 from services.universe_policy import filter_tradable_research_rows
 
@@ -68,6 +73,7 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
 
     key_facts = _compute_key_facts(holdings, portfolio)
     sector_rotation = detect_sector_rotation(holdings)
+    feature_provenance = summarize_feature_provenance(holdings)
 
     prose = _build_prose(key_facts, holdings, sector_rotation)
 
@@ -83,6 +89,7 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
         "current_weights":    current_weights,
         "portfolio":          portfolio,
         "news_context":       news_context,
+        "feature_provenance": feature_provenance,
         "sector_rotation":    sector_rotation,
         "sector_rotation_section": format_rotation_for_prompt(sector_rotation),
     }
@@ -157,16 +164,35 @@ def _normalize_feature_snapshot(snapshot: dict) -> dict:
     """Use features as holdings when only a daily feature snapshot exists."""
     out = dict(snapshot)
     if not out.get("holdings") and out.get("features"):
-        out["holdings"] = out.get("features") or []
+        as_of = out.get("timestamp_utc") or out.get("received_at") or out.get("trading_date")
+        trading_date = out.get("trading_date") or as_of
+        out["holdings"] = [
+            annotate_snapshot_row_provenance(
+                row,
+                source="qc_daily_snapshot",
+                as_of=as_of,
+                trading_date=trading_date,
+            )
+            for row in (out.get("features") or [])
+        ]
     return out
 
 
 def _merge_market_snapshots(heartbeat: dict, feature_snapshot: dict) -> dict:
     """Overlay richer daily feature fields onto live heartbeat holdings."""
     merged = dict(heartbeat)
+    heartbeat_as_of = heartbeat.get("timestamp_utc") or heartbeat.get("received_at") or heartbeat.get("trading_date")
+    heartbeat_trading_date = heartbeat.get("trading_date") or heartbeat_as_of
+    feature_as_of = feature_snapshot.get("timestamp_utc") or feature_snapshot.get("received_at") or feature_snapshot.get("trading_date")
+    feature_trading_date = feature_snapshot.get("trading_date") or feature_as_of
     feature_rows = feature_snapshot.get("features") or feature_snapshot.get("holdings") or []
     features_by_ticker = {
-        (row.get("ticker") or "").upper().strip(): row
+        (row.get("ticker") or "").upper().strip(): annotate_snapshot_row_provenance(
+            row,
+            source="qc_daily_snapshot",
+            as_of=feature_as_of,
+            trading_date=feature_trading_date,
+        )
         for row in feature_rows
         if row.get("ticker")
     }
@@ -175,7 +201,15 @@ def _merge_market_snapshots(heartbeat: dict, feature_snapshot: dict) -> dict:
     for row in heartbeat.get("holdings") or []:
         ticker = (row.get("ticker") or "").upper().strip()
         feature_row = features_by_ticker.get(ticker) or {}
-        enriched_holdings.append({**feature_row, **row})
+        live_row = annotate_snapshot_row_provenance(
+            row,
+            source="qc_heartbeat",
+            as_of=heartbeat_as_of,
+            trading_date=heartbeat_trading_date,
+        )
+        merged_row = {**feature_row, **live_row}
+        merged_row["feature_sources"] = merge_feature_sources(feature_row, live_row)
+        enriched_holdings.append(merged_row)
 
     heartbeat_tickers = {
         (row.get("ticker") or "").upper().strip()

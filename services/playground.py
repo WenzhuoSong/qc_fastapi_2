@@ -25,6 +25,7 @@ from services.quant_baseline import classify_market_regime
 from services.sector_rotation import detect_sector_rotation
 from services.strategy_feature_contract import build_strategy_feature_contract
 from services.universe_policy import filter_tradable_research_rows
+from services.feature_provenance import summarize_feature_provenance
 from strategies import ScoredTicker, compute_rebalance_actions, estimate_cost_pct, get_strategy
 
 logger = logging.getLogger("qc_fastapi_2.playground")
@@ -459,6 +460,7 @@ def _build_data_quality(
             for source, fields in sorted(filled_by_source.items())
             if fields
         },
+        "provenance_summary": summarize_feature_provenance(holdings),
     }
 
 

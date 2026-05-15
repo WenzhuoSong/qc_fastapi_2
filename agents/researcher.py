@@ -384,6 +384,7 @@ def _build_user_message(
     key_facts = brief.get("key_facts") or {}
     sector_rotation = brief.get("sector_rotation") or {}
     sector_rotation_section = brief.get("sector_rotation_section") or "(none)"
+    feature_provenance = brief.get("feature_provenance") or {}
 
     base_weights    = quant_baseline.get("base_weights") or {}
     current_weights = brief.get("current_weights") or {}
@@ -426,6 +427,8 @@ def _build_user_message(
         f"{sector_rotation_section}\n\n"
         "Structured rotation signal:\n"
         f"{json.dumps(sector_rotation, ensure_ascii=False, indent=2)}\n\n"
+        "## Data provenance and freshness\n"
+        f"{json.dumps(feature_provenance, ensure_ascii=False, indent=2)}\n\n"
         "## Macro news\n"
         f"{macro}\n\n"
         "## Calendar this week\n"
