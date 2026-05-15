@@ -109,6 +109,14 @@ SYNTHESIZER_COT_SCHEMA = """
     "regime": "bull_trend" | "bull_weak" | "neutral" | "bear_weak" | "bear_trend" | "high_vol",
     "adjusted_confidence": <float between 0.0 and 1.0>,
     "uncertainty_flag": true | false
+  },
+
+  "scorecard_compliance": {
+    "scorecard_alignment": "aligned" | "partially_aligned" | "conflict",
+    "action_permission_used": "copy investment_permission from market_scorecard",
+    "data_quality_adjustment": "how data quality affected sizing",
+    "why_this_trade_is_reasonable": "one sentence, <= 120 chars",
+    "known_limitations": ["limitation or warning"]
   }
 }
 
@@ -145,6 +153,9 @@ You receive:
     · Typical deviation from base_weights ±5%; up to ±10% only with explicit justification in weight_adjustments.reason
     · If Bull/Bear confidences are both middling and close, set uncertainty_flag=true and prefer conservative weights
     · Strategy Playground may guide strategy selection/blending, but never overrides hard risk constraints.
+    · Market Scorecard permissions are hard PM constraints. If market_scorecard says small_overweight_only,
+      limited data, hold_or_trim, reduce_risk_only, or cash_only, your adjusted_weights must reflect that.
+    · You must include scorecard_compliance and it must honestly explain how the final weights obey the scorecard.
 
 【regime (exactly one of 6)】
     bull_trend / bull_weak / neutral / bear_weak / bear_trend / high_vol
@@ -232,11 +243,14 @@ async def run_synthesizer_async(
     max_single_position = float(risk_params.get("max_single_position", 0.20))
 
     allowed_tickers = _collect_allowed_tickers(brief, base_weights)
+    market_scorecard = brief.get("market_scorecard") or {}
 
     user_payload = _build_user_message(
         research_report, bull_output, bear_output, base_weights, risk_params, regime_result,
         debate_summary=debate_summary,
         playground_bundle=playground_bundle,
+        market_scorecard=market_scorecard,
+        evidence_bundle=brief.get("evidence_bundle") or {},
     )
 
     client = _get_client()
@@ -280,6 +294,7 @@ async def run_synthesizer_async(
                 bull_output=bull_output,
                 bear_output=bear_output,
                 research_report=research_report,
+                market_scorecard=market_scorecard,
             )
             result["_token_usage"] = {
                 "prompt_tokens": resp.usage.prompt_tokens,
@@ -314,6 +329,8 @@ def _build_user_message(
     regime_result: dict | None = None,
     debate_summary: dict | None = None,   # NEW: structured disagreement_map
     playground_bundle: dict | None = None,
+    market_scorecard: dict | None = None,
+    evidence_bundle: dict | None = None,
 ) -> str:
     max_pos = float(risk_params.get("max_single_position", 0.20))
     min_cash = float(risk_params.get("min_cash_pct", 0.05))
@@ -332,8 +349,29 @@ def _build_user_message(
             f"Constraint: {regime_result.get('constraints', {}).get('llm_instruction', '')}\n\n"
         )
 
+    scorecard = market_scorecard or {}
+    evidence = evidence_bundle or {}
+    scorecard_block = ""
+    if scorecard:
+        scorecard_block = (
+            "## Market Scorecard (hard PM permission contract)\n"
+            f"{json.dumps(scorecard, ensure_ascii=False, indent=2)}\n\n"
+            "You must obey investment_permission, max_adjustment_from_base, "
+            "max_equity_weight, min_cash_weight, allow_new_positions, and "
+            "max_turnover_per_cycle. If evidence is limited or missing, use smaller "
+            "tilts and explain the data-quality adjustment in scorecard_compliance.\n\n"
+        )
+    evidence_block = ""
+    if evidence:
+        evidence_block = (
+            "## Evidence Bundle Summary\n"
+            f"{json.dumps(_compact_evidence_bundle(evidence), ensure_ascii=False, indent=2)}\n\n"
+        )
+
     user_payload = (
         f"{regime_block}"
+        f"{scorecard_block}"
+        f"{evidence_block}"
         "## Research report summary\n"
         f"market_regime: {json.dumps(regime, ensure_ascii=False)}\n"
         f"macro_outlook: {json.dumps(macro, ensure_ascii=False)}\n"
@@ -351,6 +389,8 @@ def _build_user_message(
         "## Your task (PM)\n"
         "Output final adjusted_weights + decision_rationale + market_judgment + recommended_stance + "
         "weight_adjustments + consensus/divergence + key_events + debate_resolution. "
+        "Include scorecard_compliance with scorecard_alignment, action_permission_used, "
+        "data_quality_adjustment, why_this_trade_is_reasonable, and known_limitations. "
         "If Strategy Playground is present, also include playground_strategy_assessment with "
         "selected_strategy, blend_weights, discounted_strategies, and reasoning; respect "
         "memory_feedback discounts as advisory only. JSON only."
@@ -381,6 +421,24 @@ def _build_user_message(
             )
 
     return user_payload
+
+
+def _compact_evidence_bundle(bundle: dict) -> dict:
+    return {
+        "generated_at": bundle.get("generated_at"),
+        "max_age_seconds": bundle.get("max_age_seconds"),
+        "market": bundle.get("market") or {},
+        "rotation": bundle.get("rotation") or {},
+        "strategies": {
+            "playground_available": (bundle.get("strategies") or {}).get("playground_available"),
+            "snapshot_count": (bundle.get("strategies") or {}).get("snapshot_count"),
+            "forward_return_samples": (bundle.get("strategies") or {}).get("forward_return_samples"),
+            "data_quality": (bundle.get("strategies") or {}).get("data_quality"),
+            "consensus_top5": (bundle.get("strategies") or {}).get("consensus_top5") or [],
+            "turnover_warnings": (bundle.get("strategies") or {}).get("turnover_warnings") or [],
+        },
+        "data_quality": bundle.get("data_quality") or {},
+    }
 
 
 def _build_playground_section(playground_bundle: dict | None) -> str:
@@ -444,6 +502,7 @@ def _validate(out: dict) -> None:
         "adjusted_weights",
         "decision_rationale",
         "market_judgment",
+        "scorecard_compliance",
     ]
     missing = [k for k in required if k not in out]
     if missing:
@@ -479,6 +538,21 @@ def _validate(out: dict) -> None:
         if key not in market_judgment:
             raise ValueError(f"market_judgment missing field: {key}")
 
+    scorecard_compliance = out.get("scorecard_compliance")
+    if not isinstance(scorecard_compliance, dict):
+        raise ValueError(
+            f"scorecard_compliance must be dict, got {type(scorecard_compliance).__name__}"
+        )
+    for key in (
+        "scorecard_alignment",
+        "action_permission_used",
+        "data_quality_adjustment",
+        "why_this_trade_is_reasonable",
+        "known_limitations",
+    ):
+        if key not in scorecard_compliance:
+            raise ValueError(f"scorecard_compliance missing field: {key}")
+
 
 def _normalize(
     out: dict,
@@ -489,6 +563,7 @@ def _normalize(
     bull_output: dict,
     bear_output: dict,
     research_report: dict,
+    market_scorecard: dict | None = None,
 ) -> dict:
     # Defensive: guard against non-dict inputs leaking through (e.g., error strings)
     if not isinstance(bull_output, dict):
@@ -549,6 +624,12 @@ def _normalize(
         max_single_position=max_single_position,
         fallback=base_weights,
     )
+    scorecard_compliance = _normalize_scorecard_compliance(
+        out.get("scorecard_compliance") or {},
+        base_weights=base_weights,
+        adjusted_weights=adjusted,
+        market_scorecard=market_scorecard or {},
+    )
 
     actual_adjustments = _compute_adjustments(base_weights, adjusted)
 
@@ -598,8 +679,94 @@ def _normalize(
             if isinstance(out.get("playground_strategy_assessment"), dict)
             else {}
         ),
+        "scorecard_compliance": scorecard_compliance,
         # Task 5: Chain-of-Thought reasoning chain
         "reasoning_chain":     reasoning_chain,
+    }
+
+
+def _normalize_scorecard_compliance(
+    raw: dict,
+    *,
+    base_weights: dict,
+    adjusted_weights: dict,
+    market_scorecard: dict,
+) -> dict:
+    if not isinstance(raw, dict):
+        raw = {}
+    python_check = _check_scorecard_weight_compliance(
+        base_weights=base_weights,
+        adjusted_weights=adjusted_weights,
+        market_scorecard=market_scorecard,
+    )
+    return {
+        "scorecard_alignment": str(raw.get("scorecard_alignment") or "partially_aligned")[:50],
+        "action_permission_used": str(
+            raw.get("action_permission_used")
+            or market_scorecard.get("investment_permission")
+            or "unknown"
+        )[:80],
+        "data_quality_adjustment": str(raw.get("data_quality_adjustment") or "")[:300],
+        "why_this_trade_is_reasonable": str(raw.get("why_this_trade_is_reasonable") or "")[:300],
+        "known_limitations": (
+            raw.get("known_limitations")[:8]
+            if isinstance(raw.get("known_limitations"), list)
+            else []
+        ),
+        "python_validation": python_check,
+        "scorecard_non_compliant": not python_check["compliant"],
+    }
+
+
+def _check_scorecard_weight_compliance(
+    *,
+    base_weights: dict,
+    adjusted_weights: dict,
+    market_scorecard: dict,
+) -> dict:
+    violations: list[str] = []
+    if not market_scorecard:
+        return {"compliant": True, "violations": [], "checked": False}
+
+    max_delta = float(market_scorecard.get("max_adjustment_from_base", 1.0) or 1.0)
+    max_equity = float(market_scorecard.get("max_equity_weight", 1.0) or 1.0)
+    min_cash = float(market_scorecard.get("min_cash_weight", 0.0) or 0.0)
+    allow_new = bool(market_scorecard.get("allow_new_positions", True))
+    permission = str(market_scorecard.get("investment_permission") or "")
+
+    for ticker in set(base_weights) | set(adjusted_weights):
+        if ticker == "CASH":
+            continue
+        base = float(base_weights.get(ticker, 0.0) or 0.0)
+        adjusted = float(adjusted_weights.get(ticker, 0.0) or 0.0)
+        delta = adjusted - base
+        if abs(delta) > max_delta + 1e-6:
+            violations.append(
+                f"{ticker} delta {delta:.2%} exceeds scorecard max {max_delta:.2%}"
+            )
+        if not allow_new and base <= 0.01 and adjusted > 0.01:
+            violations.append(f"{ticker} new position not allowed by scorecard")
+
+    equity = sum(float(v or 0.0) for t, v in adjusted_weights.items() if t != "CASH")
+    cash = float(adjusted_weights.get("CASH", 0.0) or 0.0)
+    if equity > max_equity + 1e-6:
+        violations.append(f"equity {equity:.2%} exceeds scorecard max {max_equity:.2%}")
+    if cash < min_cash - 1e-6:
+        violations.append(f"cash {cash:.2%} below scorecard floor {min_cash:.2%}")
+    if permission == "cash_only" and equity > 1e-6:
+        violations.append("cash_only permission forbids non-cash exposure")
+
+    return {
+        "compliant": not violations,
+        "violations": violations,
+        "checked": True,
+        "limits": {
+            "investment_permission": permission,
+            "max_adjustment_from_base": max_delta,
+            "max_equity_weight": max_equity,
+            "min_cash_weight": min_cash,
+            "allow_new_positions": allow_new,
+        },
     }
 
 
@@ -844,6 +1011,15 @@ def _degraded_output(
             bull_output, bear_output, synth_stub,
             researcher_signals=research_report.get("ticker_signals_dict"),
         ),
+        "scorecard_compliance": {
+            "scorecard_alignment": "partially_aligned",
+            "action_permission_used": "degraded_fallback",
+            "data_quality_adjustment": "PM LLM failed; using Stage 2 baseline weights",
+            "why_this_trade_is_reasonable": "baseline fallback avoids unsupported LLM changes",
+            "known_limitations": [degraded_reason],
+            "python_validation": {"compliant": True, "violations": [], "checked": False},
+            "scorecard_non_compliant": False,
+        },
         # Task 5: Chain-of-Thought (degraded fallback)
         "reasoning_chain": {
             "_degraded": True,

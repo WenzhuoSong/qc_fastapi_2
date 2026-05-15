@@ -1,0 +1,286 @@
+"""
+Evidence bundle builder.
+
+This module gathers existing pipeline outputs into one factual contract for
+downstream agents. It does not decide target weights; market_scorecard.py turns
+this evidence into action permissions.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+
+DEFAULT_MAX_AGE_SECONDS = 1800
+
+
+def build_evidence_bundle(
+    *,
+    brief: dict[str, Any] | None,
+    quant_baseline: dict[str, Any] | None,
+    playground_bundle: dict[str, Any] | None = None,
+    max_age_seconds: int = DEFAULT_MAX_AGE_SECONDS,
+) -> dict[str, Any]:
+    brief = brief or {}
+    quant = quant_baseline or {}
+    playground = playground_bundle or None
+
+    market = _build_market_section(brief, quant)
+    rotation = brief.get("sector_rotation") or {}
+    news = _build_news_section(brief)
+    strategies = _build_strategy_section(playground)
+    memory = _build_memory_section(brief)
+    data_quality = _build_data_quality_section(
+        news=news,
+        strategies=strategies,
+        memory=memory,
+        brief=brief,
+    )
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "max_age_seconds": int(max_age_seconds),
+        "source_timestamps": _build_source_timestamps(brief, playground),
+        "market": market,
+        "rotation": rotation,
+        "news": news,
+        "strategies": strategies,
+        "memory": memory,
+        "data_quality": data_quality,
+    }
+
+
+def _build_market_section(brief: dict[str, Any], quant: dict[str, Any]) -> dict[str, Any]:
+    regime_result = quant.get("regime_result") or {}
+    signals = regime_result.get("signals") or {}
+    key_facts = brief.get("key_facts") or {}
+    portfolio = brief.get("portfolio") or {}
+
+    return {
+        "regime": regime_result.get("regime") or "unknown",
+        "regime_confidence": regime_result.get("confidence") or "low",
+        "regime_reasoning": regime_result.get("reasoning"),
+        "spy_mom_20d": _first_number(signals, "spy_mom_20d"),
+        "spy_mom_60d": _first_number(signals, "spy_mom_60d", fallback=key_facts.get("spy_mom_60d")),
+        "spy_mom_252d": _first_number(signals, "spy_mom_252d"),
+        "spy_rsi": _first_number(signals, "spy_rsi"),
+        "spy_atr_pct": _first_number(signals, "spy_atr_pct"),
+        "vix": _first_number(signals, "vix", fallback=portfolio.get("vix")),
+        "drawdown_pct": _first_number(
+            signals,
+            "drawdown",
+            fallback=key_facts.get("drawdown_pct", portfolio.get("current_drawdown_pct")),
+        ),
+        "breadth_pct": _to_float(key_facts.get("breadth_pct")),
+        "avg_atr_pct": _to_float(key_facts.get("avg_atr_pct")),
+        "risk_on_score": _to_float(key_facts.get("risk_on_score")),
+        "top5_momentum": key_facts.get("top5_momentum") or [],
+        "bottom5_momentum": key_facts.get("bottom5_momentum") or [],
+        "n_etfs": key_facts.get("n_etfs"),
+    }
+
+
+def _build_news_section(brief: dict[str, Any]) -> dict[str, Any]:
+    context = brief.get("news_context") or {}
+    warnings: list[str] = []
+    if context.get("_stale_warning"):
+        warnings.append(str(context["_stale_warning"]))
+    warnings.extend(str(item) for item in context.get("data_gaps") or [])
+
+    data_quality = "fresh"
+    if context.get("_fallback") or context.get("data_gaps"):
+        data_quality = "limited"
+    if context.get("_stale_warning"):
+        data_quality = "stale"
+    if not context and not brief.get("macro_news_section"):
+        data_quality = "missing"
+        warnings.append("No structured news context or macro news section available")
+
+    return {
+        "macro_signals": context.get("macro_signals") or [],
+        "ticker_signals": context.get("ticker_signals") or {},
+        "calendar_events": brief.get("calendar_section") or "",
+        "macro_news_section_present": bool(brief.get("macro_news_section")),
+        "per_ticker_news_count": sum(len(v) for v in (brief.get("per_ticker_news") or {}).values()),
+        "hard_risk_tickers": sorted((brief.get("hard_risks_map") or {}).keys()),
+        "data_quality": data_quality,
+        "warnings": _unique(warnings),
+    }
+
+
+def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]:
+    if not playground:
+        return {
+            "playground_available": False,
+            "snapshot_count": 0,
+            "forward_return_samples": 0,
+            "consensus_top5": [],
+            "strategy_results": [],
+            "turnover_warnings": [],
+            "data_quality": "missing",
+            "warnings": [
+                "No recent Playground result available; strategy comparison cannot influence allocation"
+            ],
+        }
+
+    replay_metrics = playground.get("replay_metrics") or {}
+    forward_samples = _max_forward_samples(replay_metrics)
+    strategy_results = _strategy_results(playground)
+    max_turnover = max(
+        [_to_float(item.get("turnover"), 0.0) for item in strategy_results] or [0.0]
+    )
+    warnings = list(playground.get("data_gaps") or [])
+    turnover_warnings: list[str] = []
+    if max_turnover > 0.50:
+        turnover_warnings.append(f"Strategy turnover {max_turnover:.1%} may erode returns")
+
+    snapshot_count = int(_to_float(playground.get("snapshot_count"), 0))
+    data_quality = "fresh"
+    if snapshot_count < 20 or forward_samples < 10:
+        data_quality = "limited"
+    if not strategy_results:
+        data_quality = "missing"
+        warnings.append("Playground has no strategy results")
+
+    return {
+        "playground_available": True,
+        "generated_at": playground.get("generated_at"),
+        "regime_label": playground.get("regime_label"),
+        "regime_confidence": playground.get("regime_confidence"),
+        "snapshot_count": snapshot_count,
+        "forward_return_samples": forward_samples,
+        "consensus_top5": _top_weights(playground.get("consensus_weights") or {}),
+        "consensus_weights": playground.get("consensus_weights") or {},
+        "strategy_results": strategy_results,
+        "turnover_warnings": turnover_warnings,
+        "data_quality": data_quality,
+        "warnings": _unique([str(item) for item in warnings] + turnover_warnings),
+    }
+
+
+def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
+    replay_metrics = playground.get("replay_metrics") or {}
+    out: list[dict[str, Any]] = []
+    for item in playground.get("strategies") or []:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("strategy_name")
+        metrics = replay_metrics.get(name) or {}
+        risk_profile = item.get("risk_profile") or {}
+        turnover = _to_float(
+            risk_profile.get("turnover"),
+            _to_float(item.get("expected_turnover_pct"), _to_float(metrics.get("avg_turnover"))),
+        )
+        out.append(
+            {
+                "strategy_name": name,
+                "data_ready": bool(item.get("data_ready")),
+                "can_influence_allocation": bool(
+                    (item.get("feature_contract") or {}).get("can_influence_allocation", item.get("data_ready"))
+                ),
+                "regime_fit": item.get("regime_fit"),
+                "turnover": turnover,
+                "estimated_cost_pct": _to_float(item.get("estimated_cost_pct")),
+                "selected_tickers": item.get("selected_tickers") or [],
+                "metric_reliability": metrics.get("metric_reliability") or {},
+                "n_forward_return_samples": metrics.get("n_forward_return_samples"),
+            }
+        )
+    return out
+
+
+def _build_memory_section(brief: dict[str, Any]) -> dict[str, Any]:
+    memory = brief.get("memory_context") or {}
+    warnings = list(memory.get("data_gaps") or [])
+    return {
+        "has_memory": bool(memory.get("has_memory")),
+        "recent_regime_trend": memory.get("regime_trend"),
+        "recent_days": memory.get("recent_days") or [],
+        "recent_weeks": memory.get("recent_weeks") or [],
+        "warnings": _unique(str(item) for item in warnings),
+    }
+
+
+def _build_data_quality_section(
+    *,
+    news: dict[str, Any],
+    strategies: dict[str, Any],
+    memory: dict[str, Any],
+    brief: dict[str, Any],
+) -> dict[str, Any]:
+    warnings: list[str] = []
+    warnings.extend(news.get("warnings") or [])
+    warnings.extend(str(item) for item in strategies.get("warnings") or [])
+    warnings.extend(str(item) for item in memory.get("warnings") or [])
+    if not brief.get("holdings"):
+        warnings.append("No holdings available in market brief")
+
+    levels = {
+        str(news.get("data_quality") or "unknown"),
+        str(strategies.get("data_quality") or "unknown"),
+    }
+    if "missing" in levels:
+        overall = "missing"
+    elif "stale" in levels:
+        overall = "stale"
+    elif "limited" in levels:
+        overall = "limited"
+    else:
+        overall = "fresh"
+
+    return {
+        "overall": overall,
+        "warnings": _unique(warnings),
+    }
+
+
+def _build_source_timestamps(brief: dict[str, Any], playground: dict[str, Any] | None) -> dict[str, Any]:
+    macro_context = brief.get("news_context") or {}
+    return {
+        "macro_news_cache": macro_context.get("processed_at"),
+        "playground": (playground or {}).get("generated_at"),
+    }
+
+
+def _top_weights(weights: dict[str, Any], n: int = 5) -> list[dict[str, Any]]:
+    rows = [
+        {"ticker": str(ticker), "weight": round(_to_float(weight), 4)}
+        for ticker, weight in (weights or {}).items()
+        if ticker != "CASH" and _to_float(weight) > 0
+    ]
+    rows.sort(key=lambda item: item["weight"], reverse=True)
+    return rows[:n]
+
+
+def _max_forward_samples(replay_metrics: dict[str, Any]) -> int:
+    samples = []
+    for item in replay_metrics.values():
+        if isinstance(item, dict):
+            samples.append(int(_to_float(item.get("n_forward_return_samples"), 0)))
+    return max(samples) if samples else 0
+
+
+def _first_number(mapping: dict[str, Any], key: str, fallback: Any = None) -> float | None:
+    value = mapping.get(key)
+    if value is None:
+        value = fallback
+    return _to_float(value, None)
+
+
+def _to_float(value: Any, default: float | None = 0.0) -> float | None:
+    try:
+        return float(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _unique(values) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        text = str(value)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out

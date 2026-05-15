@@ -46,6 +46,8 @@ from services.market_brief    import build_market_brief
 from services.quant_baseline  import run_quant_baseline_async
 from services.position_manager import apply_position_constraints
 from services.playground      import run_playground
+from services.evidence_bundle import build_evidence_bundle
+from services.market_scorecard import build_market_scorecard
 from services.execution_audit import build_execution_audit_payload, count_today_actual_execution_actions
 from strategies              import compute_rebalance_actions, estimate_cost_pct
 from tracking.wandb_client   import PipelineRunTracker
@@ -624,6 +626,36 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         )
     except Exception as e:
         logger.warning(f"Stage 2c Playground skipped: {e}")
+
+    # Stage 2d: Evidence bundle + market scorecard contracts (no execution effect yet)
+    evidence_bundle = build_evidence_bundle(
+        brief=brief,
+        quant_baseline=quant_baseline,
+        playground_bundle=playground_bundle,
+    )
+    market_scorecard = build_market_scorecard(evidence_bundle)
+    brief["evidence_bundle"] = evidence_bundle
+    brief["market_scorecard"] = market_scorecard
+    pipeline_context["market_scorecard"] = market_scorecard
+    logger.info(
+        "Stage 2d Evidence Scorecard done | "
+        f"condition={market_scorecard.get('market_condition')} "
+        f"| permission={market_scorecard.get('investment_permission')} "
+        f"| data_quality={market_scorecard.get('data_quality')} "
+        f"| dominant={market_scorecard.get('dominant_constraint')}"
+    )
+    await _save_step_log(
+        analysis_id, "2d_evidence_scorecard", "evidence_scorecard",
+        input_data={
+            "playground_available": bool(playground_bundle),
+            "regime": (quant_baseline.get("regime_result") or {}).get("regime"),
+        },
+        output_data={
+            "evidence_bundle": evidence_bundle,
+            "market_scorecard": market_scorecard,
+        },
+        duration_ms=0,
+    )
 
     # Stage 3: RESEARCHER (LLM) -- info synthesis (analysis only, no decisions)
     t0 = time.time()

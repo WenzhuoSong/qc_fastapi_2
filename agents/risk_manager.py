@@ -36,6 +36,7 @@ from strategies import (
     estimate_cost_pct,
 )
 from tools.db_tools import tool_write_approval_token
+from services.market_scorecard import is_evidence_stale
 
 logger = logging.getLogger("qc_fastapi_2.risk_mgr")
 
@@ -87,6 +88,12 @@ async def run_risk_manager_async(
     portfolio = brief.get("portfolio") or {}
     holdings = brief.get("holdings") or []
     critical_alerts = brief.get("critical_alerts") or []
+    market_scorecard = (
+        pipeline_context.get("market_scorecard")
+        or brief.get("market_scorecard")
+        or {}
+    )
+    evidence_bundle = brief.get("evidence_bundle") or {}
 
     # ═══ 3-layer overlay chain ═══
     overlays_applied: list[str] = []
@@ -127,6 +134,18 @@ async def run_risk_manager_async(
         )
 
     target_weights = _normalize_weights(working)
+    scorecard_enforcement = apply_scorecard_constraints(
+        target_weights=target_weights,
+        base_weights=quant_baseline.get("base_weights") or {},
+        market_scorecard=market_scorecard,
+    )
+    target_weights = scorecard_enforcement["target_weights_post_scorecard_clip"]
+    if scorecard_enforcement["violations"]:
+        overlays_applied.append("scorecard_constraints")
+        logger.warning(
+            "[RiskMgr] scorecard constraints adjusted target weights | "
+            f"violations={scorecard_enforcement['violations']}"
+        )
 
     # ═══ rebalance_actions + cost ═══
     rebalance_threshold = float(risk_params.get("rebalance_threshold", 0.02))
@@ -143,6 +162,36 @@ async def run_risk_manager_async(
         portfolio=portfolio,
         risk_params=risk_params,
     )
+    scorecard_check = scorecard_enforcement["post_clip_compliance"]
+    checks["scorecard_ok"] = {
+        "pass": bool(scorecard_check.get("compliant", True)),
+        "actual": scorecard_check,
+        "threshold": "market_scorecard",
+    }
+    if not scorecard_check.get("compliant", True):
+        reasons.extend(scorecard_check.get("violations") or [])
+
+    evidence_stale = bool(evidence_bundle and is_evidence_stale(evidence_bundle))
+    if evidence_stale:
+        checks["evidence_fresh_ok"] = {
+            "pass": False,
+            "actual": "stale",
+            "threshold": evidence_bundle.get("max_age_seconds"),
+        }
+        reasons.append("Evidence bundle is stale; execution requires fresh market evidence")
+
+    human_required = bool(market_scorecard.get("require_human_confirmation"))
+    full_auto_blocked = (
+        pipeline_context.get("auth_mode") == "FULL_AUTO"
+        and human_required
+    )
+    if full_auto_blocked:
+        checks["human_confirmation_ok"] = {
+            "pass": False,
+            "actual": "required",
+            "threshold": "FULL_AUTO must not execute scorecard-human-required proposal",
+        }
+        reasons.append("Market scorecard requires human confirmation; FULL_AUTO execution blocked")
 
     approved = all(c["pass"] for c in checks.values())
     failed_checks = {name: c for name, c in checks.items() if not c["pass"]}
@@ -157,6 +206,7 @@ async def run_risk_manager_async(
         "rejection_reasons":   reasons,
         "failed_checks":       failed_checks,
         "n_holdings":          _count_non_cash(target_weights),
+        "scorecard_enforcement": scorecard_enforcement,
         "reviewed_at":         datetime.utcnow().isoformat(),
     }
 
@@ -306,6 +356,198 @@ def _apply_critical_alerts_overlay(
 
 
 # ═══════════════════════════════════════════════════════════════
+# Scorecard hard constraints
+# ═══════════════════════════════════════════════════════════════
+
+
+def apply_scorecard_constraints(
+    *,
+    target_weights: dict[str, float],
+    base_weights: dict[str, float],
+    market_scorecard: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Enforce Market Scorecard limits using cash-first redistribution.
+
+    Freed or clipped equity goes to CASH. We do not proportionally re-expand
+    equity after clipping because that can violate reduce-risk constraints.
+    """
+    scorecard = market_scorecard or {}
+    pre = _normalize_weights(target_weights)
+    if not scorecard:
+        return {
+            "applied": False,
+            "target_weights_pre_scorecard_clip": pre,
+            "target_weights_post_scorecard_clip": pre,
+            "violations": [],
+            "clip_log": [],
+            "post_clip_compliance": _check_scorecard_compliance(pre, base_weights, scorecard),
+        }
+
+    base = _clean_weight_map(base_weights)
+    work = _clean_weight_map(pre)
+    work.setdefault("CASH", 0.0)
+    clip_log: list[str] = []
+
+    permission = str(scorecard.get("investment_permission") or "")
+    if permission == "cash_only":
+        for ticker in list(work):
+            if ticker != "CASH" and work.get(ticker, 0.0) > 0:
+                clip_log.append(f"cash_only:{ticker} {work[ticker]:.2%}->0.00%")
+                work[ticker] = 0.0
+        work["CASH"] = 1.0
+        post = _cash_first_normalize(work)
+        return _scorecard_enforcement_result(pre, post, base, scorecard, clip_log)
+
+    max_delta = _optional_float(scorecard.get("max_adjustment_from_base"))
+    max_single = _optional_float(scorecard.get("max_single_position"))
+    allow_new = bool(scorecard.get("allow_new_positions", True))
+
+    # Per-position caps. Any freed weight is retained as CASH.
+    for ticker in list(work.keys()):
+        if ticker == "CASH":
+            continue
+        current = float(work.get(ticker, 0.0) or 0.0)
+        base_w = float(base.get(ticker, 0.0) or 0.0)
+
+        if not allow_new and base_w <= 0.01 and current > 0.01:
+            work[ticker] = base_w
+            work["CASH"] += max(current - base_w, 0.0)
+            clip_log.append(f"new_position_blocked:{ticker} {current:.2%}->{base_w:.2%}")
+            current = work[ticker]
+
+        if max_delta is not None:
+            upper = base_w + max_delta
+            lower = max(base_w - max_delta, 0.0)
+            if current > upper:
+                work[ticker] = upper
+                work["CASH"] += current - upper
+                clip_log.append(f"max_delta:{ticker} {current:.2%}->{upper:.2%}")
+                current = upper
+            elif current < lower:
+                needed = lower - current
+                available_cash = max(float(work.get("CASH", 0.0) or 0.0), 0.0)
+                add_back = min(needed, available_cash)
+                if add_back > 0:
+                    work[ticker] = current + add_back
+                    work["CASH"] = available_cash - add_back
+                    clip_log.append(
+                        f"max_sell_delta:{ticker} {current:.2%}->{work[ticker]:.2%}"
+                    )
+                    current = work[ticker]
+
+        if max_single is not None and current > max_single:
+            work[ticker] = max_single
+            work["CASH"] += current - max_single
+            clip_log.append(f"max_single:{ticker} {current:.2%}->{max_single:.2%}")
+
+    # Portfolio-level equity cap sends excess to cash.
+    max_equity = _optional_float(scorecard.get("max_equity_weight"))
+    if max_equity is not None:
+        equity = _equity_sum(work)
+        if equity > max_equity + 1e-9:
+            scale = max_equity / equity if equity > 0 else 0.0
+            freed = 0.0
+            for ticker in list(work.keys()):
+                if ticker == "CASH":
+                    continue
+                old = work[ticker]
+                work[ticker] = old * scale
+                freed += old - work[ticker]
+            work["CASH"] = float(work.get("CASH", 0.0) or 0.0) + freed
+            clip_log.append(f"max_equity:{equity:.2%}->{max_equity:.2%}")
+
+    # Cash floor also reduces equity and moves proceeds to cash.
+    min_cash = _optional_float(scorecard.get("min_cash_weight"))
+    if min_cash is not None:
+        cash = float(work.get("CASH", 0.0) or 0.0)
+        if cash < min_cash - 1e-9:
+            shortfall = min_cash - cash
+            equity = _equity_sum(work)
+            if equity > 0:
+                target_equity = max(equity - shortfall, 0.0)
+                scale = target_equity / equity if equity > 0 else 0.0
+                for ticker in list(work.keys()):
+                    if ticker != "CASH":
+                        work[ticker] *= scale
+                work["CASH"] = min_cash
+                clip_log.append(f"min_cash:{cash:.2%}->{min_cash:.2%}")
+            else:
+                work["CASH"] = 1.0
+
+    post = _cash_first_normalize(work)
+    return _scorecard_enforcement_result(pre, post, base, scorecard, clip_log)
+
+
+def _scorecard_enforcement_result(
+    pre: dict[str, float],
+    post: dict[str, float],
+    base: dict[str, float],
+    scorecard: dict[str, Any],
+    clip_log: list[str],
+) -> dict[str, Any]:
+    compliance = _check_scorecard_compliance(post, base, scorecard)
+    return {
+        "applied": True,
+        "target_weights_pre_scorecard_clip": pre,
+        "target_weights_post_scorecard_clip": post,
+        "violations": clip_log,
+        "clip_log": clip_log,
+        "post_clip_compliance": compliance,
+    }
+
+
+def _check_scorecard_compliance(
+    weights: dict[str, float],
+    base_weights: dict[str, float],
+    scorecard: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not scorecard:
+        return {"compliant": True, "violations": [], "checked": False}
+
+    clean = _clean_weight_map(weights)
+    base = _clean_weight_map(base_weights)
+    violations: list[str] = []
+
+    max_delta = _optional_float(scorecard.get("max_adjustment_from_base"))
+    max_equity = _optional_float(scorecard.get("max_equity_weight"))
+    min_cash = _optional_float(scorecard.get("min_cash_weight"))
+    max_single = _optional_float(scorecard.get("max_single_position"))
+    allow_new = bool(scorecard.get("allow_new_positions", True))
+    permission = str(scorecard.get("investment_permission") or "")
+
+    for ticker, weight in clean.items():
+        if ticker == "CASH":
+            continue
+        base_w = float(base.get(ticker, 0.0) or 0.0)
+        if max_delta is not None and abs(weight - base_w) > max_delta + 1e-6:
+            violations.append(
+                f"{ticker} delta {(weight - base_w):.2%} exceeds scorecard max {max_delta:.2%}"
+            )
+        if max_single is not None and weight > max_single + 1e-6:
+            violations.append(
+                f"{ticker} weight {weight:.2%} exceeds scorecard single cap {max_single:.2%}"
+            )
+        if not allow_new and base_w <= 0.01 and weight > 0.01:
+            violations.append(f"{ticker} new position not allowed by scorecard")
+
+    equity = _equity_sum(clean)
+    cash = float(clean.get("CASH", 0.0) or 0.0)
+    if max_equity is not None and equity > max_equity + 1e-6:
+        violations.append(f"equity {equity:.2%} exceeds scorecard max {max_equity:.2%}")
+    if min_cash is not None and cash < min_cash - 1e-6:
+        violations.append(f"cash {cash:.2%} below scorecard floor {min_cash:.2%}")
+    if permission == "cash_only" and equity > 1e-6:
+        violations.append("cash_only permission forbids non-cash exposure")
+
+    return {
+        "compliant": not violations,
+        "violations": violations,
+        "checked": True,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
 # Six quantitative checks
 # ═══════════════════════════════════════════════════════════════
 
@@ -445,15 +687,7 @@ def _run_checks(
 
 def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
     """Renormalize after overlays so sum = 1.0 and weights are non-negative."""
-    cleaned: dict[str, float] = {}
-    for t, w in weights.items():
-        try:
-            wf = float(w)
-        except (TypeError, ValueError):
-            wf = 0.0
-        if wf < 0:
-            wf = 0.0
-        cleaned[t] = wf
+    cleaned = _clean_weight_map(weights)
 
     total = sum(cleaned.values())
     if total <= 0:
@@ -464,6 +698,59 @@ def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
     out = {t: round(w, 4) for t, w in scaled.items() if t != "CASH"}
     out["CASH"] = round(max(1.0 - sum(out.values()), 0.0), 4)
     return out
+
+
+def _cash_first_normalize(weights: dict[str, float]) -> dict[str, float]:
+    """
+    Normalize without re-expanding equity. Non-cash weights keep their clipped
+    absolute levels; CASH absorbs the remainder.
+    """
+    cleaned = _clean_weight_map(weights)
+    equity = _equity_sum(cleaned)
+    if equity >= 1.0:
+        scale = 1.0 / equity if equity > 0 else 0.0
+        out = {
+            ticker: round(weight * scale, 4)
+            for ticker, weight in cleaned.items()
+            if ticker != "CASH" and weight > 0
+        }
+        out["CASH"] = round(max(1.0 - sum(out.values()), 0.0), 4)
+        return out
+
+    out = {
+        ticker: round(weight, 4)
+        for ticker, weight in cleaned.items()
+        if ticker != "CASH" and weight > 0
+    }
+    out["CASH"] = round(max(1.0 - sum(out.values()), 0.0), 4)
+    return out
+
+
+def _clean_weight_map(weights: dict[str, Any] | None) -> dict[str, float]:
+    cleaned: dict[str, float] = {}
+    for t, w in (weights or {}).items():
+        ticker = str(t or "").upper().strip()
+        if not ticker:
+            continue
+        try:
+            wf = float(w)
+        except (TypeError, ValueError):
+            wf = 0.0
+        cleaned[ticker] = max(wf, 0.0)
+    return cleaned
+
+
+def _equity_sum(weights: dict[str, float]) -> float:
+    return sum(float(w or 0.0) for t, w in weights.items() if t != "CASH")
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _count_non_cash(weights: dict[str, float]) -> int:

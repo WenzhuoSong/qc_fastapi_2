@@ -33,6 +33,7 @@ Hard format:
 - Total length ≤ 800 characters
 - Include 5 blocks: long/short debate summary / market view / rebalance / risk result / command hints (only include command hints if approved is true)
 - Debate summary: Bull/Bear confidence and resolution (1–2 lines)
+- Include market scorecard condition, permission, data quality, and any clipping/blocking details when present
 - Do not invent numbers — only repeat fields you are given
 - No graphical characters beyond emoji
 - CRITICAL: For SEMI_AUTO mode (when auth_mode == "SEMI_AUTO") AND approved is true, you MUST include clickable command options at the end: <b>/confirm</b>  <b>/skip</b>  <b>/pause</b>
@@ -117,6 +118,9 @@ def _build_payload(
 ) -> dict:
     mj = researcher_out.get("market_judgment", {}) or {}
     debate = researcher_out.get("debate_summary") or {}
+    scorecard = pipeline_context.get("market_scorecard") or {}
+    enforcement = risk_out.get("scorecard_enforcement") or {}
+    compliance = enforcement.get("post_clip_compliance") or {}
     return {
         "approved":         bool(risk_out.get("approved", False)),
         "regime":           mj.get("regime", "neutral"),
@@ -129,6 +133,23 @@ def _build_payload(
         "estimated_cost":   risk_out.get("estimated_cost_pct", 0),
         "overlays_applied": risk_out.get("overlays_applied", []),
         "rejection_reasons":risk_out.get("rejection_reasons", []),
+        "market_scorecard": {
+            "market_condition": scorecard.get("market_condition"),
+            "investment_permission": scorecard.get("investment_permission"),
+            "confidence": scorecard.get("confidence"),
+            "data_quality": scorecard.get("data_quality"),
+            "dominant_constraint": scorecard.get("dominant_constraint"),
+            "require_human_confirmation": scorecard.get("require_human_confirmation"),
+            "reasons": (scorecard.get("reasons") or [])[:3],
+            "warnings": (scorecard.get("warnings") or [])[:3],
+        },
+        "scorecard_enforcement": {
+            "applied": enforcement.get("applied"),
+            "violations": enforcement.get("violations") or [],
+            "pre_clip": enforcement.get("target_weights_pre_scorecard_clip") or {},
+            "post_clip": enforcement.get("target_weights_post_scorecard_clip") or {},
+            "post_clip_compliant": compliance.get("compliant"),
+        },
         "auth_mode":        pipeline_context.get("auth_mode", "SEMI_AUTO"),
         "timeout_minutes":  settings.semi_auto_timeout_minutes,
         "debate_summary":   debate,
@@ -146,6 +167,8 @@ def _fallback_template(p: dict) -> str:
     cost     = float(p["estimated_cost"] or 0)
     overlays = p["overlays_applied"] or []
     debate   = p.get("debate_summary") or {}
+    scorecard = p.get("market_scorecard") or {}
+    enforcement = p.get("scorecard_enforcement") or {}
 
     up, down = "\u25b2", "\u25bc"
 
@@ -165,6 +188,9 @@ def _fallback_template(p: dict) -> str:
             debate_line += f"  → {resolution}\n"
         debate_line += "\n"
 
+    scorecard_line = _format_scorecard_line(scorecard)
+    enforcement_line = _format_enforcement_line(enforcement)
+
     if not approved:
         reasons_text = "\n".join(f"  - {r}" for r in p["rejection_reasons"]) or "  - No reason provided"
         return (
@@ -173,6 +199,8 @@ def _fallback_template(p: dict) -> str:
             f"{debate_line}"
             f"🌡️ Regime: {regime}\n"
             f"📊 Stance: {stance}\n\n"
+            f"{scorecard_line}"
+            f"{enforcement_line}"
             f"<b>Failed checks:</b>\n{reasons_text}\n\n"
             f"No execution this round — wait for the next analysis."
         )
@@ -202,6 +230,8 @@ def _fallback_template(p: dict) -> str:
         f"{debate_line}"
         f"🌡️ Regime: {regime}\n"
         f"📊 Stance: {stance}\n\n"
+        f"{scorecard_line}"
+        f"{enforcement_line}"
         f"<b>Suggested actions</b>\n"
         f"{actions_str}\n\n"
         f"💰 Est. cost: {cost:.2%}\n"
@@ -209,6 +239,36 @@ def _fallback_template(p: dict) -> str:
         f"{overlay_line}"
         f"\n⏱️ No reply in {p['timeout_minutes']} min → auto-execute when market is normal"
         f"{command_buttons}"
+    )
+
+
+def _format_scorecard_line(scorecard: dict) -> str:
+    if not scorecard or not scorecard.get("market_condition"):
+        return ""
+    condition = scorecard.get("market_condition")
+    permission = scorecard.get("investment_permission")
+    data_quality = scorecard.get("data_quality")
+    dominant = scorecard.get("dominant_constraint")
+    human = " | human confirm" if scorecard.get("require_human_confirmation") else ""
+    return (
+        f"<b>Market scorecard</b>\n"
+        f"  {condition} | permission={permission} | data={data_quality}"
+        f"{human}\n"
+        f"  dominant: {dominant}\n\n"
+    )
+
+
+def _format_enforcement_line(enforcement: dict) -> str:
+    if not enforcement:
+        return ""
+    violations = enforcement.get("violations") or []
+    if not violations:
+        return ""
+    shown = "; ".join(str(v) for v in violations[:3])
+    extra = f" (+{len(violations) - 3} more)" if len(violations) > 3 else ""
+    return (
+        f"<b>Risk clipping</b>\n"
+        f"  {shown}{extra}\n\n"
     )
 
 

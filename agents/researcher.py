@@ -385,6 +385,8 @@ def _build_user_message(
     sector_rotation = brief.get("sector_rotation") or {}
     sector_rotation_section = brief.get("sector_rotation_section") or "(none)"
     feature_provenance = brief.get("feature_provenance") or {}
+    evidence_bundle = brief.get("evidence_bundle") or {}
+    market_scorecard = brief.get("market_scorecard") or {}
 
     base_weights    = quant_baseline.get("base_weights") or {}
     current_weights = brief.get("current_weights") or {}
@@ -419,6 +421,13 @@ def _build_user_message(
 
     return (
         f"{regime_block}"
+        "## Market condition scorecard (deterministic Python permission layer)\n"
+        f"{json.dumps(market_scorecard, ensure_ascii=False, indent=2)}\n\n"
+        "Use this scorecard as the system's auditable market-state contract. "
+        "Your analysis may disagree with the interpretation, but you must explicitly "
+        "explain any disagreement and cannot ignore data-quality or permission warnings.\n\n"
+        "## Evidence bundle summary\n"
+        f"{json.dumps(_compact_evidence_bundle(evidence_bundle), ensure_ascii=False, indent=2)}\n\n"
         "## Market technicals\n"
         f"{prose}\n\n"
         "## Quantitative facts\n"
@@ -445,7 +454,9 @@ def _build_user_message(
         f"{json.dumps(ranking, ensure_ascii=False, indent=2)}\n\n"
         "## Your task\n"
         "From the above, output market_regime + macro_outlook + ticker_signals +\n"
-        "cross_signal_insights. Analyze only — no trading decision. JSON only."
+        "cross_signal_insights. Analyze only — no trading decision. Include scorecard "
+        "alignment or disagreement inside the relevant market_regime disagreement_reason, "
+        "macro_outlook data_gaps, and cross_signal_insights fields. JSON only."
         + _build_calibration_section(calibration_bias)
         + _build_similar_cases_section(similar_cases)
         + memory_section
@@ -453,6 +464,32 @@ def _build_user_message(
         + _build_macro_section(memory_context)
         + _build_scenario_section(brief)
     )
+
+
+def _compact_evidence_bundle(bundle: dict) -> dict:
+    if not bundle:
+        return {}
+    return {
+        "generated_at": bundle.get("generated_at"),
+        "max_age_seconds": bundle.get("max_age_seconds"),
+        "market": bundle.get("market") or {},
+        "rotation": bundle.get("rotation") or {},
+        "news": {
+            "data_quality": (bundle.get("news") or {}).get("data_quality"),
+            "warnings": (bundle.get("news") or {}).get("warnings") or [],
+            "hard_risk_tickers": (bundle.get("news") or {}).get("hard_risk_tickers") or [],
+            "per_ticker_news_count": (bundle.get("news") or {}).get("per_ticker_news_count"),
+        },
+        "strategies": {
+            "playground_available": (bundle.get("strategies") or {}).get("playground_available"),
+            "snapshot_count": (bundle.get("strategies") or {}).get("snapshot_count"),
+            "forward_return_samples": (bundle.get("strategies") or {}).get("forward_return_samples"),
+            "data_quality": (bundle.get("strategies") or {}).get("data_quality"),
+            "consensus_top5": (bundle.get("strategies") or {}).get("consensus_top5") or [],
+            "turnover_warnings": (bundle.get("strategies") or {}).get("turnover_warnings") or [],
+        },
+        "data_quality": bundle.get("data_quality") or {},
+    }
 
 
 def _format_per_ticker_news(per_ticker_news: dict) -> str:
