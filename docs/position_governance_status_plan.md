@@ -386,49 +386,93 @@ Still diagnostic-only:
 }
 ```
 
-## Not Yet Done
+## Next Required Work
 
-### Position Governance v2.3 Advisory Quality Aggregation
+### 1. Deployment Verification And Data Integrity
 
-Next enhancement:
+Before adding more decision complexity, deploy the current governance stack and
+observe real runs.
+
+Required checks:
+
+- Telegram wording must not imply execution when Risk Manager blocked the plan.
+- `position_advisory_overrides` appears only when the LLM actually made a
+  proposal.
+- `position_advisory_outcomes` is backfilled by daily analyst after yfinance
+  `return_1d` is available.
+- Missing ticker returns are reported and do not break DQS/advisory backfill.
+- `position_governance` step logs contain adjusted weights, decision reasons,
+  replacement candidates, advisory overrides, and advisory quality diagnostics.
+
+Acceptance criteria:
+
+```text
+Run for several trading days without schema/runtime failures.
+Backfill produces diagnostic rows or explicit no-data reasons.
+No Telegram message says or implies that blocked actions were executed.
+```
+
+### 2. Position Explanation Report
+
+This is the next useful product feature. It should answer the operator's core
+question: "Why are we still holding this ticker, especially if it is losing?"
+
+Target output per holding:
+
+```json
+{
+  "ticker": "FTXL",
+  "position_state": "loss_review",
+  "why_hold": ["loss above hard trim threshold", "no hard-risk event"],
+  "why_not_add": ["unrealized loss review", "semiconductor exposure near limit"],
+  "why_not_exit": ["exit not allowed without hard risk or deep weak-support loss"],
+  "next_trigger": "trim if loss <= -8% and strategy support remains weak"
+}
+```
+
+Implementation target:
+
+- Build from deterministic `position_decisions`, not free-form LLM text.
+- Show current PnL, weight, risk contribution, strategy support, allowed
+  actions, blocked actions, and next trigger.
+- Add Telegram summary for the top problem holdings.
+- Store full explanation in step logs for audit.
+
+## Backlog / Not Current Mainline
+
+### Advisory Quality Aggregation
+
+This was proposed as a possible v2.3, but it is not part of the immediate
+required plan. It should wait until real advisory outcome samples exist.
+
+Possible future enhancement:
 
 - Aggregate advisory outcome score by action, ticker group, and market regime.
-- Feed diagnostic warning into Synthesizer prompt when enough samples exist.
+- Feed diagnostic warning into Synthesizer prompt only after enough samples.
 - Keep deterministic validator as final authority.
 
 ## Next Development Plan
 
 Recommended sequence:
 
-1. **v1.1 Risk Contribution**
-   - Add risk contribution fields.
-   - Use risk contribution in trim priority.
-   - Add tests for high-ATR small positions and low-ATR large positions.
+1. **Deploy and verify current stack**
+   - Confirm Telegram semantics.
+   - Confirm advisory outcome backfill.
+   - Confirm no schema/runtime failures.
 
-2. **v1.2 Replacement Ranking**
-   - Add quant baseline score input to governance.
-   - Rank replacement candidates by support, score, volatility, and concentration.
-   - Add `replacement_candidates` output.
+2. **Build Position Explanation Report**
+   - Explain hold/add/trim/exit/review per holding.
+   - Surface "why hold / why not add / why not exit / next trigger".
+   - Keep explanations deterministic and auditable.
 
-3. **v1.3 Portfolio Summary**
-   - Add `portfolio_governance_summary`.
-   - Show concentration and top risk contributors in Telegram.
+3. **Observe samples before feedback-driven changes**
+   - Collect enough advisory outcomes.
+   - Review if LLM proposals are useful or noisy.
+   - Keep advisory quality diagnostic-only until sample size is meaningful.
 
-4. **v2 LLM Advisory Override**
-   - Add LLM advisory proposal generation. Completed.
-   - Add Python validator. Completed.
-   - Log accepted/rejected override decisions. Completed.
-
-5. **v2.1 Advisory Quality Feedback**
-   - Add diagnostic summary. Completed.
-   - Store feedback in decision memory. Completed.
-   - Add forward-return scoring helper. Completed.
-   - Backfill realized ticker-level advisory outcomes. Completed in v2.2.
-
-6. **v2.2 Advisory Outcome Backfill**
-   - Read yfinance ticker returns. Completed.
-   - Backfill advisory outcome scores into memory. Completed.
-   - Keep feedback diagnostic-only. Completed.
+4. **Optional backlog**
+   - Advisory quality aggregation by action/group/regime.
+   - Parameter calibration after enough samples.
 
 ## Current Acceptance Criteria
 
