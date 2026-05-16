@@ -336,6 +336,7 @@ class SectorRotationTests(unittest.TestCase):
                 "n_forward_return_samples": 100,
                 "sharpe": 1.2,
                 "hit_rate": 0.55,
+                "avg_turnover": 0.084,
             }
         }
         confidence = _compute_strategy_confidence(
@@ -376,7 +377,74 @@ class SectorRotationTests(unittest.TestCase):
         self.assertIn("hist=high/100", summary)
         self.assertIn("live_samples=3", summary)
         self.assertIn("sharpe=1.20", summary)
+        self.assertIn("current_turnover=", summary)
+        self.assertIn("hist_avg_turnover=8.4%", summary)
         self.assertIn("historical_strong", summary)
+
+    def test_strategy_confidence_summary_prioritizes_risk_reason_codes(self):
+        result = _run_one_strategy(
+            "momentum_lite_v1",
+            [
+                {
+                    "ticker": "SPY",
+                    "mom_20d": 0.02,
+                    "mom_60d": 0.05,
+                    "mom_252d": 0.12,
+                    "rsi_14": 55,
+                    "atr_pct": 0.011,
+                    "hist_vol_20d": 0.14,
+                }
+            ],
+            {"regime": "trending_bull", "risk_params": {"max_single_position": 0.2}},
+            {},
+        )
+        confidence = {
+            "momentum_lite_v1": {
+                "strategy_name": "momentum_lite_v1",
+                "suggested_use": "advisory",
+                "confidence_score": 0.56,
+                "historical_reliability": "high",
+                "historical_samples": 100,
+                "live_samples": 3,
+                "reason_codes": [
+                    "historical_strong",
+                    "historical_positive_sharpe",
+                    "regime_fit_strong",
+                    "live_qc_limited",
+                    "high_turnover",
+                    "consensus_regime_conflict",
+                ],
+            }
+        }
+        bundle = PlaygroundBundle(
+            generated_at="2026-05-15T00:00:00",
+            regime_label="trending_bull",
+            regime_confidence="medium",
+            snapshot_count=8,
+            strategies=[result],
+            divergence_map=[],
+            consensus_weights={"SPY": 0.5, "CASH": 0.5},
+            replay_metrics={},
+            historical_replay_metrics={
+                "momentum_lite_v1": {
+                    "metric_reliability": {"level": "high"},
+                    "n_forward_return_samples": 100,
+                    "sharpe": 1.2,
+                    "avg_turnover": 0.084,
+                }
+            },
+            historical_snapshot_count=100,
+            strategy_confidence=confidence,
+            evidence_summary={},
+            data_gaps=[],
+        )
+
+        summary = _format_strategy_confidence_summary(bundle)
+        reason_line = next(line for line in summary.splitlines() if "reasons=" in line)
+
+        self.assertIn("consensus_regime_conflict", reason_line)
+        self.assertIn("high_turnover", reason_line)
+        self.assertLess(reason_line.index("consensus_regime_conflict"), reason_line.index("historical_strong"))
 
     def test_playground_evidence_summary_labels_historical_live_and_permission(self):
         summary = _build_playground_evidence_summary(

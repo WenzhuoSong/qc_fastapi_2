@@ -1464,18 +1464,41 @@ def _format_strategy_confidence_summary(bundle: PlaygroundBundle, limit: int = 4
         historical = row.get("historical_reliability") or "unknown"
         live_samples = int(row.get("live_samples") or 0)
         hist_samples = int(row.get("historical_samples") or 0)
-        turnover = _format_pct(result.expected_turnover_pct if result else None)
+        current_turnover = _format_pct(result.expected_turnover_pct if result else None)
+        hist_turnover = _format_pct(metrics.get("avg_turnover"))
         sharpe = metrics.get("sharpe")
         sharpe_text = f"{float(sharpe):.2f}" if sharpe is not None else "n/a"
-        codes = ", ".join((row.get("reason_codes") or row.get("notes") or [])[:4])
+        codes = ", ".join(_prioritize_reason_codes(row.get("reason_codes") or row.get("notes") or [])[:5])
         lines.append(
             f"- {escape(name)}: use={escape(str(row.get('suggested_use') or 'unknown'))}, "
             f"confidence={confidence_score}, hist={escape(str(historical))}/{hist_samples}, "
-            f"live_samples={live_samples}, sharpe={sharpe_text}, turnover={turnover}"
+            f"live_samples={live_samples}, sharpe={sharpe_text}, "
+            f"current_turnover={current_turnover}, hist_avg_turnover={hist_turnover}"
         )
         if codes:
             lines.append(f"  reasons={escape(codes)}")
     return "\n".join(lines)
+
+
+def _prioritize_reason_codes(codes: list[Any]) -> list[str]:
+    priority = {
+        "consensus_regime_conflict": 0,
+        "high_turnover": 1,
+        "moderate_turnover": 2,
+        "data_not_ready": 3,
+        "live_qc_missing": 4,
+        "live_qc_limited": 5,
+        "regime_fit_weak": 6,
+        "historical_missing": 7,
+        "historical_insufficient": 8,
+        "historical_strong": 20,
+        "historical_positive_sharpe": 21,
+        "regime_fit_strong": 22,
+        "regime_fit_medium": 23,
+        "low_turnover": 24,
+    }
+    cleaned = [str(code) for code in codes if str(code)]
+    return sorted(dict.fromkeys(cleaned), key=lambda code: (priority.get(code, 10), code))
 
 
 def _format_pct(value: Any) -> str:

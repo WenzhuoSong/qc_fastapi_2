@@ -31,7 +31,11 @@ def _install_import_stubs() -> None:
 
 _install_import_stubs()
 
-from services.position_manager import apply_position_constraints, _holding_days_are_trusted  # noqa: E402
+from services.position_manager import (  # noqa: E402
+    apply_position_constraints,
+    _build_position_monitor_diagnostics,
+    _holding_days_are_trusted,
+)
 
 
 class PositionManagerTest(unittest.TestCase):
@@ -44,6 +48,50 @@ class PositionManagerTest(unittest.TestCase):
         snapshot = types.SimpleNamespace(schema_version="1.4")
 
         self.assertTrue(_holding_days_are_trusted(snapshot))
+
+    def test_position_monitor_diagnostics_reports_schema_and_filters_unheld_atr(self):
+        snapshot = types.SimpleNamespace(id=42, schema_version="1.4")
+        rows = [
+            types.SimpleNamespace(
+                ticker="SPY",
+                weight_current=0.12,
+                holding_days=7,
+                atr_pct=0.012,
+            ),
+            types.SimpleNamespace(
+                ticker="SOXS",
+                weight_current=0.0,
+                holding_days=0,
+                atr_pct=0.19,
+            ),
+        ]
+
+        diagnostics = _build_position_monitor_diagnostics(
+            snapshot=snapshot,
+            rows=rows,
+            max_holding_days=60,
+            atr_threshold=2.0,
+        )
+
+        self.assertEqual(diagnostics["heartbeat_schema_version"], "1.4")
+        self.assertTrue(diagnostics["holding_days_trusted"])
+        self.assertTrue(diagnostics["holding_period_alerts_enabled"])
+        self.assertEqual(diagnostics["held_positions"], 1)
+        self.assertEqual(diagnostics["unheld_rows_filtered"], 1)
+        self.assertEqual(diagnostics["unheld_high_atr_filtered"], 1)
+        self.assertEqual(diagnostics["max_observed_holding_days"], 7)
+
+    def test_position_monitor_diagnostics_marks_old_schema_untrusted(self):
+        diagnostics = _build_position_monitor_diagnostics(
+            snapshot=types.SimpleNamespace(id=1, schema_version="1.3"),
+            rows=[],
+            max_holding_days=60,
+            atr_threshold=2.0,
+        )
+
+        self.assertFalse(diagnostics["holding_days_trusted"])
+        self.assertFalse(diagnostics["holding_period_alerts_enabled"])
+        self.assertEqual(diagnostics["holding_period_skip_reason"], "heartbeat schema_version < 1.4")
 
     def test_min_hold_days_preserves_young_sell(self):
         out = apply_position_constraints(

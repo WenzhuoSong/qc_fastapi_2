@@ -365,12 +365,19 @@ async def run_position_health_check(
     drift_alerts = await check_position_drift(threshold=drift_threshold)
     holding_alerts = await check_holding_periods(max_days=max_holding_days)
     intraday_alerts = await check_intraday_moves(atr_threshold=atr_threshold)
+    snapshot, rows = await _latest_heartbeat_holdings()
+    diagnostics = _build_position_monitor_diagnostics(
+        snapshot=snapshot,
+        rows=rows,
+        max_holding_days=max_holding_days,
+        atr_threshold=atr_threshold,
+    )
 
     total = len(drift_alerts) + len(holding_alerts) + len(intraday_alerts)
     logger.info(
         f"[position_manager] drift={len(drift_alerts)} "
         f"holding={len(holding_alerts)} intraday={len(intraday_alerts)} "
-        f"total={total}"
+        f"total={total} diagnostics={diagnostics}"
     )
 
     return {
@@ -378,6 +385,7 @@ async def run_position_health_check(
         "holding_period_alerts": holding_alerts,
         "intraday_alerts": intraday_alerts,
         "total_alerts": total,
+        "diagnostics": diagnostics,
     }
 
 
@@ -552,6 +560,58 @@ def _holding_days_are_trusted(snapshot: QCSnapshot | None) -> bool:
         return float(str(version)) >= 1.4
     except (TypeError, ValueError):
         return False
+
+
+def _build_position_monitor_diagnostics(
+    *,
+    snapshot: QCSnapshot | None,
+    rows: list[HoldingsFactor],
+    max_holding_days: int,
+    atr_threshold: float,
+) -> dict[str, Any]:
+    schema_version = getattr(snapshot, "schema_version", None)
+    holding_days_trusted = _holding_days_are_trusted(snapshot)
+    held_rows = []
+    unheld_rows = []
+    holding_days_values: list[int] = []
+    unheld_high_atr = 0
+
+    for row in rows or []:
+        try:
+            weight = float(getattr(row, "weight_current", 0) or 0)
+        except (TypeError, ValueError):
+            weight = 0.0
+        target = held_rows if weight > 0.01 else unheld_rows
+        target.append(row)
+
+        if weight > 0.01:
+            try:
+                holding_days_values.append(int(getattr(row, "holding_days", 0) or 0))
+            except (TypeError, ValueError):
+                pass
+        else:
+            try:
+                atr = abs(float(getattr(row, "atr_pct", 0) or 0))
+                if atr > atr_threshold * 0.01:
+                    unheld_high_atr += 1
+            except (TypeError, ValueError):
+                pass
+
+    max_observed_holding_days = max(holding_days_values) if holding_days_values else None
+    return {
+        "heartbeat_snapshot_id": getattr(snapshot, "id", None),
+        "heartbeat_schema_version": schema_version,
+        "holding_days_trusted": holding_days_trusted,
+        "holding_period_alerts_enabled": holding_days_trusted,
+        "holding_period_skip_reason": None if holding_days_trusted else "heartbeat schema_version < 1.4",
+        "holdings_rows": len(rows or []),
+        "held_positions": len(held_rows),
+        "unheld_rows_filtered": len(unheld_rows),
+        "unheld_high_atr_filtered": unheld_high_atr,
+        "max_observed_holding_days": max_observed_holding_days,
+        "max_holding_days_threshold": max_holding_days,
+        "atr_threshold_x": atr_threshold,
+    }
 
 
 async def persist_position_alerts(alerts: list[dict], source: str = "position_monitor") -> None:

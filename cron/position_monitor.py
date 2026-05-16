@@ -30,12 +30,32 @@ NOTIFY_HEALTHY = os.getenv("POSITION_MONITOR_NOTIFY_HEALTHY", "").lower() in {"1
 
 def _healthy_message(result: dict) -> str:
     report_time = datetime.now(MARKET_TZ).strftime("%Y-%m-%d %H:%M %Z")
+    diagnostics = result.get("diagnostics") or {}
+    diag_line = _diagnostic_line(diagnostics)
     return (
         f"📊 Position health report | {report_time}\n\n"
         "No actionable position alerts.\n"
         f"Drift: {len(result.get('drift_alerts') or [])}, "
         f"Holding-period: {len(result.get('holding_period_alerts') or [])}, "
         f"Volatility: {len(result.get('intraday_alerts') or [])}"
+        f"{diag_line}"
+    )
+
+
+def _diagnostic_line(diagnostics: dict) -> str:
+    if not diagnostics:
+        return ""
+    schema = diagnostics.get("heartbeat_schema_version") or "unknown"
+    trusted = "trusted" if diagnostics.get("holding_days_trusted") else "untrusted"
+    held = diagnostics.get("held_positions", 0)
+    filtered = diagnostics.get("unheld_high_atr_filtered", 0)
+    max_days = diagnostics.get("max_observed_holding_days")
+    max_days_text = "n/a" if max_days is None else str(max_days)
+    return (
+        "\nDiagnostics: "
+        f"schema={schema} ({trusted}), held={held}, "
+        f"max_holding_days={max_days_text}, "
+        f"unheld_high_atr_filtered={filtered}"
     )
 
 
@@ -49,6 +69,7 @@ async def main() -> None:
                 drift_alerts=len(result.get("drift_alerts") or []),
                 holding_period_alerts=len(result.get("holding_period_alerts") or []),
                 intraday_alerts=len(result.get("intraday_alerts") or []),
+                diagnostics=result.get("diagnostics") or {},
             )
 
             total = result["total_alerts"]
@@ -70,6 +91,9 @@ async def main() -> None:
             # Build Telegram message — only for warning/critical alerts
             report_time = datetime.now(MARKET_TZ).strftime("%Y-%m-%d %H:%M %Z")
             lines = [f"📊 Position health report | {report_time}\n"]
+            diagnostic_line = _diagnostic_line(result.get("diagnostics") or {})
+            if diagnostic_line:
+                lines.append(diagnostic_line.strip())
 
             if result["drift_alerts"]:
                 lines.append(f"🚨 Drift alerts ({len(result['drift_alerts'])}):")
