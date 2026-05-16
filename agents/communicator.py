@@ -482,6 +482,14 @@ def _format_position_governance_line(governance: dict) -> str:
             for item in governance["advisory_overrides"][:3]
         ]
         lines.append("  llm advisory: " + "; ".join(overrides))
+    quality = (portfolio_summary.get("advisory_quality") or {}).get("current_run") or {}
+    if quality.get("total"):
+        lines.append(
+            "  advisory quality: "
+            f"accepted={int(quality.get('accepted') or 0)}, "
+            f"rejected={int(quality.get('rejected') or 0)}, "
+            f"converted={int(quality.get('converted') or 0)}"
+        )
     return "\n".join(lines) + "\n\n"
 
 

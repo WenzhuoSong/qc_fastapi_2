@@ -23,8 +23,9 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import MemoryDaily, AgentAnalysis
+from db.models import MemoryDaily, AgentAnalysis, MarketDailyFeature
 from db.session import AsyncSessionLocal
+from services.advisory_quality import build_advisory_quality_diagnostics
 
 logger = logging.getLogger("qc_fastapi_2.decision_memory")
 
@@ -121,6 +122,13 @@ async def write_decision_context(
                 regime_confidence = regime_result.get("confidence")
 
             # Build structured decision record
+            risk_output = (analysis.risk_output if analysis else {}) or {}
+            position_governance = risk_output.get("position_governance") or {}
+            advisory_overrides = position_governance.get("advisory_overrides") or []
+            advisory_quality = (
+                (position_governance.get("portfolio_summary") or {}).get("advisory_quality")
+                or build_advisory_quality_diagnostics(advisory_overrides)
+            )
             decision_record = {
                 "analysis_id": analysis_id,
                 "regime": regime,
@@ -140,6 +148,8 @@ async def write_decision_context(
                 },
                 "playground_strategy_assessment": playground_assessment,
                 "playground_selected_strategies": playground_selected_strategies,
+                "position_advisory_overrides": advisory_overrides,
+                "position_advisory_quality": advisory_quality,
                 # outcome may have portfolio_return_pct and decision_quality_score
                 "outcome_portfolio_return_pct": outcome.get("portfolio_return_pct"),
                 "outcome_decision_quality_score": decision_quality,
@@ -282,13 +292,12 @@ async def backfill_decision_quality(
             if not existing:
                 return False
 
-            if existing.decision is None:
-                existing.decision = {}
-
-            existing.decision["outcome_decision_quality_score"] = decision_quality_score
+            decision = dict(existing.decision or {})
+            decision["outcome_decision_quality_score"] = decision_quality_score
             if portfolio_return_pct is not None:
-                existing.decision["outcome_portfolio_return_pct"] = portfolio_return_pct
-            existing.decision["outcome_backfilled_at"] = datetime.utcnow().isoformat()
+                decision["outcome_portfolio_return_pct"] = portfolio_return_pct
+            decision["outcome_backfilled_at"] = datetime.utcnow().isoformat()
+            existing.decision = decision
 
             await db.commit()
             logger.info(
@@ -298,3 +307,83 @@ async def backfill_decision_quality(
     except Exception as e:
         logger.error(f"[decision_memory] Failed to backfill decision quality: {e}")
         return False
+
+
+async def backfill_advisory_outcomes(
+    trading_date: date,
+    *,
+    benchmark_return: Optional[float] = None,
+) -> dict:
+    """
+    Backfill ticker-level outcome scores for accepted LLM advisory proposals.
+
+    Uses market_daily_features.return_1d for the same trading date. This is
+    diagnostic-only and does not change execution permissions.
+    """
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(MemoryDaily).where(MemoryDaily.trading_date == trading_date)
+            )
+            existing = result.scalar_one_or_none()
+            if not existing or not existing.decision:
+                return {"ok": False, "reason": "missing_decision_context", "scored": 0}
+
+            decision = dict(existing.decision or {})
+            overrides = decision.get("position_advisory_overrides") or []
+            tickers = sorted({
+                str(row.get("ticker") or "").upper().strip()
+                for row in overrides
+                if isinstance(row, dict) and str(row.get("validator_result") or "").startswith("accepted")
+            })
+            if not tickers:
+                return {"ok": True, "reason": "no_accepted_advisory_overrides", "scored": 0}
+
+            returns = await _read_ticker_returns(db, trading_date, tickers)
+            if benchmark_return is None:
+                benchmark_return = returns.get("SPY")
+            if benchmark_return is None:
+                benchmark_return = existing.spy_return_pct
+
+            from services.advisory_quality import build_advisory_outcome_backfill
+
+            decision.update(build_advisory_outcome_backfill(
+                decision,
+                forward_returns_by_ticker=returns,
+                benchmark_return=float(benchmark_return or 0.0),
+            ))
+            decision["position_advisory_outcome_backfilled_at"] = datetime.utcnow().isoformat()
+            existing.decision = decision
+
+            await db.commit()
+            logger.info(
+                "[decision_memory] Backfilled advisory outcomes for %s scored=%s",
+                trading_date,
+                len(scored),
+            )
+            return {
+                "ok": True,
+                "reason": "backfilled",
+                "scored": len(scored),
+                "missing_tickers": [ticker for ticker in tickers if ticker not in returns],
+            }
+    except Exception as e:
+        logger.error(f"[decision_memory] Failed to backfill advisory outcomes: {e}")
+        return {"ok": False, "reason": type(e).__name__, "scored": 0}
+
+
+async def _read_ticker_returns(db: AsyncSession, trading_date: date, tickers: list[str]) -> dict[str, float]:
+    wanted = sorted({ticker.upper().strip() for ticker in tickers if ticker} | {"SPY"})
+    if not wanted:
+        return {}
+    result = await db.execute(
+        select(MarketDailyFeature.ticker, MarketDailyFeature.return_1d)
+        .where(MarketDailyFeature.trading_date == trading_date)
+        .where(MarketDailyFeature.ticker.in_(wanted))
+        .where(MarketDailyFeature.source == "yfinance")
+    )
+    returns: dict[str, float] = {}
+    for ticker, value in result.all():
+        if value is not None:
+            returns[str(ticker).upper()] = float(value)
+    return returns

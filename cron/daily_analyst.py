@@ -19,7 +19,7 @@ from openai import AsyncOpenAI
 from sqlalchemy import select, func
 
 from config import get_settings
-from db.models import AgentAnalysis, ExecutionLog, MemoryDaily, PortfolioTimeseries
+from db.models import AgentAnalysis, ExecutionLog, MemoryDaily, PortfolioTimeseries, MarketDailyFeature
 from db.session import AsyncSessionLocal
 from services.cron_audit import audit_cron_run
 
@@ -91,6 +91,7 @@ async def _main_impl(audit=None) -> None:
             read_decision_context,
             compute_decision_quality_score,
             backfill_decision_quality,
+            backfill_advisory_outcomes,
         )
         yesterday_ctx = await read_decision_context(yesterday)
         if yesterday_ctx:
@@ -111,6 +112,14 @@ async def _main_impl(audit=None) -> None:
                 )
                 await _write_dqs_to_memory_daily_column(yesterday, dqs, portfolio_ret)
                 logger.info(f"[DAILY_ANALYST] DQS backfill: {yesterday} DQS={dqs:.3f}")
+            advisory_result = await backfill_advisory_outcomes(
+                yesterday,
+                benchmark_return=spy_ret,
+            )
+            logger.info(
+                "[DAILY_ANALYST] Advisory outcome backfill: %s",
+                advisory_result,
+            )
         else:
             logger.info(f"[DAILY_ANALYST] No decision context for {yesterday}, skipping DQS backfill")
     except Exception as e:
@@ -232,6 +241,16 @@ async def _get_yesterday_portfolio_return(target_date: date) -> float | None:
 async def _get_yesterday_spy_return(target_date: date) -> float | None:
     """Get SPY return for target_date from MemoryDaily."""
     async with AsyncSessionLocal() as session:
+        feature_result = await session.execute(
+            select(MarketDailyFeature.return_1d)
+            .where(MarketDailyFeature.trading_date == target_date)
+            .where(MarketDailyFeature.ticker == "SPY")
+            .where(MarketDailyFeature.source == "yfinance")
+            .limit(1)
+        )
+        feature_row = feature_result.scalar_one_or_none()
+        if feature_row is not None:
+            return float(feature_row)
         result = await session.execute(
             select(MemoryDaily.spy_return_pct)
             .where(MemoryDaily.trading_date == target_date)

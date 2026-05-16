@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from services.advisory_quality import build_advisory_quality_diagnostics
+
 
 SECTOR_GROUPS = {
     "semiconductors": {"FTXL", "PSI", "SOXX", "XSD", "SMH", "SOXL", "SOXS", "DRAM"},
@@ -544,6 +546,7 @@ def _portfolio_summary(
             "advisory_overrides": len([row for row in advisory_overrides if str(row.get("validator_result") or "").startswith("accepted")]),
         },
         "advisory_overrides": advisory_overrides[:8],
+        "advisory_quality": build_advisory_quality_diagnostics(advisory_overrides),
         "replacement_candidates": [
             {
                 "ticker": item.get("ticker"),

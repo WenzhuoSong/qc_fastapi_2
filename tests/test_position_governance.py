@@ -299,6 +299,9 @@ class PositionGovernanceTest(unittest.TestCase):
         self.assertIn("llm_advisory_validated", decision["reason_codes"])
         self.assertEqual(out.trade_summary["advisory_overrides"], 1)
         self.assertIn("accepted_as_trim_1.00%", out.advisory_overrides[0]["validator_result"])
+        quality = out.portfolio_summary["advisory_quality"]["current_run"]
+        self.assertEqual(quality["accepted"], 1)
+        self.assertEqual(quality["accepted_tickers"], ["QQQ"])
 
     def test_llm_advisory_add_rejected_when_human_required(self):
         out = apply_position_governance(

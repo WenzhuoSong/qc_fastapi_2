@@ -321,17 +321,80 @@ Current validator behavior:
 - Convert unsupported exit advisory into `hold_review` unless hard risk or exit trigger is active.
 - Log every accepted/rejected/converted advisory decision in `advisory_overrides`.
 
+### Completed: Position Governance v2.1 Advisory Quality Feedback Diagnostics
+
+The system now records diagnostic feedback for LLM advisory proposals without
+changing execution behavior.
+
+Implemented:
+
+- Track accepted/rejected/converted/noop proposals by ticker and action.
+- Store advisory diagnostics in `portfolio_summary.advisory_quality`.
+- Surface current-run advisory quality in Telegram.
+- Store `position_advisory_overrides` and `position_advisory_quality` in
+  daily decision memory.
+- Provide pure forward-return scoring helper:
+  - `add` is good when ticker forward return beats benchmark.
+  - `trim` / `exit` is good when ticker forward return trails benchmark.
+
+Current status:
+
+```json
+{
+  "diagnostic_only": true,
+  "current_run": {
+    "total": 3,
+    "accepted": 1,
+    "rejected": 1,
+    "converted": 1
+  },
+  "historical_feedback": {
+    "sample_size": 0,
+    "verdict": "insufficient"
+  },
+  "execution_impact": "none"
+}
+```
+
+This feedback is intentionally not used to relax or tighten execution yet.
+
+### Completed: Position Governance v2.2 Advisory Outcome Backfill
+
+Daily analyst now backfills accepted advisory proposal outcomes when next-day
+market feature data is available.
+
+Implemented:
+
+- Read accepted `position_advisory_overrides` from daily decision memory.
+- Read ticker-level `return_1d` from `market_daily_features` using yfinance
+  source.
+- Use SPY `return_1d` as benchmark when available.
+- Score advisory outcomes:
+  - `add` is correct when ticker return beats benchmark.
+  - `trim` / `exit` is correct when ticker return trails benchmark.
+- Write back:
+  - `position_advisory_outcomes`
+  - updated `position_advisory_quality`
+  - `position_advisory_benchmark_return`
+  - `position_advisory_outcome_backfilled_at`
+
+Still diagnostic-only:
+
+```json
+{
+  "execution_impact": "none"
+}
+```
+
 ## Not Yet Done
 
-### Position Governance v2.1 Advisory Quality Feedback
+### Position Governance v2.3 Advisory Quality Aggregation
 
-The next enhancement is to measure whether accepted LLM advisory proposals
-improve outcomes over deterministic baseline:
+Next enhancement:
 
-- Track accepted vs rejected proposals by ticker and reason.
-- Compare forward returns after accepted trims/adds.
-- Penalize proposal types that consistently reduce performance.
-- Surface advisory quality in Telegram only as diagnostics, not execution logic.
+- Aggregate advisory outcome score by action, ticker group, and market regime.
+- Feed diagnostic warning into Synthesizer prompt when enough samples exist.
+- Keep deterministic validator as final authority.
 
 ## Next Development Plan
 
@@ -355,6 +418,17 @@ Recommended sequence:
    - Add LLM advisory proposal generation. Completed.
    - Add Python validator. Completed.
    - Log accepted/rejected override decisions. Completed.
+
+5. **v2.1 Advisory Quality Feedback**
+   - Add diagnostic summary. Completed.
+   - Store feedback in decision memory. Completed.
+   - Add forward-return scoring helper. Completed.
+   - Backfill realized ticker-level advisory outcomes. Completed in v2.2.
+
+6. **v2.2 Advisory Outcome Backfill**
+   - Read yfinance ticker returns. Completed.
+   - Backfill advisory outcome scores into memory. Completed.
+   - Keep feedback diagnostic-only. Completed.
 
 ## Current Acceptance Criteria
 
