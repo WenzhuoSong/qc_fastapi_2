@@ -240,11 +240,17 @@ class DecayDetector:
             return {"signal": "disagreement_trend", "triggered": False, "details": "insufficient cross_exam data"}
 
         # Count average disagreement items per week in recent 4 weeks vs prior 4 weeks
-        def count_disagreements(output_data: dict) -> int:
+        def count_disagreements(output_data: dict | list) -> int:
             # cross_exam output has rebuttal dicts
             items = output_data or {}
             count = 0
-            for v in items.values():
+            if isinstance(items, dict):
+                values = items.values()
+            elif isinstance(items, list):
+                values = items
+            else:
+                return 0
+            for v in values:
                 if isinstance(v, dict):
                     args = v.get("arguments") or []
                     if isinstance(args, list) and len(args) > 2:
