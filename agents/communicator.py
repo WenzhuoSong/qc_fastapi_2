@@ -73,6 +73,8 @@ async def run_communicator_async(
     risk_out (Stage 4 Risk Manager final execution plan).
     """
     payload = _build_payload(pipeline_context, researcher_out, risk_out)
+    if not payload.get("approved", False):
+        return {"text": _fallback_template(payload), "used_fallback": True}
 
     try:
         text = await asyncio.wait_for(_llm_format(payload), timeout=LLM_TIMEOUT_SECONDS)
@@ -125,6 +127,7 @@ def _build_payload(
     decision_style = pipeline_context.get("decision_style") or {}
     enforcement = risk_out.get("scorecard_enforcement") or {}
     style_enforcement = risk_out.get("style_enforcement") or {}
+    position_governance = risk_out.get("position_governance") or {}
     strategy_use_enforcement = (
         researcher_out.get("strategy_use_enforcement")
         or pipeline_context.get("strategy_use_enforcement")
@@ -203,6 +206,15 @@ def _build_payload(
             "pre_clip": strategy_use_enforcement.get("target_weights_pre_strategy_use_clip") or {},
             "post_clip": strategy_use_enforcement.get("target_weights_post_strategy_use_clip") or {},
         },
+        "position_governance": {
+            "position_decisions": (position_governance.get("position_decisions") or [])[:8],
+            "blocked_actions": (position_governance.get("blocked_actions") or [])[:8],
+            "forced_trims": (position_governance.get("forced_trims") or [])[:8],
+            "replacements": (position_governance.get("replacements") or [])[:8],
+            "advisory_overrides": (position_governance.get("advisory_overrides") or [])[:8],
+            "trade_summary": position_governance.get("trade_summary") or {},
+            "portfolio_summary": position_governance.get("portfolio_summary") or {},
+        },
         "auth_mode":        pipeline_context.get("auth_mode", "SEMI_AUTO"),
         "timeout_minutes":  settings.semi_auto_timeout_minutes,
         "debate_summary":   debate,
@@ -226,6 +238,7 @@ def _fallback_template(p: dict) -> str:
     style = p.get("decision_style") or {}
     style_enforcement = p.get("style_enforcement") or {}
     strategy_use_enforcement = p.get("strategy_use_enforcement") or {}
+    position_governance = p.get("position_governance") or {}
 
     up, down = "\u25b2", "\u25bc"
 
@@ -251,6 +264,7 @@ def _fallback_template(p: dict) -> str:
     style_line = _format_style_line(style)
     style_enforcement_line = _format_style_enforcement_line(style_enforcement)
     strategy_use_line = _format_strategy_use_enforcement_line(strategy_use_enforcement)
+    position_governance_line = _format_position_governance_line(position_governance)
 
     if not approved:
         reasons_text = "\n".join(f"  - {r}" for r in p["rejection_reasons"]) or "  - No reason provided"
@@ -266,6 +280,7 @@ def _fallback_template(p: dict) -> str:
             f"{enforcement_line}"
             f"{style_enforcement_line}"
             f"{strategy_use_line}"
+            f"{position_governance_line}"
             f"<b>Failed checks:</b>\n{reasons_text}\n\n"
             f"No execution this round — wait for the next analysis."
         )
@@ -301,6 +316,7 @@ def _fallback_template(p: dict) -> str:
         f"{enforcement_line}"
         f"{style_enforcement_line}"
         f"{strategy_use_line}"
+        f"{position_governance_line}"
         f"<b>Suggested actions</b>\n"
         f"{actions_str}\n\n"
         f"💰 Est. cost: {cost:.2%}\n"
@@ -415,6 +431,89 @@ def _format_strategy_use_enforcement_line(enforcement: dict) -> str:
         + "\n".join(lines)
         + "\n\n"
     )
+
+
+def _format_position_governance_line(governance: dict) -> str:
+    if not governance:
+        return ""
+    decisions = governance.get("position_decisions") or []
+    interesting = [
+        row for row in decisions
+        if row.get("decision") in {"trim", "trim_review", "hold_review", "add"}
+        or row.get("reason_codes")
+    ][:5]
+    portfolio_summary = governance.get("portfolio_summary") or {}
+    if (
+        not interesting
+        and not governance.get("blocked_actions")
+        and not governance.get("forced_trims")
+        and not portfolio_summary
+    ):
+        return ""
+    lines = ["<b>Position governance</b>"]
+    concentration = _format_governance_concentration(portfolio_summary)
+    if concentration:
+        lines.append("  risk concentration: " + concentration)
+    top_risk = _format_governance_top_risk(portfolio_summary)
+    if top_risk:
+        lines.append("  top risk: " + top_risk)
+    for row in interesting:
+        reasons = ",".join((row.get("reason_codes") or [])[:3])
+        lines.append(
+            f"  {row.get('ticker')}: {row.get('decision')} | "
+            f"support={row.get('strategy_support')} | "
+            f"target {float(row.get('target_before') or 0):.1%}->{float(row.get('target_after') or 0):.1%}"
+            + (f" | {reasons}" if reasons else "")
+        )
+    if governance.get("blocked_actions"):
+        lines.append("  blocked: " + "; ".join(str(x) for x in governance["blocked_actions"][:3]))
+    if governance.get("forced_trims"):
+        lines.append("  trims: " + "; ".join(str(x) for x in governance["forced_trims"][:3]))
+    if governance.get("replacements"):
+        repl = [
+            f"{item.get('ticker')} +{float(item.get('added_weight') or 0):.1%} "
+            f"({item.get('support')}, score={float(item.get('score') or 0):.2f})"
+            for item in governance["replacements"][:3]
+        ]
+        lines.append("  replacements: " + "; ".join(repl))
+    if governance.get("advisory_overrides"):
+        overrides = [
+            f"{item.get('ticker')} {item.get('llm_advisory')}->{item.get('validator_result')}"
+            for item in governance["advisory_overrides"][:3]
+        ]
+        lines.append("  llm advisory: " + "; ".join(overrides))
+    return "\n".join(lines) + "\n\n"
+
+
+def _format_governance_concentration(portfolio_summary: dict) -> str:
+    groups = portfolio_summary.get("group_exposures") or {}
+    ordered = sorted(
+        groups.items(),
+        key=lambda item: abs(float((item[1] or {}).get("headroom") or 0.0)),
+    )
+    parts = []
+    for group, row in ordered[:3]:
+        exposure = float((row or {}).get("exposure") or 0.0)
+        limit = (row or {}).get("limit")
+        headroom = (row or {}).get("headroom")
+        if limit is None or headroom is None or exposure <= 0:
+            continue
+        parts.append(
+            f"{group} {exposure:.1%} [limit {float(limit):.1%}, headroom {float(headroom):+.1%}]"
+        )
+    return "; ".join(parts)
+
+
+def _format_governance_top_risk(portfolio_summary: dict) -> str:
+    rows = portfolio_summary.get("top_risk_contributors") or []
+    parts = []
+    for row in rows[:3]:
+        ticker = row.get("ticker")
+        contribution = float(row.get("risk_contribution") or 0.0)
+        status = row.get("risk_budget_status") or "normal"
+        if ticker:
+            parts.append(f"{ticker} {contribution:.2%} ({status})")
+    return "; ".join(parts)
 
 
 def append_command_hints(text: str) -> str:

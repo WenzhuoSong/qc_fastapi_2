@@ -127,7 +127,17 @@ SYNTHESIZER_COT_SCHEMA = """
     "sizing_adjustment": "how style_limits affected sizing and turnover",
     "blocked_or_clipped_actions": ["action blocked or clipped by style limits"],
     "known_limitations": ["style/news limitation or warning"]
-  }
+  },
+
+  "position_advisory_proposals": [
+    {
+      "ticker": "TICKER",
+      "llm_advisory": "add" | "trim" | "hold" | "hold_review" | "trim_review" | "exit",
+      "target_weight": <float or null>,
+      "reason": "short thesis/governance reason; advisory only",
+      "confidence": <float between 0.0 and 1.0>
+    }
+  ]
 }
 
 Rules:
@@ -170,6 +180,9 @@ You receive:
       style_limits must cap how aggressively you move from base_weights. Include style_compliance.
     · Structured News Evidence action_bias is advisory evidence. News may confirm, block, or reduce a trade,
       but news cannot directly create target weights.
+    · position_advisory_proposals are optional advisory-only lifecycle suggestions. They do not execute
+      directly and may be rejected or clipped by deterministic Position Governance. Use them only for
+      ticker-level thesis decay/escalation that adjusted_weights alone cannot explain.
 
 【regime (exactly one of 6)】
     bull_trend / bull_weak / neutral / bear_weak / bear_trend / high_vol
@@ -800,6 +813,11 @@ def _normalize(
         ),
         "scorecard_compliance": scorecard_compliance,
         "style_compliance": style_compliance,
+        "position_advisory_proposals": (
+            out.get("position_advisory_proposals")[:12]
+            if isinstance(out.get("position_advisory_proposals"), list)
+            else []
+        ),
         # Task 5: Chain-of-Thought reasoning chain
         "reasoning_chain":     reasoning_chain,
     }

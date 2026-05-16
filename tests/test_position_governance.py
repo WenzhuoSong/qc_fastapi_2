@@ -1,0 +1,367 @@
+import unittest
+
+from services.position_governance import apply_position_governance
+
+
+class PositionGovernanceTest(unittest.TestCase):
+    def test_loss_with_weak_strategy_support_blocks_add_and_marks_review(self):
+        out = apply_position_governance(
+            target_weights={"FTXL": 0.06, "CASH": 0.94},
+            current_weights={"FTXL": 0.03, "CASH": 0.97},
+            holdings_meta=[
+                {"ticker": "FTXL", "unrealized_pnl_pct": -0.059, "atr_pct": 0.018},
+            ],
+            strategy_evidence={"strategy_results": []},
+            market_scorecard={"investment_permission": "small_overweight_only"},
+            news_evidence={},
+        )
+
+        decision = _decision(out, "FTXL")
+        self.assertEqual(decision["decision"], "hold_review")
+        self.assertEqual(decision["target_after"], 0.03)
+        self.assertIn("unrealized_loss_review", decision["reason_codes"])
+        self.assertIn("strategy_support_weak", decision["reason_codes"])
+        self.assertTrue(any(item.startswith("buy_blocked:FTXL") for item in out.blocked_actions))
+
+    def test_deep_loss_with_weak_support_trims_position(self):
+        out = apply_position_governance(
+            target_weights={"PSI": 0.04, "CASH": 0.96},
+            current_weights={"PSI": 0.04, "CASH": 0.96},
+            holdings_meta=[
+                {"ticker": "PSI", "unrealized_pnl_pct": -0.10, "atr_pct": 0.018},
+            ],
+            strategy_evidence={"strategy_results": []},
+            market_scorecard={"investment_permission": "small_overweight_only"},
+            news_evidence={},
+        )
+
+        decision = _decision(out, "PSI")
+        self.assertEqual(decision["decision"], "trim")
+        self.assertAlmostEqual(decision["target_after"], 0.01, places=4)
+        self.assertTrue(any(item.startswith("PSI") for item in out.forced_trims))
+
+    def test_crowded_semiconductor_group_blocks_new_adds(self):
+        out = apply_position_governance(
+            target_weights={"FTXL": 0.08, "SOXX": 0.07, "PSI": 0.06, "CASH": 0.79},
+            current_weights={"FTXL": 0.06, "SOXX": 0.07, "PSI": 0.06, "XSD": 0.08, "CASH": 0.73},
+            holdings_meta=[
+                {"ticker": "FTXL", "unrealized_pnl_pct": -0.02, "atr_pct": 0.018},
+                {"ticker": "SOXX", "unrealized_pnl_pct": -0.03, "atr_pct": 0.018},
+                {"ticker": "PSI", "unrealized_pnl_pct": -0.04, "atr_pct": 0.018},
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "suggested_use": "advisory",
+                        "selected_tickers": ["FTXL", "SOXX", "PSI"],
+                    }
+                ]
+            },
+            market_scorecard={"investment_permission": "small_overweight_only"},
+            news_evidence={},
+        )
+
+        decision = _decision(out, "FTXL")
+        self.assertEqual(decision["target_after"], 0.06)
+        self.assertIn("semiconductors_concentration_high", decision["reason_codes"])
+        self.assertIn("concentration_add_blocked:FTXL", out.blocked_actions)
+        self.assertGreater(decision["sector_crowding_multiplier"], 1.0)
+        semis = out.portfolio_summary["group_exposures"]["semiconductors"]
+        self.assertEqual(semis["status"], "over_limit")
+        self.assertAlmostEqual(semis["limit"], 0.25, places=4)
+
+    def test_large_winner_high_weight_gets_trimmed_for_risk_budget(self):
+        out = apply_position_governance(
+            target_weights={"XLK": 0.16, "CASH": 0.84},
+            current_weights={"XLK": 0.16, "CASH": 0.84},
+            holdings_meta=[
+                {"ticker": "XLK", "unrealized_pnl_pct": 0.107, "atr_pct": 0.018},
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "suggested_use": "advisory",
+                        "selected_tickers": ["XLK"],
+                    }
+                ]
+            },
+            market_scorecard={"investment_permission": "small_overweight_only"},
+            news_evidence={},
+        )
+
+        decision = _decision(out, "XLK")
+        self.assertEqual(decision["decision"], "trim")
+        self.assertAlmostEqual(decision["target_after"], 0.14, places=4)
+        self.assertIn("winner_risk_budget_review", decision["reason_codes"])
+
+    def test_hard_risk_ticker_gets_trim_or_exit_permission(self):
+        out = apply_position_governance(
+            target_weights={"XLE": 0.09, "CASH": 0.91},
+            current_weights={"XLE": 0.09, "CASH": 0.91},
+            holdings_meta=[
+                {"ticker": "XLE", "unrealized_pnl_pct": 0.03, "atr_pct": 0.018},
+            ],
+            strategy_evidence={},
+            market_scorecard={"investment_permission": "small_overweight_only"},
+            news_evidence={"hard_risk_events": {"XLE": ["oil_shock"]}},
+        )
+
+        decision = _decision(out, "XLE")
+        self.assertEqual(decision["action_permission"], "trim_or_exit")
+        self.assertIn("hard_risk", decision["reason_codes"])
+        self.assertLess(decision["target_after"], decision["target_before"])
+
+    def test_replacement_allocates_trimmed_cash_to_supported_candidate_when_allowed(self):
+        out = apply_position_governance(
+            target_weights={"PSI": 0.04, "SPY": 0.10, "CASH": 0.86},
+            current_weights={"PSI": 0.04, "SPY": 0.10, "CASH": 0.86},
+            holdings_meta=[
+                {"ticker": "PSI", "unrealized_pnl_pct": -0.10, "atr_pct": 0.018},
+                {"ticker": "SPY", "unrealized_pnl_pct": 0.02, "atr_pct": 0.012},
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "suggested_use": "advisory",
+                        "selected_tickers": ["SPY"],
+                    }
+                ]
+            },
+            market_scorecard={
+                "investment_permission": "normal_rebalance",
+                "require_human_confirmation": False,
+            },
+            news_evidence={},
+            config={"replacement_max_single_pct": 0.02},
+        )
+
+        self.assertAlmostEqual(_decision(out, "PSI")["target_after"], 0.01, places=4)
+        self.assertAlmostEqual(_decision(out, "SPY")["target_after"], 0.12, places=4)
+        self.assertEqual(out.replacements[0]["ticker"], "SPY")
+        self.assertEqual(out.trade_summary["replacements"], 1)
+        self.assertIn("score", out.replacements[0])
+        self.assertIn("why", out.replacements[0])
+
+    def test_replacement_keeps_cash_when_human_confirmation_required(self):
+        out = apply_position_governance(
+            target_weights={"PSI": 0.04, "SPY": 0.10, "CASH": 0.86},
+            current_weights={"PSI": 0.04, "SPY": 0.10, "CASH": 0.86},
+            holdings_meta=[
+                {"ticker": "PSI", "unrealized_pnl_pct": -0.10, "atr_pct": 0.018},
+                {"ticker": "SPY", "unrealized_pnl_pct": 0.02, "atr_pct": 0.012},
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "suggested_use": "advisory",
+                        "selected_tickers": ["SPY"],
+                    }
+                ]
+            },
+            market_scorecard={
+                "investment_permission": "normal_rebalance",
+                "require_human_confirmation": True,
+            },
+            news_evidence={},
+        )
+
+        self.assertEqual(out.replacements, [])
+        self.assertAlmostEqual(_decision(out, "SPY")["target_after"], 0.10, places=4)
+
+    def test_replacement_ranking_prefers_better_scored_candidate(self):
+        out = apply_position_governance(
+            target_weights={"PSI": 0.04, "SPY": 0.10, "QQQ": 0.10, "CASH": 0.76},
+            current_weights={"PSI": 0.04, "SPY": 0.10, "QQQ": 0.10, "CASH": 0.76},
+            holdings_meta=[
+                {"ticker": "PSI", "unrealized_pnl_pct": -0.10, "atr_pct": 0.018},
+                {"ticker": "SPY", "unrealized_pnl_pct": 0.01, "atr_pct": 0.012},
+                {"ticker": "QQQ", "unrealized_pnl_pct": 0.01, "atr_pct": 0.025},
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {
+                        "strategy_name": "weak_first",
+                        "suggested_use": "advisory",
+                        "confidence_score": 0.35,
+                        "selected_tickers": ["QQQ"],
+                    },
+                    {
+                        "strategy_name": "strong_second",
+                        "suggested_use": "advisory",
+                        "confidence_score": 0.80,
+                        "selected_tickers": ["SPY"],
+                    },
+                ]
+            },
+            market_scorecard={
+                "investment_permission": "normal_rebalance",
+                "require_human_confirmation": False,
+            },
+            news_evidence={},
+            config={"replacement_max_single_pct": 0.02},
+        )
+
+        self.assertEqual(out.replacements[0]["ticker"], "SPY")
+        self.assertGreater(out.replacements[0]["score"], 0.5)
+        self.assertIn("high_strategy_confidence", out.replacements[0]["why"])
+        candidates = out.portfolio_summary["replacement_candidates"]
+        self.assertEqual(candidates[0]["ticker"], "SPY")
+
+    def test_risk_contribution_flags_small_high_vol_position(self):
+        out = apply_position_governance(
+            target_weights={"SOXL": 0.04, "CASH": 0.96},
+            current_weights={"SOXL": 0.04, "CASH": 0.96},
+            holdings_meta=[
+                {"ticker": "SOXL", "unrealized_pnl_pct": 0.01, "atr_pct": 0.09},
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "suggested_use": "advisory",
+                        "selected_tickers": ["SOXL"],
+                    }
+                ]
+            },
+            market_scorecard={"investment_permission": "small_overweight_only"},
+            news_evidence={},
+        )
+
+        decision = _decision(out, "SOXL")
+        self.assertEqual(decision["risk_budget_status"], "high")
+        self.assertAlmostEqual(decision["raw_risk_contribution"], 0.0036, places=5)
+        self.assertEqual(out.portfolio_summary["top_risk_contributors"][0]["ticker"], "SOXL")
+
+    def test_large_low_vol_position_does_not_become_high_risk_contribution(self):
+        out = apply_position_governance(
+            target_weights={"BND": 0.16, "CASH": 0.84},
+            current_weights={"BND": 0.16, "CASH": 0.84},
+            holdings_meta=[
+                {"ticker": "BND", "unrealized_pnl_pct": 0.02, "atr_pct": 0.005},
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {
+                        "strategy_name": "low_vol_factor",
+                        "suggested_use": "advisory",
+                        "selected_tickers": ["BND"],
+                    }
+                ]
+            },
+            market_scorecard={"investment_permission": "small_overweight_only"},
+            news_evidence={},
+        )
+
+        decision = _decision(out, "BND")
+        self.assertEqual(decision["risk_budget_status"], "normal")
+        self.assertNotIn("winner_risk_budget_review", decision["reason_codes"])
+        self.assertAlmostEqual(decision["risk_contribution"], 0.0008, places=5)
+
+    def test_llm_advisory_trim_is_clipped_and_logged(self):
+        out = apply_position_governance(
+            target_weights={"QQQ": 0.12, "CASH": 0.88},
+            current_weights={"QQQ": 0.12, "CASH": 0.88},
+            holdings_meta=[
+                {"ticker": "QQQ", "unrealized_pnl_pct": 0.03, "atr_pct": 0.02},
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "suggested_use": "advisory",
+                        "selected_tickers": ["QQQ"],
+                    }
+                ]
+            },
+            market_scorecard={
+                "investment_permission": "normal_rebalance",
+                "require_human_confirmation": False,
+            },
+            news_evidence={},
+            llm_advisory_proposals=[
+                {
+                    "ticker": "QQQ",
+                    "llm_advisory": "trim",
+                    "target_weight": 0.05,
+                    "reason": "live consensus weakened",
+                }
+            ],
+            config={"replacement_enabled": 0},
+        )
+
+        decision = _decision(out, "QQQ")
+        self.assertEqual(decision["decision"], "trim")
+        self.assertAlmostEqual(decision["target_after"], 0.11, places=4)
+        self.assertIn("llm_advisory_validated", decision["reason_codes"])
+        self.assertEqual(out.trade_summary["advisory_overrides"], 1)
+        self.assertIn("accepted_as_trim_1.00%", out.advisory_overrides[0]["validator_result"])
+
+    def test_llm_advisory_add_rejected_when_human_required(self):
+        out = apply_position_governance(
+            target_weights={"SPY": 0.10, "CASH": 0.90},
+            current_weights={"SPY": 0.10, "CASH": 0.90},
+            holdings_meta=[
+                {"ticker": "SPY", "unrealized_pnl_pct": 0.01, "atr_pct": 0.012},
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "suggested_use": "advisory",
+                        "selected_tickers": ["SPY"],
+                    }
+                ]
+            },
+            market_scorecard={
+                "investment_permission": "normal_rebalance",
+                "require_human_confirmation": True,
+            },
+            news_evidence={},
+            llm_advisory_proposals=[
+                {"ticker": "SPY", "llm_advisory": "add", "target_weight": 0.12}
+            ],
+        )
+
+        self.assertAlmostEqual(_decision(out, "SPY")["target_after"], 0.10, places=4)
+        self.assertEqual(out.advisory_overrides[0]["validator_result"], "rejected_human_required_add")
+        self.assertTrue(any(item.startswith("llm_advisory_rejected:SPY") for item in out.blocked_actions))
+
+    def test_llm_exit_without_exit_permission_converts_to_review(self):
+        out = apply_position_governance(
+            target_weights={"SPY": 0.10, "CASH": 0.90},
+            current_weights={"SPY": 0.10, "CASH": 0.90},
+            holdings_meta=[
+                {"ticker": "SPY", "unrealized_pnl_pct": 0.01, "atr_pct": 0.012},
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "suggested_use": "advisory",
+                        "selected_tickers": ["SPY"],
+                    }
+                ]
+            },
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            news_evidence={},
+            llm_advisory_proposals=[
+                {"ticker": "SPY", "llm_advisory": "exit", "reason": "narrative concern"}
+            ],
+        )
+
+        decision = _decision(out, "SPY")
+        self.assertEqual(decision["decision"], "hold_review")
+        self.assertAlmostEqual(decision["target_after"], 0.10, places=4)
+        self.assertEqual(out.advisory_overrides[0]["validator_result"], "converted_exit_to_hold_review")
+
+
+def _decision(out, ticker):
+    return next(row for row in out.position_decisions if row["ticker"] == ticker)
+
+
+if __name__ == "__main__":
+    unittest.main()

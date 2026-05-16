@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+import asyncio
 
 
 def _install_import_stubs() -> None:
@@ -20,7 +21,7 @@ def _install_import_stubs() -> None:
 _install_import_stubs()
 sys.modules.pop("agents.communicator", None)
 
-from agents.communicator import _build_payload, _fallback_template  # noqa: E402
+from agents.communicator import _build_payload, _fallback_template, run_communicator_async  # noqa: E402
 
 
 class CommunicatorScorecardTest(unittest.TestCase):
@@ -227,6 +228,37 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("defensive_only", text)
         self.assertIn("Evidence bundle is stale", text)
         self.assertNotIn("/confirm", text)
+
+    def test_rejected_communicator_uses_deterministic_fallback(self):
+        out = asyncio.run(run_communicator_async(
+            {
+                "auth_mode": "FULL_AUTO",
+                "market_scorecard": {
+                    "market_condition": "mean_reverting",
+                    "investment_permission": "small_overweight_only",
+                    "data_quality": "limited",
+                    "dominant_constraint": "strategy_advisory_only",
+                    "require_human_confirmation": True,
+                },
+            },
+            {
+                "market_judgment": {"regime": "mean_reverting", "adjusted_confidence": 0.5},
+                "recommended_stance": "maintain",
+            },
+            {
+                "approved": False,
+                "rebalance_actions": [
+                    {"ticker": "QQQ", "action": "sell", "weight_delta": -0.0203}
+                ],
+                "rejection_reasons": ["Market scorecard requires human confirmation"],
+            },
+        ))
+
+        self.assertTrue(out["used_fallback"])
+        self.assertIn("Rebalance rejected by risk", out["text"])
+        self.assertIn("No execution this round", out["text"])
+        self.assertNotIn("Action taken", out["text"])
+        self.assertNotIn("/confirm", out["text"])
 
 
 if __name__ == "__main__":

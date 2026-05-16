@@ -217,6 +217,41 @@ class SynthesizerContractTest(unittest.TestCase):
         self.assertFalse(compliance["python_validation"]["compliant"])
         self.assertTrue(compliance["python_validation"]["violations"])
 
+    def test_normalize_preserves_position_advisory_proposals(self):
+        out = _normalize(
+            {
+                "reasoning_chain": _valid_reasoning_chain(),
+                "adjusted_weights": {"SPY": 0.8, "CASH": 0.2},
+                "decision_rationale": "test",
+                "recommended_stance": "overweight",
+                "market_judgment": {
+                    "regime": "bull_trend",
+                    "adjusted_confidence": 0.74,
+                    "uncertainty_flag": False,
+                },
+                "scorecard_compliance": _valid_scorecard_compliance(),
+                "style_compliance": _valid_style_compliance(),
+                "position_advisory_proposals": [
+                    {
+                        "ticker": "SPY",
+                        "llm_advisory": "trim_review",
+                        "target_weight": 0.79,
+                        "reason": "risk budget review",
+                        "confidence": 0.6,
+                    }
+                ],
+            },
+            base_weights={"SPY": 0.8, "CASH": 0.2},
+            allowed_tickers={"SPY", "CASH"},
+            max_single_position=1.0,
+            bull_output={"overall_confidence": "high"},
+            bear_output={"overall_confidence": "low"},
+            research_report={},
+        )
+
+        self.assertEqual(out["position_advisory_proposals"][0]["ticker"], "SPY")
+        self.assertEqual(out["position_advisory_proposals"][0]["llm_advisory"], "trim_review")
+
 
 if __name__ == "__main__":
     unittest.main()

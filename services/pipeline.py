@@ -30,6 +30,8 @@ only reads from DB cache. Both crons fail independently: news down -> pipeline u
 pipeline down -> news continues refreshing.
 """
 import asyncio
+import hashlib
+import json
 import logging
 import time
 from datetime import datetime, timedelta
@@ -51,6 +53,7 @@ from services.market_scorecard import build_market_scorecard
 from services.news_evidence   import build_news_evidence
 from services.decision_style  import resolve_decision_style
 from services.strategy_use_constraints import apply_strategy_use_constraints
+from services.position_governance import apply_position_governance
 from services.execution_audit import build_execution_audit_payload, count_today_actual_execution_actions
 from strategies              import compute_rebalance_actions, estimate_cost_pct
 from tracking.wandb_client   import PipelineRunTracker
@@ -67,6 +70,8 @@ settings = get_settings()
 # --------------- Pipeline TTL Lock ---------------
 PIPELINE_LOCK_KEY    = "pipeline_lock"
 PIPELINE_TTL_MINUTES = 55  # slightly less than 1 hour cron interval
+REJECTED_NOTIFICATION_STATE_KEY = "last_rejected_pipeline_notification"
+REJECTED_NOTIFICATION_COOLDOWN_MINUTES = 360
 
 
 async def _acquire_pipeline_lock() -> bool:
@@ -406,6 +411,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         active_cfg      = await get_system_config(db, "active_strategy")
         alerts_cfg      = await get_system_config(db, "pending_critical_alerts")
         pm_cfg          = await get_system_config(db, "position_manager_config")
+        pg_cfg          = await get_system_config(db, "position_governance_config")
 
     paused = bool((paused_cfg.value if paused_cfg else {}).get("paused", False))
     if paused:
@@ -442,6 +448,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
     )
     pending_alerts = (alerts_cfg.value if alerts_cfg else {}).get("alerts", []) or []
     position_manager_config = (pm_cfg.value if pm_cfg else {}) or {}
+    position_governance_config = (pg_cfg.value if pg_cfg else {}) or {}
 
     params_key = f"strategy_{active_name}_params"
     async with AsyncSessionLocal() as db:
@@ -461,6 +468,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "strategy_params":   strategy_params,
         "pending_alerts":    pending_alerts,
         "position_manager_config": position_manager_config,
+        "position_governance_config": position_governance_config,
     }
 
 
@@ -1080,7 +1088,70 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         else:
             logger.info("[Stage6→7] Regime weights within constraints, no clip needed")
 
-    # ── Stage 6.5: Position Manager quantity/frequency controls ───────────────
+    # ── Stage 6.5a: Position Governance lifecycle controls ───────────────────
+    if risk_out.get("approved") and risk_out.get("target_weights"):
+        target_before_governance = risk_out.get("target_weights") or {}
+        governance_out = apply_position_governance(
+            target_weights=target_before_governance,
+            current_weights=brief.get("current_weights") or {},
+            holdings_meta=brief.get("holdings") or [],
+            strategy_evidence=evidence_bundle.get("strategies") or {},
+            market_scorecard=market_scorecard,
+            news_evidence=news_evidence,
+            llm_advisory_proposals=synthesizer_out.get("position_advisory_proposals") or [],
+            config=pipeline_context.get("position_governance_config") or {},
+        )
+        risk_out["target_weights"] = governance_out.adjusted_weights
+        rebalance_threshold = float((pipeline_context.get("risk_params") or {}).get("rebalance_threshold", 0.02))
+        rebalance_actions = compute_rebalance_actions(
+            governance_out.adjusted_weights,
+            brief.get("current_weights") or {},
+            rebalance_threshold,
+        )
+        risk_out["rebalance_actions"] = rebalance_actions
+        risk_out["estimated_cost_pct"] = estimate_cost_pct(rebalance_actions)
+        risk_out["n_holdings"] = governance_out.trade_summary.get("position_count", risk_out.get("n_holdings"))
+        risk_out["position_governance"] = {
+            "position_decisions": governance_out.position_decisions,
+            "blocked_actions": governance_out.blocked_actions,
+            "forced_trims": governance_out.forced_trims,
+            "replacements": governance_out.replacements,
+            "advisory_overrides": governance_out.advisory_overrides,
+            "trade_summary": governance_out.trade_summary,
+            "portfolio_summary": governance_out.portfolio_summary,
+            "config": governance_out.config,
+        }
+
+        if governance_out.blocked_actions or governance_out.forced_trims:
+            logger.warning(
+                "[Stage6.5a] Position Governance adjusted weights | "
+                f"blocked={governance_out.blocked_actions} trims={governance_out.forced_trims}"
+            )
+        else:
+            logger.info("[Stage6.5a] Position Governance passed, no adjustment needed")
+
+        await _save_step_log(
+            analysis_id, "6ba_position_governance", "position_governance",
+            input_data={
+                "target_weights_raw": target_before_governance,
+                "current_weights": brief.get("current_weights") or {},
+                "strategy_use_summary": (evidence_bundle.get("strategies") or {}).get("strategy_use_summary"),
+                "market_scorecard": market_scorecard,
+            },
+            output_data={
+                "adjusted_weights": governance_out.adjusted_weights,
+                "position_decisions": governance_out.position_decisions,
+                "blocked_actions": governance_out.blocked_actions,
+                "forced_trims": governance_out.forced_trims,
+                "replacements": governance_out.replacements,
+                "advisory_overrides": governance_out.advisory_overrides,
+                "trade_summary": governance_out.trade_summary,
+                "portfolio_summary": governance_out.portfolio_summary,
+            },
+            duration_ms=0,
+        )
+
+    # ── Stage 6.5b: Position Manager quantity/frequency controls ───────────────
     if risk_out.get("approved") and risk_out.get("target_weights"):
         target_before_pm = risk_out.get("target_weights") or {}
         actual_daily_trades = await count_today_actual_execution_actions()
@@ -1171,8 +1242,16 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     auth_mode = pipeline_context["auth_mode"]
 
     if not approved:
-        await tool_send_telegram({"text": remove_command_hints(comm_out["text"])})
-        logger.info("Risk rejected — notified and stopping")
+        should_notify, suppress_reason = await _should_notify_rejected_pipeline(
+            risk_out=risk_out,
+            synthesizer_out=synthesizer_out,
+            pipeline_context=pipeline_context,
+        )
+        if should_notify:
+            await tool_send_telegram({"text": remove_command_hints(comm_out["text"])})
+            logger.info("Risk rejected — notified and stopping")
+        else:
+            logger.info("Risk rejected — duplicate notification suppressed: %s", suppress_reason)
         pipeline_status = "rejected_by_risk"
     elif auth_mode == "SEMI_AUTO":
         await _send_semi_auto_proposal(pipeline_context, risk_out, comm_out, analysis_id)
@@ -1225,6 +1304,81 @@ async def _run_pipeline_inner(trigger: str) -> dict:
 
 
 # ─────────────────────────────── SEMI_AUTO Proposal ───────────────────────────────
+
+
+async def _should_notify_rejected_pipeline(
+    *,
+    risk_out: dict,
+    synthesizer_out: dict,
+    pipeline_context: dict,
+    cooldown_minutes: int = REJECTED_NOTIFICATION_COOLDOWN_MINUTES,
+) -> tuple[bool, str | None]:
+    fingerprint = _rejected_pipeline_fingerprint(risk_out, synthesizer_out, pipeline_context)
+    now = datetime.utcnow()
+    async with AsyncSessionLocal() as db:
+        cfg = await get_system_config(db, REJECTED_NOTIFICATION_STATE_KEY)
+        previous = (cfg.value if cfg else {}) or {}
+        previous_fingerprint = previous.get("fingerprint")
+        previous_at_raw = previous.get("notified_at")
+        previous_at = None
+        if previous_at_raw:
+            try:
+                previous_at = datetime.fromisoformat(previous_at_raw)
+            except (TypeError, ValueError):
+                previous_at = None
+
+        if previous_fingerprint == fingerprint and previous_at is not None:
+            age = now - previous_at
+            if age < timedelta(minutes=cooldown_minutes):
+                return False, f"same rejected proposal fingerprint within {cooldown_minutes}m"
+
+        await upsert_system_config(db, REJECTED_NOTIFICATION_STATE_KEY, {
+            "fingerprint": fingerprint,
+            "notified_at": now.isoformat(),
+            "cooldown_minutes": cooldown_minutes,
+        }, "pipeline")
+    return True, None
+
+
+def _rejected_pipeline_fingerprint(
+    risk_out: dict,
+    synthesizer_out: dict,
+    pipeline_context: dict,
+) -> str:
+    scorecard = pipeline_context.get("market_scorecard") or {}
+    strategy_use = (
+        synthesizer_out.get("strategy_use_enforcement")
+        or pipeline_context.get("strategy_use_enforcement")
+        or {}
+    )
+    payload = {
+        "rejection_reasons": sorted(str(item) for item in (risk_out.get("rejection_reasons") or [])[:8]),
+        "rebalance_actions": [
+            {
+                "ticker": str(action.get("ticker")),
+                "action": str(action.get("action")),
+                "weight_delta": round(float(action.get("weight_delta") or 0.0), 4),
+            }
+            for action in (risk_out.get("rebalance_actions") or [])[:10]
+            if isinstance(action, dict)
+        ],
+        "scorecard": {
+            "condition": scorecard.get("market_condition"),
+            "permission": scorecard.get("investment_permission"),
+            "dominant": scorecard.get("dominant_constraint"),
+            "human": bool(scorecard.get("require_human_confirmation")),
+        },
+        "style_violations": sorted(
+            str(item)
+            for item in ((risk_out.get("style_enforcement") or {}).get("violations") or [])[:8]
+        ),
+        "strategy_use_violations": sorted(
+            str(item)
+            for item in (strategy_use.get("violations") or strategy_use.get("clip_log") or [])[:8]
+        ),
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 async def _send_semi_auto_proposal(
