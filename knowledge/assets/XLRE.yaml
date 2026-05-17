@@ -1,0 +1,13 @@
+id: XLRE
+type: asset
+asset_class: sector_etf
+sector_group: real_estate
+summary: Real estate sector ETF with rate sensitivity and income-like characteristics.
+risk_drivers: [interest_rates, real_estate_cycle, credit_conditions]
+positive_regimes: [falling_rate_expectation, stable_growth]
+weak_regimes: [rising_rate_expectation, credit_stress]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - do not treat as pure defensive asset during rising rates
+sources: [issuer_fact_sheet]
+last_reviewed: 2026-05-18

@@ -1,0 +1,14 @@
+id: SGOV
+type: asset
+asset_class: cash_like_etf
+sector_group: defensive_bonds
+summary: Short-term Treasury ETF used as cash-like defensive allocation.
+risk_drivers: [cash_yield, short_rate]
+positive_regimes: [cash_only, defensive, high_vol]
+weak_regimes: [strong_risk_on]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - useful replacement for risk reduction
+  - low expected upside in risk-on regimes
+sources: [issuer_fact_sheet]
+last_reviewed: 2026-05-18

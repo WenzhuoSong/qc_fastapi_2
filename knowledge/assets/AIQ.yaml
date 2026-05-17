@@ -1,0 +1,13 @@
+id: AIQ
+type: asset
+asset_class: thematic_etf
+sector_group: tech_growth
+summary: AI and technology thematic ETF with growth exposure.
+risk_drivers: [ai_theme, growth_beta, valuation_risk]
+positive_regimes: [trending_bull, ai_capex_strength]
+weak_regimes: [rising_rate_expectation, high_vol]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - count with tech_growth concentration
+sources: [issuer_fact_sheet]
+last_reviewed: 2026-05-18

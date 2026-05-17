@@ -1,0 +1,21 @@
+id: momentum_lite_v1
+type: strategy
+category: momentum
+summary: Medium-horizon momentum strategy that favors ETFs with persistent relative strength.
+best_regimes: [trending_bull, risk_on]
+weak_regimes: [mean_reverting, high_vol]
+required_features: [mom_20d, mom_60d, mom_252d, atr_pct]
+positive_signals:
+  - broad market trend confirmation
+  - multiple horizons aligned
+  - volatility not elevated
+failure_modes:
+  - sharp reversal after crowded momentum
+  - high turnover in choppy markets
+  - live defensive consensus conflict
+governance_implications:
+  - cap adds when ATR is elevated
+  - advisory only when live consensus conflicts with regime
+  - use staged trim rather than full exit without hard risk
+sources: [jegadeesh_titman_1993, time_series_momentum_2012]
+last_reviewed: 2026-05-18

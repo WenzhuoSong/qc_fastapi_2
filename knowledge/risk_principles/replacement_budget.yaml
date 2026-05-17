@@ -1,0 +1,9 @@
+id: replacement_budget
+type: risk_principle
+summary: Freed cash can be reallocated only to supported, non-crowded, non-high-risk candidates.
+trigger_conditions: [forced_trim, replacement_candidate]
+governance_action: allocate_with_score_and_size_caps
+applies_to: [all_assets]
+cannot_override: [human_required, restrictive_scorecard]
+sources: [risk_governance_policy]
+last_reviewed: 2026-05-18

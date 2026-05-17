@@ -1,0 +1,14 @@
+id: QQQ
+type: asset
+asset_class: equity_etf
+sector_group: tech_growth
+summary: Nasdaq-100 ETF with growth and mega-cap technology concentration.
+risk_drivers: [growth_beta, technology_concentration, rate_sensitivity]
+positive_regimes: [trending_bull, risk_on]
+weak_regimes: [rising_rate_expectation, high_vol]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - watch overlap with XLK and AI/growth ETFs
+  - trim pressure should rise when tech_growth exposure is near limit
+sources: [issuer_fact_sheet]
+last_reviewed: 2026-05-18

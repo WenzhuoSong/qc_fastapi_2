@@ -1,0 +1,14 @@
+id: PSI
+type: asset
+asset_class: sector_etf
+sector_group: semiconductors
+summary: Dynamic semiconductor ETF with high theme concentration.
+risk_drivers: [semiconductor_cycle, factor_rotation, growth_beta]
+positive_regimes: [trending_bull, semiconductor_momentum]
+weak_regimes: [high_vol, growth_scare]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - count toward semiconductor concentration
+  - add should be blocked when semiconductors are over limit
+sources: [issuer_fact_sheet]
+last_reviewed: 2026-05-18

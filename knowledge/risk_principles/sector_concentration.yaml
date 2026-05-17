@@ -1,0 +1,9 @@
+id: sector_concentration
+type: risk_principle
+summary: Theme and sector exposure above configured limits blocks incremental adds.
+trigger_conditions: [group_exposure_above_limit]
+governance_action: block_add_and_trim_weak_support
+applies_to: [semiconductors, tech_growth, defensive_bonds, cyclicals, real_estate]
+cannot_override: [llm_advisory]
+sources: [risk_governance_policy]
+last_reviewed: 2026-05-18

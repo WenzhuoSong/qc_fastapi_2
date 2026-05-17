@@ -1,0 +1,14 @@
+id: SOXX
+type: asset
+asset_class: sector_etf
+sector_group: semiconductors
+summary: Semiconductor ETF with high cyclicality and growth exposure.
+risk_drivers: [semiconductor_cycle, ai_capex, export_controls, growth_beta]
+positive_regimes: [trending_bull, ai_capex_strength]
+weak_regimes: [geopolitical_risk, high_vol, growth_scare]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - count toward semiconductor concentration
+  - high correlation with PSI, FTXL, XSD, SOXL
+sources: [issuer_fact_sheet]
+last_reviewed: 2026-05-18

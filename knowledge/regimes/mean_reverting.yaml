@@ -1,0 +1,11 @@
+id: mean_reverting
+type: regime
+summary: Choppy or range-bound regime where trend continuation is less reliable.
+supports_strategies: [mean_reversion_lite, low_vol_factor]
+weak_strategies: [momentum_lite_v1]
+risk_notes:
+  - reduce turnover from conflicting signals
+  - use smaller step-in sizing
+  - be cautious with leveraged ETFs
+sources: [fama_french_1993]
+last_reviewed: 2026-05-18

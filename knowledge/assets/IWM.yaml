@@ -1,0 +1,13 @@
+id: IWM
+type: asset
+asset_class: equity_etf
+sector_group: cyclicals
+summary: US small-cap equity ETF with higher economic sensitivity than large-cap benchmarks.
+risk_drivers: [small_cap_beta, credit_conditions, economic_growth]
+positive_regimes: [risk_on, broadening_bull]
+weak_regimes: [credit_stress, risk_off]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - add cautiously when credit stress or recession risk rises
+sources: [issuer_fact_sheet]
+last_reviewed: 2026-05-18

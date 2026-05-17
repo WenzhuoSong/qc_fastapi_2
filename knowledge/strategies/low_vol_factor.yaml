@@ -1,0 +1,21 @@
+id: low_vol_factor
+type: strategy
+category: defensive_factor
+summary: Defensive allocation preference toward lower-volatility ETFs and cash-like assets.
+best_regimes: [high_vol, defensive, risk_off]
+weak_regimes: [trending_bull, risk_on]
+required_features: [atr_pct, hist_vol_20d, beta_vs_spy]
+positive_signals:
+  - high market volatility
+  - stale or limited data quality
+  - defensive scorecard permission
+failure_modes:
+  - lagging strong risk-on markets
+  - crowding into duration-sensitive bonds during rising-rate shocks
+  - overtrading between defensive substitutes
+governance_implications:
+  - useful as advisory risk brake
+  - do not assume bond ETFs are risk-free
+  - prefer hold-or-trim when data quality is poor
+sources: [quality_minus_junk_2013, fama_french_1993]
+last_reviewed: 2026-05-18

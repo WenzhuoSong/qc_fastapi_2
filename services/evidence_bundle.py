@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from services.knowledge_base import build_knowledge_context
 from services.news_evidence import build_news_evidence
 
 
@@ -33,6 +34,11 @@ def build_evidence_bundle(
     news = _build_news_section(brief)
     structured_news_evidence = news_evidence or build_news_evidence(brief)
     strategies = _build_strategy_section(playground)
+    knowledge = _build_knowledge_section(
+        brief=brief,
+        market=market,
+        strategies=strategies,
+    )
     memory = _build_memory_section(brief)
     data_quality = _build_data_quality_section(
         news=news,
@@ -51,6 +57,7 @@ def build_evidence_bundle(
         "news": news,
         "news_evidence": structured_news_evidence,
         "strategies": strategies,
+        "knowledge": knowledge,
         "memory": memory,
         "data_quality": data_quality,
     }
@@ -261,6 +268,59 @@ def _build_memory_section(brief: dict[str, Any]) -> dict[str, Any]:
         "recent_weeks": memory.get("recent_weeks") or [],
         "warnings": _unique(str(item) for item in warnings),
     }
+
+
+def _build_knowledge_section(
+    *,
+    brief: dict[str, Any],
+    market: dict[str, Any],
+    strategies: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        tickers = _knowledge_tickers(brief=brief, strategies=strategies)
+        strategy_names = [
+            str(item.get("strategy_name"))
+            for item in strategies.get("strategy_results") or []
+            if item.get("strategy_name")
+        ]
+        reason_codes: list[str] = []
+        for item in strategies.get("strategy_results") or []:
+            reason_codes.extend(str(code) for code in item.get("reason_codes") or [])
+        evidence_summary = strategies.get("evidence_summary") or {}
+        permission = evidence_summary.get("execution_permission")
+        if permission:
+            reason_codes.append(str(permission))
+        return build_knowledge_context(
+            tickers=tickers,
+            strategy_names=strategy_names,
+            regime=market.get("regime") or strategies.get("regime_label"),
+            reason_codes=reason_codes,
+        )
+    except Exception as exc:  # pragma: no cover - defensive: keep pipeline alive.
+        return {
+            "available": False,
+            "warnings": [f"knowledge_base_unavailable: {exc}"],
+        }
+
+
+def _knowledge_tickers(*, brief: dict[str, Any], strategies: dict[str, Any]) -> list[str]:
+    tickers: list[str] = []
+    for row in brief.get("holdings") or []:
+        if isinstance(row, dict):
+            tickers.append(str(row.get("ticker") or row.get("symbol") or ""))
+    for key in ("current_weights", "target_weights", "weights"):
+        weights = brief.get(key) or {}
+        if isinstance(weights, dict):
+            tickers.extend(str(ticker) for ticker in weights.keys())
+    for row in strategies.get("consensus_top5") or []:
+        if isinstance(row, dict):
+            tickers.append(str(row.get("ticker") or ""))
+    consensus_weights = strategies.get("consensus_weights") or {}
+    if isinstance(consensus_weights, dict):
+        tickers.extend(str(ticker) for ticker in consensus_weights.keys())
+    for row in strategies.get("strategy_results") or []:
+        tickers.extend(str(ticker) for ticker in row.get("selected_tickers") or [])
+    return _unique(ticker.upper() for ticker in tickers if ticker and ticker != "CASH")
 
 
 def _build_data_quality_section(

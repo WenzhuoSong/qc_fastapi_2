@@ -1,0 +1,13 @@
+id: BND
+type: asset
+asset_class: bond_etf
+sector_group: defensive_bonds
+summary: Broad investment-grade bond ETF.
+risk_drivers: [duration, credit_spread, rates]
+positive_regimes: [risk_off, stable_rates]
+weak_regimes: [rising_rate_expectation, credit_stress]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - broad bond exposure can diversify equities but may lose in rate shocks
+sources: [issuer_fact_sheet, fama_french_1993]
+last_reviewed: 2026-05-18

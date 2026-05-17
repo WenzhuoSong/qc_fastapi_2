@@ -1,0 +1,16 @@
+id: SOXL
+type: asset
+asset_class: leveraged_etf
+sector_group: semiconductors
+summary: 3x leveraged bullish semiconductor ETF with daily reset compounding risk.
+leverage: 3
+risk_drivers: [leverage, daily_reset_compounding, semiconductor_beta, high_atr]
+positive_regimes: [short_term_semiconductor_breakout]
+weak_regimes: [high_vol, mean_reverting, risk_off]
+holding_policy: {allow_long_hold: false, max_holding_style: short_term_only}
+governance_notes:
+  - never add when ATR is high
+  - require explicit strategy support
+  - prefer trim review on volatility spike
+sources: [issuer_fact_sheet, leveraged_etf_policy]
+last_reviewed: 2026-05-18

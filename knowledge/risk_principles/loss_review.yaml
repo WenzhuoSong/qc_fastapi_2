@@ -1,0 +1,9 @@
+id: loss_review
+type: risk_principle
+summary: Losing positions require review before adding and may be trimmed when support is weak.
+trigger_conditions: [unrealized_loss_review, loss_below_threshold]
+governance_action: block_add_or_stage_trim
+applies_to: [all_assets]
+cannot_override: [human_required, hard_risk]
+sources: [risk_governance_policy]
+last_reviewed: 2026-05-18

@@ -1,0 +1,14 @@
+id: TLT
+type: asset
+asset_class: bond_etf
+sector_group: defensive_bonds
+summary: Long-duration Treasury ETF with high sensitivity to interest-rate expectations.
+risk_drivers: [long_duration, rates, inflation_expectation]
+positive_regimes: [growth_scare, falling_rate_expectation, risk_off]
+weak_regimes: [rising_rate_expectation, inflation_shock]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - defensive label does not mean low risk
+  - explain losses through duration and rate context
+sources: [issuer_fact_sheet, fama_french_1993]
+last_reviewed: 2026-05-18

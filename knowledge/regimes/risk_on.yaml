@@ -1,0 +1,10 @@
+id: risk_on
+type: regime
+summary: Broad participation regime with favorable equity and cyclical risk appetite.
+supports_strategies: [momentum_lite_v1]
+weak_strategies: [low_vol_factor]
+risk_notes:
+  - broad market ETFs may be cleaner than crowded themes
+  - still cap concentration and high ATR adds
+sources: [risk_governance_policy]
+last_reviewed: 2026-05-18

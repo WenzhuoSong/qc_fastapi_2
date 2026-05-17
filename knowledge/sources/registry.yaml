@@ -1,0 +1,36 @@
+sources:
+  jegadeesh_titman_1993:
+    type: academic
+    reliability: high
+    title: Returns to Buying Winners and Selling Losers
+    use_for: [momentum, relative_strength]
+  time_series_momentum_2012:
+    type: academic
+    reliability: high
+    title: Time Series Momentum
+    use_for: [trend_following, regime_fit]
+  fama_french_1993:
+    type: academic
+    reliability: high
+    title: Common Risk Factors in the Returns on Stocks and Bonds
+    use_for: [factor_risk, bond_equity_risk]
+  quality_minus_junk_2013:
+    type: academic
+    reliability: medium
+    title: Quality Minus Junk
+    use_for: [quality_factor, defensive_factor]
+  issuer_fact_sheet:
+    type: issuer_document
+    reliability: high
+    title: ETF issuer fact sheet or prospectus
+    use_for: [asset_metadata, holding_policy]
+  risk_governance_policy:
+    type: internal_policy
+    reliability: high
+    title: Deterministic position governance policy
+    use_for: [risk_controls, execution_boundaries]
+  leveraged_etf_policy:
+    type: internal_policy
+    reliability: high
+    title: Leveraged and inverse ETF handling policy
+    use_for: [leveraged_etf, holding_policy]

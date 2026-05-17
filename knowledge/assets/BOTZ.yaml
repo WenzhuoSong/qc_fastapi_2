@@ -1,0 +1,13 @@
+id: BOTZ
+type: asset
+asset_class: thematic_etf
+sector_group: tech_growth
+summary: Robotics and automation thematic ETF.
+risk_drivers: [automation_theme, growth_beta, global_equity_exposure]
+positive_regimes: [trending_bull, capex_strength]
+weak_regimes: [risk_off, rising_rate_expectation]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - thematic concentration requires strategy support
+sources: [issuer_fact_sheet]
+last_reviewed: 2026-05-18

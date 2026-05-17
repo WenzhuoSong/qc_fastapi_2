@@ -1,0 +1,9 @@
+id: high_atr_no_add
+type: risk_principle
+summary: Elevated ATR blocks new adds and may require trim review.
+trigger_conditions: [high_atr, high_risk_contribution]
+governance_action: block_add_and_review_trim
+applies_to: [all_assets, leveraged_etf]
+cannot_override: [llm_advisory]
+sources: [risk_governance_policy]
+last_reviewed: 2026-05-18

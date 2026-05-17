@@ -1,0 +1,21 @@
+id: mean_reversion_lite
+type: strategy
+category: mean_reversion
+summary: Contrarian strategy that favors assets stretched away from recent ranges when market conditions are choppy.
+best_regimes: [mean_reverting, range_bound]
+weak_regimes: [trending_bull, high_vol_breakout]
+required_features: [rsi_14, bb_position, return_5d, atr_pct]
+positive_signals:
+  - extreme short-term move
+  - stable volatility
+  - range-bound regime
+failure_modes:
+  - trend continuation
+  - catching falling assets during hard-risk events
+  - high turnover during unstable signals
+governance_implications:
+  - avoid full-size allocation when trend regime is strong
+  - require hard-risk check before buying losers
+  - prefer small step-in sizing
+sources: [fama_french_1993]
+last_reviewed: 2026-05-18

@@ -1,6 +1,6 @@
 # Position Governance Status And Plan
 
-Last updated: 2026-05-16
+Last updated: 2026-05-18
 
 ## Purpose
 
@@ -421,6 +421,42 @@ Implementation notes:
   `portfolio_summary`.
 - Rejected pipeline runs also generate diagnostic-only explanations so blocked
   reports can still answer why holdings are held / not added / not exited.
+
+### Completed: Trading Knowledge Base v1
+
+The system now has a compact structured knowledge base for strategies, assets,
+regimes, risk principles, and sources.
+
+Implemented in:
+
+- `knowledge/strategies/*.yaml`
+- `knowledge/assets/*.yaml`
+- `knowledge/regimes/*.yaml`
+- `knowledge/risk_principles/*.yaml`
+- `knowledge/sources/registry.yaml`
+- `services/knowledge_base.py`
+- `services/evidence_bundle.py`
+- `docs/trading_knowledge_base.md`
+- `tests/test_knowledge_base.py`
+
+Current v1 scope:
+
+```text
+strategies: 3
+assets: 20
+regimes: 5
+risk_principles: 8
+sources: 7
+```
+
+Runtime usage:
+
+- `build_knowledge_context(...)` selects only relevant items for current
+  holdings, Playground strategies, market regime, and reason codes.
+- `build_evidence_bundle(...)` exposes the compact subset under
+  `bundle["knowledge"]`.
+- Knowledge can improve explanations and prompts, but cannot create trades or
+  override deterministic validators.
 
 ## Next Required Work
 

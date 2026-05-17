@@ -124,6 +124,13 @@ class EvidenceBundleTest(unittest.TestCase):
         self.assertIn("news_evidence", bundle)
         self.assertEqual(bundle["news_evidence"]["macro_news_score"]["overall_bias"], "positive")
         self.assertIn("ticker_news_scores", bundle["news_evidence"])
+        self.assertTrue(bundle["knowledge"]["available"])
+        self.assertIn(
+            "momentum_lite_v1",
+            [item["id"] for item in bundle["knowledge"]["strategies"]],
+        )
+        self.assertIn("SPY", [item["id"] for item in bundle["knowledge"]["assets"]])
+        self.assertIn("trending_bull", [item["id"] for item in bundle["knowledge"]["regimes"]])
         self.assertEqual(bundle["data_quality"]["overall"], "fresh")
 
     def test_missing_playground_uses_fallback_and_marks_missing_quality(self):

@@ -1,0 +1,13 @@
+id: IEF
+type: asset
+asset_class: bond_etf
+sector_group: defensive_bonds
+summary: Intermediate-duration Treasury ETF.
+risk_drivers: [duration, rates, inflation_expectation]
+positive_regimes: [risk_off, falling_rate_expectation]
+weak_regimes: [rising_rate_expectation, inflation_shock]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - lower duration risk than TLT but still rate-sensitive
+sources: [issuer_fact_sheet, fama_french_1993]
+last_reviewed: 2026-05-18

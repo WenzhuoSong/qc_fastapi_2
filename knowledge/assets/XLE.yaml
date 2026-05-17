@@ -1,0 +1,13 @@
+id: XLE
+type: asset
+asset_class: sector_etf
+sector_group: cyclicals
+summary: Energy sector ETF driven by oil, gas, inflation, and geopolitical supply risk.
+risk_drivers: [oil_price, commodity_cycle, geopolitical_risk]
+positive_regimes: [inflationary_growth, commodity_strength]
+weak_regimes: [growth_scare, oil_price_shock_down]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - news hard-risk events should block new adds
+sources: [issuer_fact_sheet]
+last_reviewed: 2026-05-18

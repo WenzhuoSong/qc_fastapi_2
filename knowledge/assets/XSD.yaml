@@ -1,0 +1,13 @@
+id: XSD
+type: asset
+asset_class: sector_etf
+sector_group: semiconductors
+summary: Equal-weight semiconductor ETF with smaller-cap semiconductor exposure.
+risk_drivers: [semiconductor_cycle, small_mid_cap_beta, growth_beta]
+positive_regimes: [trending_bull, risk_on]
+weak_regimes: [high_vol, liquidity_stress]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - higher breadth than mega-cap semis but still same theme concentration
+sources: [issuer_fact_sheet]
+last_reviewed: 2026-05-18

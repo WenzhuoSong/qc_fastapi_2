@@ -1,0 +1,11 @@
+id: defensive
+type: regime
+summary: Risk-reduction regime where new equity risk should be limited or blocked.
+supports_strategies: [low_vol_factor]
+weak_strategies: [momentum_lite_v1]
+risk_notes:
+  - prioritize cash-like and short-duration defensive assets
+  - human confirmation may be required
+  - do not add unsupported losing positions
+sources: [risk_governance_policy]
+last_reviewed: 2026-05-18

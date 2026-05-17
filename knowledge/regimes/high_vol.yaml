@@ -1,0 +1,11 @@
+id: high_vol
+type: regime
+summary: Elevated volatility regime where capital protection and trade-size limits dominate.
+supports_strategies: [low_vol_factor]
+weak_strategies: [momentum_lite_v1, mean_reversion_lite]
+risk_notes:
+  - high ATR blocks adds
+  - prefer hold-or-trim over expansion
+  - leveraged ETFs require extra caution
+sources: [risk_governance_policy]
+last_reviewed: 2026-05-18

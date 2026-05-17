@@ -1,0 +1,15 @@
+id: SOXS
+type: asset
+asset_class: inverse_leveraged_etf
+sector_group: semiconductors
+summary: 3x inverse semiconductor ETF with daily reset compounding risk.
+leverage: -3
+risk_drivers: [inverse_leverage, daily_reset_compounding, semiconductor_beta, high_atr]
+positive_regimes: [short_term_semiconductor_breakdown]
+weak_regimes: [trending_bull, high_vol_chop]
+holding_policy: {allow_long_hold: false, max_holding_style: short_term_only}
+governance_notes:
+  - not suitable for passive long holding
+  - use only with explicit short-term risk thesis
+sources: [issuer_fact_sheet, leveraged_etf_policy]
+last_reviewed: 2026-05-18

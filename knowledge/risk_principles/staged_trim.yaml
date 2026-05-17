@@ -1,0 +1,9 @@
+id: staged_trim
+type: risk_principle
+summary: Governance prefers staged trims over full exits unless hard risk or explicit exit permission is present.
+trigger_conditions: [loss_review, hard_risk, high_atr]
+governance_action: trim_step_or_review_exit
+applies_to: [all_assets]
+cannot_override: [llm_advisory_without_validator]
+sources: [risk_governance_policy]
+last_reviewed: 2026-05-18

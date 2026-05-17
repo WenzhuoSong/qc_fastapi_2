@@ -1,0 +1,9 @@
+id: human_required_boundary
+type: risk_principle
+summary: Human confirmation blocks risk expansion and replacement allocation.
+trigger_conditions: [scorecard_human_required]
+governance_action: block_add_and_replacement
+applies_to: [all_assets]
+cannot_override: [llm_advisory, strategy_confidence]
+sources: [risk_governance_policy]
+last_reviewed: 2026-05-18

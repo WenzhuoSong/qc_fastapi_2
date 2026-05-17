@@ -1,0 +1,14 @@
+id: SPY
+type: asset
+asset_class: equity_etf
+sector_group: broad_market
+summary: Broad US large-cap equity benchmark.
+risk_drivers: [market_beta, equity_risk_premium]
+positive_regimes: [trending_bull, risk_on]
+weak_regimes: [high_vol, risk_off]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - useful benchmark and replacement candidate
+  - broad exposure reduces single-theme concentration
+sources: [issuer_fact_sheet]
+last_reviewed: 2026-05-18
