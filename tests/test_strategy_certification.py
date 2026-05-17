@@ -1,0 +1,125 @@
+import unittest
+
+from services.strategy_certification import certify_strategies
+
+
+class StrategyCertificationTest(unittest.TestCase):
+    def test_certifies_advisory_when_historical_and_live_are_ready(self):
+        out = certify_strategies({
+            "evidence_summary": {
+                "historical_evidence": "strong",
+                "live_fit": "aligned",
+            },
+            "strategy_results": [
+                {
+                    "strategy_name": "momentum_lite_v1",
+                    "data_ready": True,
+                    "can_influence_allocation": True,
+                    "turnover": 0.20,
+                    "n_forward_return_samples": 30,
+                    "historical_forward_return_samples": 289,
+                    "historical_sharpe": 1.2,
+                    "historical_hit_rate": 0.55,
+                    "suggested_use": "advisory",
+                    "confidence_score": 0.7,
+                }
+            ],
+        })
+
+        row = out["items"]["momentum_lite_v1"]
+        self.assertEqual(row["status"], "advisory")
+        self.assertEqual(row["approved_use"], "advisory")
+        self.assertEqual(out["summary"]["actionable_count"], 1)
+
+    def test_research_supported_when_live_is_insufficient_or_turnover_high(self):
+        out = certify_strategies({
+            "evidence_summary": {
+                "historical_evidence": "strong",
+                "live_fit": "insufficient",
+            },
+            "strategy_results": [
+                {
+                    "strategy_name": "mean_reversion_lite",
+                    "data_ready": True,
+                    "can_influence_allocation": True,
+                    "turnover": 0.75,
+                    "n_forward_return_samples": 3,
+                    "historical_forward_return_samples": 289,
+                    "historical_sharpe": 1.1,
+                    "suggested_use": "advisory",
+                    "confidence_score": 0.55,
+                }
+            ],
+        })
+
+        row = out["items"]["mean_reversion_lite"]
+        self.assertEqual(row["status"], "research_supported")
+        self.assertEqual(row["approved_use"], "research_only")
+        self.assertIn("live_samples_insufficient", row["promotion_blockers"])
+        self.assertIn("turnover_high", row["demotion_reasons"])
+
+    def test_bundle_level_conflict_does_not_leak_to_aligned_strategy(self):
+        out = certify_strategies({
+            "evidence_summary": {
+                "historical_evidence": "strong",
+                "live_fit": "conflicted",
+            },
+            "strategy_results": [
+                {
+                    "strategy_name": "momentum_lite_v1",
+                    "data_ready": True,
+                    "can_influence_allocation": True,
+                    "turnover": 0.20,
+                    "n_forward_return_samples": 30,
+                    "metric_reliability": {"level": "high"},
+                    "historical_metric_reliability": {"level": "high"},
+                    "historical_forward_return_samples": 289,
+                    "historical_sharpe": 1.2,
+                    "suggested_use": "advisory",
+                    "confidence_score": 0.70,
+                    "reason_codes": ["historical_strong", "live_qc_supported"],
+                },
+                {
+                    "strategy_name": "mean_reversion_lite",
+                    "data_ready": True,
+                    "can_influence_allocation": True,
+                    "turnover": 0.20,
+                    "n_forward_return_samples": 30,
+                    "metric_reliability": {"level": "high"},
+                    "historical_metric_reliability": {"level": "high"},
+                    "historical_forward_return_samples": 289,
+                    "historical_sharpe": 1.0,
+                    "suggested_use": "advisory",
+                    "confidence_score": 0.60,
+                    "reason_codes": ["historical_strong", "consensus_regime_conflict"],
+                },
+            ],
+        })
+
+        aligned = out["items"]["momentum_lite_v1"]
+        conflicted = out["items"]["mean_reversion_lite"]
+        self.assertEqual(aligned["live"]["fit"], "aligned")
+        self.assertEqual(aligned["status"], "advisory")
+        self.assertNotIn("live_fit_conflicted", aligned["demotion_reasons"])
+        self.assertEqual(conflicted["live"]["fit"], "conflicted")
+        self.assertIn("live_fit_conflicted", conflicted["demotion_reasons"])
+
+    def test_disables_malformed_or_non_influential_strategy(self):
+        out = certify_strategies({
+            "strategy_results": [
+                {
+                    "strategy_name": "broken_strategy",
+                    "data_ready": False,
+                    "can_influence_allocation": False,
+                    "suggested_use": "ignore",
+                }
+            ],
+        })
+
+        row = out["items"]["broken_strategy"]
+        self.assertEqual(row["status"], "disabled")
+        self.assertEqual(row["approved_use"], "none")
+
+
+if __name__ == "__main__":
+    unittest.main()

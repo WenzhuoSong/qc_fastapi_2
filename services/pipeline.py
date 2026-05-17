@@ -54,6 +54,10 @@ from services.news_evidence   import build_news_evidence
 from services.decision_style  import resolve_decision_style
 from services.strategy_use_constraints import apply_strategy_use_constraints
 from services.position_governance import apply_position_governance
+from services.empirical_profile_store import (
+    build_empirical_profiles_from_feature_store,
+    collect_empirical_profile_tickers,
+)
 from services.execution_audit import build_execution_audit_payload, count_today_actual_execution_actions
 from strategies              import compute_rebalance_actions, estimate_cost_pct
 from tracking.wandb_client   import PipelineRunTracker
@@ -639,6 +643,30 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         logger.warning(f"Stage 2c Playground skipped: {e}")
 
     # Stage 2d: Evidence bundle + market scorecard contracts (no execution effect yet)
+    empirical_profiles = {}
+    try:
+        empirical_tickers = collect_empirical_profile_tickers(
+            brief=brief,
+            quant_baseline=quant_baseline,
+            playground_bundle=playground_bundle,
+        )
+        async with AsyncSessionLocal() as db:
+            empirical_profiles = await build_empirical_profiles_from_feature_store(
+                db,
+                tickers=empirical_tickers,
+                lookback_days=420,
+                source="yfinance",
+            )
+        brief["empirical_profiles"] = empirical_profiles
+        logger.info(
+            "Stage 2d empirical profiles loaded | tickers=%s profiles=%s",
+            len(empirical_tickers),
+            len(empirical_profiles),
+        )
+    except Exception as e:
+        logger.warning(f"Stage 2d empirical profile loading failed; continuing without profiles: {e}")
+        brief["empirical_profiles"] = {}
+
     try:
         news_evidence = build_news_evidence(brief)
     except Exception as e:
@@ -663,6 +691,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         quant_baseline=quant_baseline,
         playground_bundle=playground_bundle,
         news_evidence=news_evidence,
+        empirical_profiles=empirical_profiles,
     )
     market_scorecard = build_market_scorecard(evidence_bundle)
     try:

@@ -11,7 +11,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from services.knowledge_base import build_knowledge_context
+from services.knowledge_resolver import resolve_knowledge
 from services.news_evidence import build_news_evidence
+from services.strategy_confidence_calibrator import calibrate_strategy_confidence
+from services.strategy_certification import certify_strategies
 
 
 DEFAULT_MAX_AGE_SECONDS = 1800
@@ -23,6 +26,7 @@ def build_evidence_bundle(
     quant_baseline: dict[str, Any] | None,
     playground_bundle: dict[str, Any] | None = None,
     news_evidence: dict[str, Any] | None = None,
+    empirical_profiles: dict[str, Any] | None = None,
     max_age_seconds: int = DEFAULT_MAX_AGE_SECONDS,
 ) -> dict[str, Any]:
     brief = brief or {}
@@ -38,7 +42,21 @@ def build_evidence_bundle(
         brief=brief,
         market=market,
         strategies=strategies,
+        empirical_profiles=empirical_profiles or brief.get("empirical_profiles") or {},
     )
+    calibration = calibrate_strategy_confidence(
+        strategy_confidence=strategies.get("strategy_confidence") or {},
+        knowledge_resolution=knowledge.get("resolution") or {},
+    )
+    strategies = _with_calibrated_strategy_confidence(
+        strategies=strategies,
+        calibration=calibration,
+    )
+    strategies["strategy_certification"] = certify_strategies(strategies)
+    knowledge["strategy_confidence_calibration"] = {
+        "records": calibration.get("records") or [],
+        "summary": calibration.get("summary") or {},
+    }
     memory = _build_memory_section(brief)
     data_quality = _build_data_quality_section(
         news=news,
@@ -275,6 +293,7 @@ def _build_knowledge_section(
     brief: dict[str, Any],
     market: dict[str, Any],
     strategies: dict[str, Any],
+    empirical_profiles: dict[str, Any],
 ) -> dict[str, Any]:
     try:
         tickers = _knowledge_tickers(brief=brief, strategies=strategies)
@@ -290,12 +309,32 @@ def _build_knowledge_section(
         permission = evidence_summary.get("execution_permission")
         if permission:
             reason_codes.append(str(permission))
-        return build_knowledge_context(
+        context = build_knowledge_context(
             tickers=tickers,
             strategy_names=strategy_names,
             regime=market.get("regime") or strategies.get("regime_label"),
             reason_codes=reason_codes,
         )
+        resolution = resolve_knowledge(
+            knowledge_context=context,
+            computed_facts={
+                "market": market,
+                "strategies": strategies,
+                "positions": {
+                    "holdings": brief.get("holdings") or [],
+                    "current_weights": brief.get("current_weights") or {},
+                    "target_weights": brief.get("target_weights") or {},
+                },
+                "news_evidence": brief.get("news_evidence") or {},
+                "scorecard": brief.get("market_scorecard") or {},
+                "position_governance": brief.get("position_governance") or {},
+                "empirical_profiles": empirical_profiles,
+            },
+        )
+        return {
+            **context,
+            "resolution": resolution,
+        }
     except Exception as exc:  # pragma: no cover - defensive: keep pipeline alive.
         return {
             "available": False,
@@ -321,6 +360,38 @@ def _knowledge_tickers(*, brief: dict[str, Any], strategies: dict[str, Any]) -> 
     for row in strategies.get("strategy_results") or []:
         tickers.extend(str(ticker) for ticker in row.get("selected_tickers") or [])
     return _unique(ticker.upper() for ticker in tickers if ticker and ticker != "CASH")
+
+
+def _with_calibrated_strategy_confidence(
+    *,
+    strategies: dict[str, Any],
+    calibration: dict[str, Any],
+) -> dict[str, Any]:
+    calibrated_confidence = calibration.get("strategy_confidence") or {}
+    if not calibrated_confidence:
+        return strategies
+    out = dict(strategies)
+    original_confidence = strategies.get("strategy_confidence") or {}
+    out["strategy_confidence_pre_calibration"] = original_confidence
+    out["strategy_confidence"] = calibrated_confidence
+    out["strategy_confidence_calibration"] = {
+        "records": calibration.get("records") or [],
+        "summary": calibration.get("summary") or {},
+    }
+    out["strategy_use_summary"] = _strategy_use_summary(calibrated_confidence)
+
+    calibrated_results: list[dict[str, Any]] = []
+    for item in strategies.get("strategy_results") or []:
+        row = dict(item)
+        name = row.get("strategy_name")
+        confidence_row = calibrated_confidence.get(name) or {}
+        if confidence_row:
+            row["confidence_score_pre_calibration"] = item.get("confidence_score")
+            row["confidence_score"] = confidence_row.get("confidence_score")
+            row["calibration_reason_codes"] = confidence_row.get("calibration_reason_codes") or []
+        calibrated_results.append(row)
+    out["strategy_results"] = calibrated_results
+    return out
 
 
 def _build_data_quality_section(

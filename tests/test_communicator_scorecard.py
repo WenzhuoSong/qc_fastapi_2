@@ -69,6 +69,42 @@ class CommunicatorScorecardTest(unittest.TestCase):
                         "execution_permission": "advisory",
                     },
                 },
+                "evidence_bundle": {
+                    "knowledge": {
+                        "resolution": {
+                            "conflicts": [
+                                {
+                                    "id": "regime_strategy_conflict",
+                                    "strategy": "momentum_lite_v1",
+                                    "regime": "mean_reverting",
+                                }
+                            ],
+                            "hard_constraints": [
+                                {
+                                    "id": "high_atr_no_add",
+                                    "action": "block_add",
+                                }
+                            ],
+                            "missing_knowledge": [],
+                        },
+                        "strategy_confidence_calibration": {
+                            "summary": {"total": 1, "accepted": 1, "rejected": 0}
+                        },
+                    },
+                    "strategies": {
+                        "strategy_certification": {
+                            "summary": {"counts": {"research_supported": 1, "advisory": 0}},
+                            "items": {
+                                "momentum_lite_v1": {
+                                    "status": "research_supported",
+                                    "approved_use": "research_only",
+                                    "promotion_blockers": ["live_samples_insufficient"],
+                                    "demotion_reasons": ["turnover_high"],
+                                }
+                            },
+                        }
+                    },
+                },
             },
             {
                 "market_judgment": {"regime": "bull_trend", "adjusted_confidence": 0.6},
@@ -110,6 +146,9 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertEqual(payload["decision_style"]["analysis_style"], "macro_defensive")
         self.assertEqual(payload["style_enforcement"]["violations"][0], "style_new_position_blocked:XLF 10.00%->0.00%")
         self.assertEqual(payload["strategy_use_enforcement"]["evidence_summary"]["historical_evidence"], "strong")
+        self.assertEqual(payload["knowledge_resolution"]["conflicts"][0]["id"], "regime_strategy_conflict")
+        self.assertEqual(payload["knowledge_resolution"]["calibration"]["summary"]["accepted"], 1)
+        self.assertEqual(payload["strategy_certification"]["items"][0]["status"], "research_supported")
         self.assertEqual(
             payload["strategy_use_enforcement"]["violations"][0],
             "strategy_advisory_only:max_delta:SPY 60.00%->53.00%",
@@ -168,6 +207,36 @@ class CommunicatorScorecardTest(unittest.TestCase):
                         "execution_permission": "advisory",
                     },
                 },
+                "knowledge_resolution": {
+                    "conflicts": [
+                        {
+                            "id": "regime_strategy_conflict",
+                            "strategy": "momentum_lite_v1",
+                            "regime": "mean_reverting",
+                        }
+                    ],
+                    "hard_constraints": [
+                        {
+                            "id": "high_atr_no_add",
+                            "action": "block_add",
+                        }
+                    ],
+                    "calibration": {
+                        "summary": {"total": 1, "accepted": 1, "rejected": 0}
+                    },
+                },
+                "strategy_certification": {
+                    "summary": {"counts": {"research_supported": 1}},
+                    "items": [
+                        {
+                            "strategy_name": "momentum_lite_v1",
+                            "status": "research_supported",
+                            "approved_use": "research_only",
+                            "promotion_blockers": ["live_samples_insufficient"],
+                            "demotion_reasons": ["turnover_high"],
+                        }
+                    ],
+                },
             }
         )
 
@@ -186,6 +255,11 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("live=insufficient", text)
         self.assertIn("permission=advisory", text)
         self.assertIn("strategy_advisory_only:max_delta:SPY", text)
+        self.assertIn("Knowledge resolution", text)
+        self.assertIn("regime_strategy_conflict:momentum_lite_v1", text)
+        self.assertIn("confidence calibration: accepted=1, rejected=0", text)
+        self.assertIn("Strategy certification", text)
+        self.assertIn("momentum_lite_v1=research_supported", text)
         self.assertIn("/confirm", text)
 
     def test_rejected_fallback_shows_scorecard(self):

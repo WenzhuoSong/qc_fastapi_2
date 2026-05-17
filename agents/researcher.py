@@ -506,7 +506,16 @@ def _compact_evidence_bundle(bundle: dict) -> dict:
             "strategy_confidence": _compact_strategy_confidence(
                 (bundle.get("strategies") or {}).get("strategy_confidence") or {}
             ),
+            "strategy_confidence_calibration": (bundle.get("strategies") or {}).get(
+                "strategy_confidence_calibration"
+            ) or {},
+            "strategy_certification": _compact_strategy_certification(
+                (bundle.get("strategies") or {}).get("strategy_certification") or {}
+            ),
         },
+        "knowledge_resolution": _compact_knowledge_resolution(
+            ((bundle.get("knowledge") or {}).get("resolution") or {})
+        ),
         "data_quality": bundle.get("data_quality") or {},
     }
 
@@ -527,6 +536,81 @@ def _compact_strategy_confidence(confidence: dict) -> dict:
             "reason_codes": row.get("reason_codes") or [],
         }
     return compact
+
+
+def _compact_strategy_certification(certification: dict) -> dict:
+    if not certification:
+        return {}
+    items = certification.get("items") or {}
+    compact_items = {}
+    for name, row in items.items():
+        if not isinstance(row, dict):
+            continue
+        compact_items[name] = {
+            "status": row.get("status"),
+            "approved_use": row.get("approved_use"),
+            "confidence_score": row.get("confidence_score"),
+            "historical": row.get("historical") or {},
+            "live": row.get("live") or {},
+            "turnover": row.get("turnover"),
+            "promotion_blockers": row.get("promotion_blockers") or [],
+            "demotion_reasons": row.get("demotion_reasons") or [],
+        }
+    return {
+        "summary": certification.get("summary") or {},
+        "items": compact_items,
+    }
+
+
+def _compact_knowledge_resolution(resolution: dict) -> dict:
+    if not resolution:
+        return {}
+    return {
+        "hard_constraints": [
+            {
+                "id": item.get("id"),
+                "type": item.get("type"),
+                "ticker": item.get("ticker"),
+                "action": item.get("action"),
+                "reason": item.get("reason"),
+            }
+            for item in (resolution.get("hard_constraints") or [])[:6]
+        ],
+        "conflicts": [
+            {
+                "id": item.get("id"),
+                "type": item.get("type"),
+                "strategy": item.get("strategy"),
+                "regime": item.get("regime"),
+                "severity": item.get("severity"),
+                "reason": item.get("reason"),
+            }
+            for item in (resolution.get("conflicts") or [])[:6]
+        ],
+        "missing_knowledge": [
+            {
+                "kind": item.get("kind"),
+                "id": item.get("id"),
+                "severity": item.get("severity"),
+                "reason": item.get("reason"),
+                "fallback": item.get("fallback"),
+            }
+            for item in (resolution.get("missing_knowledge") or [])[:6]
+        ],
+        "confidence_adjustments": {
+            "intended_consumer": (resolution.get("confidence_adjustments") or {}).get("intended_consumer"),
+            "items": [
+                {
+                    "target_type": item.get("target_type"),
+                    "target": item.get("target"),
+                    "delta": item.get("delta"),
+                    "reason": item.get("reason"),
+                    "status": item.get("status"),
+                }
+                for item in ((resolution.get("confidence_adjustments") or {}).get("items") or [])[:6]
+            ],
+        },
+    }
 
 
 def _compact_news_evidence(news_evidence: dict) -> dict:

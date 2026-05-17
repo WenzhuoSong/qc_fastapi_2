@@ -72,6 +72,48 @@ class AgentPromptContextTest(unittest.TestCase):
                 "evidence_bundle": {
                     "news_evidence": NEWS_EVIDENCE,
                     "decision_style": DECISION_STYLE,
+                    "knowledge": {
+                        "resolution": {
+                            "hard_constraints": [
+                                {
+                                    "id": "high_atr_no_add",
+                                    "type": "position_action_constraint",
+                                    "action": "block_add",
+                                }
+                            ],
+                            "conflicts": [
+                                {
+                                    "id": "regime_strategy_conflict",
+                                    "strategy": "momentum_lite_v1",
+                                    "regime": "mean_reverting",
+                                }
+                            ],
+                            "confidence_adjustments": {
+                                "intended_consumer": "strategy_confidence_calibrator",
+                                "items": [
+                                    {
+                                        "target_type": "strategy",
+                                        "target": "momentum_lite_v1",
+                                        "delta": -0.1,
+                                        "reason": "regime_strategy_conflict",
+                                    }
+                                ],
+                            },
+                        }
+                    },
+                    "strategies": {
+                        "strategy_certification": {
+                            "summary": {"counts": {"research_supported": 1}},
+                            "items": {
+                                "momentum_lite_v1": {
+                                    "status": "research_supported",
+                                    "approved_use": "research_only",
+                                    "promotion_blockers": ["live_samples_insufficient"],
+                                    "demotion_reasons": [],
+                                }
+                            },
+                        }
+                    },
                 },
                 "market_scorecard": {"investment_permission": "defensive_only"},
                 "news_evidence": NEWS_EVIDENCE,
@@ -84,6 +126,11 @@ class AgentPromptContextTest(unittest.TestCase):
         self.assertIn("Decision style", message)
         self.assertIn("block_new_buy", message)
         self.assertIn("macro_defensive", message)
+        self.assertIn("knowledge_resolution", message)
+        self.assertIn("regime_strategy_conflict", message)
+        self.assertIn("strategy_confidence_calibrator", message)
+        self.assertIn("strategy_certification", message)
+        self.assertIn("research_supported", message)
 
     def test_bull_and_bear_prompts_include_style_context(self):
         bull = _build_bull_message(

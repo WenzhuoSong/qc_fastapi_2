@@ -96,6 +96,16 @@ class EvidenceBundleTest(unittest.TestCase):
             brief=brief,
             quant_baseline=quant,
             playground_bundle=playground,
+            empirical_profiles={
+                "SPY": {
+                    "source": "yfinance",
+                    "samples": 80,
+                    "avg_return": 0.001,
+                    "volatility": 0.01,
+                    "max_drawdown": -0.04,
+                    "data_quality": "fresh",
+                }
+            },
         )
 
         self.assertIn("generated_at", bundle)
@@ -109,6 +119,11 @@ class EvidenceBundleTest(unittest.TestCase):
         self.assertEqual(
             bundle["strategies"]["strategy_results"][0]["suggested_use"],
             "advisory",
+        )
+        self.assertIn("strategy_certification", bundle["strategies"])
+        self.assertEqual(
+            bundle["strategies"]["strategy_certification"]["items"]["momentum_lite_v1"]["status"],
+            "research_supported",
         )
         self.assertEqual(
             bundle["strategies"]["strategy_results"][0]["reason_codes"],
@@ -131,7 +146,73 @@ class EvidenceBundleTest(unittest.TestCase):
         )
         self.assertIn("SPY", [item["id"] for item in bundle["knowledge"]["assets"]])
         self.assertIn("trending_bull", [item["id"] for item in bundle["knowledge"]["regimes"]])
+        self.assertIn("resolution", bundle["knowledge"])
+        self.assertEqual(
+            bundle["knowledge"]["resolution"]["confidence_adjustments"]["intended_consumer"],
+            "strategy_confidence_calibrator",
+        )
+        spy_context = next(
+            item for item in bundle["knowledge"]["resolution"]["advisory_context"]
+            if item.get("id") == "SPY"
+        )
+        self.assertEqual(spy_context["empirical_behavior"]["samples"], 80)
         self.assertEqual(bundle["data_quality"]["overall"], "fresh")
+
+    def test_calibrates_strategy_confidence_once_when_resolver_finds_conflict(self):
+        bundle = build_evidence_bundle(
+            brief={
+                "key_facts": {},
+                "sector_rotation": {},
+                "news_context": {"macro_signals": []},
+                "holdings": [{"ticker": "SOXL"}],
+            },
+            quant_baseline={
+                "regime_result": {
+                    "regime": "mean_reverting",
+                    "confidence": "medium",
+                }
+            },
+            playground_bundle={
+                "snapshot_count": 30,
+                "consensus_weights": {"SOXL": 0.2, "CASH": 0.8},
+                "strategy_confidence": {
+                    "momentum_lite_v1": {
+                        "confidence_score": 0.60,
+                        "suggested_use": "advisory",
+                        "reason_codes": [],
+                    }
+                },
+                "strategies": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "data_ready": True,
+                        "risk_profile": {"turnover": 0.2},
+                        "selected_tickers": ["SOXL"],
+                    }
+                ],
+                "replay_metrics": {
+                    "momentum_lite_v1": {"n_forward_return_samples": 12}
+                },
+            },
+        )
+
+        strategies = bundle["strategies"]
+        self.assertAlmostEqual(
+            strategies["strategy_confidence"]["momentum_lite_v1"]["confidence_score"],
+            0.50,
+        )
+        self.assertAlmostEqual(
+            strategies["strategy_confidence_pre_calibration"]["momentum_lite_v1"]["confidence_score"],
+            0.60,
+        )
+        self.assertEqual(
+            strategies["strategy_confidence_calibration"]["summary"]["accepted"],
+            1,
+        )
+        self.assertIn(
+            "regime_strategy_conflict",
+            [item["id"] for item in bundle["knowledge"]["resolution"]["conflicts"]],
+        )
 
     def test_missing_playground_uses_fallback_and_marks_missing_quality(self):
         bundle = build_evidence_bundle(

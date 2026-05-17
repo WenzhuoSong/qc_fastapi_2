@@ -125,6 +125,9 @@ def _build_payload(
     scorecard = pipeline_context.get("market_scorecard") or {}
     news_evidence = pipeline_context.get("news_evidence") or {}
     decision_style = pipeline_context.get("decision_style") or {}
+    evidence_bundle = pipeline_context.get("evidence_bundle") or {}
+    knowledge = evidence_bundle.get("knowledge") or {}
+    strategies = evidence_bundle.get("strategies") or {}
     enforcement = risk_out.get("scorecard_enforcement") or {}
     style_enforcement = risk_out.get("style_enforcement") or {}
     position_governance = risk_out.get("position_governance") or {}
@@ -206,6 +209,13 @@ def _build_payload(
             "pre_clip": strategy_use_enforcement.get("target_weights_pre_strategy_use_clip") or {},
             "post_clip": strategy_use_enforcement.get("target_weights_post_strategy_use_clip") or {},
         },
+        "strategy_certification": _compact_strategy_certification(
+            strategies.get("strategy_certification") or {}
+        ),
+        "knowledge_resolution": _compact_knowledge_resolution(
+            knowledge.get("resolution") or {},
+            strategies.get("strategy_confidence_calibration") or knowledge.get("strategy_confidence_calibration") or {},
+        ),
         "position_governance": {
             "mode": position_governance.get("mode"),
             "position_decisions": (position_governance.get("position_decisions") or [])[:8],
@@ -239,6 +249,8 @@ def _fallback_template(p: dict) -> str:
     style = p.get("decision_style") or {}
     style_enforcement = p.get("style_enforcement") or {}
     strategy_use_enforcement = p.get("strategy_use_enforcement") or {}
+    strategy_certification = p.get("strategy_certification") or {}
+    knowledge_resolution = p.get("knowledge_resolution") or {}
     position_governance = p.get("position_governance") or {}
 
     up, down = "\u25b2", "\u25bc"
@@ -265,6 +277,8 @@ def _fallback_template(p: dict) -> str:
     style_line = _format_style_line(style)
     style_enforcement_line = _format_style_enforcement_line(style_enforcement)
     strategy_use_line = _format_strategy_use_enforcement_line(strategy_use_enforcement)
+    strategy_certification_line = _format_strategy_certification_line(strategy_certification)
+    knowledge_line = _format_knowledge_resolution_line(knowledge_resolution)
     position_governance_line = _format_position_governance_line(position_governance)
 
     if not approved:
@@ -281,6 +295,8 @@ def _fallback_template(p: dict) -> str:
             f"{enforcement_line}"
             f"{style_enforcement_line}"
             f"{strategy_use_line}"
+            f"{strategy_certification_line}"
+            f"{knowledge_line}"
             f"{position_governance_line}"
             f"<b>Failed checks:</b>\n{reasons_text}\n\n"
             f"No execution this round — wait for the next analysis."
@@ -317,6 +333,8 @@ def _fallback_template(p: dict) -> str:
         f"{enforcement_line}"
         f"{style_enforcement_line}"
         f"{strategy_use_line}"
+        f"{strategy_certification_line}"
+        f"{knowledge_line}"
         f"{position_governance_line}"
         f"<b>Suggested actions</b>\n"
         f"{actions_str}\n\n"
@@ -432,6 +450,112 @@ def _format_strategy_use_enforcement_line(enforcement: dict) -> str:
         + "\n".join(lines)
         + "\n\n"
     )
+
+
+def _compact_knowledge_resolution(resolution: dict, calibration: dict) -> dict:
+    if not resolution and not calibration:
+        return {}
+    conflicts = resolution.get("conflicts") or []
+    constraints = resolution.get("hard_constraints") or []
+    missing = resolution.get("missing_knowledge") or []
+    return {
+        "conflicts": conflicts[:5],
+        "hard_constraints": constraints[:5],
+        "missing_knowledge": missing[:5],
+        "calibration": calibration or {},
+    }
+
+
+def _compact_strategy_certification(certification: dict) -> dict:
+    if not certification:
+        return {}
+    items = certification.get("items") or {}
+    compact_items = []
+    for name, row in items.items():
+        if not isinstance(row, dict):
+            continue
+        compact_items.append({
+            "strategy_name": name,
+            "status": row.get("status"),
+            "approved_use": row.get("approved_use"),
+            "promotion_blockers": (row.get("promotion_blockers") or [])[:3],
+            "demotion_reasons": (row.get("demotion_reasons") or [])[:3],
+        })
+    return {
+        "summary": certification.get("summary") or {},
+        "items": compact_items[:5],
+    }
+
+
+def _format_strategy_certification_line(certification: dict) -> str:
+    if not certification:
+        return ""
+    items = certification.get("items") or []
+    if not items:
+        return ""
+    parts = [
+        f"{item.get('strategy_name')}={item.get('status')}"
+        + (
+            f" block:{','.join(item.get('promotion_blockers') or [])}"
+            if item.get("promotion_blockers") else ""
+        )
+        + (
+            f" demote:{','.join(item.get('demotion_reasons') or [])}"
+            if item.get("demotion_reasons") else ""
+        )
+        for item in items[:3]
+    ]
+    summary = certification.get("summary") or {}
+    counts = (summary.get("counts") or {})
+    count_text = ", ".join(
+        f"{key}={value}" for key, value in counts.items() if value
+    )
+    count_line = f"  counts: {count_text}\n" if count_text else ""
+    return (
+        "<b>Strategy certification</b>\n"
+        f"{count_line}"
+        f"  " + "; ".join(parts) + "\n\n"
+    )
+
+
+def _format_knowledge_resolution_line(resolution: dict) -> str:
+    if not resolution:
+        return ""
+    conflicts = resolution.get("conflicts") or []
+    constraints = resolution.get("hard_constraints") or []
+    missing = resolution.get("missing_knowledge") or []
+    calibration = resolution.get("calibration") or {}
+    summary = calibration.get("summary") or {}
+
+    lines = []
+    if conflicts:
+        shown = "; ".join(
+            f"{item.get('id')}:{item.get('strategy') or item.get('ticker') or item.get('regime')}"
+            for item in conflicts[:3]
+        )
+        lines.append(f"  conflicts: {shown}")
+    if constraints:
+        shown = "; ".join(
+            f"{item.get('id')}:{item.get('ticker') or item.get('action')}"
+            for item in constraints[:3]
+        )
+        lines.append(f"  constraints: {shown}")
+    if summary.get("total"):
+        lines.append(
+            "  confidence calibration: "
+            f"accepted={int(summary.get('accepted') or 0)}, "
+            f"rejected={int(summary.get('rejected') or 0)}"
+        )
+    if missing:
+        shown = "; ".join(
+            f"{item.get('severity')}:{item.get('kind')}:{item.get('id')}"
+            for item in missing[:3]
+        )
+        lines.append(f"  missing: {shown}")
+
+    if not lines:
+        return ""
+    return "<b>Knowledge resolution</b>\n" + "\n".join(lines) + "\n\n"
 
 
 def _format_position_governance_line(governance: dict) -> str:

@@ -343,6 +343,10 @@ Implemented:
 - Provide pure forward-return scoring helper:
   - `add` is good when ticker forward return beats benchmark.
   - `trim` / `exit` is good when ticker forward return trails benchmark.
+- Known limitation: this is a coarse diagnostic. A trim that is followed by
+  ticker outperformance is not automatically a bad decision because the
+  counterfactual risk, position size, and governance state may still justify the
+  trim.
 
 Current status:
 
@@ -392,6 +396,11 @@ Still diagnostic-only:
   "execution_impact": "none"
 }
 ```
+
+Known limitation: next-day return versus SPY is a first-pass label, not a
+counterfactual execution-quality model. It must not be used to relax validators,
+auto-promote advisory behavior, or change execution thresholds without a later
+counterfactual design.
 
 ### Completed: Position Explanation Report v1
 
@@ -458,9 +467,74 @@ Runtime usage:
 - Knowledge can improve explanations and prompts, but cannot create trades or
   override deterministic validators.
 
+Next knowledge-module direction:
+
+- Keep static YAML knowledge independent from computed data.
+- Add a `knowledge_resolver` plug that combines static knowledge with computed
+  facts from yfinance, QC snapshots, Playground replay, news, scorecard, and
+  position governance.
+- Keep resolver MVP intentionally small:
+  - `high_atr_no_add`
+  - `leveraged_etf_caution`
+  - `regime_strategy_conflict`
+- Split resolver output into:
+  - advisory context for LLM agents
+  - hard constraints for deterministic validators
+  - conflicts for observability
+  - interpretation hints for position explanations and Telegram
+- Route resolver confidence adjustments to a single intended consumer:
+  `strategy_confidence_calibrator`. Scorecard, risk manager, position
+  governance, and agents consume only post-calibration confidence to avoid
+  double-applying the same delta.
+- Implement `strategy_confidence_calibrator` as a dedicated service positioned
+  after knowledge resolver and before scorecard/risk/position governance.
+- Treat `missing_knowledge` explicitly:
+  - `info`: log only
+  - `warning`: keep static context but suppress derived claims
+  - `blocking`: suppress affected advisory context and reject related confidence
+    adjustments
+- Add data-generated ETF empirical behavior from yfinance/QC history, but store
+  it in a derived DB table or JSON sidecar rather than static YAML.
+- Add first-stage strategy certification from Playground replay and live QC
+  validation using `experimental / research_supported / advisory / disabled`.
+  Reserve `certified` for a later phase.
+
+Detailed design lives in `docs/trading_knowledge_base.md`.
+
 ## Next Required Work
 
-### 1. Deployment Verification And Data Integrity
+### 1. Knowledge Resolver Plug
+
+Before expanding YAML content further, implement the module plug that lets
+knowledge cooperate with computed information.
+
+Required checks:
+
+- Raw YAML is not read directly by agents.
+- Resolver accepts current computed facts and returns one normalized contract.
+- Resolver separates `advisory_context` from `hard_constraints`.
+- Resolver includes `intended_consumer` on confidence adjustments, and only the
+  strategy confidence calibrator may apply them.
+- Calibrator applies accepted adjustments exactly once before scorecard/risk
+  layers consume strategy confidence, and records rejected adjustments.
+- Resolver emits `missing_knowledge` with severity and fallback behavior.
+- Blocking examples include malformed required strategy fields, incompatible
+  empirical profile schema version, or malformed advisory certification metrics.
+- MVP resolver implements only `high_atr_no_add`,
+  `leveraged_etf_caution`, and `regime_strategy_conflict`.
+- Conflicts such as regime/strategy mismatch are explicit and testable.
+- Hard constraints remain enforced by Python validators.
+
+Acceptance criteria:
+
+```text
+Same inputs produce same resolved knowledge.
+LLM receives explanation context, not execution authority.
+Position governance and risk manager can consume hard constraints without
+depending on prompt compliance.
+```
+
+### 2. Deployment Verification And Data Integrity
 
 Before adding more decision complexity, deploy the current governance stack and
 observe real runs.
@@ -484,7 +558,7 @@ Backfill produces diagnostic rows or explicit no-data reasons.
 No Telegram message says or implies that blocked actions were executed.
 ```
 
-### 2. Position Explanation Report Verification
+### 3. Position Explanation Report Verification
 
 The first implementation is complete. Next step is to verify live Telegram
 output and step logs:
