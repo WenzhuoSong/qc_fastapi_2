@@ -547,6 +547,7 @@ def _portfolio_summary(
         },
         "advisory_overrides": advisory_overrides[:8],
         "advisory_quality": build_advisory_quality_diagnostics(advisory_overrides),
+        "position_explanations": _position_explanations(decisions, blocked_actions),
         "replacement_candidates": [
             {
                 "ticker": item.get("ticker"),
@@ -558,6 +559,175 @@ def _portfolio_summary(
             for item in replacement_candidates[:8]
         ],
     }
+
+
+def _position_explanations(
+    decisions: list[dict[str, Any]],
+    blocked_actions: list[str],
+) -> list[dict[str, Any]]:
+    blocked_by_ticker: dict[str, list[str]] = {}
+    for item in blocked_actions:
+        text = str(item or "")
+        parts = text.split(":")
+        ticker = parts[1].upper() if len(parts) > 1 else ""
+        if ticker:
+            blocked_by_ticker.setdefault(ticker, []).append(text)
+
+    explanations = [_explain_position(row, blocked_by_ticker.get(str(row.get("ticker") or "").upper(), [])) for row in decisions]
+    return sorted(
+        explanations,
+        key=lambda row: (
+            -int(row.get("priority") or 0),
+            -abs(float(row.get("unrealized_pnl_pct") or 0.0)),
+            -float(row.get("risk_contribution") or 0.0),
+            str(row.get("ticker") or ""),
+        ),
+    )
+
+
+def _explain_position(row: dict[str, Any], blocked: list[str]) -> dict[str, Any]:
+    ticker = str(row.get("ticker") or "").upper()
+    reasons = set(str(item) for item in (row.get("reason_codes") or []))
+    allowed = set(str(item) for item in (row.get("allowed_actions") or []))
+    decision = str(row.get("decision") or "hold")
+    state = _position_state(row, reasons)
+    why_hold = _why_hold(row, reasons, allowed)
+    why_not_add = _why_not_add(row, reasons, allowed, blocked)
+    why_not_exit = _why_not_exit(row, reasons, allowed)
+    next_trigger = _next_trigger(row, reasons)
+    priority = _explanation_priority(row, reasons, blocked)
+    return {
+        "ticker": ticker,
+        "position_state": state,
+        "decision": decision,
+        "current_weight": row.get("current_weight"),
+        "target_after": row.get("target_after"),
+        "unrealized_pnl_pct": row.get("unrealized_pnl_pct"),
+        "risk_contribution": row.get("risk_contribution"),
+        "risk_budget_status": row.get("risk_budget_status"),
+        "strategy_support": row.get("strategy_support"),
+        "action_permission": row.get("action_permission"),
+        "why_hold": why_hold,
+        "why_not_add": why_not_add,
+        "why_not_exit": why_not_exit,
+        "next_trigger": next_trigger,
+        "blocked_actions": blocked[:3],
+        "priority": priority,
+    }
+
+
+def _position_state(row: dict[str, Any], reasons: set[str]) -> str:
+    decision = str(row.get("decision") or "hold")
+    if "hard_risk" in reasons:
+        return "hard_risk"
+    if "unrealized_loss_review" in reasons:
+        return "deep_loss_trim" if decision == "trim" else "loss_review"
+    if "high_atr" in reasons or row.get("risk_budget_status") == "high":
+        return "risk_budget_review"
+    if any(reason.endswith("_concentration_high") for reason in reasons):
+        return "concentration_review"
+    if "winner_risk_budget_review" in reasons:
+        return "winner_trim_review"
+    if "strategy_support_weak" in reasons:
+        return "weak_support_review"
+    if decision == "add":
+        return "supported_add"
+    return "normal_hold"
+
+
+def _why_hold(row: dict[str, Any], reasons: set[str], allowed: set[str]) -> list[str]:
+    out: list[str] = []
+    pnl = row.get("unrealized_pnl_pct")
+    if "unrealized_loss_review" in reasons and isinstance(pnl, (int, float)):
+        if pnl > -0.08:
+            out.append("loss is above hard trim threshold")
+        else:
+            out.append("loss reached trim zone; target was reduced, not forced to full exit")
+    if "hard_risk" not in reasons:
+        out.append("no hard-risk event requires immediate exit")
+    if row.get("strategy_support") in {"primary", "advisory"}:
+        out.append(f"strategy support remains {row.get('strategy_support')}")
+    if "trim" in allowed and "exit" not in allowed:
+        out.append("governance allows trim but not unrestricted exit")
+    if not out:
+        out.append("no deterministic rule requires reduction")
+    return list(dict.fromkeys(out))[:4]
+
+
+def _why_not_add(row: dict[str, Any], reasons: set[str], allowed: set[str], blocked: list[str]) -> list[str]:
+    out: list[str] = []
+    if "add" in allowed and not blocked:
+        return ["add is allowed within risk limits"]
+    if "scorecard_human_required" in reasons:
+        out.append("market scorecard requires human confirmation")
+    if any(reason.startswith("scorecard_") and reason != "scorecard_human_required" for reason in reasons):
+        out.append("scorecard permission restricts new risk")
+    if "unrealized_loss_review" in reasons:
+        out.append("position is in unrealized loss review")
+    if "strategy_support_weak" in reasons:
+        out.append("strategy support is weak or absent")
+    if "high_atr" in reasons:
+        out.append("ATR is elevated")
+    if any(reason.endswith("_concentration_high") for reason in reasons):
+        out.append("group exposure is above limit")
+    if blocked:
+        out.append("buy was blocked by governance")
+    if not out:
+        out.append("add is not in allowed action set")
+    return list(dict.fromkeys(out))[:4]
+
+
+def _why_not_exit(row: dict[str, Any], reasons: set[str], allowed: set[str]) -> list[str]:
+    out: list[str] = []
+    if "exit" in allowed:
+        return ["exit is permitted for manual/hard-risk review"]
+    if "hard_risk" not in reasons:
+        out.append("no hard-risk event is active")
+    if "unrealized_loss_review" in reasons and "strategy_support_weak" not in reasons:
+        out.append("loss review exists but strategy support is not weak")
+    elif "unrealized_loss_review" in reasons:
+        out.append("governance uses staged trim before full exit")
+    else:
+        out.append("exit requires hard risk or deep weak-support loss")
+    return list(dict.fromkeys(out))[:4]
+
+
+def _next_trigger(row: dict[str, Any], reasons: set[str]) -> str:
+    if "hard_risk" in reasons:
+        return "review manual exit when hard-risk event remains unresolved"
+    if "unrealized_loss_review" in reasons:
+        return "trim if loss <= -8% and strategy support remains weak"
+    if "high_atr" in reasons:
+        return "allow add only after ATR falls below high-volatility threshold"
+    if any(reason.endswith("_concentration_high") for reason in reasons):
+        group = row.get("group") or "group"
+        limit = row.get("group_limit")
+        limit_text = f"{float(limit):.0%}" if isinstance(limit, (int, float)) else "limit"
+        return f"allow add after {group} exposure falls below {limit_text}"
+    if "winner_risk_budget_review" in reasons:
+        return "trim again if winner remains oversized and risk budget stays high"
+    if "strategy_support_weak" in reasons:
+        return "hold until strategy support improves or risk trigger worsens"
+    return "continue monitoring for loss, volatility, concentration, or hard-risk triggers"
+
+
+def _explanation_priority(row: dict[str, Any], reasons: set[str], blocked: list[str]) -> int:
+    score = 0
+    if "hard_risk" in reasons:
+        score += 50
+    if row.get("decision") in {"trim", "trim_review"}:
+        score += 30
+    if "unrealized_loss_review" in reasons:
+        score += 25
+    if blocked:
+        score += 20
+    if "high_atr" in reasons or row.get("risk_budget_status") == "high":
+        score += 15
+    if any(reason.endswith("_concentration_high") for reason in reasons):
+        score += 12
+    if "strategy_support_weak" in reasons:
+        score += 10
+    return score
 
 
 def _apply_replacements(

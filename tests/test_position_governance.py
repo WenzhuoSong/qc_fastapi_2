@@ -22,6 +22,11 @@ class PositionGovernanceTest(unittest.TestCase):
         self.assertIn("unrealized_loss_review", decision["reason_codes"])
         self.assertIn("strategy_support_weak", decision["reason_codes"])
         self.assertTrue(any(item.startswith("buy_blocked:FTXL") for item in out.blocked_actions))
+        explanation = _explanation(out, "FTXL")
+        self.assertEqual(explanation["position_state"], "loss_review")
+        self.assertIn("loss is above hard trim threshold", explanation["why_hold"])
+        self.assertIn("position is in unrealized loss review", explanation["why_not_add"])
+        self.assertEqual(explanation["next_trigger"], "trim if loss <= -8% and strategy support remains weak")
 
     def test_deep_loss_with_weak_support_trims_position(self):
         out = apply_position_governance(
@@ -70,6 +75,9 @@ class PositionGovernanceTest(unittest.TestCase):
         semis = out.portfolio_summary["group_exposures"]["semiconductors"]
         self.assertEqual(semis["status"], "over_limit")
         self.assertAlmostEqual(semis["limit"], 0.25, places=4)
+        explanation = _explanation(out, "FTXL")
+        self.assertIn("group exposure is above limit", explanation["why_not_add"])
+        self.assertIn("semiconductors exposure falls below 25%", explanation["next_trigger"])
 
     def test_large_winner_high_weight_gets_trimmed_for_risk_budget(self):
         out = apply_position_governance(
@@ -112,6 +120,9 @@ class PositionGovernanceTest(unittest.TestCase):
         self.assertEqual(decision["action_permission"], "trim_or_exit")
         self.assertIn("hard_risk", decision["reason_codes"])
         self.assertLess(decision["target_after"], decision["target_before"])
+        explanation = _explanation(out, "XLE")
+        self.assertEqual(explanation["position_state"], "hard_risk")
+        self.assertEqual(explanation["why_not_exit"], ["exit is permitted for manual/hard-risk review"])
 
     def test_replacement_allocates_trimmed_cash_to_supported_candidate_when_allowed(self):
         out = apply_position_governance(
@@ -364,6 +375,10 @@ class PositionGovernanceTest(unittest.TestCase):
 
 def _decision(out, ticker):
     return next(row for row in out.position_decisions if row["ticker"] == ticker)
+
+
+def _explanation(out, ticker):
+    return next(row for row in out.portfolio_summary["position_explanations"] if row["ticker"] == ticker)
 
 
 if __name__ == "__main__":

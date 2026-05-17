@@ -457,6 +457,9 @@ def _format_position_governance_line(governance: dict) -> str:
     top_risk = _format_governance_top_risk(portfolio_summary)
     if top_risk:
         lines.append("  top risk: " + top_risk)
+    explanations = _format_position_explanations(portfolio_summary)
+    if explanations:
+        lines.extend(explanations)
     for row in interesting:
         reasons = ",".join((row.get("reason_codes") or [])[:3])
         lines.append(
@@ -522,6 +525,21 @@ def _format_governance_top_risk(portfolio_summary: dict) -> str:
         if ticker:
             parts.append(f"{ticker} {contribution:.2%} ({status})")
     return "; ".join(parts)
+
+
+def _format_position_explanations(portfolio_summary: dict) -> list[str]:
+    rows = portfolio_summary.get("position_explanations") or []
+    parts: list[str] = []
+    for row in rows[:3]:
+        ticker = row.get("ticker")
+        state = row.get("position_state")
+        trigger = row.get("next_trigger")
+        why_not_add = (row.get("why_not_add") or [""])[0]
+        if ticker and state:
+            detail = f" | no add: {why_not_add}" if why_not_add else ""
+            trigger_text = f" | next: {trigger}" if trigger else ""
+            parts.append(f"  explain {ticker}: {state}{detail}{trigger_text}")
+    return parts
 
 
 def append_command_hints(text: str) -> str:

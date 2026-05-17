@@ -386,6 +386,33 @@ Still diagnostic-only:
 }
 ```
 
+### Completed: Position Explanation Report v1
+
+The governance output now includes deterministic position explanations inside
+`portfolio_summary.position_explanations`.
+
+Each explanation answers:
+
+```json
+{
+  "ticker": "FTXL",
+  "position_state": "loss_review",
+  "why_hold": ["loss is above hard trim threshold", "no hard-risk event requires immediate exit"],
+  "why_not_add": ["position is in unrealized loss review", "strategy support is weak or absent"],
+  "why_not_exit": ["no hard-risk event is active", "governance uses staged trim before full exit"],
+  "next_trigger": "trim if loss <= -8% and strategy support remains weak"
+}
+```
+
+Implementation notes:
+
+- Built from deterministic `position_decisions`, not free-form LLM text.
+- Includes current weight, target weight, PnL, risk contribution, strategy
+  support, action permission, blocked actions, and next trigger.
+- Telegram shows the top problem holdings as compact `explain TICKER` lines.
+- Full explanation is stored in the position governance step log through
+  `portfolio_summary`.
+
 ## Next Required Work
 
 ### 1. Deployment Verification And Data Integrity
@@ -412,31 +439,16 @@ Backfill produces diagnostic rows or explicit no-data reasons.
 No Telegram message says or implies that blocked actions were executed.
 ```
 
-### 2. Position Explanation Report
+### 2. Position Explanation Report Verification
 
-This is the next useful product feature. It should answer the operator's core
-question: "Why are we still holding this ticker, especially if it is losing?"
+The first implementation is complete. Next step is to verify live Telegram
+output and step logs:
 
-Target output per holding:
-
-```json
-{
-  "ticker": "FTXL",
-  "position_state": "loss_review",
-  "why_hold": ["loss above hard trim threshold", "no hard-risk event"],
-  "why_not_add": ["unrealized loss review", "semiconductor exposure near limit"],
-  "why_not_exit": ["exit not allowed without hard risk or deep weak-support loss"],
-  "next_trigger": "trim if loss <= -8% and strategy support remains weak"
-}
-```
-
-Implementation target:
-
-- Build from deterministic `position_decisions`, not free-form LLM text.
-- Show current PnL, weight, risk contribution, strategy support, allowed
-  actions, blocked actions, and next trigger.
-- Add Telegram summary for the top problem holdings.
-- Store full explanation in step logs for audit.
+- Top problem holdings should be shown without flooding the message.
+- Explanations must not imply execution.
+- `why_hold`, `why_not_add`, and `why_not_exit` should be understandable for
+  losing holdings.
+- Full explanations should be available in step logs for all holdings.
 
 ## Backlog / Not Current Mainline
 
@@ -460,10 +472,10 @@ Recommended sequence:
    - Confirm advisory outcome backfill.
    - Confirm no schema/runtime failures.
 
-2. **Build Position Explanation Report**
-   - Explain hold/add/trim/exit/review per holding.
-   - Surface "why hold / why not add / why not exit / next trigger".
-   - Keep explanations deterministic and auditable.
+2. **Verify Position Explanation Report**
+   - Confirm Telegram readability.
+   - Confirm all holdings have full step-log explanations.
+   - Tune priority ordering only after seeing real messages.
 
 3. **Observe samples before feedback-driven changes**
    - Collect enough advisory outcomes.
