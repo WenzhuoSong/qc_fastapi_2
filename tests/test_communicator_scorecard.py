@@ -220,6 +220,22 @@ class CommunicatorScorecardTest(unittest.TestCase):
                     "style_reason": "stale data",
                 },
                 "style_enforcement": {},
+                "position_governance": {
+                    "mode": "diagnostic_only",
+                    "position_decisions": [],
+                    "forced_trims": ["QQQ 12.0%->11.0%"],
+                    "replacements": [{"ticker": "SPY", "added_weight": 0.01, "support": "advisory", "score": 0.7}],
+                    "portfolio_summary": {
+                        "position_explanations": [
+                            {
+                                "ticker": "QQQ",
+                                "position_state": "loss_review",
+                                "why_not_add": ["position is in unrealized loss review"],
+                                "next_trigger": "trim if loss <= -8% and strategy support remains weak",
+                            }
+                        ]
+                    },
+                },
             }
         )
 
@@ -228,6 +244,10 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("defensive_only", text)
         self.assertIn("Evidence bundle is stale", text)
         self.assertNotIn("/confirm", text)
+        self.assertIn("mode=diagnostic_only", text)
+        self.assertIn("explain QQQ", text)
+        self.assertNotIn("trims: QQQ", text)
+        self.assertNotIn("replacements:", text)
 
     def test_rejected_communicator_uses_deterministic_fallback(self):
         out = asyncio.run(run_communicator_async(

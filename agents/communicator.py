@@ -207,6 +207,7 @@ def _build_payload(
             "post_clip": strategy_use_enforcement.get("target_weights_post_strategy_use_clip") or {},
         },
         "position_governance": {
+            "mode": position_governance.get("mode"),
             "position_decisions": (position_governance.get("position_decisions") or [])[:8],
             "blocked_actions": (position_governance.get("blocked_actions") or [])[:8],
             "forced_trims": (position_governance.get("forced_trims") or [])[:8],
@@ -436,6 +437,7 @@ def _format_strategy_use_enforcement_line(enforcement: dict) -> str:
 def _format_position_governance_line(governance: dict) -> str:
     if not governance:
         return ""
+    diagnostic_only = governance.get("mode") == "diagnostic_only"
     decisions = governance.get("position_decisions") or []
     interesting = [
         row for row in decisions
@@ -451,6 +453,8 @@ def _format_position_governance_line(governance: dict) -> str:
     ):
         return ""
     lines = ["<b>Position governance</b>"]
+    if diagnostic_only:
+        lines.append("  mode=diagnostic_only (no target changes)")
     concentration = _format_governance_concentration(portfolio_summary)
     if concentration:
         lines.append("  risk concentration: " + concentration)
@@ -470,9 +474,9 @@ def _format_position_governance_line(governance: dict) -> str:
         )
     if governance.get("blocked_actions"):
         lines.append("  blocked: " + "; ".join(str(x) for x in governance["blocked_actions"][:3]))
-    if governance.get("forced_trims"):
+    if governance.get("forced_trims") and not diagnostic_only:
         lines.append("  trims: " + "; ".join(str(x) for x in governance["forced_trims"][:3]))
-    if governance.get("replacements"):
+    if governance.get("replacements") and not diagnostic_only:
         repl = [
             f"{item.get('ticker')} +{float(item.get('added_weight') or 0):.1%} "
             f"({item.get('support')}, score={float(item.get('score') or 0):.2f})"

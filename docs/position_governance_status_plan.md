@@ -41,6 +41,13 @@ Risk Manager
   -> Communicator / Executor
 ```
 
+Position Governance runs in two modes:
+
+- `execution`: risk approved; governance may adjust target weights before
+  Position Manager.
+- `diagnostic_only`: risk rejected; governance uses current weights to produce
+  explanations only and must not change execution targets.
+
 Current governance output:
 
 ```json
@@ -412,6 +419,8 @@ Implementation notes:
 - Telegram shows the top problem holdings as compact `explain TICKER` lines.
 - Full explanation is stored in the position governance step log through
   `portfolio_summary`.
+- Rejected pipeline runs also generate diagnostic-only explanations so blocked
+  reports can still answer why holdings are held / not added / not exited.
 
 ## Next Required Work
 

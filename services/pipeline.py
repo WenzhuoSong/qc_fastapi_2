@@ -1089,8 +1089,15 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             logger.info("[Stage6→7] Regime weights within constraints, no clip needed")
 
     # ── Stage 6.5a: Position Governance lifecycle controls ───────────────────
-    if risk_out.get("approved") and risk_out.get("target_weights"):
-        target_before_governance = risk_out.get("target_weights") or {}
+    run_governance_execution = bool(risk_out.get("approved") and risk_out.get("target_weights"))
+    run_governance_diagnostic = bool((not risk_out.get("approved")) and (brief.get("current_weights") or {}))
+    if run_governance_execution or run_governance_diagnostic:
+        governance_mode = "execution" if run_governance_execution else "diagnostic_only"
+        target_before_governance = (
+            (risk_out.get("target_weights") or {})
+            if run_governance_execution
+            else (brief.get("current_weights") or {})
+        )
         governance_out = apply_position_governance(
             target_weights=target_before_governance,
             current_weights=brief.get("current_weights") or {},
@@ -1101,49 +1108,56 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             llm_advisory_proposals=synthesizer_out.get("position_advisory_proposals") or [],
             config=pipeline_context.get("position_governance_config") or {},
         )
-        risk_out["target_weights"] = governance_out.adjusted_weights
-        rebalance_threshold = float((pipeline_context.get("risk_params") or {}).get("rebalance_threshold", 0.02))
-        rebalance_actions = compute_rebalance_actions(
-            governance_out.adjusted_weights,
-            brief.get("current_weights") or {},
-            rebalance_threshold,
-        )
-        risk_out["rebalance_actions"] = rebalance_actions
-        risk_out["estimated_cost_pct"] = estimate_cost_pct(rebalance_actions)
-        risk_out["n_holdings"] = governance_out.trade_summary.get("position_count", risk_out.get("n_holdings"))
         risk_out["position_governance"] = {
+            "mode": governance_mode,
             "position_decisions": governance_out.position_decisions,
             "blocked_actions": governance_out.blocked_actions,
-            "forced_trims": governance_out.forced_trims,
-            "replacements": governance_out.replacements,
+            "forced_trims": governance_out.forced_trims if run_governance_execution else [],
+            "replacements": governance_out.replacements if run_governance_execution else [],
             "advisory_overrides": governance_out.advisory_overrides,
             "trade_summary": governance_out.trade_summary,
             "portfolio_summary": governance_out.portfolio_summary,
             "config": governance_out.config,
         }
 
+        if run_governance_execution:
+            risk_out["target_weights"] = governance_out.adjusted_weights
+            rebalance_threshold = float((pipeline_context.get("risk_params") or {}).get("rebalance_threshold", 0.02))
+            rebalance_actions = compute_rebalance_actions(
+                governance_out.adjusted_weights,
+                brief.get("current_weights") or {},
+                rebalance_threshold,
+            )
+            risk_out["rebalance_actions"] = rebalance_actions
+            risk_out["estimated_cost_pct"] = estimate_cost_pct(rebalance_actions)
+            risk_out["n_holdings"] = governance_out.trade_summary.get("position_count", risk_out.get("n_holdings"))
+
         if governance_out.blocked_actions or governance_out.forced_trims:
             logger.warning(
-                "[Stage6.5a] Position Governance adjusted weights | "
-                f"blocked={governance_out.blocked_actions} trims={governance_out.forced_trims}"
+                "[Stage6.5a] Position Governance %s | blocked=%s trims=%s",
+                governance_mode,
+                governance_out.blocked_actions,
+                governance_out.forced_trims if run_governance_execution else [],
             )
         else:
-            logger.info("[Stage6.5a] Position Governance passed, no adjustment needed")
+            logger.info("[Stage6.5a] Position Governance %s, no adjustment needed", governance_mode)
 
         await _save_step_log(
             analysis_id, "6ba_position_governance", "position_governance",
             input_data={
+                "mode": governance_mode,
                 "target_weights_raw": target_before_governance,
                 "current_weights": brief.get("current_weights") or {},
                 "strategy_use_summary": (evidence_bundle.get("strategies") or {}).get("strategy_use_summary"),
                 "market_scorecard": market_scorecard,
             },
             output_data={
+                "mode": governance_mode,
                 "adjusted_weights": governance_out.adjusted_weights,
                 "position_decisions": governance_out.position_decisions,
                 "blocked_actions": governance_out.blocked_actions,
-                "forced_trims": governance_out.forced_trims,
-                "replacements": governance_out.replacements,
+                "forced_trims": governance_out.forced_trims if run_governance_execution else [],
+                "replacements": governance_out.replacements if run_governance_execution else [],
                 "advisory_overrides": governance_out.advisory_overrides,
                 "trade_summary": governance_out.trade_summary,
                 "portfolio_summary": governance_out.portfolio_summary,
