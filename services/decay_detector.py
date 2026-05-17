@@ -37,6 +37,11 @@ from tools.notify_tools import tool_send_telegram
 
 logger = logging.getLogger("qc_fastapi_2.decay_detector")
 
+
+def _fmt_float(value: object) -> str:
+    return f"{float(value):.2f}" if isinstance(value, (int, float)) else "N/A"
+
+
 # ─────────────────────────────── Strength Enum ───────────────────────────────
 
 
@@ -210,7 +215,7 @@ class DecayDetector:
             "consecutive_weak": consecutive_weak,
             "recent_effectiveness": recent_effectiveness,
             "details": (
-                f"momentum: recent_avg={recent_avg:.2f}, prev_avg={prev_avg:.2f if prev_avg else 'N/A'}, "
+                f"momentum: recent_avg={recent_avg:.2f}, prev_avg={_fmt_float(prev_avg)}, "
                 f"consecutive_weak={consecutive_weak}/3"
             ),
         }
@@ -257,8 +262,14 @@ class DecayDetector:
                         count += 1  # multi-argument = strong disagreement
             return count
 
-        recent_avg = sum(count_disagreements(logs[-4:])) / min(4, len(logs))
-        prev_avg = sum(count_disagreements(logs[-8:-4])) / 4 if len(logs) >= 8 else 0
+        recent_window = logs[-4:]
+        prev_window = logs[-8:-4] if len(logs) >= 8 else []
+        recent_avg = sum(count_disagreements(log) for log in recent_window) / max(len(recent_window), 1)
+        prev_avg = (
+            sum(count_disagreements(log) for log in prev_window) / len(prev_window)
+            if prev_window
+            else 0
+        )
 
         if recent_avg - prev_avg > 2.0:  # 2+ more disagreements = decay signal
             return {
