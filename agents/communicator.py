@@ -141,6 +141,7 @@ def _build_payload(
     style_compliance = style_enforcement.get("post_clip_compliance") or {}
     macro_news = news_evidence.get("macro_news_score") or {}
     synth_style = researcher_out.get("style_compliance") or {}
+    proposal_shaping = researcher_out.get("proposal_shaping") or {}
     return {
         "approved":         bool(risk_out.get("approved", False)),
         "regime":           mj.get("regime", "neutral"),
@@ -162,6 +163,14 @@ def _build_payload(
             "require_human_confirmation": scorecard.get("require_human_confirmation"),
             "reasons": (scorecard.get("reasons") or [])[:3],
             "warnings": (scorecard.get("warnings") or [])[:3],
+        },
+        "data_quality_detail": {
+            "qc_snapshots": strategies.get("snapshot_count"),
+            "qc_forward_samples": strategies.get("forward_return_samples"),
+            "historical_snapshots": strategies.get("historical_snapshot_count"),
+            "historical_forward_samples": strategies.get("historical_forward_return_samples"),
+            "strategy_data_quality": strategies.get("data_quality"),
+            "evidence_summary": strategies.get("evidence_summary") or {},
         },
         "scorecard_enforcement": {
             "applied": enforcement.get("applied"),
@@ -193,6 +202,11 @@ def _build_payload(
             "sizing_adjustment": synth_style.get("sizing_adjustment"),
             "blocked_or_clipped_actions": synth_style.get("blocked_or_clipped_actions") or [],
             "style_non_compliant": synth_style.get("style_non_compliant"),
+        },
+        "proposal_shaping": {
+            "applied": proposal_shaping.get("applied"),
+            "clip_log": proposal_shaping.get("clip_log") or [],
+            "constraints": proposal_shaping.get("constraints") or {},
         },
         "style_enforcement": {
             "applied": style_enforcement.get("applied"),
@@ -246,9 +260,11 @@ def _fallback_template(p: dict) -> str:
     overlays = p["overlays_applied"] or []
     debate   = p.get("debate_summary") or {}
     scorecard = p.get("market_scorecard") or {}
+    data_quality_detail = p.get("data_quality_detail") or {}
     enforcement = p.get("scorecard_enforcement") or {}
     news = p.get("news_evidence") or {}
     style = p.get("decision_style") or {}
+    proposal_shaping = p.get("proposal_shaping") or {}
     style_enforcement = p.get("style_enforcement") or {}
     strategy_use_enforcement = p.get("strategy_use_enforcement") or {}
     strategy_certification = p.get("strategy_certification") or {}
@@ -275,9 +291,11 @@ def _fallback_template(p: dict) -> str:
         debate_line += "\n"
 
     scorecard_line = _format_scorecard_line(scorecard)
+    data_quality_line = _format_data_quality_detail_line(data_quality_detail)
     enforcement_line = _format_enforcement_line(enforcement)
     news_line = _format_news_line(news)
     style_line = _format_style_line(style)
+    proposal_shaping_line = _format_proposal_shaping_line(proposal_shaping)
     style_enforcement_line = _format_style_enforcement_line(style_enforcement)
     strategy_use_line = _format_strategy_use_enforcement_line(strategy_use_enforcement)
     strategy_certification_line = _format_strategy_certification_line(strategy_certification)
@@ -295,7 +313,9 @@ def _fallback_template(p: dict) -> str:
             f"📊 Stance: {stance}\n\n"
             f"{news_line}"
             f"{style_line}"
+            f"{proposal_shaping_line}"
             f"{scorecard_line}"
+            f"{data_quality_line}"
             f"{enforcement_line}"
             f"{style_enforcement_line}"
             f"{strategy_use_line}"
@@ -334,7 +354,9 @@ def _fallback_template(p: dict) -> str:
         f"📊 Stance: {stance}\n\n"
         f"{news_line}"
         f"{style_line}"
+        f"{proposal_shaping_line}"
         f"{scorecard_line}"
+        f"{data_quality_line}"
         f"{enforcement_line}"
         f"{style_enforcement_line}"
         f"{strategy_use_line}"
@@ -365,6 +387,34 @@ def _format_scorecard_line(scorecard: dict) -> str:
         f"  {condition} | permission={permission} | data={data_quality}"
         f"{human}\n"
         f"  dominant: {dominant}\n\n"
+    )
+
+
+def _format_data_quality_detail_line(detail: dict) -> str:
+    if not detail:
+        return ""
+    evidence = detail.get("evidence_summary") or {}
+    qc_snapshots = detail.get("qc_snapshots")
+    qc_forward = detail.get("qc_forward_samples")
+    hist = detail.get("historical_snapshots")
+    hist_forward = detail.get("historical_forward_samples")
+    strategy_quality = detail.get("strategy_data_quality")
+    bits = []
+    if qc_snapshots is not None:
+        bits.append(f"QC live={int(qc_snapshots or 0)} snapshots/{int(qc_forward or 0)} forward")
+    if hist is not None:
+        bits.append(f"yfinance={int(hist or 0)} history/{int(hist_forward or 0)} forward")
+    if evidence.get("live_fit"):
+        bits.append(f"live_fit={evidence.get('live_fit')}")
+    if evidence.get("historical_evidence"):
+        bits.append(f"historical={evidence.get('historical_evidence')}")
+    if strategy_quality:
+        bits.append(f"strategy_data={strategy_quality}")
+    if not bits:
+        return ""
+    return (
+        f"<b>Data quality detail</b>\n"
+        f"  {' | '.join(bits)}\n\n"
     )
 
 
@@ -406,6 +456,30 @@ def _format_style_line(style: dict) -> str:
         f"  analysis={style.get('analysis_style')} | trade={style.get('trade_style')}"
         f"{conviction_text}\n"
         f"  reason: {reason}\n\n"
+    )
+
+
+def _format_proposal_shaping_line(shaping: dict) -> str:
+    if not shaping or not shaping.get("applied"):
+        return ""
+    clips = shaping.get("clip_log") or []
+    constraints = shaping.get("constraints") or {}
+    shown = "; ".join(str(v) for v in clips[:3])
+    extra = f" (+{len(clips) - 3} more)" if len(clips) > 3 else ""
+    cap_bits = []
+    if constraints.get("max_single_delta") is not None:
+        cap_bits.append(f"single_delta<={float(constraints.get('max_single_delta')):.1%}")
+    if constraints.get("max_turnover") is not None:
+        cap_bits.append(f"turnover<={float(constraints.get('max_turnover')):.1%}")
+    if constraints.get("human_required"):
+        cap_bits.append("human_required")
+    if constraints.get("scorecard_data_quality"):
+        cap_bits.append(f"data={constraints.get('scorecard_data_quality')}")
+    cap_text = " | " + " | ".join(cap_bits) if cap_bits else ""
+    return (
+        f"<b>Proposal shaping</b>\n"
+        f"  pre-risk clipped{cap_text}\n"
+        f"  {shown}{extra}\n\n"
     )
 
 

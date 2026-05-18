@@ -57,6 +57,7 @@ from services.decision_ledger import (
     build_decision_ledger,
 )
 from services.strategy_use_constraints import apply_strategy_use_constraints
+from services.proposal_shaper import shape_proposal_before_risk
 from services.position_governance import apply_position_governance
 from services.empirical_profile_store import (
     build_empirical_profiles_from_feature_store,
@@ -1063,6 +1064,36 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             )
         else:
             logger.info("[Stage5→6] Strategy-use constraints passed, no clip needed")
+
+        proposal_shape = shape_proposal_before_risk(
+            adjusted_weights=synthesizer_out.get("adjusted_weights") or {},
+            current_weights=brief.get("current_weights") or {},
+            holdings_meta=brief.get("holdings") or [],
+            market_scorecard=market_scorecard,
+            decision_style=decision_style,
+        )
+        synthesizer_out["proposal_shaping"] = proposal_shape
+        if proposal_shape.get("applied"):
+            pre_shape = synthesizer_out.get("adjusted_weights") or {}
+            synthesizer_out["adjusted_weights"] = proposal_shape.get("adjusted_weights") or pre_shape
+            logger.warning(
+                "[Stage5→6] Proposal shaper clipped %s items:\n%s",
+                len(proposal_shape.get("clip_log") or []),
+                "\n".join(proposal_shape.get("clip_log") or []),
+            )
+            await _save_step_log(
+                analysis_id, "5d_proposal_shaper", "proposal_shaper",
+                input_data={
+                    "adjusted_weights_before_shaping": pre_shape,
+                    "current_weights": brief.get("current_weights") or {},
+                    "market_scorecard": market_scorecard,
+                    "decision_style": decision_style,
+                },
+                output_data=proposal_shape,
+                duration_ms=0,
+            )
+        else:
+            logger.info("[Stage5→6] Proposal shaper passed, no pre-risk clip needed")
 
     # Stage 6: RISK MGR (Python) —— overlays + 6 checks
     # synthesizer_out interface compatible with old researcher_out, Risk MGR unchanged

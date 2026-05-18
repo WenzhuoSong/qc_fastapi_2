@@ -17,9 +17,10 @@ Goal:
 ```text
 raw information
   -> structured evidence
-  -> per-ticker decision ledger
   -> risk/governance validation
-  -> execution result
+  -> initial per-ticker decision ledger
+  -> communicator / executor
+  -> execution audit attachment
   -> Telegram/final report
   -> daily memory/backfill
 ```
@@ -243,6 +244,44 @@ Reports must distinguish:
 
 This prevents messages like "sell QQQ" from being mistaken for actual execution
 when risk rejected the plan.
+
+### 5. Decision Ledger Has A Two-Step Lifecycle
+
+The ledger is first built before execution, then updated after execution audit.
+
+Pre-execution ledger:
+
+- built after risk manager, position governance, and position manager
+- records evidence, proposed action, final validated action, and target weights
+- may show `execution_status = not_sent`, `pending`, or `unknown`
+- must not claim that a broker/QC order was sent or filled
+
+Post-execution ledger update:
+
+- attaches executor audit through `apply_execution_audit_to_decision_ledger(...)`
+- records `execution_status` from the executor/audit payload
+- records `actual_execution_action`
+- preserves `final_action` as the planned/validated action
+
+Field semantics:
+
+- `proposed_action`: what upstream alpha/synthesizer wanted
+- `final_action`: what deterministic validation allowed before execution
+- `actual_execution_action`: what actually happened after audit; rejected,
+  failed, or skipped execution maps to `none`
+- `execution_status`: audit status such as proposed, sent, accepted, rejected,
+  skipped, failed, or filled
+
+Accurate pipeline shape:
+
+```text
+position manager
+  -> initial decision ledger
+  -> communicator / executor
+  -> execution audit
+  -> updated decision ledger
+  -> daily memory / review
+```
 
 ## Target Contract
 
@@ -794,12 +833,13 @@ The decision evidence utilization mainline is complete:
 
 ```text
 evidence bundle
-  -> decision ledger
+  -> initial decision ledger
   -> pipeline step log
   -> compact Telegram display
+  -> executor / execution audit when applicable
+  -> updated decision ledger
   -> compact daily memory
   -> proposed-vs-final diagnostic review
-  -> execution audit attachment
 ```
 
 Completed files:
