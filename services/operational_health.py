@@ -91,7 +91,7 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
             blocker=True,
             missing_blocker=True,
         ),
-        "daily_feature_snapshot": _freshness_check(
+        "daily_feature_snapshot": _trading_day_freshness_check(
             label="Daily features",
             timestamp=getattr(feature_snapshot, "received_at", None),
             now=now,
@@ -99,7 +99,7 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
             blocker=False,
             missing_blocker=False,
         ),
-        "yfinance_backfill": _freshness_check(
+        "yfinance_backfill": _trading_day_freshness_check(
             label="YFinance backfill",
             timestamp=getattr(yfinance, "updated_at", None),
             now=now,
@@ -115,7 +115,7 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
             blocker=False,
             missing_blocker=False,
         ),
-        "memory_write": _freshness_check(
+        "memory_write": _trading_day_freshness_check(
             label="Memory write",
             timestamp=getattr(memory, "updated_at", None) or getattr(memory, "created_at", None),
             now=now,
@@ -268,6 +268,62 @@ def _heartbeat_freshness_check(
         "market_status": reason,
     })
     return check
+
+
+def _trading_day_freshness_check(
+    *,
+    label: str,
+    timestamp: Any,
+    now: datetime,
+    max_age_hours: int,
+    blocker: bool,
+    missing_blocker: bool,
+) -> dict[str, Any]:
+    """Freshness check for daily research jobs that do not update on weekends."""
+    check = _freshness_check(
+        label=label,
+        timestamp=timestamp,
+        now=now,
+        max_age_hours=max_age_hours,
+        blocker=blocker,
+        missing_blocker=missing_blocker,
+    )
+    if check.get("state") != "stale":
+        return check
+
+    parsed = _to_naive_datetime(timestamp)
+    if parsed is None:
+        return check
+
+    market_now = now.replace(tzinfo=UTC).astimezone(MARKET_TZ)
+    timestamp_market_date = parsed.replace(tzinfo=UTC).astimezone(MARKET_TZ).date()
+    expected_date = _latest_expected_daily_research_date(market_now)
+    if timestamp_market_date >= expected_date:
+        check.update({
+            "state": "ok",
+            "reason": "trading calendar grace",
+            "blocking": False,
+            "market_status": "trading calendar grace",
+            "expected_research_date": expected_date.isoformat(),
+        })
+    return check
+
+
+def _latest_expected_daily_research_date(market_now: datetime):
+    """Return the latest trading date daily research data should cover by now."""
+    current_date = market_now.date()
+    current_time = market_now.time()
+    weekday = market_now.weekday()
+
+    if weekday < 5 and current_time >= MARKET_CLOSE:
+        return current_date
+
+    days_back = 1
+    while True:
+        candidate = current_date - timedelta(days=days_back)
+        if candidate.weekday() < 5:
+            return candidate
+        days_back += 1
 
 
 def _cron_to_dict(row: Any) -> dict[str, Any]:
