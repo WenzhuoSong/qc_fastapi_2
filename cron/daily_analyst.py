@@ -184,6 +184,9 @@ async def _main_impl(audit=None) -> None:
                 researcher_confidence=_get_researcher_confidence(analysis),
                 recommended_stance=memory_data.get("recommended_stance"),
             )
+            review_summary = _decision_ledger_review_summary(analysis)
+            if review_summary:
+                logger.info("[DAILY_ANALYST] Decision ledger review: %s", review_summary)
         except Exception as e:
             logger.warning(f"[DAILY_ANALYST] write_decision_context failed: {e}")
 
@@ -220,6 +223,24 @@ def _get_researcher_confidence(analysis) -> str | None:
     if score >= 0.45:
         return "medium"
     return "low"
+
+
+def _decision_ledger_review_summary(analysis) -> str | None:
+    """Return diagnostic-only proposed-vs-final ledger summary for logs."""
+    risk_out = analysis.risk_output or {}
+    try:
+        from services.decision_ledger_memory import (
+            build_decision_ledger_review,
+            compact_decision_ledger_for_memory,
+        )
+
+        compact = compact_decision_ledger_for_memory(risk_out.get("decision_ledger") or {})
+        review = build_decision_ledger_review(compact)
+    except Exception:
+        return None
+    if not review.get("available"):
+        return None
+    return str(review.get("summary") or "")[:500]
 
 
 # ── DQS Backfill Helpers ────────────────────────────────────────────────────────

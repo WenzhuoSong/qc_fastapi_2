@@ -310,10 +310,29 @@ class CommunicatorScorecardTest(unittest.TestCase):
                         ]
                     },
                 },
+                "decision_ledger": {
+                    "portfolio_summary": {
+                        "risk_approved": False,
+                        "execution_status": "not_sent",
+                        "governance_available": True,
+                    },
+                    "top_decisions": [
+                        {
+                            "ticker": "QQQ",
+                            "proposed_action": "trim",
+                            "final_action": "none",
+                            "reason_codes": ["risk_rejected", "human_required"],
+                            "changed_by": ["risk_rejected_final_target_current"],
+                        }
+                    ],
+                },
             }
         )
 
         self.assertIn("Market scorecard", text)
+        self.assertIn("Decision ledger", text)
+        self.assertIn("QQQ: trim -> none", text)
+        self.assertIn("risk_rejected", text)
         self.assertIn("Decision style", text)
         self.assertIn("defensive_only", text)
         self.assertIn("Evidence bundle is stale", text)
@@ -322,6 +341,61 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("explain QQQ", text)
         self.assertNotIn("trims: QQQ", text)
         self.assertNotIn("replacements:", text)
+
+    def test_decision_ledger_payload_compacts_top_five_decisions(self):
+        from agents.communicator import _build_payload
+
+        ledger_rows = {
+            f"T{i}": {
+                "ticker": f"T{i}",
+                "proposed_action": "trim",
+                "final_action": "none" if i == 0 else "trim",
+                "execution_status": "not_sent",
+                "risk_result": "blocked",
+                "reason_codes": ["risk_rejected"] if i == 0 else ["trim_review"],
+                "trade_lifecycle": {"final_target": 0.01, "changed_by": ["risk_target"]},
+                "evidence_used": {
+                    "position_governance": {
+                        "decision": "trim_review",
+                        "risk_rank": i + 1,
+                    }
+                },
+                "explanation": {"position_state": "risk_budget_review"},
+            }
+            for i in range(7)
+        }
+        payload = _build_payload(
+            {"auth_mode": "FULL_AUTO"},
+            {
+                "market_judgment": {"regime": "neutral", "adjusted_confidence": 0.5},
+                "recommended_stance": "maintain",
+            },
+            {
+                "approved": False,
+                "target_weights": {},
+                "rebalance_actions": [],
+                "rejection_reasons": [],
+                "decision_ledger": {
+                    "phase": "phase_3_sparse_lifecycle",
+                    "portfolio_summary": {
+                        "risk_approved": False,
+                        "execution_status": "not_sent",
+                        "governance_available": True,
+                        "ticker_count": 7,
+                    },
+                    "tickers": ledger_rows,
+                    "warnings": [],
+                },
+            },
+        )
+
+        compact = payload["decision_ledger"]
+        self.assertEqual(len(compact["top_decisions"]), 5)
+        self.assertEqual(compact["top_decisions"][0]["ticker"], "T0")
+        text = _fallback_template(payload)
+        self.assertIn("Decision ledger", text)
+        self.assertIn("T0: trim -> none", text)
+        self.assertNotIn("T6:", text)
 
     def test_rejected_communicator_uses_deterministic_fallback(self):
         out = asyncio.run(run_communicator_async(

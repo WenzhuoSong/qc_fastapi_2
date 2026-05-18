@@ -131,6 +131,7 @@ def _build_payload(
     enforcement = risk_out.get("scorecard_enforcement") or {}
     style_enforcement = risk_out.get("style_enforcement") or {}
     position_governance = risk_out.get("position_governance") or {}
+    decision_ledger = risk_out.get("decision_ledger") or {}
     strategy_use_enforcement = (
         researcher_out.get("strategy_use_enforcement")
         or pipeline_context.get("strategy_use_enforcement")
@@ -226,6 +227,7 @@ def _build_payload(
             "trade_summary": position_governance.get("trade_summary") or {},
             "portfolio_summary": position_governance.get("portfolio_summary") or {},
         },
+        "decision_ledger": _compact_decision_ledger(decision_ledger),
         "auth_mode":        pipeline_context.get("auth_mode", "SEMI_AUTO"),
         "timeout_minutes":  settings.semi_auto_timeout_minutes,
         "debate_summary":   debate,
@@ -252,6 +254,7 @@ def _fallback_template(p: dict) -> str:
     strategy_certification = p.get("strategy_certification") or {}
     knowledge_resolution = p.get("knowledge_resolution") or {}
     position_governance = p.get("position_governance") or {}
+    decision_ledger = p.get("decision_ledger") or {}
 
     up, down = "\u25b2", "\u25bc"
 
@@ -279,6 +282,7 @@ def _fallback_template(p: dict) -> str:
     strategy_use_line = _format_strategy_use_enforcement_line(strategy_use_enforcement)
     strategy_certification_line = _format_strategy_certification_line(strategy_certification)
     knowledge_line = _format_knowledge_resolution_line(knowledge_resolution)
+    decision_ledger_line = _format_decision_ledger_line(decision_ledger)
     position_governance_line = _format_position_governance_line(position_governance)
 
     if not approved:
@@ -297,6 +301,7 @@ def _fallback_template(p: dict) -> str:
             f"{strategy_use_line}"
             f"{strategy_certification_line}"
             f"{knowledge_line}"
+            f"{decision_ledger_line}"
             f"{position_governance_line}"
             f"<b>Failed checks:</b>\n{reasons_text}\n\n"
             f"No execution this round — wait for the next analysis."
@@ -335,6 +340,7 @@ def _fallback_template(p: dict) -> str:
         f"{strategy_use_line}"
         f"{strategy_certification_line}"
         f"{knowledge_line}"
+        f"{decision_ledger_line}"
         f"{position_governance_line}"
         f"<b>Suggested actions</b>\n"
         f"{actions_str}\n\n"
@@ -556,6 +562,109 @@ def _format_knowledge_resolution_line(resolution: dict) -> str:
     if not lines:
         return ""
     return "<b>Knowledge resolution</b>\n" + "\n".join(lines) + "\n\n"
+
+
+def _compact_decision_ledger(ledger: dict) -> dict:
+    if not ledger:
+        return {}
+    tickers = ledger.get("tickers") or {}
+    rows = []
+    for ticker, row in tickers.items():
+        if not isinstance(row, dict):
+            continue
+        lifecycle = row.get("trade_lifecycle") or {}
+        governance = (row.get("evidence_used") or {}).get("position_governance") or {}
+        explanation = row.get("explanation") or {}
+        rows.append({
+            "ticker": row.get("ticker") or ticker,
+            "proposed_action": row.get("proposed_action"),
+            "final_action": row.get("final_action"),
+            "execution_status": row.get("execution_status"),
+            "risk_result": row.get("risk_result"),
+            "reason_codes": (row.get("reason_codes") or [])[:4],
+            "governance_decision": governance.get("decision"),
+            "risk_rank": governance.get("risk_rank"),
+            "position_state": explanation.get("position_state"),
+            "final_target": lifecycle.get("final_target"),
+            "changed_by": lifecycle.get("changed_by") or [],
+            "sort_score": _decision_ledger_sort_score(row),
+        })
+    rows.sort(key=lambda item: (-int(item.get("sort_score") or 0), str(item.get("ticker") or "")))
+    summary = ledger.get("portfolio_summary") or {}
+    return {
+        "phase": ledger.get("phase"),
+        "portfolio_summary": {
+            "risk_approved": summary.get("risk_approved"),
+            "execution_status": summary.get("execution_status"),
+            "governance_available": summary.get("governance_available"),
+            "ticker_count": summary.get("ticker_count"),
+        },
+        "top_decisions": rows[:5],
+        "warnings": (ledger.get("warnings") or [])[:3],
+    }
+
+
+def _decision_ledger_sort_score(row: dict) -> int:
+    score = 0
+    proposed = str(row.get("proposed_action") or "")
+    final = str(row.get("final_action") or "")
+    reasons = {str(item) for item in row.get("reason_codes") or []}
+    governance = (row.get("evidence_used") or {}).get("position_governance") or {}
+    explanation = row.get("explanation") or {}
+    governance_decision = str(governance.get("decision") or "")
+    state = str(explanation.get("position_state") or "")
+    if final in {"none", "unknown"} and proposed not in {"hold", "none", ""}:
+        score += 80
+    if "hard_risk" in reasons or state == "hard_risk":
+        score += 70
+    if governance_decision in {"trim", "trim_review"} or final == "trim":
+        score += 50
+    if governance_decision == "hold_review" or state.endswith("_review"):
+        score += 35
+    if final == "add":
+        score += 25
+    if reasons:
+        score += min(20, len(reasons) * 4)
+    risk_rank = governance.get("risk_rank")
+    if isinstance(risk_rank, (int, float)):
+        score += max(0, 10 - int(risk_rank))
+    return score
+
+
+def _format_decision_ledger_line(ledger: dict) -> str:
+    if not ledger:
+        return ""
+    rows = ledger.get("top_decisions") or []
+    summary = ledger.get("portfolio_summary") or {}
+    warnings = ledger.get("warnings") or []
+    if not rows and not warnings:
+        return ""
+    lines = ["<b>Decision ledger</b>"]
+    status_bits = []
+    if summary.get("risk_approved") is not None:
+        status_bits.append(f"risk_approved={bool(summary.get('risk_approved'))}")
+    if summary.get("execution_status"):
+        status_bits.append(f"execution={summary.get('execution_status')}")
+    if summary.get("governance_available") is not None:
+        status_bits.append(f"governance={bool(summary.get('governance_available'))}")
+    if status_bits:
+        lines.append("  " + " | ".join(status_bits))
+    for row in rows[:5]:
+        ticker = row.get("ticker")
+        proposed = row.get("proposed_action") or "hold"
+        final = row.get("final_action") or "unknown"
+        reasons = ",".join(str(item) for item in (row.get("reason_codes") or [])[:3])
+        changed_by = ",".join(str(item) for item in (row.get("changed_by") or [])[:2])
+        suffix_parts = []
+        if reasons:
+            suffix_parts.append(reasons)
+        if changed_by:
+            suffix_parts.append(f"changed_by={changed_by}")
+        suffix = " | " + " | ".join(suffix_parts) if suffix_parts else ""
+        lines.append(f"  {ticker}: {proposed} -> {final}{suffix}")
+    if warnings:
+        lines.append("  warnings: " + "; ".join(str(item) for item in warnings[:3]))
+    return "\n".join(lines) + "\n\n"
 
 
 def _format_position_governance_line(governance: dict) -> str:

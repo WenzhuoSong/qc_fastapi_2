@@ -52,6 +52,10 @@ from services.evidence_bundle import build_evidence_bundle
 from services.market_scorecard import build_market_scorecard
 from services.news_evidence   import build_news_evidence
 from services.decision_style  import resolve_decision_style
+from services.decision_ledger import (
+    apply_execution_audit_to_decision_ledger,
+    build_decision_ledger,
+)
 from services.strategy_use_constraints import apply_strategy_use_constraints
 from services.position_governance import apply_position_governance
 from services.empirical_profile_store import (
@@ -1248,6 +1252,49 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             duration_ms=0,
         )
 
+    try:
+        decision_ledger = build_decision_ledger(
+            evidence_bundle=evidence_bundle,
+            market_scorecard=market_scorecard,
+            strategy_output={
+                "base_weights": base_weights,
+                "strategy_target_weights": (playground_bundle or {}).get("consensus_weights") or {},
+                "strategies": evidence_bundle.get("strategies") or {},
+            },
+            synthesizer_output=synthesizer_out,
+            risk_output=risk_out,
+            position_governance=risk_out.get("position_governance"),
+            execution_audit=None,
+            current_holdings={
+                "current_weights": brief.get("current_weights") or {},
+                "holdings": brief.get("holdings") or [],
+            },
+        )
+        risk_out["decision_ledger"] = decision_ledger
+        await _save_step_log(
+            analysis_id, "6d_decision_ledger", "decision_ledger",
+            input_data={
+                "risk_approved": bool(risk_out.get("approved")),
+                "has_position_governance": bool(risk_out.get("position_governance")),
+                "current_weight_count": len(brief.get("current_weights") or {}),
+            },
+            output_data=decision_ledger,
+            duration_ms=0,
+        )
+    except Exception as e:
+        logger.warning("[pipeline] decision ledger build failed: %s", e)
+        risk_out["decision_ledger_error"] = str(e)
+        await _save_step_log(
+            analysis_id, "6d_decision_ledger", "decision_ledger",
+            input_data={
+                "risk_approved": bool(risk_out.get("approved")),
+                "has_position_governance": bool(risk_out.get("position_governance")),
+            },
+            output_data={"error": str(e)},
+            duration_ms=0,
+            failed=True,
+        )
+
     risk_out_for_tracker = risk_out
 
     # Stage 7: Update analysis row (fill complete data)
@@ -1556,4 +1603,13 @@ async def _save_execution(analysis_id: int, result: dict) -> None:
             qc_response     = result.get("qc_response"),
             status          = result.get("execution_status", "unknown"),
         ))
+        analysis = await db.get(AgentAnalysis, analysis_id)
+        if analysis:
+            risk_output = dict(analysis.risk_output or {})
+            if risk_output.get("decision_ledger"):
+                risk_output["decision_ledger"] = apply_execution_audit_to_decision_ledger(
+                    risk_output.get("decision_ledger") or {},
+                    audit_payload,
+                )
+                analysis.risk_output = risk_output
         await db.commit()

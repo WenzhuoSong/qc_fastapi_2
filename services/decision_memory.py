@@ -26,6 +26,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import MemoryDaily, AgentAnalysis, MarketDailyFeature
 from db.session import AsyncSessionLocal
 from services.advisory_quality import build_advisory_quality_diagnostics
+from services.decision_ledger_memory import (
+    build_decision_ledger_review,
+    compact_decision_ledger_for_memory,
+)
 
 logger = logging.getLogger("qc_fastapi_2.decision_memory")
 
@@ -124,6 +128,10 @@ async def write_decision_context(
             # Build structured decision record
             risk_output = (analysis.risk_output if analysis else {}) or {}
             position_governance = risk_output.get("position_governance") or {}
+            decision_ledger = compact_decision_ledger_for_memory(
+                risk_output.get("decision_ledger") or {}
+            )
+            decision_ledger_review = build_decision_ledger_review(decision_ledger)
             advisory_overrides = position_governance.get("advisory_overrides") or []
             advisory_quality = (
                 (position_governance.get("portfolio_summary") or {}).get("advisory_quality")
@@ -150,6 +158,9 @@ async def write_decision_context(
                 "playground_selected_strategies": playground_selected_strategies,
                 "position_advisory_overrides": advisory_overrides,
                 "position_advisory_quality": advisory_quality,
+                "decision_ledger": decision_ledger,
+                "decision_ledger_available": bool(decision_ledger.get("available")),
+                "decision_ledger_review": decision_ledger_review,
                 # outcome may have portfolio_return_pct and decision_quality_score
                 "outcome_portfolio_return_pct": outcome.get("portfolio_return_pct"),
                 "outcome_decision_quality_score": decision_quality,
@@ -347,11 +358,13 @@ async def backfill_advisory_outcomes(
 
             from services.advisory_quality import build_advisory_outcome_backfill
 
-            decision.update(build_advisory_outcome_backfill(
+            outcome_payload = build_advisory_outcome_backfill(
                 decision,
                 forward_returns_by_ticker=returns,
                 benchmark_return=float(benchmark_return or 0.0),
-            ))
+            )
+            decision.update(outcome_payload)
+            scored = outcome_payload.get("position_advisory_outcomes") or []
             decision["position_advisory_outcome_backfilled_at"] = datetime.utcnow().isoformat()
             existing.decision = decision
 
