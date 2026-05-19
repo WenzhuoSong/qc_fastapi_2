@@ -4,6 +4,24 @@ from services.position_governance import apply_position_governance
 
 
 class PositionGovernanceTest(unittest.TestCase):
+    def test_position_explanations_sort_by_current_weight_desc(self):
+        out = apply_position_governance(
+            target_weights={"AAA": 0.02, "BBB": 0.18, "CCC": 0.08, "CASH": 0.72},
+            current_weights={"AAA": 0.02, "BBB": 0.18, "CCC": 0.08, "CASH": 0.72},
+            holdings_meta=[
+                {"ticker": "AAA", "unrealized_pnl_pct": 0.01},
+                {"ticker": "BBB", "unrealized_pnl_pct": 0.01},
+                {"ticker": "CCC", "unrealized_pnl_pct": 0.01},
+            ],
+            strategy_evidence={"strategy_results": []},
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            news_evidence={},
+        )
+
+        rows = out.portfolio_summary["position_explanations"]
+
+        self.assertEqual([row["ticker"] for row in rows], ["BBB", "CCC", "AAA"])
+
     def test_loss_with_weak_strategy_support_blocks_add_and_marks_review(self):
         out = apply_position_governance(
             target_weights={"FTXL": 0.06, "CASH": 0.94},

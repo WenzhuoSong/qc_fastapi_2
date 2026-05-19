@@ -808,9 +808,7 @@ def _position_explanations(
     return sorted(
         explanations,
         key=lambda row: (
-            -int(row.get("priority") or 0),
-            -abs(float(row.get("unrealized_pnl_pct") or 0.0)),
-            -float(row.get("risk_contribution") or 0.0),
+            -float(row.get("current_weight") or 0.0),
             str(row.get("ticker") or ""),
         ),
     )
