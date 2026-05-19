@@ -317,8 +317,18 @@ def _compact_governance(governance: dict[str, Any]) -> dict[str, Any]:
         "manual_action_hints": governance.get("manual_action_hints") or portfolio.get("manual_action_hints") or [],
         "basket_reviews": portfolio.get("basket_reviews") or [],
         "thesis_status_summary": portfolio.get("thesis_status_summary") or {},
-        "position_explanations": portfolio.get("position_explanations") or [],
+        "position_explanations": _sort_by_current_weight(portfolio.get("position_explanations") or []),
     }
+
+
+def _sort_by_current_weight(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        rows,
+        key=lambda row: (
+            -float(row.get("current_weight") or 0.0),
+            str(row.get("ticker") or ""),
+        ),
+    )
 
 
 def _compact_ledger(ledger: dict[str, Any]) -> dict[str, Any]:

@@ -9,7 +9,8 @@ class DashboardTests(unittest.TestCase):
         ledger_start = source.index("def _compact_ledger")
         function_source = source[governance_start:ledger_start]
 
-        self.assertIn('"position_explanations": portfolio.get("position_explanations") or []', function_source)
+        self.assertIn('"position_explanations": _sort_by_current_weight(portfolio.get("position_explanations") or [])', function_source)
+        self.assertIn("def _sort_by_current_weight", function_source)
         self.assertNotIn('"position_explanations": (portfolio.get("position_explanations") or [])[:5]', function_source)
         self.assertNotIn("[:4]", source)
         self.assertNotIn("[:5]", source)
