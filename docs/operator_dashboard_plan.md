@@ -177,11 +177,12 @@ Acceptance checks:
 
 ## Phase D: Alerts And Notifications
 
-Status: future.
+Status: initial implementation complete.
 
 Possible alert channels:
 
-- Telegram.
+- Telegram. Initial implementation sends deduped operational alerts from the
+  morning health cron using `services/operational_alerts.py`.
 - Email.
 - Grafana Cloud / Datadog later if needed.
 
@@ -196,6 +197,19 @@ Candidate alerts:
 - Risk rejection repeats for same root cause.
 - Proposal shaping clips unusually large turnover.
 - Execution audit failed or skipped unexpectedly.
+
+Initial implemented alerts:
+
+- QC heartbeat stale or missing.
+- Daily feature snapshot stale or missing.
+- yfinance backfill stale or missing.
+- Pipeline status failed/error/timeout.
+- Recent cron failures.
+- Latest execution failed/timeout/skipped/error.
+
+Alert state is stored in `system_config.operational_alert_state_v1` to suppress
+repeats within a cooldown window. This state is only alert metadata and does not
+modify trading authorization, proposals, approvals, or execution state.
 
 ## Phase E: Grafana / Datadog Integration
 

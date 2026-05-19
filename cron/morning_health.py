@@ -19,6 +19,7 @@ from services.operational_health import (
     build_operational_health_snapshot,
     format_operational_health_report,
 )
+from services.operational_alerts import send_operational_alerts
 
 logging.basicConfig(
     level=logging.INFO,
@@ -115,11 +116,14 @@ async def main() -> None:
                 ops_snapshot = await build_operational_health_snapshot()
                 summary_lines.append("")
                 summary_lines.append(format_operational_health_report(ops_snapshot))
+                alert_result = await send_operational_alerts(ops_snapshot)
                 audit.set_summary(
                     **(audit.summary or {}),
                     ops_overall=ops_snapshot.get("overall"),
                     ops_execution_blockers=len(ops_snapshot.get("execution_blockers") or []),
                     ops_research_degradations=len(ops_snapshot.get("research_degradations") or []),
+                    ops_alerts_active=alert_result.get("active_alerts"),
+                    ops_alerts_sent=alert_result.get("sent_alerts"),
                 )
             except Exception as e:
                 logger.warning(f"[morning_health] Operational health report failed: {e}")

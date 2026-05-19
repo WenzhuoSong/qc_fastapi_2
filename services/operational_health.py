@@ -27,6 +27,7 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
     from db.models import (
         AgentAnalysis,
         CronRunLog,
+        ExecutionLog,
         MacroNewsCache,
         MarketDailyFeature,
         MemoryDaily,
@@ -70,6 +71,11 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
         analysis = (
             await db.execute(
                 select(AgentAnalysis).order_by(desc(AgentAnalysis.analyzed_at)).limit(1)
+            )
+        ).scalar_one_or_none()
+        execution = (
+            await db.execute(
+                select(ExecutionLog).order_by(desc(ExecutionLog.executed_at)).limit(1)
             )
         ).scalar_one_or_none()
         failed_crons = (
@@ -130,7 +136,9 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
             "blocking": False,
         },
     }
-    return classify_operational_health(checks, [_cron_to_dict(row) for row in failed_crons], now=now)
+    snapshot = classify_operational_health(checks, [_cron_to_dict(row) for row in failed_crons], now=now)
+    snapshot["execution"] = _execution_to_dict(execution)
+    return snapshot
 
 
 def classify_operational_health(
@@ -332,6 +340,19 @@ def _cron_to_dict(row: Any) -> dict[str, Any]:
         "status": getattr(row, "status", None),
         "started_at": _iso_or_none(getattr(row, "started_at", None)),
         "error_message": getattr(row, "error_message", None),
+    }
+
+
+def _execution_to_dict(row: Any) -> dict[str, Any]:
+    if row is None:
+        return {"available": False}
+    return {
+        "available": True,
+        "analysis_id": getattr(row, "analysis_id", None),
+        "executed_at": _iso_or_none(getattr(row, "executed_at", None)),
+        "command_type": getattr(row, "command_type", None),
+        "status": getattr(row, "status", None),
+        "retry_count": getattr(row, "retry_count", None),
     }
 
 
