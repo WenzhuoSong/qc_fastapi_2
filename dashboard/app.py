@@ -137,7 +137,7 @@ async def _latest_cron_runs() -> list[dict[str, Any]]:
     async with AsyncSessionLocal() as db:
         rows = (
             await db.execute(
-                select(CronRunLog).order_by(desc(CronRunLog.started_at)).limit(12)
+                select(CronRunLog).order_by(desc(CronRunLog.started_at))
             )
         ).scalars().all()
     return [
@@ -148,7 +148,7 @@ async def _latest_cron_runs() -> list[dict[str, Any]]:
             "finished_at": _iso(row.finished_at),
             "duration_ms": row.duration_ms,
             "summary": row.summary or {},
-            "error_message": (row.error_message or "")[:180],
+            "error_message": row.error_message or "",
         }
         for row in rows
     ]
@@ -302,8 +302,8 @@ def _compact_scorecard(scorecard: dict[str, Any]) -> dict[str, Any]:
         "data_quality": scorecard.get("data_quality"),
         "dominant_constraint": scorecard.get("dominant_constraint"),
         "require_human_confirmation": scorecard.get("require_human_confirmation"),
-        "warnings": (scorecard.get("warnings") or [])[:4],
-        "reasons": (scorecard.get("reasons") or [])[:4],
+        "warnings": scorecard.get("warnings") or [],
+        "reasons": scorecard.get("reasons") or [],
     }
 
 
@@ -312,12 +312,12 @@ def _compact_governance(governance: dict[str, Any]) -> dict[str, Any]:
     return {
         "mode": governance.get("mode"),
         "trade_summary": governance.get("trade_summary") or {},
-        "blocked_actions": (governance.get("blocked_actions") or [])[:5],
-        "forced_trims": (governance.get("forced_trims") or [])[:5],
-        "manual_action_hints": (governance.get("manual_action_hints") or portfolio.get("manual_action_hints") or [])[:5],
-        "basket_reviews": (portfolio.get("basket_reviews") or [])[:5],
+        "blocked_actions": governance.get("blocked_actions") or [],
+        "forced_trims": governance.get("forced_trims") or [],
+        "manual_action_hints": governance.get("manual_action_hints") or portfolio.get("manual_action_hints") or [],
+        "basket_reviews": portfolio.get("basket_reviews") or [],
         "thesis_status_summary": portfolio.get("thesis_status_summary") or {},
-        "position_explanations": (portfolio.get("position_explanations") or [])[:5],
+        "position_explanations": portfolio.get("position_explanations") or [],
     }
 
 
@@ -327,7 +327,7 @@ def _compact_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
     return {
         "available": True,
         "portfolio_summary": ledger.get("portfolio_summary") or {},
-        "top_decisions": (ledger.get("top_decisions") or [])[:5],
+        "top_decisions": ledger.get("top_decisions") or [],
     }
 
 
@@ -462,7 +462,7 @@ def _render_list(title: str, items: list[Any]) -> str:
     if not items:
         return "" if title else "<p class=\"muted\">None.</p>"
     heading = f"<h3>{escape(title)}</h3>" if title else ""
-    lis = "".join(f"<li>{escape(str(item))}</li>" for item in items[:6])
+    lis = "".join(f"<li>{escape(str(item))}</li>" for item in items)
     return f"{heading}<ul>{lis}</ul>"
 
 
@@ -475,8 +475,7 @@ def _format_value(value: Any) -> str:
 
 
 def _compact_json(value: Any) -> str:
-    text_value = str(value)
-    return text_value[:160] + ("..." if len(text_value) > 160 else "")
+    return str(value)
 
 
 def _iso(value: Any) -> str | None:
