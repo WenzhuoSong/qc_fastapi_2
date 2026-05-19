@@ -51,6 +51,9 @@ class GovernanceConfig:
     llm_advisory_enabled: float = 1.0
     llm_advisory_max_trim_pct: float = 0.01
     llm_advisory_max_add_pct: float = 0.01
+    advisory_basket_loss_review_pct: float = -0.06
+    advisory_basket_loss_manual_review_enabled: float = 1.0
+    advisory_basket_loss_auto_trim_enabled: float = 0.0
 
     @classmethod
     def from_config(cls, raw: dict[str, Any] | None) -> "GovernanceConfig":
@@ -242,6 +245,7 @@ def apply_position_governance(
         })
 
     _apply_basket_reviews(decisions)
+    _apply_advisory_basket_loss_reviews(decisions, cfg)
     for row in decisions:
         row["thesis_status"] = _validate_thesis_status(
             row=row,
@@ -533,7 +537,6 @@ def _apply_basket_reviews(decisions: list[dict[str, Any]]) -> None:
             and (
                 "unrealized_loss_review" in (row.get("reason_codes") or [])
                 or row.get("risk_budget_status") == "high"
-                or any(str(code).endswith("_concentration_high") for code in (row.get("reason_codes") or []))
             )
         ]
         if len(problem_rows) < 2:
@@ -549,6 +552,44 @@ def _apply_basket_reviews(decisions: list[dict[str, Any]]) -> None:
             }
 
 
+def _apply_advisory_basket_loss_reviews(
+    decisions: list[dict[str, Any]],
+    cfg: GovernanceConfig,
+) -> None:
+    """Escalate weak-positive basket losers to manual trim review.
+
+    This is intentionally diagnostic/manual by default. It changes decision
+    state and reason codes, but does not reduce target weights unless the
+    explicit auto-trim flag is enabled.
+    """
+    if not cfg.advisory_basket_loss_manual_review_enabled:
+        return
+    for row in decisions:
+        reasons = row.get("reason_codes") or []
+        if "basket_review" not in reasons or "unrealized_loss_review" not in reasons:
+            continue
+        role = str(row.get("position_role") or "")
+        if role == "core":
+            continue
+        support = str(row.get("strategy_support") or "none")
+        if support not in {"advisory", "none", "watch_only", "ignore"}:
+            continue
+        pnl = row.get("unrealized_pnl_pct")
+        if not isinstance(pnl, (int, float)) or float(pnl) > cfg.advisory_basket_loss_review_pct:
+            continue
+
+        row.setdefault("reason_codes", []).append("advisory_basket_loss_review")
+        row["reason_codes"] = list(dict.fromkeys(row["reason_codes"]))
+        if row.get("decision") in {"hold", "hold_review"}:
+            row["decision"] = "trim_review"
+
+        if cfg.advisory_basket_loss_auto_trim_enabled:
+            current_w = float(row.get("current_weight") or 0.0)
+            target_w = float(row.get("target_after") or current_w)
+            clipped = min(target_w, max(current_w - cfg.review_trim_pct, 0.0))
+            row["target_after"] = round(clipped, 6)
+
+
 def _manual_action_hints(
     *,
     decisions: list[dict[str, Any]],
@@ -562,17 +603,21 @@ def _manual_action_hints(
     for row in decisions:
         current_w = float(row.get("current_weight") or 0.0)
         target_w = float(row.get("target_after") or 0.0)
-        if target_w >= current_w - 1e-9:
-            continue
         reasons = row.get("reason_codes") or []
+        manual_review_only = "advisory_basket_loss_review" in reasons
+        if target_w >= current_w - 1e-9 and not manual_review_only:
+            continue
         if not any(code in reasons for code in ("hard_risk", "unrealized_loss_review", "winner_risk_budget_review", "basket_review")):
             continue
+        suggested_target = target_w
+        if manual_review_only and target_w >= current_w - 1e-9:
+            suggested_target = max(current_w - 0.01, 0.0)
         hints.append({
             "ticker": row.get("ticker"),
             "suggested_action": "manual_trim_review",
             "current_weight": round(current_w, 6),
-            "suggested_target": round(target_w, 6),
-            "delta": round(target_w - current_w, 6),
+            "suggested_target": round(suggested_target, 6),
+            "delta": round(suggested_target - current_w, 6),
             "reason_codes": reasons[:5],
             "note": "risk-reducing trim requires human confirmation before execution",
         })
@@ -820,10 +865,11 @@ def _explain_position(row: dict[str, Any], blocked: list[str]) -> dict[str, Any]
     allowed = set(str(item) for item in (row.get("allowed_actions") or []))
     decision = str(row.get("decision") or "hold")
     state = _position_state(row, reasons)
-    why_hold = _why_hold(row, reasons, allowed)
-    why_not_add = _why_not_add(row, reasons, allowed, blocked)
-    why_not_exit = _why_not_exit(row, reasons, allowed)
-    next_trigger = _next_trigger(row, reasons)
+    facts = _explanation_facts(row, reasons, allowed, blocked)
+    why_hold = _why_hold(row, reasons, allowed, facts)
+    why_not_add = _why_not_add(row, reasons, allowed, blocked, facts)
+    why_not_exit = _why_not_exit(row, reasons, allowed, facts)
+    next_trigger = _next_trigger(row, reasons, facts)
     priority = _explanation_priority(row, reasons, blocked)
     return {
         "ticker": ticker,
@@ -836,6 +882,7 @@ def _explain_position(row: dict[str, Any], blocked: list[str]) -> dict[str, Any]
         "risk_budget_status": row.get("risk_budget_status"),
         "basket_review": row.get("basket_review"),
         "thesis_status": row.get("thesis_status"),
+        "explanation_facts": facts,
         "strategy_support": row.get("strategy_support"),
         "action_permission": row.get("action_permission"),
         "why_hold": why_hold,
@@ -866,9 +913,83 @@ def _position_state(row: dict[str, Any], reasons: set[str]) -> str:
     return "normal_hold"
 
 
-def _why_hold(row: dict[str, Any], reasons: set[str], allowed: set[str]) -> list[str]:
+def _explanation_facts(
+    row: dict[str, Any],
+    reasons: set[str],
+    allowed: set[str],
+    blocked: list[str],
+) -> dict[str, Any]:
+    basket = row.get("basket_review") or {}
+    thesis = row.get("thesis_status") or {"status": "unknown", "evidence": []}
+    if "hard_risk" in reasons:
+        severity = "hard_risk"
+        primary_reason = "hard_risk_event_active"
+        risk_action = "manual_trim_review" if "exit" in allowed else "trim_review"
+    elif "basket_review" in reasons:
+        severity = "basket_review"
+        primary_reason = "correlated_basket_review"
+        risk_action = "manual_trim_review" if "trim" in allowed else "hold_review"
+    elif "unrealized_loss_review" in reasons:
+        severity = "loss_review"
+        primary_reason = "unrealized_loss_review"
+        risk_action = "trim" if row.get("decision") == "trim" else "hold_review"
+    elif "winner_risk_budget_review" in reasons:
+        severity = "winner_review"
+        primary_reason = "winner_risk_budget_review"
+        risk_action = "trim_review" if "trim" in allowed else "hold"
+    else:
+        severity = "normal"
+        primary_reason = "no_active_review_reason"
+        risk_action = str(row.get("decision") or "hold")
+
+    execution_blocker = None
+    if "scorecard_human_required" in reasons:
+        execution_blocker = "human_required"
+    elif any("risk_rejected" in str(item) for item in blocked):
+        execution_blocker = "risk_rejected"
+
+    basket_context = None
+    if basket:
+        basket_context = {
+            "group": basket.get("group"),
+            "tickers": basket.get("tickers") or [],
+            "trigger": "multiple_loss_review_positions",
+            "reason": basket.get("reason"),
+        }
+
+    return {
+        "severity": severity,
+        "primary_reason": primary_reason,
+        "execution_blocker": execution_blocker,
+        "risk_action": risk_action,
+        "basket_context": basket_context,
+        "thesis_status": {
+            "status": thesis.get("status", "unknown"),
+            "evidence": thesis.get("evidence") or [],
+        },
+    }
+
+
+def _why_hold(
+    row: dict[str, Any],
+    reasons: set[str],
+    allowed: set[str],
+    facts: dict[str, Any],
+) -> list[str]:
     out: list[str] = []
     pnl = row.get("unrealized_pnl_pct")
+    support = row.get("strategy_support")
+    if "hard_risk" in reasons:
+        out.append("hard-risk event is active; position requires manual trim/exit review")
+        if facts.get("execution_blocker") == "human_required":
+            out.append("automatic execution is blocked by human confirmation")
+        return list(dict.fromkeys(out))[:4]
+    if "basket_review" in reasons:
+        basket = facts.get("basket_context") or {}
+        group = basket.get("group") or row.get("group") or "correlated basket"
+        tickers = ",".join((basket.get("tickers") or [])[:4])
+        suffix = f" ({tickers})" if tickers else ""
+        out.append(f"{group} basket has multiple correlated positions in review{suffix}")
     if "unrealized_loss_review" in reasons and isinstance(pnl, (int, float)):
         if pnl > -0.08:
             out.append("loss is above hard trim threshold")
@@ -876,8 +997,10 @@ def _why_hold(row: dict[str, Any], reasons: set[str], allowed: set[str]) -> list
             out.append("loss reached trim zone; target was reduced, not forced to full exit")
     if "hard_risk" not in reasons:
         out.append("no hard-risk event requires immediate exit")
-    if row.get("strategy_support") in {"primary", "advisory"}:
-        out.append(f"strategy support remains {row.get('strategy_support')}")
+    if support == "primary":
+        out.append("primary strategy support remains")
+    elif support == "advisory":
+        out.append("only advisory strategy support remains")
     if "trim" in allowed and "exit" not in allowed:
         out.append("governance allows trim but not unrestricted exit")
     if not out:
@@ -885,9 +1008,15 @@ def _why_hold(row: dict[str, Any], reasons: set[str], allowed: set[str]) -> list
     return list(dict.fromkeys(out))[:4]
 
 
-def _why_not_add(row: dict[str, Any], reasons: set[str], allowed: set[str], blocked: list[str]) -> list[str]:
+def _why_not_add(
+    row: dict[str, Any],
+    reasons: set[str],
+    allowed: set[str],
+    blocked: list[str],
+    facts: dict[str, Any],
+) -> list[str]:
     out: list[str] = []
-    if "add" in allowed and not blocked:
+    if "add" in allowed and not blocked and not ({"unrealized_loss_review", "basket_review", "high_atr"} & reasons):
         return ["add is allowed within risk limits"]
     if "scorecard_human_required" in reasons:
         out.append("market scorecard requires human confirmation")
@@ -895,8 +1024,14 @@ def _why_not_add(row: dict[str, Any], reasons: set[str], allowed: set[str], bloc
         out.append("scorecard permission restricts new risk")
     if "unrealized_loss_review" in reasons:
         out.append("position is in unrealized loss review")
+    if "basket_review" in reasons:
+        basket = facts.get("basket_context") or {}
+        group = basket.get("group") or row.get("group") or "correlated basket"
+        out.append(f"{group} basket is in correlated review")
     if "strategy_support_weak" in reasons:
         out.append("strategy support is weak or absent")
+    elif row.get("strategy_support") == "advisory" and "unrealized_loss_review" in reasons:
+        out.append("advisory support is not strong enough to justify adding")
     if "high_atr" in reasons:
         out.append("ATR is elevated")
     if any(reason.endswith("_concentration_high") for reason in reasons):
@@ -908,7 +1043,12 @@ def _why_not_add(row: dict[str, Any], reasons: set[str], allowed: set[str], bloc
     return list(dict.fromkeys(out))[:4]
 
 
-def _why_not_exit(row: dict[str, Any], reasons: set[str], allowed: set[str]) -> list[str]:
+def _why_not_exit(
+    row: dict[str, Any],
+    reasons: set[str],
+    allowed: set[str],
+    facts: dict[str, Any],
+) -> list[str]:
     out: list[str] = []
     if "exit" in allowed:
         return ["exit is permitted for manual/hard-risk review"]
@@ -923,9 +1063,13 @@ def _why_not_exit(row: dict[str, Any], reasons: set[str], allowed: set[str]) -> 
     return list(dict.fromkeys(out))[:4]
 
 
-def _next_trigger(row: dict[str, Any], reasons: set[str]) -> str:
+def _next_trigger(row: dict[str, Any], reasons: set[str], facts: dict[str, Any]) -> str:
     if "hard_risk" in reasons:
         return "review manual exit when hard-risk event remains unresolved"
+    if "basket_review" in reasons:
+        basket = facts.get("basket_context") or {}
+        group = basket.get("group") or row.get("group") or "basket"
+        return f"manual trim review if {group} basket weakness persists"
     if "unrealized_loss_review" in reasons:
         threshold = row.get("loss_trim_threshold")
         threshold_text = f"{float(threshold):.0%}" if isinstance(threshold, (int, float)) else "-8%"

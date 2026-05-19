@@ -397,6 +397,60 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("T0: trim -> none", text)
         self.assertNotIn("T6:", text)
 
+    def test_manual_trim_review_shows_advisory_as_weak_positive(self):
+        text = _fallback_template(
+            {
+                "approved": False,
+                "regime": "bull_trend",
+                "stance": "maintain",
+                "rebalance_actions": [],
+                "estimated_cost": 0,
+                "overlays_applied": [],
+                "rejection_reasons": ["Market scorecard requires human confirmation"],
+                "auth_mode": "FULL_AUTO",
+                "timeout_minutes": 20,
+                "position_governance": {
+                    "mode": "diagnostic_only",
+                    "position_decisions": [
+                        {
+                            "ticker": "FTXL",
+                            "decision": "trim_review",
+                            "strategy_support": "advisory",
+                            "current_weight": 0.03,
+                            "target_before": 0.03,
+                            "target_after": 0.03,
+                            "reason_codes": [
+                                "scorecard_human_required",
+                                "unrealized_loss_review",
+                                "basket_review",
+                                "advisory_basket_loss_review",
+                            ],
+                        }
+                    ],
+                    "manual_action_hints": [
+                        {
+                            "ticker": "FTXL",
+                            "current_weight": 0.03,
+                            "suggested_target": 0.02,
+                            "reason_codes": [
+                                "unrealized_loss_review",
+                                "basket_review",
+                                "advisory_basket_loss_review",
+                            ],
+                        }
+                    ],
+                    "portfolio_summary": {
+                        "basket_reviews": [
+                            {"group": "semiconductors", "tickers": ["FTXL", "PSI", "SOXX"]}
+                        ],
+                    },
+                },
+            }
+        )
+
+        self.assertIn("manual trim review", text)
+        self.assertIn("FTXL 3.0%->2.0% (advisory=weak-positive, basket loss review)", text)
+
     def test_rejected_communicator_uses_deterministic_fallback(self):
         out = asyncio.run(run_communicator_async(
             {

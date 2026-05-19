@@ -806,7 +806,7 @@ def _format_position_governance_line(governance: dict) -> str:
     manual_hints = governance.get("manual_action_hints") or portfolio_summary.get("manual_action_hints") or []
     if manual_hints:
         hints = [
-            f"{item.get('ticker')} {float(item.get('current_weight') or 0):.1%}->{float(item.get('suggested_target') or 0):.1%}"
+            _format_manual_action_hint(item)
             for item in manual_hints[:3]
         ]
         lines.append("  manual trim review: " + "; ".join(hints))
@@ -819,6 +819,27 @@ def _format_position_governance_line(governance: dict) -> str:
             f"converted={int(quality.get('converted') or 0)}"
         )
     return "\n".join(lines) + "\n\n"
+
+
+def _format_manual_action_hint(item: dict) -> str:
+    ticker = item.get("ticker")
+    current = float(item.get("current_weight") or 0.0)
+    target = float(item.get("suggested_target") or 0.0)
+    reasons = set(item.get("reason_codes") or [])
+    labels: list[str] = []
+    if "advisory_basket_loss_review" in reasons:
+        labels.append("advisory=weak-positive")
+        labels.append("basket loss review")
+    elif "hard_risk" in reasons:
+        labels.append("hard-risk")
+    elif "basket_review" in reasons:
+        labels.append("basket review")
+    elif "unrealized_loss_review" in reasons:
+        labels.append("loss review")
+    elif "winner_risk_budget_review" in reasons:
+        labels.append("winner risk review")
+    reason_text = f" ({', '.join(labels)})" if labels else ""
+    return f"{ticker} {current:.1%}->{target:.1%}{reason_text}"
 
 
 def _format_governance_concentration(portfolio_summary: dict) -> str:

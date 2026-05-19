@@ -141,6 +141,9 @@ class PositionGovernanceTest(unittest.TestCase):
         explanation = _explanation(out, "XLE")
         self.assertEqual(explanation["position_state"], "hard_risk_review")
         self.assertEqual(explanation["why_not_exit"], ["exit is permitted for manual/hard-risk review"])
+        self.assertIn("hard-risk event is active", explanation["why_hold"][0])
+        self.assertNotIn("no deterministic rule requires reduction", explanation["why_hold"])
+        self.assertEqual(explanation["explanation_facts"]["severity"], "hard_risk")
 
     def test_core_loss_uses_wider_threshold_than_satellite(self):
         out = apply_position_governance(
@@ -175,6 +178,32 @@ class PositionGovernanceTest(unittest.TestCase):
         self.assertIn("basket_review", _decision(out, "FTXL")["reason_codes"])
         self.assertEqual(out.portfolio_summary["basket_reviews"][0]["group"], "semiconductors")
         self.assertEqual(out.portfolio_summary["basket_reviews"][0]["tickers"], ["FTXL", "SOXX"])
+        explanation = _explanation(out, "FTXL")
+        self.assertEqual(explanation["explanation_facts"]["severity"], "basket_review")
+        self.assertIn("basket has multiple correlated positions", " ".join(explanation["why_hold"]))
+        self.assertIn("semiconductors basket is in correlated review", explanation["why_not_add"])
+        self.assertIn("manual trim review if semiconductors basket weakness persists", explanation["next_trigger"])
+
+    def test_loss_review_with_advisory_support_is_worded_as_limited_support(self):
+        out = apply_position_governance(
+            target_weights={"FTXL": 0.06, "CASH": 0.94},
+            current_weights={"FTXL": 0.06, "CASH": 0.94},
+            holdings_meta=[
+                {"ticker": "FTXL", "universe_role": "satellite", "unrealized_pnl_pct": -0.06, "atr_pct": 0.018},
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {"strategy_name": "momentum_lite_v1", "suggested_use": "advisory", "selected_tickers": ["FTXL"]}
+                ]
+            },
+            market_scorecard={"investment_permission": "small_overweight_only"},
+            news_evidence={},
+        )
+
+        explanation = _explanation(out, "FTXL")
+        self.assertIn("only advisory strategy support remains", explanation["why_hold"])
+        self.assertNotIn("strategy support remains advisory", explanation["why_hold"])
+        self.assertIn("advisory support is not strong enough to justify adding", explanation["why_not_add"])
 
     def test_human_required_risk_reducing_trim_becomes_manual_hint(self):
         out = apply_position_governance(
@@ -256,6 +285,56 @@ class PositionGovernanceTest(unittest.TestCase):
         summary = out.portfolio_summary["thesis_status_summary"]
         self.assertGreaterEqual(summary["counts"]["weakening"], 2)
         self.assertEqual(summary["execution_authority"], "none")
+
+    def test_advisory_basket_loss_escalates_to_manual_trim_review_without_auto_trim(self):
+        out = apply_position_governance(
+            target_weights={"FTXL": 0.06, "SOXX": 0.06, "CASH": 0.88},
+            current_weights={"FTXL": 0.06, "SOXX": 0.06, "CASH": 0.88},
+            holdings_meta=[
+                {"ticker": "FTXL", "universe_role": "satellite", "unrealized_pnl_pct": -0.065, "atr_pct": 0.018},
+                {"ticker": "SOXX", "universe_role": "satellite", "unrealized_pnl_pct": -0.068, "atr_pct": 0.018},
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {"strategy_name": "momentum_lite_v1", "suggested_use": "advisory", "selected_tickers": ["FTXL", "SOXX"]}
+                ]
+            },
+            market_scorecard={
+                "investment_permission": "small_overweight_only",
+                "require_human_confirmation": True,
+            },
+            news_evidence={},
+        )
+
+        decision = _decision(out, "FTXL")
+        self.assertEqual(decision["decision"], "trim_review")
+        self.assertAlmostEqual(decision["target_after"], 0.06, places=4)
+        self.assertIn("advisory_basket_loss_review", decision["reason_codes"])
+        hint = next(row for row in out.manual_action_hints if row["ticker"] == "FTXL")
+        self.assertEqual(hint["suggested_action"], "manual_trim_review")
+        self.assertAlmostEqual(hint["suggested_target"], 0.05, places=4)
+
+    def test_core_etf_does_not_get_advisory_basket_loss_escalation(self):
+        out = apply_position_governance(
+            target_weights={"SPY": 0.06, "QQQ": 0.06, "CASH": 0.88},
+            current_weights={"SPY": 0.06, "QQQ": 0.06, "CASH": 0.88},
+            holdings_meta=[
+                {"ticker": "SPY", "universe_role": "core", "unrealized_pnl_pct": -0.065, "atr_pct": 0.018},
+                {"ticker": "QQQ", "universe_role": "core", "unrealized_pnl_pct": -0.068, "atr_pct": 0.018},
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {"strategy_name": "momentum_lite_v1", "suggested_use": "advisory", "selected_tickers": ["SPY", "QQQ"]}
+                ]
+            },
+            market_scorecard={
+                "investment_permission": "small_overweight_only",
+                "require_human_confirmation": True,
+            },
+            news_evidence={},
+        )
+
+        self.assertNotIn("advisory_basket_loss_review", _decision(out, "SPY")["reason_codes"])
 
     def test_replacement_allocates_trimmed_cash_to_supported_candidate_when_allowed(self):
         out = apply_position_governance(

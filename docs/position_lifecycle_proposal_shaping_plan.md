@@ -134,6 +134,66 @@ Human confirmation behavior:
 - The governance output records `manual_action_hints`.
 - Telegram can display `manual trim review` rows for operator action.
 
+## Phase B.1: Explanation Correctness
+
+Status: implemented.
+
+Nature:
+
+```text
+Explanation-only fix. Does not change target weights, decisions, or execution.
+```
+
+Problem:
+
+- `hard_risk_review` must never explain a holding as "no deterministic rule
+  requires reduction".
+- Repeated loss-review explanations should include basket context when a
+  correlated basket is under review.
+- `advisory` support should not be worded like strong protection for a losing
+  satellite/thematic position.
+
+Required `explanation_facts` contract:
+
+```json
+{
+  "severity": "hard_risk|basket_review|loss_review|normal",
+  "primary_reason": "hard_risk_event_active",
+  "execution_blocker": "human_required|risk_rejected|null",
+  "risk_action": "manual_trim_review|hold_review|trim|hold",
+  "basket_context": {
+    "group": "semiconductors",
+    "tickers": ["FTXL", "PSI", "SOXX"],
+    "trigger": "multiple_loss_review_positions"
+  },
+  "thesis_status": {
+    "status": "intact|weakening|broken|unknown",
+    "evidence": []
+  }
+}
+```
+
+Basket-review trigger:
+
+```text
+same group
+AND at least 2 held tickers with current_weight > 1%
+AND at least 2 tickers have unrealized_loss_review OR risk_budget_status=high
+```
+
+Acceptance criteria:
+
+- Hard-risk explanations always mention hard-risk/manual review.
+- Basket-review explanations mention correlated basket risk.
+- Advisory-only support is described as limited support, not strong support.
+- Explanation facts include `thesis_status`.
+- No target weight or decision changes are introduced in this phase.
+
+Implemented in:
+
+- `services/position_governance.py`
+- `tests/test_position_governance.py`
+
 ## Phase C: Thesis Status
 
 Status: implemented.
@@ -179,6 +239,52 @@ Current behavior:
 - Telegram can show thesis status for problem holdings.
 - `thesis_status.execution_authority = none`; target changes still come only
   from governance/risk rules.
+
+## Phase D: Advisory Support Governance Change
+
+Status: implemented as gated manual review.
+
+Nature:
+
+```text
+Governance behavior change. This is not an explanation-only fix.
+```
+
+Potential rule:
+
+```text
+satellite/thematic ETF
+AND loss <= -6%
+AND support <= advisory
+AND basket_review active
+=> trim_review or manual_trim_review
+```
+
+Implemented default behavior:
+
+- Satellite/thematic basket losers at or below `-6%` with advisory-or-weaker
+  support are escalated to `trim_review`.
+- The rule adds `advisory_basket_loss_review` to reason codes.
+- It records `manual_trim_review` hints with a default 1% review trim target.
+- It does not change target weights by default.
+- `advisory_basket_loss_auto_trim_enabled` exists but defaults to disabled.
+- Telegram manual trim hints explicitly label this case as
+  `advisory=weak-positive, basket loss review`.
+
+Required guardrails before implementation:
+
+- Separate tests from explanation-only changes.
+- Default to diagnostic/manual hints first.
+- Do not enable FULL_AUTO trims from this rule until live behavior is reviewed.
+- Telegram must explicitly show that advisory support was treated as
+  weak-positive support, not primary support.
+
+Implemented in:
+
+- `services/position_governance.py`
+- `agents/communicator.py`
+- `tests/test_position_governance.py`
+- `tests/test_communicator_scorecard.py`
 
 ## Live Validation Checklist
 
