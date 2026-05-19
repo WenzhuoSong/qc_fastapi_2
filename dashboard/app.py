@@ -506,10 +506,11 @@ def _css() -> str:
     .kv { display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-bottom:1px solid #edf0f4; }
     .kv span { color:var(--muted); }
     .kv strong { text-align:right; overflow-wrap:anywhere; }
-    .table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:8px; }
-    table { width:100%; border-collapse:collapse; min-width:620px; }
+    .table-wrap { overflow:auto; max-height:70vh; border:1px solid var(--line); border-radius:8px; }
+    table { width:100%; border-collapse:separate; border-spacing:0; min-width:1100px; }
     th, td { text-align:left; padding:9px 10px; border-bottom:1px solid #edf0f4; vertical-align:top; }
-    th { color:var(--muted); font-weight:600; background:#fafbfc; }
+    th { position:sticky; top:0; z-index:1; color:var(--muted); font-weight:600; background:#fafbfc; }
+    td { max-width:260px; overflow-wrap:anywhere; }
     ul { margin:8px 0 0; padding-left:20px; }
     @media (max-width: 720px) { header { align-items:flex-start; flex-direction:column; padding:18px; } main { padding:18px; } }
     """
