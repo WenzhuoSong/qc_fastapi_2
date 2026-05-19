@@ -776,6 +776,8 @@ def _format_position_governance_line(governance: dict) -> str:
     lines = ["<b>Position governance</b>"]
     if diagnostic_only:
         lines.append("  mode=diagnostic_only (no target changes)")
+    elif governance.get("mode") == "full_auto_governance_only":
+        lines.append("  mode=full_auto_governance_only (risk-reducing trims only)")
     concentration = _format_governance_concentration(portfolio_summary)
     if concentration:
         lines.append("  risk concentration: " + concentration)
@@ -816,7 +818,7 @@ def _format_position_governance_line(governance: dict) -> str:
             for item in governance["advisory_overrides"][:3]
         ]
         lines.append("  llm advisory: " + "; ".join(overrides))
-    manual_hints = governance.get("manual_action_hints") or portfolio_summary.get("manual_action_hints") or []
+    manual_hints = [] if governance.get("mode") == "full_auto_governance_only" else governance.get("manual_action_hints") or portfolio_summary.get("manual_action_hints") or []
     if manual_hints:
         hints = [
             _format_manual_action_hint(item)

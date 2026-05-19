@@ -257,7 +257,7 @@ Current behavior:
 
 ## Phase D: Advisory Support Governance Change
 
-Status: implemented as gated manual review.
+Status: implemented with FULL_AUTO gated risk-reduction execution.
 
 Nature:
 
@@ -281,8 +281,11 @@ Implemented default behavior:
   support are escalated to `trim_review`.
 - The rule adds `advisory_basket_loss_review` to reason codes.
 - It records `manual_trim_review` hints with a default 1% review trim target.
-- It does not change target weights by default.
-- `advisory_basket_loss_auto_trim_enabled` exists but defaults to disabled.
+- In `SEMI_AUTO`/`MANUAL`, it does not change target weights by default.
+- In `FULL_AUTO`, deep basket losers at or below the configured trim threshold
+  can auto-trim by a small fixed step.
+- Default auto-trim step is `advisory_basket_loss_auto_trim_pct = 1%`.
+- The auto-trim path adds `advisory_basket_loss_auto_trim` to reason codes.
 - Telegram manual trim hints explicitly label this case as
   `advisory=weak-positive, basket loss review`.
 
@@ -290,13 +293,15 @@ Required guardrails before implementation:
 
 - Separate tests from explanation-only changes.
 - Default to diagnostic/manual hints first.
-- Do not enable FULL_AUTO trims from this rule until live behavior is reviewed.
+- FULL_AUTO trims must stay risk-reducing only: no adds, no replacements, no
+  LLM-only execution, and no full exits from this rule.
 - Telegram must explicitly show that advisory support was treated as
   weak-positive support, not primary support.
 
 Implemented in:
 
 - `services/position_governance.py`
+- `services/pipeline.py`
 - `agents/communicator.py`
 - `tests/test_position_governance.py`
 - `tests/test_communicator_scorecard.py`

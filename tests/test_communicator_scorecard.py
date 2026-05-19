@@ -469,6 +469,41 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("manual trim review", text)
         self.assertIn("FTXL 3.0%->2.0% (advisory=weak-positive, basket loss review)", text)
 
+    def test_full_auto_governance_only_shows_trims_not_manual_review(self):
+        text = _fallback_template(
+            {
+                "approved": True,
+                "regime": "bull_trend",
+                "stance": "maintain",
+                "rebalance_actions": [
+                    {"ticker": "FTXL", "action": "sell", "weight_delta": -0.01}
+                ],
+                "estimated_cost": 0.0002,
+                "overlays_applied": ["full_auto_position_governance_risk_reduction"],
+                "rejection_reasons": [],
+                "auth_mode": "FULL_AUTO",
+                "timeout_minutes": 20,
+                "position_governance": {
+                    "mode": "full_auto_governance_only",
+                    "position_decisions": [],
+                    "forced_trims": ["FTXL 3.00%->2.00% advisory_basket_loss_auto"],
+                    "manual_action_hints": [
+                        {
+                            "ticker": "FTXL",
+                            "current_weight": 0.03,
+                            "suggested_target": 0.02,
+                            "reason_codes": ["advisory_basket_loss_review"],
+                        }
+                    ],
+                    "portfolio_summary": {},
+                },
+            }
+        )
+
+        self.assertIn("mode=full_auto_governance_only", text)
+        self.assertIn("trims: FTXL", text)
+        self.assertNotIn("manual trim review", text)
+
     def test_rejected_communicator_uses_deterministic_fallback(self):
         out = asyncio.run(run_communicator_async(
             {

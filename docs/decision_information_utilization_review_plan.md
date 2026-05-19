@@ -73,6 +73,7 @@ tracked below.
 | Phase 4 validator service | implemented and unit-tested | not yet run against Railway output |
 | Pipeline `8b_live_validation` step log | implemented and unit-tested by compile/import checks | pending live validation |
 | Warn/fail validation summary in Telegram | implemented | pending live validation |
+| FULL_AUTO governance risk-reduction trims | implemented and unit-tested | pending live validation |
 
 ## Live Validation Required Before Claiming Resolution
 
@@ -84,6 +85,7 @@ validated:
 - "FTXL/PSI/SOXX basket losers reliably appear as manual trim review."
 - "Hard-risk holdings never use stale safe-hold wording."
 - "Decision ledger always shows `sources=...` for relevant rows."
+- "FULL_AUTO governance risk-reduction trims executed correctly in Railway."
 
 Allowed wording before live validation:
 
@@ -476,6 +478,9 @@ Implemented behavior:
 - Pipeline stores validation output in `risk_out["live_validation"]`.
 - Pipeline appends compact validation summary to Telegram only when validation
   is `warn` or `fail`.
+- FULL_AUTO can convert deep deterministic basket-loss governance trims into an
+  executable risk-reduction target, while still blocking adds/replacements from
+  this override path.
 
 Implemented in:
 
