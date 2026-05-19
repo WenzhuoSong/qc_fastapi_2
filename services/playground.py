@@ -1027,18 +1027,25 @@ def _best_strategy_summary(strategy_confidence: dict[str, dict[str, Any]]) -> di
 
 async def _read_recent_snapshots(days: int) -> list[dict[str, Any]]:
     cutoff = datetime.utcnow() - timedelta(days=days)
+    row_limit = _recent_snapshot_row_limit(days)
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(QCSnapshot)
             .where(QCSnapshot.received_at >= cutoff)
             .where(QCSnapshot.packet_type.in_(("daily_feature_snapshot", "heartbeat")))
             .order_by(desc(QCSnapshot.received_at))
-            .limit(180)
+            .limit(row_limit)
         )
         rows = result.scalars().all()
     snapshots = _dedupe_market_snapshots(rows)
     snapshots.reverse()
     return snapshots
+
+
+def _recent_snapshot_row_limit(days: int) -> int:
+    # Heartbeats arrive about 26 times per market day; leave headroom for
+    # daily_feature_snapshot rows and scheduling jitter before daily dedupe.
+    return max(180, int(days or 0) * 40)
 
 
 async def _read_yfinance_feature_snapshots(days: int) -> list[dict[str, Any]]:

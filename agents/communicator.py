@@ -238,6 +238,7 @@ def _build_payload(
             "forced_trims": (position_governance.get("forced_trims") or [])[:8],
             "replacements": (position_governance.get("replacements") or [])[:8],
             "advisory_overrides": (position_governance.get("advisory_overrides") or [])[:8],
+            "manual_action_hints": (position_governance.get("manual_action_hints") or [])[:8],
             "trade_summary": position_governance.get("trade_summary") or {},
             "portfolio_summary": position_governance.get("portfolio_summary") or {},
         },
@@ -768,6 +769,9 @@ def _format_position_governance_line(governance: dict) -> str:
     top_risk = _format_governance_top_risk(portfolio_summary)
     if top_risk:
         lines.append("  top risk: " + top_risk)
+    basket_reviews = _format_governance_basket_reviews(portfolio_summary)
+    if basket_reviews:
+        lines.append("  basket review: " + basket_reviews)
     explanations = _format_position_explanations(portfolio_summary)
     if explanations:
         lines.extend(explanations)
@@ -796,6 +800,13 @@ def _format_position_governance_line(governance: dict) -> str:
             for item in governance["advisory_overrides"][:3]
         ]
         lines.append("  llm advisory: " + "; ".join(overrides))
+    manual_hints = governance.get("manual_action_hints") or portfolio_summary.get("manual_action_hints") or []
+    if manual_hints:
+        hints = [
+            f"{item.get('ticker')} {float(item.get('current_weight') or 0):.1%}->{float(item.get('suggested_target') or 0):.1%}"
+            for item in manual_hints[:3]
+        ]
+        lines.append("  manual trim review: " + "; ".join(hints))
     quality = (portfolio_summary.get("advisory_quality") or {}).get("current_run") or {}
     if quality.get("total"):
         lines.append(
@@ -835,6 +846,17 @@ def _format_governance_top_risk(portfolio_summary: dict) -> str:
         status = row.get("risk_budget_status") or "normal"
         if ticker:
             parts.append(f"{ticker} {contribution:.2%} ({status})")
+    return "; ".join(parts)
+
+
+def _format_governance_basket_reviews(portfolio_summary: dict) -> str:
+    rows = portfolio_summary.get("basket_reviews") or []
+    parts = []
+    for row in rows[:3]:
+        group = row.get("group")
+        tickers = ",".join((row.get("tickers") or [])[:4])
+        if group and tickers:
+            parts.append(f"{group} [{tickers}]")
     return "; ".join(parts)
 
 

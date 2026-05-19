@@ -121,8 +121,60 @@ class PositionGovernanceTest(unittest.TestCase):
         self.assertIn("hard_risk", decision["reason_codes"])
         self.assertLess(decision["target_after"], decision["target_before"])
         explanation = _explanation(out, "XLE")
-        self.assertEqual(explanation["position_state"], "hard_risk")
+        self.assertEqual(explanation["position_state"], "hard_risk_review")
         self.assertEqual(explanation["why_not_exit"], ["exit is permitted for manual/hard-risk review"])
+
+    def test_core_loss_uses_wider_threshold_than_satellite(self):
+        out = apply_position_governance(
+            target_weights={"SPY": 0.10, "PSI": 0.04, "CASH": 0.86},
+            current_weights={"SPY": 0.10, "PSI": 0.04, "CASH": 0.86},
+            holdings_meta=[
+                {"ticker": "SPY", "universe_role": "core", "unrealized_pnl_pct": -0.045, "atr_pct": 0.012},
+                {"ticker": "PSI", "universe_role": "satellite", "unrealized_pnl_pct": -0.045, "atr_pct": 0.018},
+            ],
+            strategy_evidence={"strategy_results": []},
+            market_scorecard={"investment_permission": "small_overweight_only"},
+            news_evidence={},
+        )
+
+        self.assertNotIn("unrealized_loss_review", _decision(out, "SPY")["reason_codes"])
+        self.assertIn("unrealized_loss_review", _decision(out, "PSI")["reason_codes"])
+        self.assertEqual(_explanation(out, "PSI")["position_state"], "loss_review")
+
+    def test_correlated_loss_positions_create_basket_review(self):
+        out = apply_position_governance(
+            target_weights={"FTXL": 0.06, "SOXX": 0.06, "CASH": 0.88},
+            current_weights={"FTXL": 0.06, "SOXX": 0.06, "CASH": 0.88},
+            holdings_meta=[
+                {"ticker": "FTXL", "universe_role": "satellite", "unrealized_pnl_pct": -0.05, "atr_pct": 0.018},
+                {"ticker": "SOXX", "universe_role": "satellite", "unrealized_pnl_pct": -0.06, "atr_pct": 0.018},
+            ],
+            strategy_evidence={"strategy_results": []},
+            market_scorecard={"investment_permission": "small_overweight_only"},
+            news_evidence={},
+        )
+
+        self.assertIn("basket_review", _decision(out, "FTXL")["reason_codes"])
+        self.assertEqual(out.portfolio_summary["basket_reviews"][0]["group"], "semiconductors")
+        self.assertEqual(out.portfolio_summary["basket_reviews"][0]["tickers"], ["FTXL", "SOXX"])
+
+    def test_human_required_risk_reducing_trim_becomes_manual_hint(self):
+        out = apply_position_governance(
+            target_weights={"PSI": 0.04, "CASH": 0.96},
+            current_weights={"PSI": 0.04, "CASH": 0.96},
+            holdings_meta=[
+                {"ticker": "PSI", "universe_role": "satellite", "unrealized_pnl_pct": -0.10, "atr_pct": 0.018},
+            ],
+            strategy_evidence={"strategy_results": []},
+            market_scorecard={
+                "investment_permission": "normal_rebalance",
+                "require_human_confirmation": True,
+            },
+            news_evidence={},
+        )
+
+        self.assertEqual(out.manual_action_hints[0]["ticker"], "PSI")
+        self.assertEqual(out.manual_action_hints[0]["suggested_action"], "manual_trim_review")
 
     def test_replacement_allocates_trimmed_cash_to_supported_candidate_when_allowed(self):
         out = apply_position_governance(

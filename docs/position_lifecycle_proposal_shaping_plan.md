@@ -86,7 +86,7 @@ Acceptance checks:
 
 ## Phase B: Position Lifecycle V1
 
-Status: planned.
+Status: implemented.
 
 Add deterministic lifecycle states:
 
@@ -100,7 +100,7 @@ hard_risk_review
 replacement_candidate
 ```
 
-Planned improvements:
+Implemented improvements:
 
 - Different loss thresholds for core versus satellite/thematic ETFs.
 - Cluster-level `basket_review` when multiple correlated tickers are in
@@ -109,10 +109,30 @@ Planned improvements:
   FULL_AUTO execution.
 - Telegram summary of lifecycle state for top problem holdings.
 
-Open design question:
+Implemented in:
 
-- Whether small risk-reducing trims should become manual action hints under
-  `human_required`, instead of being silently collapsed into rejected proposals.
+- `services/position_governance.py`
+- `services/pipeline.py`
+- `agents/communicator.py`
+- `tests/test_position_governance.py`
+
+Current lifecycle states:
+
+```text
+supported_winner
+unsupported_winner
+normal_hold
+loss_review
+loss_trim_candidate
+hard_risk_review
+replacement_candidate
+```
+
+Human confirmation behavior:
+
+- Risk-reducing trims remain non-executing when execution is constrained.
+- The governance output records `manual_action_hints`.
+- Telegram can display `manual trim review` rows for operator action.
 
 ## Phase C: Thesis Status
 

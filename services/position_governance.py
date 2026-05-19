@@ -27,6 +27,10 @@ SECTOR_GROUPS = {
 class GovernanceConfig:
     loss_review_pct: float = -0.04
     loss_trim_pct: float = -0.08
+    core_loss_review_pct: float = -0.05
+    core_loss_trim_pct: float = -0.10
+    satellite_loss_review_pct: float = -0.04
+    satellite_loss_trim_pct: float = -0.08
     winner_trim_pct: float = 0.08
     high_weight_pct: float = 0.12
     high_atr_pct: float = 0.05
@@ -68,6 +72,7 @@ class PositionGovernanceOutput:
     forced_trims: list[str]
     replacements: list[dict[str, Any]]
     advisory_overrides: list[dict[str, Any]]
+    manual_action_hints: list[dict[str, Any]]
     trade_summary: dict[str, Any]
     portfolio_summary: dict[str, Any]
     config: dict[str, Any]
@@ -102,6 +107,7 @@ def apply_position_governance(
     replacements: list[dict[str, Any]] = []
     replacement_candidates: list[dict[str, Any]] = []
     advisory_overrides: list[dict[str, Any]] = []
+    manual_action_hints: list[dict[str, Any]] = []
     work = dict(target)
 
     tickers = sorted((set(current) | set(target) | set(meta)) - {"CASH"})
@@ -114,6 +120,8 @@ def apply_position_governance(
         support_level = support["level"]
         pnl = _to_float(row.get("unrealized_pnl_pct"))
         atr = _to_float(row.get("atr_pct"))
+        role = _position_role(row, ticker)
+        loss_review_pct, loss_trim_pct = _loss_thresholds(role, cfg)
         group = _ticker_group(ticker)
         group_limit = group_limits.get(group, cfg.concentration_limit_pct) if group else None
         group_headroom = (group_limit - group_exposure.get(group, 0.0)) if group and group_limit is not None else None
@@ -147,14 +155,15 @@ def apply_position_governance(
             target_w = min(target_w, max(current_w - cfg.loss_trim_step_pct, 0.0))
             decision = "trim"
 
-        if pnl is not None and pnl <= cfg.loss_review_pct:
+        if pnl is not None and pnl <= loss_review_pct:
             reasons.append("unrealized_loss_review")
-            exits.append(f"loss_below_{cfg.loss_trim_pct:.0%}_and_strategy_support_weak")
+            reasons.append(f"{role}_loss_threshold")
+            exits.append(f"loss_below_{loss_trim_pct:.0%}_and_strategy_support_weak")
             decision = "hold_review" if decision == "hold" else decision
             if support_level in {"none", "watch_only", "ignore"}:
                 reasons.append("strategy_support_weak")
                 allowed_actions.discard("add")
-                if pnl <= cfg.loss_trim_pct:
+                if pnl <= loss_trim_pct:
                     target_w = min(target_w, max(current_w - cfg.loss_trim_step_pct, 0.0))
                     decision = "trim"
                 else:
@@ -211,6 +220,9 @@ def apply_position_governance(
             "allowed_actions": sorted(allowed_actions),
             "strategy_support": support_level,
             "supporting_strategies": support["strategies"],
+            "position_role": role,
+            "loss_review_threshold": round(loss_review_pct, 6),
+            "loss_trim_threshold": round(loss_trim_pct, 6),
             "group": group,
             "group_exposure": round(group_exposure.get(group, 0.0), 6) if group else None,
             "group_limit": round(group_limit, 6) if group_limit is not None else None,
@@ -228,6 +240,7 @@ def apply_position_governance(
             "exit_triggers": list(dict.fromkeys(exits)),
         })
 
+    _apply_basket_reviews(decisions)
     _assign_risk_ranks(decisions)
     if cfg.llm_advisory_enabled:
         advisory_overrides = _apply_llm_advisory_overrides(
@@ -252,6 +265,11 @@ def apply_position_governance(
         )
 
     adjusted = _normalize_weights(work)
+    manual_action_hints = _manual_action_hints(
+        decisions=decisions,
+        require_human=require_human,
+        permission=permission,
+    )
     portfolio_summary = _portfolio_summary(
         decisions=decisions,
         group_exposure=group_exposure,
@@ -261,6 +279,7 @@ def apply_position_governance(
         replacements=replacements,
         replacement_candidates=replacement_candidates,
         advisory_overrides=advisory_overrides,
+        manual_action_hints=manual_action_hints,
     )
     return PositionGovernanceOutput(
         adjusted_weights=adjusted,
@@ -269,11 +288,13 @@ def apply_position_governance(
         forced_trims=forced_trims,
         replacements=replacements,
         advisory_overrides=advisory_overrides,
+        manual_action_hints=manual_action_hints,
         trade_summary={
             "decisions": _decision_counts(decisions),
             "blocked_actions": len(blocked_actions),
             "forced_trims": len(forced_trims),
             "replacements": len(replacements),
+            "manual_action_hints": len(manual_action_hints),
             "advisory_overrides": len([row for row in advisory_overrides if row.get("validator_result", "").startswith("accepted")]),
             "position_count": sum(1 for t, w in adjusted.items() if t != "CASH" and w > 0.01),
         },
@@ -489,6 +510,66 @@ def _assign_risk_ranks(decisions: list[dict[str, Any]]) -> None:
         row["risk_rank"] = idx
 
 
+def _apply_basket_reviews(decisions: list[dict[str, Any]]) -> None:
+    by_group: dict[str, list[dict[str, Any]]] = {}
+    for row in decisions:
+        group = row.get("group")
+        if group:
+            by_group.setdefault(str(group), []).append(row)
+
+    for group, rows in by_group.items():
+        problem_rows = [
+            row for row in rows
+            if float(row.get("current_weight") or 0.0) > 0.01
+            and (
+                "unrealized_loss_review" in (row.get("reason_codes") or [])
+                or row.get("risk_budget_status") == "high"
+                or any(str(code).endswith("_concentration_high") for code in (row.get("reason_codes") or []))
+            )
+        ]
+        if len(problem_rows) < 2:
+            continue
+        tickers = sorted(str(row.get("ticker") or "") for row in problem_rows if row.get("ticker"))
+        for row in problem_rows:
+            row.setdefault("reason_codes", []).append("basket_review")
+            row["reason_codes"] = list(dict.fromkeys(row["reason_codes"]))
+            row["basket_review"] = {
+                "group": group,
+                "tickers": tickers,
+                "reason": "multiple correlated positions are in review",
+            }
+
+
+def _manual_action_hints(
+    *,
+    decisions: list[dict[str, Any]],
+    require_human: bool,
+    permission: str,
+) -> list[dict[str, Any]]:
+    constrained = require_human or permission in {"small_overweight_only", "hold_or_trim", "reduce_risk_only", "defensive_only"}
+    if not constrained:
+        return []
+    hints: list[dict[str, Any]] = []
+    for row in decisions:
+        current_w = float(row.get("current_weight") or 0.0)
+        target_w = float(row.get("target_after") or 0.0)
+        if target_w >= current_w - 1e-9:
+            continue
+        reasons = row.get("reason_codes") or []
+        if not any(code in reasons for code in ("hard_risk", "unrealized_loss_review", "winner_risk_budget_review", "basket_review")):
+            continue
+        hints.append({
+            "ticker": row.get("ticker"),
+            "suggested_action": "manual_trim_review",
+            "current_weight": round(current_w, 6),
+            "suggested_target": round(target_w, 6),
+            "delta": round(target_w - current_w, 6),
+            "reason_codes": reasons[:5],
+            "note": "risk-reducing trim requires human confirmation before execution",
+        })
+    return hints
+
+
 def _portfolio_summary(
     *,
     decisions: list[dict[str, Any]],
@@ -499,6 +580,7 @@ def _portfolio_summary(
     replacements: list[dict[str, Any]],
     replacement_candidates: list[dict[str, Any]],
     advisory_overrides: list[dict[str, Any]],
+    manual_action_hints: list[dict[str, Any]],
 ) -> dict[str, Any]:
     group_rows: dict[str, dict[str, Any]] = {}
     for group, exposure in group_exposure.items():
@@ -547,6 +629,8 @@ def _portfolio_summary(
         },
         "advisory_overrides": advisory_overrides[:8],
         "advisory_quality": build_advisory_quality_diagnostics(advisory_overrides),
+        "basket_reviews": _basket_reviews(decisions),
+        "manual_action_hints": manual_action_hints[:8],
         "position_explanations": _position_explanations(decisions, blocked_actions),
         "replacement_candidates": [
             {
@@ -559,6 +643,29 @@ def _portfolio_summary(
             for item in replacement_candidates[:8]
         ],
     }
+
+
+def _basket_reviews(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: dict[str, dict[str, Any]] = {}
+    for row in decisions:
+        review = row.get("basket_review") or {}
+        group = review.get("group")
+        if not group:
+            continue
+        current = seen.setdefault(str(group), {
+            "group": group,
+            "tickers": set(),
+            "reason": review.get("reason"),
+        })
+        current["tickers"].update(review.get("tickers") or [])
+    out = []
+    for item in seen.values():
+        out.append({
+            "group": item["group"],
+            "tickers": sorted(item["tickers"]),
+            "reason": item.get("reason") or "multiple correlated positions are in review",
+        })
+    return sorted(out, key=lambda item: item["group"])
 
 
 def _position_explanations(
@@ -605,6 +712,7 @@ def _explain_position(row: dict[str, Any], blocked: list[str]) -> dict[str, Any]
         "unrealized_pnl_pct": row.get("unrealized_pnl_pct"),
         "risk_contribution": row.get("risk_contribution"),
         "risk_budget_status": row.get("risk_budget_status"),
+        "basket_review": row.get("basket_review"),
         "strategy_support": row.get("strategy_support"),
         "action_permission": row.get("action_permission"),
         "why_hold": why_hold,
@@ -618,20 +726,20 @@ def _explain_position(row: dict[str, Any], blocked: list[str]) -> dict[str, Any]
 
 def _position_state(row: dict[str, Any], reasons: set[str]) -> str:
     decision = str(row.get("decision") or "hold")
+    pnl = row.get("unrealized_pnl_pct")
+    support = row.get("strategy_support")
     if "hard_risk" in reasons:
-        return "hard_risk"
+        return "hard_risk_review"
+    if "replacement_candidate" in reasons:
+        return "replacement_candidate"
     if "unrealized_loss_review" in reasons:
-        return "deep_loss_trim" if decision == "trim" else "loss_review"
-    if "high_atr" in reasons or row.get("risk_budget_status") == "high":
-        return "risk_budget_review"
-    if any(reason.endswith("_concentration_high") for reason in reasons):
-        return "concentration_review"
+        return "loss_trim_candidate" if decision == "trim" else "loss_review"
     if "winner_risk_budget_review" in reasons:
-        return "winner_trim_review"
+        return "supported_winner" if support in {"primary", "advisory"} else "unsupported_winner"
     if "strategy_support_weak" in reasons:
-        return "weak_support_review"
-    if decision == "add":
-        return "supported_add"
+        return "unsupported_winner" if isinstance(pnl, (int, float)) and pnl > 0 else "normal_hold"
+    if isinstance(pnl, (int, float)) and pnl >= 0.08:
+        return "supported_winner" if support in {"primary", "advisory"} else "unsupported_winner"
     return "normal_hold"
 
 
@@ -696,7 +804,9 @@ def _next_trigger(row: dict[str, Any], reasons: set[str]) -> str:
     if "hard_risk" in reasons:
         return "review manual exit when hard-risk event remains unresolved"
     if "unrealized_loss_review" in reasons:
-        return "trim if loss <= -8% and strategy support remains weak"
+        threshold = row.get("loss_trim_threshold")
+        threshold_text = f"{float(threshold):.0%}" if isinstance(threshold, (int, float)) else "-8%"
+        return f"trim if loss <= {threshold_text} and strategy support remains weak"
     if "high_atr" in reasons:
         return "allow add only after ATR falls below high-volatility threshold"
     if any(reason.endswith("_concentration_high") for reason in reasons):
@@ -923,6 +1033,24 @@ def _strategy_support_by_ticker(strategy_evidence: dict[str, Any]) -> dict[str, 
 def _hard_risk_tickers(news_evidence: dict[str, Any]) -> set[str]:
     hard = news_evidence.get("hard_risk_events") or {}
     return {str(ticker or "").upper().strip() for ticker in hard if str(ticker or "").strip()}
+
+
+def _position_role(row: dict[str, Any], ticker: str) -> str:
+    raw = str(row.get("universe_role") or row.get("position_role") or "").lower().strip()
+    if raw in {"core", "satellite"}:
+        return raw
+    group = _ticker_group(ticker)
+    if group in {"semiconductors", "tech_growth", "real_estate"}:
+        return "satellite"
+    return "core"
+
+
+def _loss_thresholds(role: str, cfg: GovernanceConfig) -> tuple[float, float]:
+    if role == "satellite":
+        return cfg.satellite_loss_review_pct, cfg.satellite_loss_trim_pct
+    if role == "core":
+        return cfg.core_loss_review_pct, cfg.core_loss_trim_pct
+    return cfg.loss_review_pct, cfg.loss_trim_pct
 
 
 def _group_exposure(current_weights: dict[str, float]) -> dict[str, float]:

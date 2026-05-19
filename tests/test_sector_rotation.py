@@ -47,6 +47,7 @@ from services.playground import (
     _format_strategy_confidence_summary,
     _max_drawdown,
     _merge_feature_map,
+    _recent_snapshot_row_limit,
     _replay_metric_reliability,
     _run_one_strategy,
     PlaygroundBundle,
@@ -153,6 +154,10 @@ class SectorRotationTests(unittest.TestCase):
         self.assertEqual(snapshots[0]["packet_type"], "daily_feature_snapshot")
         self.assertEqual(brief["holdings"][0]["return_5d"], 0.02)
         self.assertTrue(brief["sector_rotation"]["has_signal"])
+
+    def test_recent_snapshot_limit_covers_full_lookback_before_dedupe(self):
+        self.assertEqual(_recent_snapshot_row_limit(1), 180)
+        self.assertEqual(_recent_snapshot_row_limit(30), 1200)
 
     def test_watchlist_and_leveraged_inverse_products_are_not_research_tradable(self):
         rows = [
