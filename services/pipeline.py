@@ -1157,15 +1157,34 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             logger.info("[Stage6→7] Regime weights within constraints, no clip needed")
 
     # ── Stage 6.5a: Position Governance lifecycle controls ───────────────────
-    run_governance_execution = bool(risk_out.get("approved") and risk_out.get("target_weights"))
-    run_governance_diagnostic = bool((not risk_out.get("approved")) and (brief.get("current_weights") or {}))
+    auth_mode = pipeline_context.get("auth_mode")
+    full_auto_governance_only = bool(
+        auth_mode == "FULL_AUTO"
+        and not risk_out.get("approved")
+        and (brief.get("current_weights") or {})
+    )
+    run_governance_execution = bool(
+        (risk_out.get("approved") and risk_out.get("target_weights"))
+        or full_auto_governance_only
+    )
+    run_governance_diagnostic = bool(
+        (not risk_out.get("approved"))
+        and not full_auto_governance_only
+        and (brief.get("current_weights") or {})
+    )
     if run_governance_execution or run_governance_diagnostic:
-        governance_mode = "execution" if run_governance_execution else "diagnostic_only"
+        governance_mode = "full_auto_governance_only" if full_auto_governance_only else "execution" if run_governance_execution else "diagnostic_only"
         target_before_governance = (
             (risk_out.get("target_weights") or {})
-            if run_governance_execution
+            if run_governance_execution and not full_auto_governance_only
             else (brief.get("current_weights") or {})
         )
+        governance_config = dict(pipeline_context.get("position_governance_config") or {})
+        if auth_mode == "FULL_AUTO":
+            governance_config["advisory_basket_loss_auto_trim_enabled"] = 1.0
+        if full_auto_governance_only:
+            governance_config["replacement_enabled"] = 0.0
+            governance_config["llm_advisory_enabled"] = 0.0
         governance_out = apply_position_governance(
             target_weights=target_before_governance,
             current_weights=brief.get("current_weights") or {},
@@ -1174,7 +1193,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             market_scorecard=market_scorecard,
             news_evidence=news_evidence,
             llm_advisory_proposals=synthesizer_out.get("position_advisory_proposals") or [],
-            config=pipeline_context.get("position_governance_config") or {},
+            config=governance_config,
         )
         risk_out["position_governance"] = {
             "mode": governance_mode,
@@ -1192,6 +1211,8 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         if run_governance_execution:
             risk_out["target_weights"] = governance_out.adjusted_weights
             rebalance_threshold = float((pipeline_context.get("risk_params") or {}).get("rebalance_threshold", 0.02))
+            if full_auto_governance_only:
+                rebalance_threshold = min(rebalance_threshold, 0.005)
             rebalance_actions = compute_rebalance_actions(
                 governance_out.adjusted_weights,
                 brief.get("current_weights") or {},
@@ -1200,6 +1221,19 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             risk_out["rebalance_actions"] = rebalance_actions
             risk_out["estimated_cost_pct"] = estimate_cost_pct(rebalance_actions)
             risk_out["n_holdings"] = governance_out.trade_summary.get("position_count", risk_out.get("n_holdings"))
+            if full_auto_governance_only and governance_out.forced_trims and rebalance_actions:
+                from tools.db_tools import tool_write_approval_token
+                token_result = await tool_write_approval_token({})
+                risk_out["approved"] = True
+                approved = True
+                risk_out["approval_token"] = token_result["approval_token"]
+                risk_out["token_expires_at"] = token_result["expires_at"]
+                risk_out["approval_source"] = "full_auto_position_governance_risk_reduction"
+                risk_out["original_risk_approved"] = False
+                risk_out.setdefault("overlays_applied", []).append("full_auto_position_governance_risk_reduction")
+                risk_out.setdefault("governance_execution_notes", []).append(
+                    "FULL_AUTO executed deterministic risk-reducing position governance trims only"
+                )
 
         if governance_out.blocked_actions or governance_out.forced_trims:
             logger.warning(

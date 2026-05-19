@@ -54,6 +54,7 @@ class GovernanceConfig:
     advisory_basket_loss_review_pct: float = -0.06
     advisory_basket_loss_manual_review_enabled: float = 1.0
     advisory_basket_loss_auto_trim_enabled: float = 0.0
+    advisory_basket_loss_auto_trim_pct: float = 0.01
 
     @classmethod
     def from_config(cls, raw: dict[str, Any] | None) -> "GovernanceConfig":
@@ -245,7 +246,12 @@ def apply_position_governance(
         })
 
     _apply_basket_reviews(decisions)
-    _apply_advisory_basket_loss_reviews(decisions, cfg)
+    _apply_advisory_basket_loss_reviews(
+        decisions,
+        cfg,
+        work=work,
+        forced_trims=forced_trims,
+    )
     for row in decisions:
         row["thesis_status"] = _validate_thesis_status(
             row=row,
@@ -555,6 +561,9 @@ def _apply_basket_reviews(decisions: list[dict[str, Any]]) -> None:
 def _apply_advisory_basket_loss_reviews(
     decisions: list[dict[str, Any]],
     cfg: GovernanceConfig,
+    *,
+    work: dict[str, float],
+    forced_trims: list[str],
 ) -> None:
     """Escalate weak-positive basket losers to manual trim review.
 
@@ -583,11 +592,26 @@ def _apply_advisory_basket_loss_reviews(
         if row.get("decision") in {"hold", "hold_review"}:
             row["decision"] = "trim_review"
 
-        if cfg.advisory_basket_loss_auto_trim_enabled:
+        loss_trim_threshold = row.get("loss_trim_threshold")
+        auto_allowed = (
+            bool(cfg.advisory_basket_loss_auto_trim_enabled)
+            and isinstance(loss_trim_threshold, (int, float))
+            and isinstance(pnl, (int, float))
+            and float(pnl) <= float(loss_trim_threshold)
+        )
+        if auto_allowed:
             current_w = float(row.get("current_weight") or 0.0)
             target_w = float(row.get("target_after") or current_w)
-            clipped = min(target_w, max(current_w - cfg.review_trim_pct, 0.0))
-            row["target_after"] = round(clipped, 6)
+            trim_step = max(float(cfg.advisory_basket_loss_auto_trim_pct or 0.0), 0.0)
+            clipped = min(target_w, max(current_w - trim_step, 0.0))
+            if clipped < target_w - 1e-9:
+                ticker = str(row.get("ticker") or "")
+                work[ticker] = clipped
+                work["CASH"] = float(work.get("CASH", 0.0) or 0.0) + (target_w - clipped)
+                forced_trims.append(f"{ticker} {target_w:.2%}->{clipped:.2%} advisory_basket_loss_auto")
+                row["target_after"] = round(clipped, 6)
+                row.setdefault("reason_codes", []).append("advisory_basket_loss_auto_trim")
+                row["reason_codes"] = list(dict.fromkeys(row["reason_codes"]))
 
 
 def _manual_action_hints(

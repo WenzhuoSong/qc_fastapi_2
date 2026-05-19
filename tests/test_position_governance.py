@@ -387,6 +387,35 @@ class PositionGovernanceTest(unittest.TestCase):
 
         self.assertNotIn("advisory_basket_loss_review", _decision(out, "SPY")["reason_codes"])
 
+    def test_full_auto_advisory_basket_loss_auto_trim_reduces_target(self):
+        out = apply_position_governance(
+            target_weights={"FTXL": 0.03, "SOXX": 0.03, "CASH": 0.94},
+            current_weights={"FTXL": 0.03, "SOXX": 0.03, "CASH": 0.94},
+            holdings_meta=[
+                {"ticker": "FTXL", "universe_role": "satellite", "unrealized_pnl_pct": -0.087, "atr_pct": 0.018},
+                {"ticker": "SOXX", "universe_role": "satellite", "unrealized_pnl_pct": -0.089, "atr_pct": 0.018},
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {"strategy_name": "momentum_lite_v1", "suggested_use": "advisory", "selected_tickers": ["FTXL", "SOXX"]}
+                ]
+            },
+            market_scorecard={"investment_permission": "small_overweight_only"},
+            news_evidence={},
+            config={
+                "advisory_basket_loss_auto_trim_enabled": 1.0,
+                "advisory_basket_loss_auto_trim_pct": 0.01,
+            },
+        )
+
+        decision = _decision(out, "FTXL")
+        self.assertEqual(decision["decision"], "trim_review")
+        self.assertAlmostEqual(decision["target_after"], 0.02, places=4)
+        self.assertIn("advisory_basket_loss_review", decision["reason_codes"])
+        self.assertIn("advisory_basket_loss_auto_trim", decision["reason_codes"])
+        self.assertAlmostEqual(out.adjusted_weights["FTXL"], 0.02, places=4)
+        self.assertTrue(any("FTXL" in row and "advisory_basket_loss_auto" in row for row in out.forced_trims))
+
     def test_replacement_allocates_trimmed_cash_to_supported_candidate_when_allowed(self):
         out = apply_position_governance(
             target_weights={"PSI": 0.04, "SPY": 0.10, "CASH": 0.86},

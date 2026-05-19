@@ -16,6 +16,7 @@ STATIC_REASON_SOURCE_EFFECTS: dict[str, tuple[tuple[str, str], ...]] = {
         ("qc", "unrealized_loss_review"),
         ("strategy", "advisory_or_weaker_support"),
     ),
+    "advisory_basket_loss_auto_trim": (("risk", "full_auto_governance_auto_trim"),),
     "basket_review": (("knowledge", "correlated_basket_review"),),
     "hard_risk": (("news", "hard_risk"),),
     "high_atr": (("qc", "high_atr"),),
