@@ -662,6 +662,7 @@ def _compact_decision_ledger(ledger: dict) -> dict:
             "position_state": explanation.get("position_state"),
             "final_target": lifecycle.get("final_target"),
             "changed_by": lifecycle.get("changed_by") or [],
+            "source_effects": _compact_source_effects(row.get("source_effects") or {}),
             "sort_score": _decision_ledger_sort_score(row),
         })
     rows.sort(key=lambda item: (-int(item.get("sort_score") or 0), str(item.get("ticker") or "")))
@@ -730,16 +731,28 @@ def _format_decision_ledger_line(ledger: dict) -> str:
         final = row.get("final_action") or "unknown"
         reasons = ",".join(str(item) for item in (row.get("reason_codes") or [])[:3])
         changed_by = ",".join(str(item) for item in (row.get("changed_by") or [])[:2])
+        sources = ",".join(str(item) for item in (row.get("source_effects") or [])[:4])
         suffix_parts = []
         if reasons:
             suffix_parts.append(reasons)
         if changed_by:
             suffix_parts.append(f"changed_by={changed_by}")
+        if sources:
+            suffix_parts.append(f"sources={sources}")
         suffix = " | " + " | ".join(suffix_parts) if suffix_parts else ""
         lines.append(f"  {ticker}: {proposed} -> {final}{suffix}")
     if warnings:
         lines.append("  warnings: " + "; ".join(str(item) for item in warnings[:3]))
     return "\n".join(lines) + "\n\n"
+
+
+def _compact_source_effects(source_effects: dict) -> list[str]:
+    priority = ("news", "scorecard", "risk", "knowledge", "qc", "yfinance", "strategy")
+    return [
+        source
+        for source in priority
+        if source_effects.get(source)
+    ]
 
 
 def _format_position_governance_line(governance: dict) -> str:

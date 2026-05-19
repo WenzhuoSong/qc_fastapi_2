@@ -353,6 +353,7 @@ class CommunicatorScorecardTest(unittest.TestCase):
                 "execution_status": "not_sent",
                 "risk_result": "blocked",
                 "reason_codes": ["risk_rejected"] if i == 0 else ["trim_review"],
+                "source_effects": {"risk": ["risk_rejected"], "scorecard": ["human_required"]} if i == 0 else {},
                 "trade_lifecycle": {"final_target": 0.01, "changed_by": ["risk_target"]},
                 "evidence_used": {
                     "position_governance": {
@@ -395,6 +396,7 @@ class CommunicatorScorecardTest(unittest.TestCase):
         text = _fallback_template(payload)
         self.assertIn("Decision ledger", text)
         self.assertIn("T0: trim -> none", text)
+        self.assertIn("sources=scorecard,risk", text)
         self.assertNotIn("T6:", text)
 
     def test_manual_trim_review_shows_advisory_as_weak_positive(self):

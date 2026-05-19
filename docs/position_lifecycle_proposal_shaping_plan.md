@@ -221,6 +221,19 @@ Guardrails:
 - `thesis_status` alone cannot execute trades.
 - `broken` can escalate to trim/exit review only through Position Governance.
 
+Contract:
+
+```text
+Owner: position_governance
+LLM role: advisory proposal only
+Validator: position_governance Python validator
+Execution authority: none
+```
+
+Raw LLM `thesis_status` must never change target weights, force trims, or
+create an exit/trim decision by itself. It can only become part of the validated
+thesis record and downstream explanation.
+
 Implemented in:
 
 - `services/position_governance.py`
@@ -235,6 +248,8 @@ Current behavior:
 - LLM-proposed `thesis_status` from `position_advisory_proposals` is accepted
   only when supported by deterministic evidence; otherwise the validator
   records an override/rejection.
+- LLM thesis-only proposals cannot change target weights, force trims, or alter
+  position decisions.
 - `portfolio_summary.thesis_status_summary` reports weakening/broken tickers.
 - Telegram can show thesis status for problem holdings.
 - `thesis_status.execution_authority = none`; target changes still come only

@@ -274,6 +274,23 @@ class EvidenceBundleTest(unittest.TestCase):
 
         self.assertIs(bundle["news_evidence"], prebuilt_news)
         self.assertEqual(bundle["news_evidence"]["macro_news_score"]["overall_bias"], "negative")
+        self.assertEqual(
+            bundle["knowledge"]["computed_facts_available"],
+            {
+                "news_evidence": True,
+                "scorecard": False,
+                "position_governance": False,
+                "empirical_profiles": False,
+            },
+        )
+        self.assertEqual(
+            bundle["knowledge"]["resolution"]["computed_facts_summary"]["news_evidence"]["overall_bias"],
+            "negative",
+        )
+        self.assertEqual(
+            bundle["knowledge"]["resolution"]["computed_facts_summary"]["news_evidence"]["hard_risk_tickers"],
+            ["XLF"],
+        )
 
     def test_high_turnover_strategy_adds_warning(self):
         bundle = build_evidence_bundle(

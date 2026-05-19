@@ -34,6 +34,7 @@ def resolve_knowledge(
     )
 
     empirical_profiles = facts.get("empirical_profiles") or {}
+    computed_facts_available = _computed_facts_available(facts)
     advisory_context = _asset_advisory_context(
         assets=assets,
         empirical_profiles=empirical_profiles,
@@ -77,6 +78,8 @@ def resolve_knowledge(
         "interpretation_hints": interpretation_hints,
         "confidence_adjustments": confidence_adjustments,
         "missing_knowledge": missing_knowledge,
+        "computed_facts_available": computed_facts_available,
+        "computed_facts_summary": _computed_facts_summary(facts),
         "source_trace": _source_trace(
             assets=assets,
             strategies=strategies,
@@ -84,6 +87,39 @@ def resolve_knowledge(
             risk_principles=risk_principles,
         ),
         "warnings": list(context.get("warnings") or []),
+    }
+
+
+def _computed_facts_available(facts: dict[str, Any]) -> dict[str, bool]:
+    explicit = facts.get("computed_facts_available")
+    if isinstance(explicit, dict):
+        return {
+            "news_evidence": bool(explicit.get("news_evidence")),
+            "scorecard": bool(explicit.get("scorecard")),
+            "position_governance": bool(explicit.get("position_governance")),
+            "empirical_profiles": bool(explicit.get("empirical_profiles")),
+        }
+    return {
+        "news_evidence": bool(facts.get("news_evidence")),
+        "scorecard": bool(facts.get("scorecard")),
+        "position_governance": bool(facts.get("position_governance")),
+        "empirical_profiles": bool(facts.get("empirical_profiles")),
+    }
+
+
+def _computed_facts_summary(facts: dict[str, Any]) -> dict[str, Any]:
+    news = facts.get("news_evidence") or {}
+    macro = news.get("macro_news_score") or {}
+    hard_risk = news.get("hard_risk_events") or {}
+    return {
+        "news_evidence": {
+            "overall_bias": macro.get("overall_bias"),
+            "data_quality": macro.get("data_quality"),
+            "hard_risk_tickers": sorted(str(ticker) for ticker in hard_risk.keys()),
+        },
+        "empirical_profiles": {
+            "count": len(facts.get("empirical_profiles") or {}),
+        },
     }
 
 

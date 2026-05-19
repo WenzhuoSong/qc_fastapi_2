@@ -84,6 +84,40 @@ class KnowledgeResolverTest(unittest.TestCase):
         }
         self.assertIn("TLT", missing_ids)
 
+    def test_resolver_records_computed_fact_availability(self):
+        context = build_knowledge_context(
+            tickers=["XLF"],
+            strategy_names=[],
+            regime="neutral",
+        )
+
+        resolution = resolve_knowledge(
+            knowledge_context=context,
+            computed_facts={
+                "news_evidence": {
+                    "macro_news_score": {
+                        "overall_bias": "negative",
+                        "data_quality": "fresh",
+                    },
+                    "hard_risk_events": {"XLF": ["credit_stress"]},
+                },
+                "computed_facts_available": {
+                    "news_evidence": True,
+                    "scorecard": False,
+                    "position_governance": False,
+                    "empirical_profiles": False,
+                },
+            },
+        )
+
+        self.assertTrue(resolution["computed_facts_available"]["news_evidence"])
+        self.assertFalse(resolution["computed_facts_available"]["scorecard"])
+        self.assertFalse(resolution["computed_facts_available"]["position_governance"])
+        self.assertEqual(
+            resolution["computed_facts_summary"]["news_evidence"]["hard_risk_tickers"],
+            ["XLF"],
+        )
+
 
 class StrategyConfidenceCalibratorTest(unittest.TestCase):
     def test_calibrator_applies_adjustment_once(self):

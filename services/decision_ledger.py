@@ -10,6 +10,30 @@ from datetime import UTC, datetime
 from typing import Any
 
 
+STATIC_REASON_SOURCE_EFFECTS: dict[str, tuple[tuple[str, str], ...]] = {
+    "advisory_basket_loss_review": (
+        ("knowledge", "satellite_basket_loss_review"),
+        ("qc", "unrealized_loss_review"),
+        ("strategy", "advisory_or_weaker_support"),
+    ),
+    "basket_review": (("knowledge", "correlated_basket_review"),),
+    "hard_risk": (("news", "hard_risk"),),
+    "high_atr": (("qc", "high_atr"),),
+    "human_required": (("scorecard", "human_required"),),
+    "position_governance_missing": (("risk", "position_governance_missing"),),
+    "replacement_candidate": (("strategy", "replacement_candidate"),),
+    "risk_rejected": (("risk", "risk_rejected"),),
+    "scorecard_human_required": (("scorecard", "scorecard_human_required"),),
+    "scorecard_limit": (("scorecard", "scorecard_limit"),),
+    "stale_evidence": (("scorecard", "stale_evidence"),),
+    "strategy_support_weak": (("strategy", "strategy_support_weak"),),
+    "style_limit": (("risk", "style_limit"),),
+    "turnover_limit": (("risk", "turnover_limit"),),
+    "unrealized_loss_review": (("qc", "unrealized_loss_review"),),
+    "winner_risk_budget_review": (("qc", "winner_risk_budget_review"),),
+}
+
+
 def build_decision_ledger(
     *,
     evidence_bundle: dict[str, Any] | None = None,
@@ -215,6 +239,24 @@ def _build_ticker_row(
     else:
         final_action = _final_action_from_governance(governance_decision, proposed)
 
+    evidence_used = {
+        "news": None,
+        "historical": _historical_evidence(historical_evidence),
+        "intraday": _intraday_evidence(holding_meta),
+        "strategy": None,
+        "scorecard": None,
+        "position_governance": _governance_evidence(governance_decision, governance_available),
+    }
+    trade_lifecycle = _sparse_trade_lifecycle(
+        current_weight=current_weight,
+        base_weight=base_weight,
+        strategy_target=strategy_target,
+        synthesizer_target=synthesizer_target,
+        risk_target=target_weight,
+        governance_decision=governance_decision if governance_available else None,
+        risk_approved=risk_approved,
+    )
+
     return {
         "ticker": ticker,
         "current": {
@@ -226,23 +268,13 @@ def _build_ticker_row(
             "unrealized_pnl_pct": _first_present(holding_meta, "unrealized_pnl_pct", "unrealized_percentage"),
             "holding_days": holding_meta.get("holding_days"),
         },
-        "evidence_used": {
-            "news": None,
-            "historical": _historical_evidence(historical_evidence),
-            "intraday": _intraday_evidence(holding_meta),
-            "strategy": None,
-            "scorecard": None,
-            "position_governance": _governance_evidence(governance_decision, governance_available),
-        },
-        "trade_lifecycle": _sparse_trade_lifecycle(
-            current_weight=current_weight,
-            base_weight=base_weight,
-            strategy_target=strategy_target,
-            synthesizer_target=synthesizer_target,
-            risk_target=target_weight,
-            governance_decision=governance_decision if governance_available else None,
-            risk_approved=risk_approved,
+        "evidence_used": evidence_used,
+        "source_effects": _source_effects(
+            reason_codes=reason_codes,
+            evidence_used=evidence_used,
+            trade_lifecycle=trade_lifecycle,
         ),
+        "trade_lifecycle": trade_lifecycle,
         "proposed_action": proposed,
         "final_action": final_action,
         "execution_status": "not_sent" if not risk_approved else "unknown",
@@ -445,6 +477,66 @@ def _governance_evidence(
         "target_after": decision.get("target_after"),
         "reason_codes": decision.get("reason_codes") or [],
     }
+
+
+def _source_effects(
+    *,
+    reason_codes: list[str],
+    evidence_used: dict[str, Any],
+    trade_lifecycle: dict[str, Any],
+) -> dict[str, list[str]]:
+    effects: dict[str, list[str]] = {
+        "qc": [],
+        "yfinance": [],
+        "knowledge": [],
+        "news": [],
+        "scorecard": [],
+        "risk": [],
+        "strategy": [],
+    }
+    for code in reason_codes:
+        for source, effect in _static_reason_source_effects(str(code)):
+            effects.setdefault(source, [])
+            effects[source].append(effect)
+
+    if evidence_used.get("historical"):
+        effects["yfinance"].append("empirical_profile_available")
+    if evidence_used.get("intraday"):
+        effects["qc"].append("current_holdings_available")
+    for stage in trade_lifecycle.get("changed_by") or []:
+        source = _lifecycle_stage_source(str(stage))
+        if source:
+            effects[source].append(str(stage))
+
+    return {
+        source: _unique(values)
+        for source, values in effects.items()
+        if values
+    }
+
+
+def _static_reason_source_effects(reason_code: str) -> tuple[tuple[str, str], ...]:
+    if reason_code in STATIC_REASON_SOURCE_EFFECTS:
+        return STATIC_REASON_SOURCE_EFFECTS[reason_code]
+    if reason_code.startswith("failed_check:"):
+        return (("risk", reason_code),)
+    if reason_code.startswith("risk_reason:"):
+        return (("risk", reason_code),)
+    if reason_code.endswith("_concentration_high"):
+        return (("knowledge", "group_concentration_high"),)
+    return ()
+
+
+def _lifecycle_stage_source(stage: str) -> str | None:
+    if stage in {"base_weight", "strategy_target"}:
+        return "strategy"
+    if stage == "synthesizer_target":
+        return "strategy"
+    if stage in {"risk_target", "risk_rejected_final_target_current"}:
+        return "risk"
+    if stage == "position_governance":
+        return "knowledge"
+    return None
 
 
 def _historical_evidence_by_ticker(evidence_bundle: dict[str, Any]) -> dict[str, dict[str, Any]]:

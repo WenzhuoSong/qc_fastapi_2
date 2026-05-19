@@ -40,6 +40,8 @@ class DecisionLedgerTests(unittest.TestCase):
         self.assertIn("risk_rejected", row["reason_codes"])
         self.assertIn("human_required", row["reason_codes"])
         self.assertIn("scorecard_human_required", row["reason_codes"])
+        self.assertIn("risk_rejected", row["source_effects"]["risk"])
+        self.assertIn("scorecard_human_required", row["source_effects"]["scorecard"])
         self.assertEqual(ledger["portfolio_summary"]["execution_status"], "not_sent")
 
     def test_missing_position_governance_warns_without_fallback_inference(self):
@@ -60,6 +62,7 @@ class DecisionLedgerTests(unittest.TestCase):
         self.assertEqual(row["final_action"], "unknown")
         self.assertIn("position_governance_missing", row["reason_codes"])
         self.assertIsNone(row["evidence_used"]["position_governance"])
+        self.assertIn("position_governance_missing", row["source_effects"]["risk"])
 
     def test_holding_without_proposed_trade_gets_hold_row_and_explanation_reference(self):
         explanation = {
@@ -188,6 +191,7 @@ class DecisionLedgerTests(unittest.TestCase):
         self.assertEqual(historical["freshness"]["policy"], "empirical_profile_provider")
         self.assertFalse(historical["freshness"]["is_stale"])
         self.assertIsNone(ledger["tickers"]["QQQ"]["placeholders"]["etf_historical"])
+        self.assertEqual(ledger["tickers"]["QQQ"]["source_effects"]["yfinance"], ["empirical_profile_available"])
 
     def test_hydrates_intraday_evidence_from_current_holding_row_without_freshness_rejudgment(self):
         ledger = build_decision_ledger(
@@ -224,6 +228,77 @@ class DecisionLedgerTests(unittest.TestCase):
         self.assertEqual(intraday["freshness"][0]["policy"], "upstream_feature_provenance")
         self.assertIsNone(intraday["freshness"][0]["is_stale"])
         self.assertIsNone(ledger["tickers"]["XLK"]["placeholders"]["etf_intraday"])
+        self.assertEqual(ledger["tickers"]["XLK"]["source_effects"]["qc"], ["current_holdings_available"])
+
+    def test_source_effects_use_static_reason_code_mapping(self):
+        ledger = build_decision_ledger(
+            risk_output={
+                "approved": False,
+                "target_weights": {"FTXL": 0.02, "CASH": 0.98},
+                "rebalance_actions": [
+                    {"ticker": "FTXL", "action": "sell", "weight_delta": -0.01}
+                ],
+                "rejection_reasons": [
+                    "Market scorecard requires human confirmation; FULL_AUTO execution blocked"
+                ],
+                "position_governance": _governance(
+                    ticker="FTXL",
+                    decision="trim_review",
+                    reason_codes=[
+                        "unrealized_loss_review",
+                        "basket_review",
+                        "advisory_basket_loss_review",
+                        "hard_risk",
+                        "scorecard_human_required",
+                    ],
+                    target_after=0.03,
+                ),
+            },
+            current_holdings={
+                "current_weights": {"FTXL": 0.03, "CASH": 0.97},
+                "holdings": [
+                    {
+                        "ticker": "FTXL",
+                        "unrealized_pnl_pct": -0.066,
+                        "feature_sources": [
+                            {"source": "qc_heartbeat", "filled_fields": ["price"]}
+                        ],
+                    }
+                ],
+            },
+        )
+
+        effects = ledger["tickers"]["FTXL"]["source_effects"]
+        self.assertIn("unrealized_loss_review", effects["qc"])
+        self.assertIn("current_holdings_available", effects["qc"])
+        self.assertIn("correlated_basket_review", effects["knowledge"])
+        self.assertIn("satellite_basket_loss_review", effects["knowledge"])
+        self.assertIn("hard_risk", effects["news"])
+        self.assertIn("scorecard_human_required", effects["scorecard"])
+        self.assertIn("advisory_or_weaker_support", effects["strategy"])
+        self.assertIn("risk_rejected", effects["risk"])
+
+    def test_source_effects_are_repeatable_for_same_input(self):
+        payload = {
+            "risk_output": {
+                "approved": False,
+                "target_weights": {"QQQ": 0.09, "CASH": 0.91},
+                "rejection_reasons": ["turnover exceeds limit"],
+                "position_governance": _governance(
+                    ticker="QQQ",
+                    decision="trim_review",
+                    reason_codes=["winner_risk_budget_review", "scorecard_human_required"],
+                ),
+            },
+            "current_holdings": {"QQQ": 0.12, "CASH": 0.88},
+        }
+
+        first = build_decision_ledger(**payload)["tickers"]["QQQ"]["source_effects"]
+        second = build_decision_ledger(**payload)["tickers"]["QQQ"]["source_effects"]
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["qc"], ["winner_risk_budget_review"])
+        self.assertIn("turnover_limit", first["risk"])
 
     def test_sparse_trade_lifecycle_uses_current_weight_as_final_when_risk_rejected(self):
         ledger = build_decision_ledger(

@@ -269,6 +269,57 @@ class PositionGovernanceTest(unittest.TestCase):
         self.assertEqual(thesis["llm_status"], "broken")
         self.assertTrue(thesis["llm_validator_result"].startswith("overridden_by_validator"))
 
+    def test_llm_thesis_status_without_action_cannot_change_position(self):
+        out = apply_position_governance(
+            target_weights={"SPY": 0.10, "CASH": 0.90},
+            current_weights={"SPY": 0.10, "CASH": 0.90},
+            holdings_meta=[
+                {"ticker": "SPY", "universe_role": "core", "unrealized_pnl_pct": 0.02, "atr_pct": 0.012},
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {"strategy_name": "momentum_lite_v1", "suggested_use": "advisory", "selected_tickers": ["SPY"]}
+                ],
+            },
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            news_evidence={},
+            llm_advisory_proposals=[
+                {"ticker": "SPY", "thesis_status": "broken", "reason": "narrative only"}
+            ],
+        )
+
+        decision = _decision(out, "SPY")
+        thesis = decision["thesis_status"]
+        self.assertEqual(thesis["status"], "intact")
+        self.assertEqual(thesis["execution_authority"], "none")
+        self.assertEqual(decision["decision"], "hold")
+        self.assertEqual(decision["target_after"], 0.10)
+        self.assertFalse(out.forced_trims)
+
+    def test_accepted_llm_thesis_status_still_has_no_execution_authority(self):
+        out = apply_position_governance(
+            target_weights={"URA": 0.005, "CASH": 0.995},
+            current_weights={"URA": 0.005, "CASH": 0.995},
+            holdings_meta=[
+                {"ticker": "URA", "universe_role": "satellite", "unrealized_pnl_pct": 0.0, "atr_pct": 0.012},
+            ],
+            strategy_evidence={"strategy_results": []},
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            news_evidence={},
+            llm_advisory_proposals=[
+                {"ticker": "URA", "thesis_status": "broken", "reason": "research concern without trade action"}
+            ],
+        )
+
+        decision = _decision(out, "URA")
+        thesis = decision["thesis_status"]
+        self.assertEqual(thesis["status"], "broken")
+        self.assertEqual(thesis["llm_validator_result"], "accepted")
+        self.assertEqual(thesis["execution_authority"], "none")
+        self.assertEqual(decision["decision"], "hold")
+        self.assertEqual(decision["target_after"], 0.005)
+        self.assertFalse(out.forced_trims)
+
     def test_thesis_summary_tracks_problem_tickers(self):
         out = apply_position_governance(
             target_weights={"FTXL": 0.06, "SOXX": 0.06, "CASH": 0.88},

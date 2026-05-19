@@ -42,6 +42,7 @@ def build_evidence_bundle(
         brief=brief,
         market=market,
         strategies=strategies,
+        news_evidence=structured_news_evidence,
         empirical_profiles=empirical_profiles or brief.get("empirical_profiles") or {},
     )
     calibration = calibrate_strategy_confidence(
@@ -293,6 +294,7 @@ def _build_knowledge_section(
     brief: dict[str, Any],
     market: dict[str, Any],
     strategies: dict[str, Any],
+    news_evidence: dict[str, Any],
     empirical_profiles: dict[str, Any],
 ) -> dict[str, Any]:
     try:
@@ -315,6 +317,12 @@ def _build_knowledge_section(
             regime=market.get("regime") or strategies.get("regime_label"),
             reason_codes=reason_codes,
         )
+        computed_facts_available = {
+            "news_evidence": bool(news_evidence),
+            "scorecard": False,
+            "position_governance": False,
+            "empirical_profiles": bool(empirical_profiles),
+        }
         resolution = resolve_knowledge(
             knowledge_context=context,
             computed_facts={
@@ -325,14 +333,14 @@ def _build_knowledge_section(
                     "current_weights": brief.get("current_weights") or {},
                     "target_weights": brief.get("target_weights") or {},
                 },
-                "news_evidence": brief.get("news_evidence") or {},
-                "scorecard": brief.get("market_scorecard") or {},
-                "position_governance": brief.get("position_governance") or {},
+                "news_evidence": news_evidence,
                 "empirical_profiles": empirical_profiles,
+                "computed_facts_available": computed_facts_available,
             },
         )
         return {
             **context,
+            "computed_facts_available": computed_facts_available,
             "resolution": resolution,
         }
     except Exception as exc:  # pragma: no cover - defensive: keep pipeline alive.
