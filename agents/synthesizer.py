@@ -134,6 +134,8 @@ SYNTHESIZER_COT_SCHEMA = """
       "ticker": "TICKER",
       "llm_advisory": "add" | "trim" | "hold" | "hold_review" | "trim_review" | "exit",
       "target_weight": <float or null>,
+      "thesis_status": "intact" | "weakening" | "broken" | "unknown",
+      "thesis_reason": "short evidence-backed thesis status reason",
       "reason": "short thesis/governance reason; advisory only",
       "confidence": <float between 0.0 and 1.0>
     }
@@ -182,7 +184,9 @@ You receive:
       but news cannot directly create target weights.
     · position_advisory_proposals are optional advisory-only lifecycle suggestions. They do not execute
       directly and may be rejected or clipped by deterministic Position Governance. Use them only for
-      ticker-level thesis decay/escalation that adjusted_weights alone cannot explain.
+      ticker-level thesis decay/escalation that adjusted_weights alone cannot explain. thesis_status
+      must cite concrete evidence; Python validation may override or reject it and it has no direct
+      execution authority.
 
 【regime (exactly one of 6)】
     bull_trend / bull_weak / neutral / bear_weak / bear_trend / high_vol

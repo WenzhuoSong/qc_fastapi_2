@@ -236,6 +236,8 @@ class SynthesizerContractTest(unittest.TestCase):
                         "ticker": "SPY",
                         "llm_advisory": "trim_review",
                         "target_weight": 0.79,
+                        "thesis_status": "weakening",
+                        "thesis_reason": "risk budget review",
                         "reason": "risk budget review",
                         "confidence": 0.6,
                     }
@@ -251,6 +253,7 @@ class SynthesizerContractTest(unittest.TestCase):
 
         self.assertEqual(out["position_advisory_proposals"][0]["ticker"], "SPY")
         self.assertEqual(out["position_advisory_proposals"][0]["llm_advisory"], "trim_review")
+        self.assertEqual(out["position_advisory_proposals"][0]["thesis_status"], "weakening")
 
 
 if __name__ == "__main__":

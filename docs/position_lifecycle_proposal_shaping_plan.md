@@ -136,7 +136,7 @@ Human confirmation behavior:
 
 ## Phase C: Thesis Status
 
-Status: planned.
+Status: implemented.
 
 Add a structured research judgment for each problem holding:
 
@@ -160,6 +160,25 @@ Guardrails:
 - Python validator records whether supporting evidence exists.
 - `thesis_status` alone cannot execute trades.
 - `broken` can escalate to trim/exit review only through Position Governance.
+
+Implemented in:
+
+- `services/position_governance.py`
+- `agents/synthesizer.py`
+- `agents/communicator.py`
+- `tests/test_position_governance.py`
+- `tests/test_synthesizer_contract.py`
+
+Current behavior:
+
+- Position Governance computes `thesis_status` for every decision row.
+- LLM-proposed `thesis_status` from `position_advisory_proposals` is accepted
+  only when supported by deterministic evidence; otherwise the validator
+  records an override/rejection.
+- `portfolio_summary.thesis_status_summary` reports weakening/broken tickers.
+- Telegram can show thesis status for problem holdings.
+- `thesis_status.execution_authority = none`; target changes still come only
+  from governance/risk rules.
 
 ## Live Validation Checklist
 

@@ -176,6 +176,69 @@ class PositionGovernanceTest(unittest.TestCase):
         self.assertEqual(out.manual_action_hints[0]["ticker"], "PSI")
         self.assertEqual(out.manual_action_hints[0]["suggested_action"], "manual_trim_review")
 
+    def test_thesis_status_broken_for_hard_risk_and_has_no_execution_authority(self):
+        out = apply_position_governance(
+            target_weights={"XLE": 0.09, "CASH": 0.91},
+            current_weights={"XLE": 0.09, "CASH": 0.91},
+            holdings_meta=[
+                {"ticker": "XLE", "unrealized_pnl_pct": 0.03, "atr_pct": 0.018},
+            ],
+            strategy_evidence={
+                "evidence_summary": {"live_fit": "conflicted"},
+                "strategy_results": [
+                    {"strategy_name": "momentum_lite_v1", "suggested_use": "advisory", "selected_tickers": ["XLE"]}
+                ],
+            },
+            market_scorecard={"investment_permission": "small_overweight_only"},
+            news_evidence={"hard_risk_events": {"XLE": ["oil_shock"]}},
+        )
+
+        thesis = _decision(out, "XLE")["thesis_status"]
+        self.assertEqual(thesis["status"], "broken")
+        self.assertIn("hard_risk_event", thesis["evidence"])
+        self.assertEqual(thesis["execution_authority"], "none")
+
+    def test_llm_thesis_status_is_overridden_when_evidence_conflicts(self):
+        out = apply_position_governance(
+            target_weights={"SPY": 0.10, "CASH": 0.90},
+            current_weights={"SPY": 0.10, "CASH": 0.90},
+            holdings_meta=[
+                {"ticker": "SPY", "universe_role": "core", "unrealized_pnl_pct": 0.02, "atr_pct": 0.012},
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {"strategy_name": "momentum_lite_v1", "suggested_use": "advisory", "selected_tickers": ["SPY"]}
+                ],
+            },
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            news_evidence={},
+            llm_advisory_proposals=[
+                {"ticker": "SPY", "llm_advisory": "hold", "thesis_status": "broken", "reason": "unsupported"}
+            ],
+        )
+
+        thesis = _decision(out, "SPY")["thesis_status"]
+        self.assertEqual(thesis["status"], "intact")
+        self.assertEqual(thesis["llm_status"], "broken")
+        self.assertTrue(thesis["llm_validator_result"].startswith("overridden_by_validator"))
+
+    def test_thesis_summary_tracks_problem_tickers(self):
+        out = apply_position_governance(
+            target_weights={"FTXL": 0.06, "SOXX": 0.06, "CASH": 0.88},
+            current_weights={"FTXL": 0.06, "SOXX": 0.06, "CASH": 0.88},
+            holdings_meta=[
+                {"ticker": "FTXL", "universe_role": "satellite", "unrealized_pnl_pct": -0.05, "atr_pct": 0.018},
+                {"ticker": "SOXX", "universe_role": "satellite", "unrealized_pnl_pct": -0.06, "atr_pct": 0.018},
+            ],
+            strategy_evidence={"strategy_results": []},
+            market_scorecard={"investment_permission": "small_overweight_only"},
+            news_evidence={},
+        )
+
+        summary = out.portfolio_summary["thesis_status_summary"]
+        self.assertGreaterEqual(summary["counts"]["weakening"], 2)
+        self.assertEqual(summary["execution_authority"], "none")
+
     def test_replacement_allocates_trimmed_cash_to_supported_candidate_when_allowed(self):
         out = apply_position_governance(
             target_weights={"PSI": 0.04, "SPY": 0.10, "CASH": 0.86},

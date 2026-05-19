@@ -772,6 +772,9 @@ def _format_position_governance_line(governance: dict) -> str:
     basket_reviews = _format_governance_basket_reviews(portfolio_summary)
     if basket_reviews:
         lines.append("  basket review: " + basket_reviews)
+    thesis = _format_governance_thesis_status(portfolio_summary)
+    if thesis:
+        lines.append("  thesis: " + thesis)
     explanations = _format_position_explanations(portfolio_summary)
     if explanations:
         lines.extend(explanations)
@@ -860,18 +863,32 @@ def _format_governance_basket_reviews(portfolio_summary: dict) -> str:
     return "; ".join(parts)
 
 
+def _format_governance_thesis_status(portfolio_summary: dict) -> str:
+    summary = portfolio_summary.get("thesis_status_summary") or {}
+    rows = summary.get("problem_tickers") or []
+    parts = []
+    for row in rows[:4]:
+        ticker = row.get("ticker")
+        status = row.get("status")
+        if ticker and status:
+            parts.append(f"{ticker}={status}")
+    return "; ".join(parts)
+
+
 def _format_position_explanations(portfolio_summary: dict) -> list[str]:
     rows = portfolio_summary.get("position_explanations") or []
     parts: list[str] = []
     for row in rows[:3]:
         ticker = row.get("ticker")
         state = row.get("position_state")
+        thesis = (row.get("thesis_status") or {}).get("status")
         trigger = row.get("next_trigger")
         why_not_add = (row.get("why_not_add") or [""])[0]
         if ticker and state:
             detail = f" | no add: {why_not_add}" if why_not_add else ""
+            thesis_text = f" | thesis={thesis}" if thesis and thesis != "unknown" else ""
             trigger_text = f" | next: {trigger}" if trigger else ""
-            parts.append(f"  explain {ticker}: {state}{detail}{trigger_text}")
+            parts.append(f"  explain {ticker}: {state}{thesis_text}{detail}{trigger_text}")
     return parts
 
 

@@ -96,6 +96,7 @@ def apply_position_governance(
     meta = _meta_by_ticker(holdings_meta or [])
     strategy_support = _strategy_support_by_ticker(strategy_evidence or {})
     hard_risk_tickers = _hard_risk_tickers(news_evidence or {})
+    llm_thesis_by_ticker = _llm_thesis_by_ticker(llm_advisory_proposals or [])
     group_exposure = _group_exposure(current)
     group_limits = _group_limits(cfg)
     permission = str((market_scorecard or {}).get("investment_permission") or "normal_rebalance")
@@ -241,6 +242,14 @@ def apply_position_governance(
         })
 
     _apply_basket_reviews(decisions)
+    for row in decisions:
+        row["thesis_status"] = _validate_thesis_status(
+            row=row,
+            news_evidence=news_evidence or {},
+            strategy_evidence=strategy_evidence or {},
+            market_scorecard=market_scorecard or {},
+            llm_thesis=llm_thesis_by_ticker.get(str(row.get("ticker") or "").upper()),
+        )
     _assign_risk_ranks(decisions)
     if cfg.llm_advisory_enabled:
         advisory_overrides = _apply_llm_advisory_overrides(
@@ -570,6 +579,99 @@ def _manual_action_hints(
     return hints
 
 
+def _llm_thesis_by_ticker(proposals: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for raw in proposals:
+        if not isinstance(raw, dict):
+            continue
+        ticker = str(raw.get("ticker") or "").upper().strip()
+        status = str(raw.get("thesis_status") or raw.get("llm_thesis_status") or "").lower().strip()
+        if ticker and status in {"intact", "weakening", "broken", "unknown"}:
+            out[ticker] = {
+                "status": status,
+                "reason": str(raw.get("thesis_reason") or raw.get("reason") or "")[:240],
+                "confidence": raw.get("confidence"),
+            }
+    return out
+
+
+def _validate_thesis_status(
+    *,
+    row: dict[str, Any],
+    news_evidence: dict[str, Any],
+    strategy_evidence: dict[str, Any],
+    market_scorecard: dict[str, Any],
+    llm_thesis: dict[str, Any] | None,
+) -> dict[str, Any]:
+    ticker = str(row.get("ticker") or "").upper().strip()
+    reasons = set(str(item) for item in (row.get("reason_codes") or []))
+    support = str(row.get("strategy_support") or "none")
+    pnl = row.get("unrealized_pnl_pct")
+    status = "unknown"
+    evidence: list[str] = []
+    warnings: list[str] = []
+
+    if support in {"primary", "advisory"}:
+        evidence.append(f"strategy_support:{support}")
+    elif support in {"none", "watch_only", "ignore"}:
+        evidence.append(f"strategy_support:{support}")
+
+    if isinstance(pnl, (int, float)):
+        evidence.append(f"pnl:{float(pnl):.2%}")
+    if "hard_risk" in reasons:
+        evidence.append("hard_risk_event")
+    if "basket_review" in reasons:
+        evidence.append("basket_review")
+    if row.get("risk_budget_status") in {"medium", "high"}:
+        evidence.append(f"risk_budget:{row.get('risk_budget_status')}")
+
+    ticker_news = (news_evidence.get("ticker_news_scores") or {}).get(ticker) or {}
+    if isinstance(ticker_news, dict):
+        bias = ticker_news.get("bias") or ticker_news.get("action_bias")
+        if bias:
+            evidence.append(f"news:{bias}")
+
+    evidence_summary = strategy_evidence.get("evidence_summary") or {}
+    live_fit = str(evidence_summary.get("live_fit") or "")
+    if live_fit in {"conflicted", "insufficient"}:
+        evidence.append(f"live_fit:{live_fit}")
+    if market_scorecard.get("dominant_constraint"):
+        evidence.append(f"scorecard:{market_scorecard.get('dominant_constraint')}")
+
+    if "hard_risk" in reasons:
+        status = "broken"
+    elif "unrealized_loss_review" in reasons and "strategy_support_weak" in reasons:
+        status = "broken" if row.get("decision") == "trim" else "weakening"
+    elif "basket_review" in reasons and "strategy_support_weak" in reasons:
+        status = "weakening"
+    elif support in {"primary", "advisory"} and "unrealized_loss_review" not in reasons and "hard_risk" not in reasons:
+        status = "intact"
+    elif support in {"none", "watch_only", "ignore"} and isinstance(pnl, (int, float)) and pnl < 0:
+        status = "weakening"
+
+    llm_status = (llm_thesis or {}).get("status")
+    llm_result = "missing"
+    if llm_status:
+        if not evidence:
+            llm_result = "rejected_no_supporting_evidence"
+            warnings.append("LLM thesis status ignored because supporting evidence is missing")
+        elif llm_status == status or status == "unknown":
+            llm_result = "accepted"
+            status = llm_status
+        else:
+            llm_result = f"overridden_by_validator:{status}"
+            warnings.append(f"LLM thesis_status={llm_status} conflicted with deterministic evidence")
+
+    return {
+        "status": status,
+        "llm_status": llm_status,
+        "llm_validator_result": llm_result,
+        "evidence": list(dict.fromkeys(evidence))[:8],
+        "warnings": warnings,
+        "execution_authority": "none",
+    }
+
+
 def _portfolio_summary(
     *,
     decisions: list[dict[str, Any]],
@@ -631,6 +733,7 @@ def _portfolio_summary(
         "advisory_quality": build_advisory_quality_diagnostics(advisory_overrides),
         "basket_reviews": _basket_reviews(decisions),
         "manual_action_hints": manual_action_hints[:8],
+        "thesis_status_summary": _thesis_status_summary(decisions),
         "position_explanations": _position_explanations(decisions, blocked_actions),
         "replacement_candidates": [
             {
@@ -666,6 +769,27 @@ def _basket_reviews(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "reason": item.get("reason") or "multiple correlated positions are in review",
         })
     return sorted(out, key=lambda item: item["group"])
+
+
+def _thesis_status_summary(decisions: list[dict[str, Any]]) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    problem_tickers: list[dict[str, Any]] = []
+    for row in decisions:
+        thesis = row.get("thesis_status") or {}
+        status = str(thesis.get("status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+        if status in {"weakening", "broken"}:
+            problem_tickers.append({
+                "ticker": row.get("ticker"),
+                "status": status,
+                "evidence": thesis.get("evidence") or [],
+                "validator": thesis.get("llm_validator_result"),
+            })
+    return {
+        "counts": counts,
+        "problem_tickers": problem_tickers[:8],
+        "execution_authority": "none",
+    }
 
 
 def _position_explanations(
@@ -713,6 +837,7 @@ def _explain_position(row: dict[str, Any], blocked: list[str]) -> dict[str, Any]
         "risk_contribution": row.get("risk_contribution"),
         "risk_budget_status": row.get("risk_budget_status"),
         "basket_review": row.get("basket_review"),
+        "thesis_status": row.get("thesis_status"),
         "strategy_support": row.get("strategy_support"),
         "action_permission": row.get("action_permission"),
         "why_hold": why_hold,
