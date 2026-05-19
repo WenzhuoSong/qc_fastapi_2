@@ -152,7 +152,10 @@ def classify_operational_health(
     research_degradations: list[str] = []
 
     for check in checks.values():
-        if check.get("state") == "ok":
+        state = check.get("state")
+        if state is None:
+            continue
+        if state == "ok":
             continue
         message = f"{check.get('label')}: {check.get('reason')}"
         if check.get("blocking"):

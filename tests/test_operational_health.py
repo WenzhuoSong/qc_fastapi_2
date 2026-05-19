@@ -38,6 +38,23 @@ class OperationalHealthTests(unittest.TestCase):
         self.assertEqual(snapshot["overall"], "execution_blocked")
         self.assertIn("QC heartbeat", snapshot["execution_blockers"][0])
         self.assertIn("News cache", snapshot["research_degradations"][0])
+        self.assertFalse(any("Pipeline" in item for item in snapshot["research_degradations"]))
+
+    def test_pipeline_pending_without_state_does_not_degrade_health(self):
+        now = datetime(2026, 5, 19, 13, 0, 0)
+        checks = {
+            "qc_heartbeat": {"label": "QC heartbeat", "state": "ok", "age_hours": 17.3},
+            "daily_feature_snapshot": {"label": "Daily features", "state": "ok", "age_hours": 16.9},
+            "yfinance_backfill": {"label": "YFinance backfill", "state": "ok", "age_hours": 16.6},
+            "news_cache": {"label": "News cache", "state": "ok", "age_hours": 1.1},
+            "memory_write": {"label": "Memory write", "state": "ok", "age_hours": 15.2},
+            "pipeline_status": {"label": "Pipeline", "status": "pending"},
+        }
+
+        snapshot = classify_operational_health(checks, [], now=now)
+
+        self.assertEqual(snapshot["overall"], "healthy")
+        self.assertEqual(snapshot["research_degradations"], [])
 
     def test_formats_short_telegram_report(self):
         snapshot = {
