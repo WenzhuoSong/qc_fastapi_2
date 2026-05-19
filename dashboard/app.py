@@ -416,7 +416,7 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
       <h3>Rejection Reasons</h3>{_render_list("", latest.get("rejection_reasons") or [])}
       <h3>Manual Review Hints</h3>{_render_table(hints, ["ticker", "suggested_action", "current_weight", "suggested_target", "delta"])}
       <h3>Thesis Problems</h3>{_render_table(thesis, ["ticker", "status", "validator"])}
-      <h3>Position Explanations</h3>{_render_table(governance.get("position_explanations") or [], ["ticker", "position_state", "decision", "strategy_support", "next_trigger"])}
+      <h3>Position Explanations</h3>{_render_table(governance.get("position_explanations") or [], ["ticker", "position_state", "decision", "current_weight", "target_after", "unrealized_pnl_pct", "risk_budget_status", "strategy_support", "action_permission", "why_hold", "why_not_add", "why_not_exit", "next_trigger"])}
       <h3>Decision Ledger</h3>{_render_table((latest.get("decision_ledger") or {}).get("top_decisions") or [], ["ticker", "proposed_action", "final_action", "execution_status", "risk_result"])}
     """
 
