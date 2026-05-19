@@ -402,13 +402,13 @@ def _format_data_quality_detail_line(detail: dict) -> str:
     strategy_quality = detail.get("strategy_data_quality")
     bits = []
     if qc_snapshots is not None:
-        bits.append(f"QC live={int(qc_snapshots or 0)} snapshots/{int(qc_forward or 0)} forward")
-    if hist is not None:
-        bits.append(f"yfinance={int(hist or 0)} history/{int(hist_forward or 0)} forward")
+        bits.append(f"QC live snapshots={int(qc_snapshots or 0)}/{int(qc_forward or 0)} forward")
     if evidence.get("live_fit"):
-        bits.append(f"live_fit={evidence.get('live_fit')}")
+        bits.append(f"QC live fit={evidence.get('live_fit')}")
+    if hist is not None:
+        bits.append(f"yfinance history={int(hist or 0)}/{int(hist_forward or 0)} forward")
     if evidence.get("historical_evidence"):
-        bits.append(f"historical={evidence.get('historical_evidence')}")
+        bits.append(f"yfinance evidence={evidence.get('historical_evidence')}")
     if strategy_quality:
         bits.append(f"strategy_data={strategy_quality}")
     if not bits:

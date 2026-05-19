@@ -56,6 +56,10 @@ from services.decision_ledger import (
     apply_execution_audit_to_decision_ledger,
     build_decision_ledger,
 )
+from services.decision_live_validation import (
+    format_decision_live_validation_report,
+    validate_decision_live_artifacts,
+)
 from services.strategy_use_constraints import apply_strategy_use_constraints
 from services.proposal_shaper import shape_proposal_before_risk
 from services.position_governance import apply_position_governance
@@ -1355,6 +1359,33 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     tracker.log_stage_metrics("8_communicator", dur_comm,
         used_fallback=comm_out.get("used_fallback", False))
 
+    validation_out = validate_decision_live_artifacts(
+        stage_outputs={
+            "2d_evidence_scorecard": {
+                "evidence_bundle": evidence_bundle,
+                "market_scorecard": market_scorecard,
+                "news_evidence": news_evidence,
+            },
+            "5_synthesizer": synthesizer_out,
+            "5d_proposal_shaper": synthesizer_out.get("proposal_shaping") or {},
+            "6_risk_mgr": risk_out,
+            "6ba_position_governance": risk_out.get("position_governance") or {},
+            "6d_decision_ledger": risk_out.get("decision_ledger") or {},
+            "8_communicator": comm_out,
+        }
+    )
+    risk_out["live_validation"] = validation_out
+    await _save_step_log(
+        analysis_id, "8b_live_validation", "decision_live_validation",
+        input_data={"analysis_id": analysis_id, "communicator_used_fallback": comm_out.get("used_fallback", False)},
+        output_data=validation_out,
+        duration_ms=0,
+        failed=validation_out.get("overall") == "fail",
+    )
+    await _update_analysis_risk_output(analysis_id, risk_out)
+    if validation_out.get("overall") in {"warn", "fail"}:
+        comm_out["text"] = _append_live_validation_report(comm_out.get("text") or "", validation_out)
+
     # Phase 3: Record LLM failure for circuit breaker monitoring (communicator uses LLM + fallback)
     if comm_out.get("used_fallback", False):
         from services.circuit_breaker import record_stage_failure
@@ -1619,6 +1650,28 @@ async def _finalize_analysis(
             )
         )
         await db.commit()
+
+
+async def _update_analysis_risk_output(analysis_id: int, risk_out: dict) -> None:
+    """Persist post-communicator audit fields without changing execution status."""
+    from sqlalchemy import update
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                update(AgentAnalysis)
+                .where(AgentAnalysis.id == analysis_id)
+                .values(risk_output=risk_out)
+            )
+            await db.commit()
+    except Exception as e:
+        logger.warning("[pipeline] failed to persist updated risk_output: %s", e)
+
+
+def _append_live_validation_report(text: str, validation_out: dict) -> str:
+    report = format_decision_live_validation_report(validation_out)
+    if not report:
+        return text
+    return f"{text.rstrip()}\n\n{report}".strip()
 
 
 async def _save_execution(analysis_id: int, result: dict) -> None:

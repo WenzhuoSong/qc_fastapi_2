@@ -4,8 +4,18 @@ Last updated: 2026-05-19
 
 ## Purpose
 
-This document reviews whether the trading system actually uses the four major
-information sources in the ETF decision path:
+This document has three separate jobs:
+
+1. Define the intended information-source contract.
+2. Record what is implemented in code and covered by tests.
+3. Record what still requires Railway live validation.
+
+These are deliberately separate. A feature marked as code-implemented is not
+considered live-proven until Railway pipeline output or Telegram output has been
+validated.
+
+This document reviews whether the trading system is designed and wired to use
+the four major information sources in the ETF decision path:
 
 - QC live and daily data
 - yfinance historical data
@@ -17,7 +27,17 @@ ticker and per action, which evidence affected proposal shaping, scorecard
 permission, risk clipping, position governance, manual review, final action, and
 execution status.
 
-## Current System Contract
+## Status Semantics
+
+```text
+Code status      = files/tests/contracts exist locally.
+Railway status   = behavior has been observed in real deployed pipeline output.
+Live validation  = read-only validator or manual review confirms Railway output.
+```
+
+Do not treat `code implemented` as equivalent to `live validated`.
+
+## Information-Source Contract
 
 ```text
 QC data              -> current state and execution readiness
@@ -36,11 +56,48 @@ all sources
   -> communicator / execution audit / daily memory
 ```
 
+This is a specification. The implementation and live validation status are
+tracked below.
+
+## Implementation And Validation Matrix
+
+| Capability | Code status | Railway status |
+| --- | --- | --- |
+| Resolver receives current `news_evidence` | implemented and unit-tested | pending live validation |
+| Resolver marks unavailable scorecard/governance facts | implemented and unit-tested | pending live validation |
+| `source_effects` in decision ledger | implemented and unit-tested | pending live validation |
+| Telegram compact `sources=...` | implemented and unit-tested | pending live validation |
+| `thesis_status` owner/validator contract | implemented and unit-tested | pending live validation |
+| Explanation correctness for hard-risk/basket/advisory | implemented and unit-tested | pending live validation |
+| `Data quality detail` display | implemented and unit-tested with source-specific labels | pending live validation |
+| Phase 4 validator service | implemented and unit-tested | not yet run against Railway output |
+| Pipeline `8b_live_validation` step log | implemented and unit-tested by compile/import checks | pending live validation |
+| Warn/fail validation summary in Telegram | implemented | pending live validation |
+
+## Live Validation Required Before Claiming Resolution
+
+The following statements must not be treated as proven until Railway output is
+validated:
+
+- "Proposal shaping solved repeated invalid add proposals."
+- "Telegram always shows source-specific data quality."
+- "FTXL/PSI/SOXX basket losers reliably appear as manual trim review."
+- "Hard-risk holdings never use stale safe-hold wording."
+- "Decision ledger always shows `sources=...` for relevant rows."
+
+Allowed wording before live validation:
+
+```text
+Code-side rule implemented and unit-tested; Railway behavior pending validation.
+```
+
 ## Review Findings
 
 ### Finding 1: Knowledge Resolver Input Timing Is Incomplete
 
-Status: **implemented**
+Code status: **implemented and unit-tested**
+
+Railway status: **pending live validation**
 
 Code reviewed:
 
@@ -48,7 +105,7 @@ Code reviewed:
 - `services/evidence_bundle.py`
 - `services/knowledge_resolver.py`
 
-Current behavior:
+Code behavior before the Phase 1 fix:
 
 - `pipeline` builds empirical profiles first.
 - `pipeline` builds `news_evidence`.
@@ -81,7 +138,7 @@ Impact:
 - The system can overstate how fully "knowledge and computed data" are working
   together.
 
-Implemented fix:
+Code-side fix:
 
 - Change `build_evidence_bundle(...)` and `_build_knowledge_section(...)` so
   structured `news_evidence` is passed directly into resolver computed facts.
@@ -116,7 +173,9 @@ Implemented in:
 
 ### Finding 2: Thesis Status Owner Is Implemented But Needs Contract Hardening
 
-Status: **implemented**
+Code status: **implemented and unit-tested**
+
+Railway status: **pending live validation**
 
 Code reviewed:
 
@@ -124,7 +183,7 @@ Code reviewed:
 - `services/position_governance.py`
 - `tests/test_position_governance.py`
 
-Current behavior:
+Code behavior:
 
 - Synthesizer may propose `position_advisory_proposals[].thesis_status`.
 - `position_governance` owns `_validate_thesis_status(...)`.
@@ -163,7 +222,9 @@ Implemented in:
 
 ### Finding 3: Decision Ledger Aggregates Evidence But Needs Source-Effect Trace
 
-Status: **implemented**
+Code status: **implemented and unit-tested**
+
+Railway status: **pending live validation**
 
 Code reviewed:
 
@@ -171,7 +232,7 @@ Code reviewed:
 - `agents/communicator.py`
 - `tests/test_decision_ledger.py`
 
-Current behavior:
+Code behavior before the Phase 2 fix:
 
 - Ledger includes current holdings/intraday evidence from holding metadata.
 - Ledger includes historical evidence from empirical profiles.
@@ -194,7 +255,7 @@ For example:
 - news caused `hard_risk`
 - scorecard caused `scorecard_human_required`
 
-Implemented fix:
+Code-side fix:
 
 - Add a derived `source_effects` block per ticker.
 - The mapping must be a static deterministic lookup table in code. It must not
@@ -231,16 +292,20 @@ Implemented in:
 
 ### Finding 4: Explanation Layer Was Recently Fixed But Needs Live Validation
 
-Status: **implemented, validation tooling added**
+Code status: **implemented and unit-tested**
 
-Recent fixes:
+Railway status: **pending live validation**
+
+Validation tooling: **implemented and unit-tested**
+
+Code-side fixes:
 
 - Hard-risk rows no longer fall back to "no deterministic rule requires
   reduction".
 - Basket-review rows include correlated basket context.
 - Advisory support is displayed as weak-positive support in manual trim review.
 
-Remaining risk:
+Remaining live risk:
 
 This must be validated on Railway output with real positions such as
 FTXL/PSI/SOXX/XLRE/XLV. Until then, explanation correctness should be marked as
@@ -261,21 +326,28 @@ Validation support:
 
 ### Finding 5: Data Quality Labels Need Source-Specific Meaning
 
-Status: **partially implemented, needs display validation**
+Code status: **implemented and unit-tested**
 
-Current behavior:
+Railway status: **pending live validation**
+
+Code behavior:
 
 - Operational health tracks QC heartbeat, daily feature snapshot, yfinance
   backfill, news cache, and memory write separately.
 - Playground separates historical evidence from live fit.
 - Communicator has `Data quality detail`.
+- Communicator labels data-quality fields source-specifically:
+  - `QC live snapshots=...`
+  - `QC live fit=...`
+  - `yfinance history=...`
+  - `yfinance evidence=...`
 
 Risk:
 
 User-facing messages can still be interpreted as "data is bad" even when the
 actual meaning is "heartbeat is fresh but live-fit samples are insufficient".
 
-Planned fix:
+Required display behavior:
 
 - Keep data-quality display source-specific:
 
@@ -308,7 +380,9 @@ QC live fit: insufficient
 
 Priority: **highest**
 
-Status: **implemented**
+Code status: **implemented and unit-tested**
+
+Railway status: **pending live validation**
 
 Tasks:
 
@@ -321,14 +395,16 @@ Tasks:
 
 Expected impact:
 
-- Knowledge output becomes honest about which computed facts it actually used.
+- Knowledge output becomes honest about which computed facts it is wired to use.
 - News and empirical profile integration become auditable.
 
 ### Phase 2: Ledger Source-Effect Trace
 
 Priority: **high**
 
-Status: **implemented**
+Code status: **implemented and unit-tested**
+
+Railway status: **pending live validation**
 
 Tasks:
 
@@ -339,13 +415,16 @@ Tasks:
 
 Expected impact:
 
-- Each action can answer why it happened and which data source caused it.
+- Each ledger row can show which source category contributed to the recorded
+  reason codes.
 
 ### Phase 3: Thesis Status Contract Hardening
 
 Priority: **high**
 
-Status: **implemented**
+Code status: **implemented and unit-tested**
+
+Railway status: **pending live validation**
 
 Tasks:
 
@@ -364,7 +443,9 @@ test hardening.
 
 Priority: **deployment validation**
 
-Status: **implemented as read-only validation tooling**
+Code status: **read-only validation tooling implemented and unit-tested**
+
+Railway status: **not yet run against live Railway output**
 
 Tasks:
 
@@ -378,7 +459,8 @@ Tasks:
 
 Expected impact:
 
-- Confirms the code fixes are visible in real operator output.
+- Provides a repeatable way to confirm whether code-side fixes are visible in
+  real operator output.
 
 Implemented behavior:
 
@@ -390,11 +472,18 @@ Implemented behavior:
 - Validates hard-risk explanations do not regress to stale safe-hold wording.
 - Validates Decision ledger proposed/final distinction.
 - Validates compact `sources=` output when ledger `source_effects` are present.
+- Pipeline writes an `8b_live_validation` step log after communicator.
+- Pipeline stores validation output in `risk_out["live_validation"]`.
+- Pipeline appends compact validation summary to Telegram only when validation
+  is `warn` or `fail`.
 
 Implemented in:
 
 - `services/decision_live_validation.py`
+- `services/pipeline.py`
+- `agents/communicator.py`
 - `tests/test_decision_live_validation.py`
+- `tests/test_communicator_scorecard.py`
 
 ## Non-Goals
 

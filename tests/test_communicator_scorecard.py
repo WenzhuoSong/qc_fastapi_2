@@ -174,6 +174,17 @@ class CommunicatorScorecardTest(unittest.TestCase):
                     "dominant_constraint": "limited_data_quality",
                     "require_human_confirmation": True,
                 },
+                "data_quality_detail": {
+                    "qc_snapshots": 7,
+                    "qc_forward_samples": 3,
+                    "historical_snapshots": 290,
+                    "historical_forward_samples": 289,
+                    "strategy_data_quality": "historical_supported",
+                    "evidence_summary": {
+                        "historical_evidence": "strong",
+                        "live_fit": "insufficient",
+                    },
+                },
                 "scorecard_enforcement": {
                     "violations": ["max_delta:SPY 70.00%->53.00%"],
                 },
@@ -242,6 +253,11 @@ class CommunicatorScorecardTest(unittest.TestCase):
 
         self.assertIn("Market scorecard", text)
         self.assertIn("bullish_but_mixed", text)
+        self.assertIn("Data quality detail", text)
+        self.assertIn("QC live snapshots=7/3 forward", text)
+        self.assertIn("QC live fit=insufficient", text)
+        self.assertIn("yfinance history=290/289 forward", text)
+        self.assertIn("yfinance evidence=strong", text)
         self.assertIn("Risk clipping", text)
         self.assertIn("max_delta:SPY", text)
         self.assertIn("News evidence", text)
