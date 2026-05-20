@@ -381,6 +381,79 @@ class DecisionLedgerTests(unittest.TestCase):
         self.assertIn("strategy_target", lifecycle["changed_by"])
         self.assertIn("synthesizer_target", lifecycle["changed_by"])
 
+    def test_ledger_records_validated_llm_advisory_without_reason_codes(self):
+        ledger = build_decision_ledger(
+            synthesizer_output={
+                "adjusted_weights": {"QQQ": 0.13, "CASH": 0.87},
+                "position_advisory_proposals": [
+                    {
+                        "ticker": "QQQ",
+                        "llm_advisory": "trim",
+                        "target_weight": 0.11,
+                        "reason_codes": ["llm_must_not_leak"],
+                    }
+                ],
+            },
+            risk_output={
+                "approved": True,
+                "target_weights": {"QQQ": 0.12, "CASH": 0.88},
+                "position_governance": _governance(
+                    ticker="QQQ",
+                    decision="trim_review",
+                    target_after=0.11,
+                    advisory_overrides=[
+                        {
+                            "ticker": "QQQ",
+                            "llm_advisory": "trim",
+                            "validator_result": "accepted_as_trim_1.00%",
+                            "deterministic_decision": "hold_review",
+                            "final_decision": "trim_review",
+                            "target_before_override": 0.12,
+                            "target_after_override": 0.11,
+                        }
+                    ],
+                ),
+            },
+            current_holdings={"QQQ": 0.12, "CASH": 0.88},
+        )
+
+        row = ledger["tickers"]["QQQ"]
+        self.assertEqual(row["llm_advisory"]["llm_advisory"], "trim")
+        self.assertEqual(row["llm_advisory"]["validator_result"], "accepted_as_trim_1.00%")
+        self.assertEqual(row["llm_advisory"]["validated_delta"], -0.01)
+        self.assertEqual(row["llm_advisory"]["execution_authority"], "none")
+        self.assertEqual(row["trade_lifecycle"]["validated_advisory_delta"], -0.01)
+        self.assertIn("validated_llm_advisory", row["trade_lifecycle"]["changed_by"])
+        self.assertNotIn("llm_must_not_leak", row["reason_codes"])
+        self.assertEqual(ledger["position_advisory_overrides"][0]["validator_result"], "accepted_as_trim_1.00%")
+
+    def test_trade_lifecycle_includes_target_builder_target_when_available(self):
+        ledger = build_decision_ledger(
+            risk_output={
+                "approved": True,
+                "target_construction_mode": "target_builder_gated",
+                "raw_llm_adjusted_weights_consumed": False,
+                "target_builder_input": {
+                    "target_weights": {"QQQ": 0.11, "CASH": 0.89},
+                },
+                "target_weights": {"QQQ": 0.11, "CASH": 0.89},
+                "position_governance": _governance(
+                    ticker="QQQ",
+                    decision="trim_review",
+                    target_after=0.11,
+                ),
+            },
+            strategy_output={"base_weights": {"QQQ": 0.12, "CASH": 0.88}},
+            current_holdings={"QQQ": 0.12, "CASH": 0.88},
+        )
+
+        row = ledger["tickers"]["QQQ"]
+        self.assertEqual(ledger["portfolio_summary"]["target_construction_mode"], "target_builder_gated")
+        self.assertFalse(ledger["portfolio_summary"]["raw_llm_adjusted_weights_consumed"])
+        self.assertEqual(row["trade_lifecycle"]["target_builder_target"], 0.11)
+        self.assertIn("target_builder_target", row["trade_lifecycle"]["changed_by"])
+        self.assertIn("target_builder_target", row["source_effects"]["risk"])
+
     def test_execution_audit_attaches_accepted_status_without_changing_final_action(self):
         ledger = build_decision_ledger(
             risk_output={
@@ -459,6 +532,7 @@ def _governance(
     reason_codes=None,
     explanation=None,
     target_after=0.12,
+    advisory_overrides=None,
 ):
     reason_codes = reason_codes or []
     explanation = explanation or {
@@ -492,6 +566,7 @@ def _governance(
         "blocked_actions": [],
         "forced_trims": [],
         "replacements": [],
+        "advisory_overrides": advisory_overrides or [],
     }
 
 

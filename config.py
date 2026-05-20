@@ -64,11 +64,6 @@ class Settings(BaseSettings):
     finnhub_api_key: str = ""
     alphavantage_api_key: str = ""
 
-    # Weights & Biases tracking (optional — pipeline runs without it if not set)
-    wandb_api_key: str = ""              # WANDB_API_KEY
-    wandb_project: str = "agentix"       # W&B project name
-    wandb_entity: str = ""               # W&B entity (username or team name)
-
     class Config:
         env_file = ".env"
         case_sensitive = False

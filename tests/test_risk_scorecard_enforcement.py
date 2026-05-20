@@ -16,7 +16,11 @@ def _install_import_stubs() -> None:
 
 _install_import_stubs()
 
-from agents.risk_manager import apply_scorecard_constraints, apply_style_constraints  # noqa: E402
+from agents.risk_manager import (  # noqa: E402
+    apply_scorecard_constraints,
+    apply_style_constraints,
+    run_risk_manager_async,
+)
 
 
 class RiskScorecardEnforcementTest(unittest.TestCase):
@@ -124,6 +128,105 @@ class RiskStyleEnforcementTest(unittest.TestCase):
         self.assertGreaterEqual(post["CASH"], 0.30)
         self.assertTrue(any(v.startswith("style_max_delta:SPY") for v in out["violations"]))
         self.assertTrue(out["post_clip_compliance"]["compliant"])
+
+
+class RiskManagerTargetBuilderGatedTest(unittest.IsolatedAsyncioTestCase):
+    async def test_risk_manager_does_not_require_llm_adjusted_weights(self):
+        out = await run_risk_manager_async(
+            pipeline_context={
+                "risk_params": {
+                    "max_single_position": 1.0,
+                    "max_broad_market": 1.0,
+                    "min_cash_pct": 0.0,
+                    "max_trade_cost_pct": 1.0,
+                },
+                "market_scorecard": {"investment_permission": "normal_rebalance"},
+                "decision_style": {},
+            },
+            brief={
+                "current_weights": {"SPY": 0.10, "CASH": 0.90},
+                "holdings": [{"ticker": "SPY", "hist_vol_20d": 0.10}],
+                "portfolio": {"current_drawdown_pct": 0.0},
+            },
+            quant_baseline={"base_weights": {"SPY": 0.10, "CASH": 0.90}},
+            researcher_out={
+                "market_judgment": {"regime": "neutral", "uncertainty_flag": False},
+            },
+        )
+
+        self.assertEqual(out["target_construction_mode"], "deterministic_base_fallback")
+        self.assertFalse(out["raw_llm_adjusted_weights_consumed"])
+        self.assertEqual(out["target_weights"], {"SPY": 0.1, "CASH": 0.9})
+
+    async def test_target_builder_gated_path_does_not_consume_raw_llm_weights(self):
+        out = await run_risk_manager_async(
+            pipeline_context={
+                "risk_params": {
+                    "target_builder_enabled": True,
+                    "max_single_position": 1.0,
+                    "max_broad_market": 1.0,
+                    "min_cash_pct": 0.0,
+                    "max_trade_cost_pct": 1.0,
+                },
+                "target_builder_gated": {
+                    "target_weights": {"SPY": 0.20, "CASH": 0.80},
+                    "diagnostics": {"mode": "gated"},
+                },
+                "market_scorecard": {"investment_permission": "normal_rebalance"},
+                "decision_style": {},
+            },
+            brief={
+                "current_weights": {"SPY": 0.10, "CASH": 0.90},
+                "holdings": [{"ticker": "SPY", "hist_vol_20d": 0.10}],
+                "portfolio": {"current_drawdown_pct": 0.0},
+            },
+            quant_baseline={"base_weights": {"SPY": 0.10, "CASH": 0.90}},
+            researcher_out={
+                "adjusted_weights": {"SPY": 0.80, "CASH": 0.20},
+                "market_judgment": {"regime": "neutral", "uncertainty_flag": False},
+            },
+        )
+
+        self.assertEqual(out["target_construction_mode"], "target_builder_gated")
+        self.assertFalse(out["raw_llm_adjusted_weights_consumed"])
+        self.assertEqual(out["target_weights"], {"SPY": 0.2, "CASH": 0.8})
+        self.assertIn("target_builder_gated", out["overlays_applied"])
+        self.assertEqual(out["scorecard_enforcement"]["mode"], "validation_only")
+        self.assertEqual(out["style_enforcement"]["mode"], "validation_only")
+        self.assertTrue(out["approved"])
+
+    async def test_target_builder_gated_rejects_new_hard_risk_exposure(self):
+        out = await run_risk_manager_async(
+            pipeline_context={
+                "risk_params": {
+                    "target_builder_enabled": True,
+                    "max_single_position": 1.0,
+                    "max_broad_market": 1.0,
+                    "min_cash_pct": 0.0,
+                    "max_trade_cost_pct": 1.0,
+                },
+                "target_builder_gated": {
+                    "target_weights": {"XLE": 0.10, "CASH": 0.90},
+                },
+                "market_scorecard": {"investment_permission": "normal_rebalance"},
+                "decision_style": {},
+            },
+            brief={
+                "current_weights": {"CASH": 1.0},
+                "hard_risks_map": {"XLE": ["oil_shock"]},
+                "holdings": [],
+                "portfolio": {"current_drawdown_pct": 0.0},
+            },
+            quant_baseline={"base_weights": {"CASH": 1.0}},
+            researcher_out={
+                "adjusted_weights": {"XLE": 0.80, "CASH": 0.20},
+                "market_judgment": {"regime": "neutral", "uncertainty_flag": False},
+            },
+        )
+
+        self.assertFalse(out["approved"])
+        self.assertFalse(out["quantitative_checks"]["target_builder_hard_risk_ok"]["pass"])
+        self.assertIn("Target builder proposed new exposure to hard-risk tickers", " ".join(out["rejection_reasons"]))
 
     def test_style_blocks_new_positions_and_caps_new_buys(self):
         out = apply_style_constraints(

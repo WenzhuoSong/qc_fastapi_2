@@ -1,12 +1,14 @@
 # agents/synthesizer.py
 """
-Stage 5: Portfolio Manager (PM / Judge) — sole owner of adjusted_weights.
+Stage 5: Portfolio Manager (PM / Judge) — legacy diagnostic weight proposal.
 
 Bull and Bear only argue (draft + cross-exam). This stage:
     - Reads research_report + base_weights + full debate record (including rebuttals)
-    - Produces final adjusted_weights (sum = 1.0) and decision_rationale
+    - Produces diagnostic adjusted_weights plus advisory lifecycle proposals
 
-Output remains compatible with legacy researcher_out; Risk MGR unchanged.
+Phase B keeps adjusted_weights compatible with the legacy Risk MGR path, but
+the post-LLM contract is advisory-first: Position Governance is the only layer
+allowed to validate advisory actions and turn them into lifecycle changes.
 
 LLM: settings.openai_model_heavy (gpt-4o)
 """
@@ -103,6 +105,8 @@ SYNTHESIZER_COT_SCHEMA = """
     "CASH": <float>
   },
 
+  "diagnostic_weight_rationale": "why the legacy adjusted_weights diagnostic differs from baseline",
+
   "decision_rationale": "human-readable decision summary (≤100 chars)",
 
   "market_judgment": {
@@ -134,6 +138,7 @@ SYNTHESIZER_COT_SCHEMA = """
       "ticker": "TICKER",
       "llm_advisory": "add" | "trim" | "hold" | "hold_review" | "trim_review" | "exit",
       "target_weight": <float or null>,
+      "delta_hint": <float or null>,
       "thesis_status": "intact" | "weakening" | "broken" | "unknown",
       "thesis_reason": "short evidence-backed thesis status reason",
       "reason": "short thesis/governance reason; advisory only",
@@ -145,10 +150,12 @@ SYNTHESIZER_COT_SCHEMA = """
 Rules:
 1. reasoning_chain must appear before adjusted_weights; order cannot be changed
 2. step3_debate_arbitration includes only tickers where Bull/Bear disagree
-3. step4 values must be consistent with actual adjusted_weights, no contradictions
+3. step4 values must be consistent with diagnostic adjusted_weights, no contradictions
 4. sum of all adjusted_weights values must = 1.0 (±0.001 float tolerance allowed)
 5. If step1.constraints_accepted = false, override_reason must be filled in,
    and adjusted_weights must still satisfy defensive requirements (CASH >= 0.15)
+6. position_advisory_proposals must be present; use [] if there are no lifecycle advisories
+7. Do not output reason_codes or final_action; Python deterministic layers own both fields
 """
 
 SYSTEM_PROMPT = """You are the Portfolio Manager (PM) / Judge for a quantitative trading system.
@@ -170,7 +177,8 @@ You receive:
     · Cross-exam rebuttals exist to expose weak claims; use them when deciding uncertainty.
 
 【Constraints (hard)】
-    · adjusted_weights must sum to 1.0, all non-negative, include CASH
+    · adjusted_weights are legacy diagnostic weight proposals for compatibility; they must sum to 1.0,
+      all non-negative, include CASH, and may be clipped/rejected downstream.
     · Single name ≤ max_single_position; respect min_cash_pct
     · Typical deviation from base_weights ±5%; up to ±10% only with explicit justification in weight_adjustments.reason
     · If Bull/Bear confidences are both middling and close, set uncertainty_flag=true and prefer conservative weights
@@ -182,11 +190,12 @@ You receive:
       style_limits must cap how aggressively you move from base_weights. Include style_compliance.
     · Structured News Evidence action_bias is advisory evidence. News may confirm, block, or reduce a trade,
       but news cannot directly create target weights.
-    · position_advisory_proposals are optional advisory-only lifecycle suggestions. They do not execute
-      directly and may be rejected or clipped by deterministic Position Governance. Use them only for
-      ticker-level thesis decay/escalation that adjusted_weights alone cannot explain. thesis_status
-      must cite concrete evidence; Python validation may override or reject it and it has no direct
-      execution authority.
+    · position_advisory_proposals are required as a field and advisory-only. Use [] if no lifecycle
+      advisory exists. They do not execute directly and may be rejected, converted, or clipped by
+      deterministic Position Governance. Use them only for ticker-level thesis decay/escalation that
+      adjusted_weights alone cannot explain. thesis_status must cite concrete evidence; Python
+      validation may override or reject it and it has no direct execution authority.
+    · Do not generate reason_codes or final_action. Those are deterministic Python outputs.
 
 【regime (exactly one of 6)】
     bull_trend / bull_weak / neutral / bear_weak / bear_trend / high_vol
@@ -250,8 +259,8 @@ async def run_synthesizer_async(
     playground_bundle: dict | None = None,
 ) -> dict:
     """
-    Stage 5: arbitrate Bull/Bear → adjusted_weights.
-    Output compatible with legacy researcher_out; downstream Risk MGR unchanged.
+    Stage 5: arbitrate Bull/Bear into thesis/advisory proposals.
+    adjusted_weights remains diagnostic; deterministic target_builder owns execution targets.
     """
     # Defensive: ensure all dict inputs are actually dicts before any .get() call
     if not isinstance(bull_output, dict):
@@ -448,7 +457,7 @@ def _build_user_message(
         f"max_single_position = {max_pos}\n"
         f"min_cash_pct = {min_cash}\n\n"
         "## Your task (PM)\n"
-        "Output final adjusted_weights + decision_rationale + market_judgment + recommended_stance + "
+        "Output diagnostic adjusted_weights + decision_rationale + market_judgment + recommended_stance + "
         "weight_adjustments + consensus/divergence + key_events + debate_resolution. "
         "Include scorecard_compliance with scorecard_alignment, action_permission_used, "
         "data_quality_adjustment, why_this_trade_is_reasonable, and known_limitations. "
@@ -457,7 +466,8 @@ def _build_user_message(
         "blocked_or_clipped_actions, and known_limitations. "
         "If Strategy Playground is present, also include playground_strategy_assessment with "
         "selected_strategy, blend_weights, discounted_strategies, and reasoning; respect "
-        "memory_feedback discounts as advisory only. JSON only."
+        "memory_feedback discounts as advisory only. Include position_advisory_proposals as a list "
+        "even when empty. JSON only."
     )
 
     # ── Inject Structured Disagreement Map ──────────────────────
@@ -786,6 +796,15 @@ def _normalize(
 
     decision_rationale = str(out.get("decision_rationale") or out.get("reasoning") or "")[:800]
     reasoning_line = str(out.get("reasoning") or decision_rationale)[:500]
+    advisory_proposals = _normalize_position_advisory_proposals(
+        out.get("position_advisory_proposals"),
+        allowed_tickers=allowed_tickers,
+    )
+    diagnostic_weight_rationale = str(
+        out.get("diagnostic_weight_rationale")
+        or out.get("decision_rationale")
+        or "legacy diagnostic weights retained for compatibility"
+    )[:400]
 
     # Preserve reasoning_chain from LLM output (Task 5)
     reasoning_chain = out.get("reasoning_chain") or {}
@@ -801,6 +820,8 @@ def _normalize(
         },
         "recommended_stance":  stance,
         "adjusted_weights":    adjusted,
+        "legacy_adjusted_weights_mode": "diagnostic_legacy_phase_b",
+        "diagnostic_weight_rationale": diagnostic_weight_rationale,
         "weight_adjustments":  actual_adjustments,
         "reasoning":           reasoning_line,
         "decision_rationale":  decision_rationale,
@@ -817,14 +838,58 @@ def _normalize(
         ),
         "scorecard_compliance": scorecard_compliance,
         "style_compliance": style_compliance,
-        "position_advisory_proposals": (
-            out.get("position_advisory_proposals")[:12]
-            if isinstance(out.get("position_advisory_proposals"), list)
-            else []
-        ),
+        "position_advisory_proposals": advisory_proposals,
         # Task 5: Chain-of-Thought reasoning chain
         "reasoning_chain":     reasoning_chain,
     }
+
+
+def _normalize_position_advisory_proposals(
+    raw: Any,
+    *,
+    allowed_tickers: set[str],
+) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    valid_actions = {"add", "trim", "hold", "hold_review", "trim_review", "exit"}
+    valid_thesis = {"intact", "weakening", "broken", "unknown"}
+    proposals: list[dict[str, Any]] = []
+    for item in raw[:12]:
+        if not isinstance(item, dict):
+            continue
+        ticker = str(item.get("ticker") or "").upper().strip()
+        if not ticker or ticker == "CASH" or ticker not in allowed_tickers:
+            continue
+        action = str(item.get("llm_advisory") or item.get("advisory_action") or item.get("action") or "hold").lower().strip()
+        if action not in valid_actions:
+            action = "hold"
+        thesis_status = str(item.get("thesis_status") or item.get("llm_thesis_status") or "unknown").lower().strip()
+        if thesis_status not in valid_thesis:
+            thesis_status = "unknown"
+        target = _optional_float(item.get("target_weight"))
+        delta = _optional_float(item.get("delta_hint", item.get("delta_weight")))
+        confidence = _optional_float(item.get("confidence"))
+        proposals.append({
+            "ticker": ticker,
+            "llm_advisory": action,
+            "target_weight": target,
+            "delta_hint": delta,
+            "thesis_status": thesis_status,
+            "thesis_reason": str(item.get("thesis_reason") or item.get("reason") or "")[:240],
+            "reason": str(item.get("reason") or item.get("thesis_reason") or "")[:240],
+            "confidence": None if confidence is None else max(0.0, min(1.0, confidence)),
+            "execution_authority": "none",
+        })
+    return proposals
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _normalize_style_compliance(
@@ -1239,6 +1304,8 @@ def _degraded_output(
         },
         "recommended_stance":   "maintain",
         "adjusted_weights":     {k: round(float(v), 4) for k, v in base_weights.items()},
+        "legacy_adjusted_weights_mode": "diagnostic_legacy_phase_b",
+        "diagnostic_weight_rationale": "degraded fallback baseline weights; diagnostic legacy field",
         "weight_adjustments":   [],
         "reasoning":            degraded_reason,
         "decision_rationale":   degraded_reason,
@@ -1270,6 +1337,7 @@ def _degraded_output(
             "python_validation": {"compliant": True, "violations": [], "checked": False},
             "style_non_compliant": False,
         },
+        "position_advisory_proposals": [],
         # Task 5: Chain-of-Thought (degraded fallback)
         "reasoning_chain": {
             "_degraded": True,

@@ -10,8 +10,32 @@ from typing import Any
 
 
 LOSS_REVIEW_PCT = -0.04
+HIGH_ATR_PCT = 0.05
 HUMAN_OR_LIMITED_MAX_TURNOVER = 0.05
 HUMAN_OR_LIMITED_MAX_SINGLE_DELTA = 0.015
+
+SECTOR_GROUPS = {
+    "semiconductors": {"FTXL", "PSI", "SOXX", "XSD", "SMH", "SOXL", "SOXS", "DRAM"},
+    "tech_growth": {"QQQ", "XLK", "AIQ", "BOTZ", "CIBR"},
+    "defensive_bonds": {"BND", "IEF", "TLT", "SGOV"},
+    "cyclicals": {"XLE", "XLI", "IWM"},
+    "real_estate": {"XLRE"},
+}
+
+GROUP_LIMITS = {
+    "semiconductors": 0.25,
+    "tech_growth": 0.35,
+    "defensive_bonds": 0.35,
+    "cyclicals": 0.30,
+    "real_estate": 0.15,
+}
+
+NO_ADD_PERMISSIONS = {
+    "hold_or_trim",
+    "defensive_only",
+    "cash_only",
+    "reduce_risk_only",
+}
 
 
 def shape_proposal_before_risk(
@@ -39,15 +63,37 @@ def shape_proposal_before_risk(
     clip_log: list[str] = []
 
     loss_review = _loss_review_tickers(holdings_meta)
-    for ticker in sorted(loss_review):
+    high_atr = _high_atr_tickers(holdings_meta)
+    basket_review_groups = _basket_review_groups(loss_review)
+    group_exposure = _group_exposure(current)
+    over_limit_groups = {
+        group
+        for group, exposure in group_exposure.items()
+        if exposure >= GROUP_LIMITS.get(group, 1.0) - 1e-9
+    }
+    no_add_all = _scorecard_blocks_add(scorecard)
+
+    for ticker in sorted(set(work) | set(current)):
         if ticker == "CASH":
             continue
         target = float(work.get(ticker, 0.0) or 0.0)
         current_w = float(current.get(ticker, 0.0) or 0.0)
-        if current_w > 0 and target > current_w + 1e-9:
-            work[ticker] = current_w
-            work["CASH"] = float(work.get("CASH", 0.0) or 0.0) + (target - current_w)
-            clip_log.append(f"loss_review_no_add:{ticker} {target:.2%}->{current_w:.2%}")
+        if target <= current_w + 1e-9:
+            continue
+        blocked_reasons = _add_block_reasons(
+            ticker=ticker,
+            loss_review=loss_review,
+            high_atr=high_atr,
+            basket_review_groups=basket_review_groups,
+            over_limit_groups=over_limit_groups,
+            scorecard_blocks_add=no_add_all,
+        )
+        if not blocked_reasons:
+            continue
+        work[ticker] = current_w
+        work["CASH"] = float(work.get("CASH", 0.0) or 0.0) + (target - current_w)
+        for reason in blocked_reasons:
+            clip_log.append(f"{reason}:{ticker} {target:.2%}->{current_w:.2%}")
 
     constrained = _is_constrained(scorecard, style)
     single_delta_cap = _single_delta_cap(scorecard, style) if constrained else None
@@ -65,6 +111,9 @@ def shape_proposal_before_risk(
         "clip_log": clip_log,
         "constraints": {
             "loss_review_no_add": sorted(loss_review),
+            "high_atr_no_add": sorted(high_atr),
+            "basket_review_no_add_groups": sorted(basket_review_groups),
+            "group_limit_no_add_groups": sorted(over_limit_groups),
             "constrained": constrained,
             "max_single_delta": single_delta_cap,
             "max_turnover": turnover_cap,
@@ -126,6 +175,75 @@ def _loss_review_tickers(holdings_meta: list[dict[str, Any]]) -> set[str]:
         if pnl is not None and pnl <= LOSS_REVIEW_PCT:
             tickers.add(ticker)
     return tickers
+
+
+def _high_atr_tickers(holdings_meta: list[dict[str, Any]]) -> set[str]:
+    tickers: set[str] = set()
+    for row in holdings_meta or []:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or row.get("symbol") or "").upper().strip()
+        if not ticker:
+            continue
+        atr = _optional_float(row.get("atr_pct"))
+        if atr is not None and atr >= HIGH_ATR_PCT:
+            tickers.add(ticker)
+    return tickers
+
+
+def _basket_review_groups(loss_review: set[str]) -> set[str]:
+    counts: dict[str, int] = {}
+    for ticker in loss_review:
+        group = _ticker_group(ticker)
+        if group:
+            counts[group] = counts.get(group, 0) + 1
+    return {group for group, count in counts.items() if count >= 2}
+
+
+def _group_exposure(weights: dict[str, float]) -> dict[str, float]:
+    exposure: dict[str, float] = {}
+    for ticker, weight in weights.items():
+        group = _ticker_group(ticker)
+        if group:
+            exposure[group] = exposure.get(group, 0.0) + float(weight or 0.0)
+    return exposure
+
+
+def _ticker_group(ticker: str) -> str | None:
+    clean = str(ticker or "").upper().strip()
+    for group, members in SECTOR_GROUPS.items():
+        if clean in members:
+            return group
+    return None
+
+
+def _scorecard_blocks_add(scorecard: dict[str, Any]) -> bool:
+    permission = str(scorecard.get("investment_permission") or "")
+    return permission in NO_ADD_PERMISSIONS
+
+
+def _add_block_reasons(
+    *,
+    ticker: str,
+    loss_review: set[str],
+    high_atr: set[str],
+    basket_review_groups: set[str],
+    over_limit_groups: set[str],
+    scorecard_blocks_add: bool,
+) -> list[str]:
+    reasons: list[str] = []
+    group = _ticker_group(ticker)
+    if scorecard_blocks_add:
+        reasons.append("scorecard_no_add")
+    if ticker in loss_review:
+        reasons.append("loss_review_no_add")
+    if ticker in high_atr:
+        reasons.append("high_atr_no_add")
+    if group and group in basket_review_groups:
+        reasons.append("basket_review_no_add")
+    if group and group in over_limit_groups:
+        reasons.append("group_limit_no_add")
+    return reasons
 
 
 def _cap_single_deltas(

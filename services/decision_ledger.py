@@ -56,6 +56,7 @@ def build_decision_ledger(
     base_weights = _extract_base_weights(strategy_output or {})
     strategy_targets = _extract_strategy_targets(strategy_output or {}, evidence_bundle or {})
     synthesizer_targets = _clean_weight_map((synthesizer_output or {}).get("adjusted_weights") or {})
+    target_builder_targets = _target_builder_targets(risk)
     target_weights = _clean_weight_map(risk.get("target_weights") or {})
     proposed_actions = _actions_by_ticker(risk.get("rebalance_actions") or [])
     approved = bool(risk.get("approved", False))
@@ -73,6 +74,7 @@ def build_decision_ledger(
 
     decision_by_ticker = _governance_decisions_by_ticker(governance if governance_available else {})
     explanation_by_ticker = _governance_explanations_by_ticker(governance if governance_available else {})
+    advisory_by_ticker = _advisory_overrides_by_ticker(governance if governance_available else {})
     tickers = _ledger_tickers(
         current_weights=current_weights,
         target_weights=target_weights,
@@ -92,10 +94,12 @@ def build_decision_ledger(
             governance_available=governance_available,
             governance_decision=decision_by_ticker.get(ticker),
             governance_explanation=explanation_by_ticker.get(ticker),
+            advisory_override=advisory_by_ticker.get(ticker),
             historical_evidence=historical_evidence.get(ticker),
             base_weight=base_weights.get(ticker),
             strategy_target=strategy_targets.get(ticker),
             synthesizer_target=synthesizer_targets.get(ticker),
+            target_builder_target=target_builder_targets.get(ticker),
         )
         for ticker in tickers
     }
@@ -112,11 +116,14 @@ def build_decision_ledger(
             "require_human_confirmation": (market_scorecard or {}).get("require_human_confirmation"),
             "risk_approved": approved,
             "execution_status": execution_status,
+            "target_construction_mode": risk.get("target_construction_mode"),
+            "raw_llm_adjusted_weights_consumed": risk.get("raw_llm_adjusted_weights_consumed"),
             "turnover": _turnover(risk.get("rebalance_actions") or []),
             "ticker_count": len(rows),
             "governance_available": governance_available,
         },
         "tickers": rows,
+        "position_advisory_overrides": list(advisory_by_ticker.values())[:12],
         "missing_evidence": missing_evidence,
         "warnings": warnings,
         "placeholders": {
@@ -222,10 +229,12 @@ def _build_ticker_row(
     governance_available: bool,
     governance_decision: dict[str, Any] | None,
     governance_explanation: dict[str, Any] | None,
+    advisory_override: dict[str, Any] | None,
     historical_evidence: dict[str, Any] | None,
     base_weight: float | None,
     strategy_target: float | None,
     synthesizer_target: float | None,
+    target_builder_target: float | None,
 ) -> dict[str, Any]:
     proposed = _proposed_action(proposed_action, current_weight, target_weight)
     governance_reason_codes = list((governance_decision or {}).get("reason_codes") or [])
@@ -253,6 +262,8 @@ def _build_ticker_row(
         base_weight=base_weight,
         strategy_target=strategy_target,
         synthesizer_target=synthesizer_target,
+        target_builder_target=target_builder_target,
+        advisory_override=advisory_override,
         risk_target=target_weight,
         governance_decision=governance_decision if governance_available else None,
         risk_approved=risk_approved,
@@ -276,6 +287,7 @@ def _build_ticker_row(
             trade_lifecycle=trade_lifecycle,
         ),
         "trade_lifecycle": trade_lifecycle,
+        "llm_advisory": _compact_advisory_override(advisory_override),
         "proposed_action": proposed,
         "final_action": final_action,
         "execution_status": "not_sent" if not risk_approved else "unknown",
@@ -291,6 +303,7 @@ def _build_ticker_row(
             "base_weight": None if base_weight is not None else "missing",
             "strategy_target": None if strategy_target is not None else "missing",
             "synthesizer_target": None if synthesizer_target is not None else "missing",
+            "target_builder_target": None if target_builder_target is not None else "missing",
         },
     }
 
@@ -301,6 +314,8 @@ def _sparse_trade_lifecycle(
     base_weight: float | None,
     strategy_target: float | None,
     synthesizer_target: float | None,
+    target_builder_target: float | None,
+    advisory_override: dict[str, Any] | None,
     risk_target: float | None,
     governance_decision: dict[str, Any] | None,
     risk_approved: bool,
@@ -314,6 +329,9 @@ def _sparse_trade_lifecycle(
         "base_weight": round(float(base_weight), 6) if base_weight is not None else None,
         "strategy_target": round(float(strategy_target), 6) if strategy_target is not None else None,
         "synthesizer_target": round(float(synthesizer_target), 6) if synthesizer_target is not None else None,
+        "diagnostic_llm_target": round(float(synthesizer_target), 6) if synthesizer_target is not None else None,
+        "target_builder_target": round(float(target_builder_target), 6) if target_builder_target is not None else None,
+        "validated_advisory_delta": _validated_advisory_delta(advisory_override),
         "risk_target": round(float(risk_target), 6) if risk_target is not None else None,
         "governance_target": round(governance_target, 6) if governance_target is not None else None,
         "final_target": round(float(final_target), 6) if final_target is not None else None,
@@ -327,6 +345,10 @@ def _sparse_trade_lifecycle(
         changed_by.append("synthesizer_target")
     elif synthesizer_target is not None and base_weight is not None and abs(float(synthesizer_target) - float(base_weight)) > 1e-9:
         changed_by.append("synthesizer_target")
+    if target_builder_target is not None and base_weight is not None and abs(float(target_builder_target) - float(base_weight)) > 1e-9:
+        changed_by.append("target_builder_target")
+    if stages["validated_advisory_delta"] is not None and abs(float(stages["validated_advisory_delta"])) > 1e-9:
+        changed_by.append("validated_llm_advisory")
     if risk_target is not None and abs(float(risk_target) - float(current_weight or 0.0)) > 1e-9:
         changed_by.append("risk_target")
     if governance_target is not None and risk_target is not None and abs(governance_target - float(risk_target)) > 1e-9:
@@ -341,6 +363,9 @@ def _sparse_trade_lifecycle(
                 "base_weight",
                 "strategy_target",
                 "synthesizer_target",
+                "diagnostic_llm_target",
+                "target_builder_target",
+                "validated_advisory_delta",
                 "risk_target",
                 "governance_target",
                 "final_target",
@@ -352,6 +377,7 @@ def _sparse_trade_lifecycle(
                 "base_weight",
                 "strategy_target",
                 "synthesizer_target",
+                "target_builder_target",
             )
             if stages.get(key) is None
         ],
@@ -531,8 +557,10 @@ def _static_reason_source_effects(reason_code: str) -> tuple[tuple[str, str], ..
 def _lifecycle_stage_source(stage: str) -> str | None:
     if stage in {"base_weight", "strategy_target"}:
         return "strategy"
-    if stage == "synthesizer_target":
+    if stage in {"synthesizer_target", "validated_llm_advisory"}:
         return "strategy"
+    if stage == "target_builder_target":
+        return "risk"
     if stage in {"risk_target", "risk_rejected_final_target_current"}:
         return "risk"
     if stage == "position_governance":
@@ -685,6 +713,17 @@ def _governance_explanations_by_ticker(governance: dict[str, Any]) -> dict[str, 
     return out
 
 
+def _advisory_overrides_by_ticker(governance: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for row in governance.get("advisory_overrides") or []:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or "").upper().strip()
+        if ticker:
+            out[ticker] = row
+    return out
+
+
 def _actions_by_ticker(actions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for row in actions:
@@ -734,6 +773,43 @@ def _clean_weight_map(raw: dict[str, Any]) -> dict[str, float]:
             continue
         out[ticker] = _to_float(value, 0.0)
     return out
+
+
+def _target_builder_targets(risk: dict[str, Any]) -> dict[str, float]:
+    for key in ("target_builder_input", "target_builder_shadow"):
+        payload = risk.get(key) or {}
+        if isinstance(payload, dict) and isinstance(payload.get("target_weights"), dict):
+            return _clean_weight_map(payload.get("target_weights") or {})
+    return {}
+
+
+def _compact_advisory_override(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(row, dict) or not row:
+        return None
+    return {
+        "ticker": row.get("ticker"),
+        "llm_advisory": row.get("llm_advisory"),
+        "validator_result": row.get("validator_result"),
+        "deterministic_decision": row.get("deterministic_decision"),
+        "final_decision": row.get("final_decision"),
+        "target_before_override": row.get("target_before_override"),
+        "target_after_override": row.get("target_after_override"),
+        "validated_delta": _validated_advisory_delta(row),
+        "execution_authority": "none",
+    }
+
+
+def _validated_advisory_delta(row: dict[str, Any] | None) -> float | None:
+    if not isinstance(row, dict) or not row:
+        return None
+    result = str(row.get("validator_result") or "")
+    if not result.startswith("accepted"):
+        return 0.0
+    before = _to_float(row.get("target_before_override"), None)
+    after = _to_float(row.get("target_after_override"), None)
+    if before is None or after is None:
+        return 0.0
+    return round(float(after) - float(before), 6)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:

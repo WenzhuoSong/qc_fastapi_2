@@ -5,8 +5,3 @@ dockerfilePath = "Dockerfile"
 [deploy]
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
-
-# W&B tracking (optional — set in Railway environment variables):
-#   WANDB_API_KEY=<your-wandb-api-key>
-#   WANDB_PROJECT=agentix
-#   WANDB_ENTITY=<your-username>

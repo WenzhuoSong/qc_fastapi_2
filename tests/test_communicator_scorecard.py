@@ -175,11 +175,20 @@ class CommunicatorScorecardTest(unittest.TestCase):
                     "require_human_confirmation": True,
                 },
                 "data_quality_detail": {
+                    "overall": "limited",
+                    "feature_source_counts": {
+                        "qc_heartbeat": 12,
+                        "qc_daily_snapshot": 34,
+                    },
+                    "source_timestamps": {
+                        "macro_news_cache": "2026-05-20T12:00:00Z",
+                    },
                     "qc_snapshots": 7,
                     "qc_forward_samples": 3,
                     "historical_snapshots": 290,
                     "historical_forward_samples": 289,
                     "strategy_data_quality": "historical_supported",
+                    "news_data_quality": "fresh",
                     "evidence_summary": {
                         "historical_evidence": "strong",
                         "live_fit": "insufficient",
@@ -254,10 +263,14 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("Market scorecard", text)
         self.assertIn("bullish_but_mixed", text)
         self.assertIn("Data quality detail", text)
+        self.assertIn("QC heartbeat fields=12", text)
+        self.assertIn("Daily snapshot fields=34", text)
         self.assertIn("QC live snapshots=7/3 forward", text)
         self.assertIn("QC live fit=insufficient", text)
         self.assertIn("yfinance history=290/289 forward", text)
         self.assertIn("yfinance evidence=strong", text)
+        self.assertIn("News cache=fresh", text)
+        self.assertIn("overall=limited", text)
         self.assertIn("Risk clipping", text)
         self.assertIn("max_delta:SPY", text)
         self.assertIn("News evidence", text)
@@ -394,12 +407,14 @@ class CommunicatorScorecardTest(unittest.TestCase):
                 "rejection_reasons": [],
                 "decision_ledger": {
                     "phase": "phase_3_sparse_lifecycle",
-                    "portfolio_summary": {
-                        "risk_approved": False,
-                        "execution_status": "not_sent",
-                        "governance_available": True,
-                        "ticker_count": 7,
-                    },
+                "portfolio_summary": {
+                    "risk_approved": False,
+                    "execution_status": "not_sent",
+                    "governance_available": True,
+                    "target_construction_mode": "target_builder_gated",
+                    "raw_llm_adjusted_weights_consumed": False,
+                    "ticker_count": 7,
+                },
                     "tickers": ledger_rows,
                     "warnings": [],
                 },
@@ -412,8 +427,60 @@ class CommunicatorScorecardTest(unittest.TestCase):
         text = _fallback_template(payload)
         self.assertIn("Decision ledger", text)
         self.assertIn("T0: trim -> none", text)
+        self.assertIn("target=target_builder_gated", text)
+        self.assertIn("raw_llm=False", text)
+        self.assertIn("final=1.0%", text)
         self.assertIn("sources=scorecard,risk", text)
         self.assertNotIn("T6:", text)
+
+    def test_decision_ledger_line_shows_target_builder_and_advisory_lifecycle(self):
+        text = _fallback_template(
+            {
+                "approved": False,
+                "regime": "neutral",
+                "stance": "maintain",
+                "rebalance_actions": [],
+                "estimated_cost": 0,
+                "overlays_applied": [],
+                "rejection_reasons": [],
+                "auth_mode": "FULL_AUTO",
+                "timeout_minutes": 20,
+                "debate_summary": {},
+                "market_scorecard": {},
+                "scorecard_enforcement": {},
+                "news_evidence": {},
+                "decision_style": {},
+                "style_enforcement": {},
+                "decision_ledger": {
+                    "portfolio_summary": {
+                        "risk_approved": False,
+                        "execution_status": "not_sent",
+                        "governance_available": True,
+                        "target_construction_mode": "target_builder_gated",
+                        "raw_llm_adjusted_weights_consumed": False,
+                    },
+                    "top_decisions": [
+                        {
+                            "ticker": "QQQ",
+                            "proposed_action": "trim",
+                            "final_action": "none",
+                            "reason_codes": ["risk_rejected"],
+                            "final_target": 0.12,
+                            "target_builder_target": 0.11,
+                            "validated_advisory_delta": -0.01,
+                            "advisory_validator_result": "accepted_as_trim_1.00%",
+                            "changed_by": ["target_builder_target", "validated_llm_advisory"],
+                            "source_effects": ["risk", "strategy"],
+                        }
+                    ],
+                },
+            }
+        )
+
+        self.assertIn("QQQ: trim -> none", text)
+        self.assertIn("final=12.0%,tb=11.0%,adv=-1.0%", text)
+        self.assertIn("advisory=accepted_as_trim_1.00%", text)
+        self.assertIn("changed_by=target_builder_target,validated_llm_advisory", text)
 
     def test_manual_trim_review_shows_advisory_as_weak_positive(self):
         text = _fallback_template(

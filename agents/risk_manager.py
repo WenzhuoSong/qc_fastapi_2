@@ -3,11 +3,9 @@
 Stage 4: RISK MGR — chief risk officer (pure Python)
 
 Per update.txt: "second review + defensive overlays". Not a hard gate — an auditor:
-    1. Take researcher.adjusted_weights (draft_proposal) as input
-    2. Apply three overlays in order, turning the LLM proposal into final target_weights:
-         Overlay 1  transmission_tilt   — macro-driven sector tilt
-         Overlay 2  defensive_adjust    — regime defense matrix
-         Overlay 3  hard_risk_filter    — event risk: no new positions into flagged names; existing held
+    1. Take deterministic target_builder target_weights as input
+    2. Validate overlays and constraints against that target; Risk MGR does not construct
+       execution targets from raw LLM adjusted_weights
     3. Compute rebalance_actions + estimated cost from target_weights
     4. Six quantitative checks:
          vol_ok / drawdown_ok / position_ok / broad_market_ok / cash_ok / cost_ok
@@ -61,16 +59,24 @@ async def run_risk_manager_async(
         pipeline_context — risk_params / override_mode / active_strategy
         brief            — portfolio / holdings / hard_risks_map / current_weights
         quant_baseline   — audit reference (not used in overlay math)
-        researcher_out   — adjusted_weights + regime + key_events
+        researcher_out   — diagnostic LLM output + regime + key_events
     Output: final target_weights + six checks + token (if approved).
     """
     risk_params = pipeline_context.get("risk_params") or {}
     override_mode = pipeline_context.get("override_mode")
-
-    adjusted_weights = researcher_out.get("adjusted_weights") or {}
-    if not adjusted_weights:
-        logger.warning("RiskMgr: researcher.adjusted_weights empty, falling back to base_weights")
-        adjusted_weights = quant_baseline.get("base_weights") or {"CASH": 1.0}
+    target_builder_payload = _target_builder_payload(pipeline_context, researcher_out)
+    if not target_builder_payload:
+        logger.warning("RiskMgr: target_builder input empty, falling back to deterministic base_weights")
+        target_builder_payload = {
+            "target_weights": quant_baseline.get("base_weights") or {"CASH": 1.0},
+            "diagnostics": {
+                "mode": "deterministic_base_fallback",
+                "source": "quant_baseline.base_weights",
+                "consumes_raw_llm_adjusted_weights": False,
+            },
+        }
+    deterministic_target_mode = True
+    adjusted_weights = target_builder_payload.get("target_weights") or {"CASH": 1.0}
 
     market_judgment = researcher_out.get("market_judgment") or {}
     regime = str(market_judgment.get("regime", "neutral"))
@@ -101,65 +107,94 @@ async def run_risk_manager_async(
     )
     evidence_bundle = brief.get("evidence_bundle") or {}
 
-    # ═══ 3-layer overlay chain ═══
+    # ═══ target input / overlay chain ═══
     overlays_applied: list[str] = []
     working = dict(adjusted_weights)
+    deterministic_input_checks: dict[str, Any] = {}
+    deterministic_input_reasons: list[str] = []
 
-    # Overlay 1: transmission_tilt (macro-driven)
-    working = _apply_transmission_tilt(
-        working,
-        key_events=key_events,
-        risk_params=risk_params,
-        overlays_applied=overlays_applied,
-    )
-
-    # Overlay 2: defensive_adjust (regime defense)
-    if override_mode == "DEFENSIVE" or regime in DEFENSIVE_REGIMES:
-        working = defensive_adjust(
-            working,
-            {"regime": regime, "uncertainty_flag": uncertainty},
-        )
-        tag = f"defensive:{regime if regime in DEFENSIVE_REGIMES else 'override'}"
-        overlays_applied.append(tag)
-
-    # Overlay 3: hard_risk_filter (event risk)
-    working = _apply_hard_risk_filter(
-        working,
-        current_weights=current_weights,
-        hard_risks_map=hard_risks_map,
-        overlays_applied=overlays_applied,
-    )
-
-    # Overlay 4: critical_alerts — QC webhook emergency/critical alerts (P1-1)
-    if critical_alerts:
-        working = _apply_critical_alerts_overlay(
-            working,
+    if deterministic_target_mode:
+        overlays_applied.append(_target_builder_mode(target_builder_payload))
+        deterministic_input_checks, deterministic_input_reasons = _run_target_builder_input_checks(
+            target_weights=working,
             current_weights=current_weights,
+            hard_risks_map=hard_risks_map,
             critical_alerts=critical_alerts,
+            regime=regime,
+            override_mode=override_mode,
+        )
+    else:
+        # Overlay 1: transmission_tilt (macro-driven)
+        working = _apply_transmission_tilt(
+            working,
+            key_events=key_events,
+            risk_params=risk_params,
             overlays_applied=overlays_applied,
         )
 
+        # Overlay 2: defensive_adjust (regime defense)
+        if override_mode == "DEFENSIVE" or regime in DEFENSIVE_REGIMES:
+            working = defensive_adjust(
+                working,
+                {"regime": regime, "uncertainty_flag": uncertainty},
+            )
+            tag = f"defensive:{regime if regime in DEFENSIVE_REGIMES else 'override'}"
+            overlays_applied.append(tag)
+
+        # Overlay 3: hard_risk_filter (event risk)
+        working = _apply_hard_risk_filter(
+            working,
+            current_weights=current_weights,
+            hard_risks_map=hard_risks_map,
+            overlays_applied=overlays_applied,
+        )
+
+        # Overlay 4: critical_alerts — QC webhook emergency/critical alerts (P1-1)
+        if critical_alerts:
+            working = _apply_critical_alerts_overlay(
+                working,
+                current_weights=current_weights,
+                critical_alerts=critical_alerts,
+                overlays_applied=overlays_applied,
+            )
+
     target_weights = _normalize_weights(working)
-    scorecard_enforcement = apply_scorecard_constraints(
-        target_weights=target_weights,
-        base_weights=quant_baseline.get("base_weights") or {},
-        market_scorecard=market_scorecard,
-    )
-    target_weights = scorecard_enforcement["target_weights_post_scorecard_clip"]
+    if deterministic_target_mode:
+        scorecard_enforcement = validate_scorecard_constraints(
+            target_weights=target_weights,
+            base_weights=quant_baseline.get("base_weights") or {},
+            market_scorecard=market_scorecard,
+        )
+    else:
+        scorecard_enforcement = apply_scorecard_constraints(
+            target_weights=target_weights,
+            base_weights=quant_baseline.get("base_weights") or {},
+            market_scorecard=market_scorecard,
+        )
+        target_weights = scorecard_enforcement["target_weights_post_scorecard_clip"]
     if scorecard_enforcement["violations"]:
         overlays_applied.append("scorecard_constraints")
         logger.warning(
             "[RiskMgr] scorecard constraints adjusted target weights | "
             f"violations={scorecard_enforcement['violations']}"
         )
-    style_enforcement = apply_style_constraints(
-        target_weights=target_weights,
-        base_weights=quant_baseline.get("base_weights") or {},
-        current_weights=current_weights,
-        decision_style=decision_style,
-        market_scorecard=market_scorecard,
-    )
-    target_weights = style_enforcement["target_weights_post_style_clip"]
+    if deterministic_target_mode:
+        style_enforcement = validate_style_constraints(
+            target_weights=target_weights,
+            base_weights=quant_baseline.get("base_weights") or {},
+            current_weights=current_weights,
+            decision_style=decision_style,
+            market_scorecard=market_scorecard,
+        )
+    else:
+        style_enforcement = apply_style_constraints(
+            target_weights=target_weights,
+            base_weights=quant_baseline.get("base_weights") or {},
+            current_weights=current_weights,
+            decision_style=decision_style,
+            market_scorecard=market_scorecard,
+        )
+        target_weights = style_enforcement["target_weights_post_style_clip"]
     if style_enforcement["violations"]:
         overlays_applied.append("style_constraints")
         logger.warning(
@@ -182,6 +217,8 @@ async def run_risk_manager_async(
         portfolio=portfolio,
         risk_params=risk_params,
     )
+    checks.update(deterministic_input_checks)
+    reasons.extend(deterministic_input_reasons)
     scorecard_check = scorecard_enforcement["post_clip_compliance"]
     checks["scorecard_ok"] = {
         "pass": bool(scorecard_check.get("compliant", True)),
@@ -236,6 +273,9 @@ async def run_risk_manager_async(
         "n_holdings":          _count_non_cash(target_weights),
         "scorecard_enforcement": scorecard_enforcement,
         "style_enforcement": style_enforcement,
+        "target_construction_mode": _target_builder_mode(target_builder_payload),
+        "raw_llm_adjusted_weights_consumed": False,
+        "target_builder_input": target_builder_payload,
         "reviewed_at":         datetime.utcnow().isoformat(),
     }
 
@@ -384,6 +424,95 @@ def _apply_critical_alerts_overlay(
     return filtered
 
 
+def _target_builder_payload(
+    pipeline_context: dict,
+    researcher_out: dict,
+) -> dict[str, Any] | None:
+    payload = (
+        pipeline_context.get("target_builder_gated")
+        or researcher_out.get("target_builder_gated")
+        or {}
+    )
+    if not isinstance(payload, dict) or not payload.get("target_weights"):
+        return None
+    return payload
+
+
+def _target_builder_mode(payload: dict[str, Any]) -> str:
+    diagnostics = payload.get("diagnostics") or {}
+    mode = str(diagnostics.get("mode") or "").strip()
+    if mode == "deterministic_base_fallback":
+        return mode
+    return "target_builder_gated"
+
+
+def _run_target_builder_input_checks(
+    *,
+    target_weights: dict[str, float],
+    current_weights: dict[str, float],
+    hard_risks_map: dict[str, Any],
+    critical_alerts: list[dict[str, Any]],
+    regime: str,
+    override_mode: str | None,
+) -> tuple[dict[str, Any], list[str]]:
+    checks: dict[str, Any] = {
+        "target_builder_input_ok": {
+            "pass": bool(target_weights),
+            "actual": "present" if target_weights else "missing",
+            "threshold": "deterministic target_builder target_weights required",
+        }
+    }
+    reasons: list[str] = []
+
+    hard_risk_violations: list[str] = []
+    for ticker, risk in (hard_risks_map or {}).items():
+        clean = str(ticker or "").upper().strip()
+        if not clean or not risk:
+            continue
+        current = float(current_weights.get(clean, 0.0) or 0.0)
+        target = float(target_weights.get(clean, 0.0) or 0.0)
+        if current <= 1e-9 and target > 1e-9:
+            hard_risk_violations.append(clean)
+    checks["target_builder_hard_risk_ok"] = {
+        "pass": not hard_risk_violations,
+        "actual": hard_risk_violations,
+        "threshold": "no new exposure to hard-risk tickers",
+    }
+    if hard_risk_violations:
+        reasons.append(
+            "Target builder proposed new exposure to hard-risk tickers: "
+            + ", ".join(hard_risk_violations)
+        )
+
+    critical_violations: list[str] = []
+    for alert in critical_alerts or []:
+        ticker = str(alert.get("ticker") or "").upper().strip()
+        if not ticker:
+            continue
+        current = float(current_weights.get(ticker, 0.0) or 0.0)
+        target = float(target_weights.get(ticker, 0.0) or 0.0)
+        if target > current + 1e-9:
+            critical_violations.append(ticker)
+    checks["target_builder_critical_alert_ok"] = {
+        "pass": not critical_violations,
+        "actual": critical_violations,
+        "threshold": "no increased exposure to critical-alert tickers",
+    }
+    if critical_violations:
+        reasons.append(
+            "Target builder increased exposure to critical-alert tickers: "
+            + ", ".join(critical_violations)
+        )
+
+    defensive = override_mode == "DEFENSIVE" or regime in DEFENSIVE_REGIMES
+    checks["target_builder_defensive_context"] = {
+        "pass": True,
+        "actual": "defensive" if defensive else "normal",
+        "threshold": "diagnostic context; no overlay mutation in target_builder mode",
+    }
+    return checks, reasons
+
+
 # ═══════════════════════════════════════════════════════════════
 # Scorecard hard constraints
 # ═══════════════════════════════════════════════════════════════
@@ -506,6 +635,28 @@ def apply_scorecard_constraints(
 
     post = _cash_first_normalize(work)
     return _scorecard_enforcement_result(pre, post, base, scorecard, clip_log)
+
+
+def validate_scorecard_constraints(
+    *,
+    target_weights: dict[str, float],
+    base_weights: dict[str, float],
+    market_scorecard: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Validate target-builder output without mutating target weights."""
+    scorecard = market_scorecard or {}
+    pre = _normalize_weights(target_weights)
+    base = _clean_weight_map(base_weights)
+    compliance = _check_scorecard_compliance(pre, base, scorecard)
+    return {
+        "applied": False,
+        "mode": "validation_only",
+        "target_weights_pre_scorecard_clip": pre,
+        "target_weights_post_scorecard_clip": pre,
+        "violations": compliance.get("violations") or [],
+        "clip_log": [],
+        "post_clip_compliance": compliance,
+    }
 
 
 def _scorecard_enforcement_result(
@@ -702,6 +853,32 @@ def apply_style_constraints(
 
     post = _cash_first_normalize(work)
     return _style_enforcement_result(pre, post, base, current, style, market_scorecard, clip_log)
+
+
+def validate_style_constraints(
+    *,
+    target_weights: dict[str, float],
+    base_weights: dict[str, float],
+    current_weights: dict[str, float],
+    decision_style: dict[str, Any] | None,
+    market_scorecard: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate target-builder output without mutating target weights."""
+    pre = _normalize_weights(target_weights)
+    base = _clean_weight_map(base_weights)
+    current = _clean_weight_map(current_weights)
+    style = decision_style or {}
+    compliance = _check_style_compliance(pre, base, current, style, market_scorecard)
+    return {
+        "applied": False,
+        "mode": "validation_only",
+        "target_weights_pre_style_clip": pre,
+        "target_weights_post_style_clip": pre,
+        "violations": compliance.get("violations") or [],
+        "clip_log": [],
+        "post_clip_compliance": compliance,
+        "one_way_tightening_ok": _one_way_tightening_ok(pre, pre, market_scorecard),
+    }
 
 
 def _style_enforcement_result(

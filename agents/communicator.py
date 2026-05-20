@@ -126,6 +126,9 @@ def _build_payload(
     news_evidence = pipeline_context.get("news_evidence") or {}
     decision_style = pipeline_context.get("decision_style") or {}
     evidence_bundle = pipeline_context.get("evidence_bundle") or {}
+    bundle_data_quality = evidence_bundle.get("data_quality") or {}
+    source_timestamps = evidence_bundle.get("source_timestamps") or {}
+    feature_provenance = pipeline_context.get("feature_provenance") or {}
     knowledge = evidence_bundle.get("knowledge") or {}
     strategies = evidence_bundle.get("strategies") or {}
     enforcement = risk_out.get("scorecard_enforcement") or {}
@@ -165,11 +168,16 @@ def _build_payload(
             "warnings": (scorecard.get("warnings") or [])[:3],
         },
         "data_quality_detail": {
+            "overall": bundle_data_quality.get("overall"),
+            "warnings": (bundle_data_quality.get("warnings") or [])[:3],
+            "source_timestamps": source_timestamps,
+            "feature_source_counts": feature_provenance.get("source_counts") or {},
             "qc_snapshots": strategies.get("snapshot_count"),
             "qc_forward_samples": strategies.get("forward_return_samples"),
             "historical_snapshots": strategies.get("historical_snapshot_count"),
             "historical_forward_samples": strategies.get("historical_forward_return_samples"),
             "strategy_data_quality": strategies.get("data_quality"),
+            "news_data_quality": macro_news.get("data_quality"),
             "evidence_summary": strategies.get("evidence_summary") or {},
         },
         "scorecard_enforcement": {
@@ -400,7 +408,15 @@ def _format_data_quality_detail_line(detail: dict) -> str:
     hist = detail.get("historical_snapshots")
     hist_forward = detail.get("historical_forward_samples")
     strategy_quality = detail.get("strategy_data_quality")
+    news_quality = detail.get("news_data_quality")
+    overall = detail.get("overall")
+    source_counts = detail.get("feature_source_counts") or {}
+    source_timestamps = detail.get("source_timestamps") or {}
     bits = []
+    if source_counts.get("qc_heartbeat") is not None:
+        bits.append(f"QC heartbeat fields={int(source_counts.get('qc_heartbeat') or 0)}")
+    if source_counts.get("qc_daily_snapshot") is not None:
+        bits.append(f"Daily snapshot fields={int(source_counts.get('qc_daily_snapshot') or 0)}")
     if qc_snapshots is not None:
         bits.append(f"QC live snapshots={int(qc_snapshots or 0)}/{int(qc_forward or 0)} forward")
     if evidence.get("live_fit"):
@@ -409,8 +425,14 @@ def _format_data_quality_detail_line(detail: dict) -> str:
         bits.append(f"yfinance history={int(hist or 0)}/{int(hist_forward or 0)} forward")
     if evidence.get("historical_evidence"):
         bits.append(f"yfinance evidence={evidence.get('historical_evidence')}")
+    if news_quality:
+        news_cache = source_timestamps.get("macro_news_cache")
+        suffix = f" @{news_cache}" if news_cache else ""
+        bits.append(f"News cache={news_quality}{suffix}")
     if strategy_quality:
         bits.append(f"strategy_data={strategy_quality}")
+    if overall:
+        bits.append(f"overall={overall}")
     if not bits:
         return ""
     return (
@@ -650,6 +672,7 @@ def _compact_decision_ledger(ledger: dict) -> dict:
         lifecycle = row.get("trade_lifecycle") or {}
         governance = (row.get("evidence_used") or {}).get("position_governance") or {}
         explanation = row.get("explanation") or {}
+        advisory = row.get("llm_advisory") or {}
         rows.append({
             "ticker": row.get("ticker") or ticker,
             "proposed_action": row.get("proposed_action"),
@@ -661,6 +684,10 @@ def _compact_decision_ledger(ledger: dict) -> dict:
             "risk_rank": governance.get("risk_rank"),
             "position_state": explanation.get("position_state"),
             "final_target": lifecycle.get("final_target"),
+            "diagnostic_llm_target": lifecycle.get("diagnostic_llm_target"),
+            "target_builder_target": lifecycle.get("target_builder_target"),
+            "validated_advisory_delta": lifecycle.get("validated_advisory_delta"),
+            "advisory_validator_result": advisory.get("validator_result"),
             "changed_by": lifecycle.get("changed_by") or [],
             "source_effects": _compact_source_effects(row.get("source_effects") or {}),
             "sort_score": _decision_ledger_sort_score(row),
@@ -673,6 +700,8 @@ def _compact_decision_ledger(ledger: dict) -> dict:
             "risk_approved": summary.get("risk_approved"),
             "execution_status": summary.get("execution_status"),
             "governance_available": summary.get("governance_available"),
+            "target_construction_mode": summary.get("target_construction_mode"),
+            "raw_llm_adjusted_weights_consumed": summary.get("raw_llm_adjusted_weights_consumed"),
             "ticker_count": summary.get("ticker_count"),
         },
         "top_decisions": rows[:5],
@@ -723,6 +752,10 @@ def _format_decision_ledger_line(ledger: dict) -> str:
         status_bits.append(f"execution={summary.get('execution_status')}")
     if summary.get("governance_available") is not None:
         status_bits.append(f"governance={bool(summary.get('governance_available'))}")
+    if summary.get("target_construction_mode"):
+        status_bits.append(f"target={summary.get('target_construction_mode')}")
+    if summary.get("raw_llm_adjusted_weights_consumed") is not None:
+        status_bits.append(f"raw_llm={bool(summary.get('raw_llm_adjusted_weights_consumed'))}")
     if status_bits:
         lines.append("  " + " | ".join(status_bits))
     for row in rows[:5]:
@@ -733,8 +766,13 @@ def _format_decision_ledger_line(ledger: dict) -> str:
         changed_by = ",".join(str(item) for item in (row.get("changed_by") or [])[:2])
         sources = ",".join(str(item) for item in (row.get("source_effects") or [])[:4])
         suffix_parts = []
+        target_bits = _format_lifecycle_targets(row)
+        if target_bits:
+            suffix_parts.append(target_bits)
         if reasons:
             suffix_parts.append(reasons)
+        if row.get("advisory_validator_result"):
+            suffix_parts.append(f"advisory={row.get('advisory_validator_result')}")
         if changed_by:
             suffix_parts.append(f"changed_by={changed_by}")
         if sources:
@@ -744,6 +782,17 @@ def _format_decision_ledger_line(ledger: dict) -> str:
     if warnings:
         lines.append("  warnings: " + "; ".join(str(item) for item in warnings[:3]))
     return "\n".join(lines) + "\n\n"
+
+
+def _format_lifecycle_targets(row: dict) -> str:
+    parts = []
+    if row.get("final_target") is not None:
+        parts.append(f"final={float(row.get('final_target') or 0.0):.1%}")
+    if row.get("target_builder_target") is not None:
+        parts.append(f"tb={float(row.get('target_builder_target') or 0.0):.1%}")
+    if row.get("validated_advisory_delta") not in (None, 0, 0.0):
+        parts.append(f"adv={float(row.get('validated_advisory_delta') or 0.0):+.1%}")
+    return ",".join(parts)
 
 
 def _compact_source_effects(source_effects: dict) -> list[str]:

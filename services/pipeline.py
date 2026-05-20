@@ -10,19 +10,21 @@ Pipeline stages (10-stage Python-LLM-Python relay):
    4a. BULL RESEARCHER       (LLM)      -- draft thesis (no weights)
    4b. BEAR RESEARCHER       (LLM)      -- draft thesis (no weights, parallel with 4a)
    4c. CROSS_EXAM           (LLM)      -- swap arguments, short rebuttals (parallel with opposite side)
-    5. PM / SYNTHESIZER      (LLM)      -- sole adjusted_weights + decision_rationale
-    6. RISK MGR              (Python)   -- overlays + 6 checks -> final target_weights + token
+    5. PM / SYNTHESIZER      (LLM)      -- thesis/advisory + diagnostic adjusted_weights
+   5e. TARGET BUILDER        (Python)   -- deterministic target_weights from base + advisory
+    6. RISK MGR              (Python)   -- validation checks -> approval token
     6.5 POSITION MANAGER     (Python)   -- quantity/frequency constraints -> adjusted target_weights
     7. _save_analysis        (Python)   -- write agent_analysis table
     8. COMMUNICATOR          (LLM+fb)   -- Telegram copy (degradable)
     9. Branch: rejected / SEMI_AUTO pending / FULL_AUTO execute
 
-Core data flow (the baton being passed is weights):
+Core data flow:
     base_weights       (Stage 2 Python)       ->
     research_report    (Stage 3 LLM synthesis)  ->
     bull/bear_output   (Stage 4a/4b LLM debate) ->
-    adjusted_weights   (Stage 5 LLM arbitration) ->
-    target_weights     (Stage 6 Python)       ->
+    advisory_proposals (Stage 5 LLM semantics) ->
+    target_weights     (Stage 5e Python target_builder) ->
+    risk approval      (Stage 6 Python)       ->
     execute            (Stage 9 Python)
 
 News data is refreshed independently every 2h by cron/pre_fetch_news.py; the main pipeline
@@ -56,6 +58,7 @@ from services.decision_ledger import (
     apply_execution_audit_to_decision_ledger,
     build_decision_ledger,
 )
+from services.target_builder import build_target_weights, compare_target_weights
 from services.decision_live_validation import (
     format_decision_live_validation_report,
     validate_decision_live_artifacts,
@@ -69,7 +72,7 @@ from services.empirical_profile_store import (
 )
 from services.execution_audit import build_execution_audit_payload, count_today_actual_execution_actions
 from strategies              import compute_rebalance_actions, estimate_cost_pct
-from tracking.wandb_client   import PipelineRunTracker
+from tracking.monitor_client import PipelineRunTracker
 from db.session          import AsyncSessionLocal
 from db.queries          import get_system_config, upsert_system_config
 from db.models           import AgentAnalysis, AgentStepLog, ExecutionLog
@@ -500,6 +503,9 @@ async def _save_step_log(
 ) -> None:
     """Write one agent_step_log record. Silent failure, does not affect pipeline."""
     try:
+        token_usage = None
+        if isinstance(output_data, dict) and isinstance(output_data.get("_token_usage"), dict):
+            token_usage = output_data.get("_token_usage")
         async with AsyncSessionLocal() as db:
             db.add(AgentStepLog(
                 analysis_id = analysis_id,
@@ -509,6 +515,7 @@ async def _save_step_log(
                 output_data = output_data,
                 duration_ms = duration_ms,
                 model       = model,
+                token_usage = token_usage,
                 failed      = failed,
             ))
             await db.commit()
@@ -536,7 +543,7 @@ async def run_full_pipeline(trigger: str = "scheduled_hourly") -> dict:
 async def _run_pipeline_inner(trigger: str) -> dict:
     model_heavy = settings.openai_model_heavy
 
-    # MLflow tracking — starts here; all tracker calls are no-ops if MLflow disabled
+    # Local monitor telemetry facade. Durable per-stage data is written to AgentStepLog.
     tracker = PipelineRunTracker()
     regime_result_for_tracker: dict | None = None
     synthesizer_out_for_tracker: dict | None = None
@@ -737,6 +744,8 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     brief["market_scorecard"] = market_scorecard
     brief["news_evidence"] = news_evidence
     brief["decision_style"] = decision_style
+    pipeline_context["evidence_bundle"] = evidence_bundle
+    pipeline_context["feature_provenance"] = brief.get("feature_provenance") or {}
     pipeline_context["market_scorecard"] = market_scorecard
     pipeline_context["news_evidence"] = news_evidence
     pipeline_context["decision_style"] = decision_style
@@ -912,7 +921,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             f"{len(disagreement_map)} tickers with Bull/Bear conflict"
         )
 
-    # Stage 5: PM / SYNTHESIZER (LLM) —— final adjusted_weights + decision_rationale
+    # Stage 5: PM / SYNTHESIZER (LLM) —— advisory + diagnostic adjusted_weights
     risk_params = pipeline_context.get("risk_params", {})
     t0 = time.time()
     synthesizer_out = await run_synthesizer_async(
@@ -1002,7 +1011,8 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     else:
         logger.warning("[Stage5] No reasoning_chain in synthesizer output (Task 5)")
 
-    # ── Stage 5→6: PM Hard Clip (Task 7: confidence-aware) ─────────────────
+    # ── Stage 5 diagnostic guardrails: keep legacy adjusted_weights bounded for reporting.
+    # Execution target construction below uses advisory proposals and deterministic state.
     adjusted_weights_raw = synthesizer_out.get("adjusted_weights") or {}
     if not adjusted_weights_raw:
         logger.info("[Stage5→6] degraded fallback, skipping PM hard clip")
@@ -1099,8 +1109,71 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         else:
             logger.info("[Stage5→6] Proposal shaper passed, no pre-risk clip needed")
 
-    # Stage 6: RISK MGR (Python) —— overlays + 6 checks
-    # synthesizer_out interface compatible with old researcher_out, Risk MGR unchanged
+    target_builder_enabled = bool((pipeline_context.get("risk_params") or {}).get("target_builder_enabled", True))
+    if target_builder_enabled:
+        try:
+            pre_risk_governance = apply_position_governance(
+                target_weights=base_weights,
+                current_weights=brief.get("current_weights") or {},
+                holdings_meta=brief.get("holdings") or [],
+                strategy_evidence=evidence_bundle.get("strategies") or {},
+                market_scorecard=market_scorecard,
+                news_evidence=news_evidence,
+                llm_advisory_proposals=synthesizer_out.get("position_advisory_proposals") or [],
+                config=pipeline_context.get("position_governance_config") or {},
+            )
+            target_builder_gated = build_target_weights(
+                base_weights=base_weights,
+                current_weights=brief.get("current_weights") or {},
+                market_scorecard=market_scorecard,
+                decision_style=decision_style,
+                position_governance={
+                    "mode": "pre_risk_target_builder_gated",
+                    "position_decisions": pre_risk_governance.position_decisions,
+                    "advisory_overrides": pre_risk_governance.advisory_overrides,
+                    "portfolio_summary": pre_risk_governance.portfolio_summary,
+                },
+                validated_advisory=pre_risk_governance.advisory_overrides,
+                constraints={
+                    "max_turnover": (market_scorecard or {}).get("max_turnover_per_cycle"),
+                    "max_single_delta": (market_scorecard or {}).get("max_adjustment_from_base"),
+                },
+            ).to_dict()
+            pipeline_context["target_builder_enabled"] = True
+            pipeline_context["target_builder_gated"] = target_builder_gated
+            await _save_step_log(
+                analysis_id, "5e_target_builder_gated_input", "target_builder",
+                input_data={
+                    "mode": "gated_pre_risk",
+                    "base_weights": base_weights,
+                    "current_weights": brief.get("current_weights") or {},
+                    "market_scorecard": market_scorecard,
+                    "decision_style": decision_style,
+                },
+                output_data={
+                    "target_builder": target_builder_gated,
+                    "pre_risk_governance": {
+                        "position_decisions": pre_risk_governance.position_decisions,
+                        "advisory_overrides": pre_risk_governance.advisory_overrides,
+                        "trade_summary": pre_risk_governance.trade_summary,
+                    },
+                },
+                duration_ms=0,
+            )
+            logger.info("[Stage5→6] Target Builder gated input prepared")
+        except Exception as e:
+            pipeline_context["target_builder_enabled"] = True
+            pipeline_context["target_builder_gated_error"] = str(e)
+            logger.warning("[Stage5→6] Target Builder gated input failed; RiskMgr will use deterministic base fallback: %s", e)
+            await _save_step_log(
+                analysis_id, "5e_target_builder_gated_input", "target_builder",
+                input_data={"mode": "gated_pre_risk", "base_weights": base_weights},
+                output_data={"error": str(e), "fallback": "deterministic_base_weights"},
+                duration_ms=0,
+                failed=True,
+            )
+
+    # Stage 6: RISK MGR (Python) —— validate deterministic target + checks
     t0 = time.time()
     risk_out = await run_risk_manager_async(
         pipeline_context, brief, quant_baseline, synthesizer_out
@@ -1126,7 +1199,10 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     )
     await _save_step_log(
         analysis_id, "6_risk_mgr", "risk_manager",
-        input_data={"adjusted_weights": synthesizer_out.get("adjusted_weights")},
+        input_data={
+            "target_builder_input": pipeline_context.get("target_builder_gated"),
+            "diagnostic_llm_adjusted_weights": synthesizer_out.get("adjusted_weights"),
+        },
         output_data=risk_out,
         duration_ms=dur_risk,
     )
@@ -1322,6 +1398,64 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             },
             duration_ms=0,
         )
+
+    if risk_out.get("position_governance"):
+        try:
+            target_builder_out = build_target_weights(
+                base_weights=base_weights,
+                current_weights=brief.get("current_weights") or {},
+                market_scorecard=market_scorecard,
+                decision_style=decision_style,
+                position_governance=risk_out.get("position_governance") or {},
+                validated_advisory=(risk_out.get("position_governance") or {}).get("advisory_overrides") or [],
+                constraints={
+                    "max_turnover": (market_scorecard or {}).get("max_turnover_per_cycle"),
+                    "max_single_delta": (market_scorecard or {}).get("max_adjustment_from_base"),
+                },
+            ).to_dict()
+            target_builder_diff = compare_target_weights(
+                live_target_weights=risk_out.get("target_weights") or {},
+                shadow_target_weights=target_builder_out.get("target_weights") or {},
+            )
+            risk_out["target_builder_shadow"] = {
+                **target_builder_out,
+                "live_target_diff": target_builder_diff,
+            }
+            if target_builder_diff.get("requires_review"):
+                logger.warning(
+                    "[Stage6bb] Target Builder shadow diff requires review | max_diff=%s turnover_diff=%s",
+                    target_builder_diff.get("max_abs_diff"),
+                    target_builder_diff.get("aggregate_turnover_diff"),
+                )
+            else:
+                logger.info("[Stage6bb] Target Builder shadow completed, no material diff")
+            await _save_step_log(
+                analysis_id, "6bb_target_builder_shadow", "target_builder",
+                input_data={
+                    "mode": "shadow",
+                    "base_weights": base_weights,
+                    "current_weights": brief.get("current_weights") or {},
+                    "market_scorecard": market_scorecard,
+                    "decision_style": decision_style,
+                    "position_governance_available": True,
+                },
+                output_data=risk_out["target_builder_shadow"],
+                duration_ms=0,
+            )
+        except Exception as e:
+            logger.warning("[pipeline] target builder shadow failed: %s", e)
+            risk_out["target_builder_shadow_error"] = str(e)
+            await _save_step_log(
+                analysis_id, "6bb_target_builder_shadow", "target_builder",
+                input_data={
+                    "mode": "shadow",
+                    "base_weights": base_weights,
+                    "current_weights": brief.get("current_weights") or {},
+                },
+                output_data={"error": str(e)},
+                duration_ms=0,
+                failed=True,
+            )
 
     try:
         decision_ledger = build_decision_ledger(

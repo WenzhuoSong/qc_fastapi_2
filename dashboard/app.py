@@ -28,7 +28,7 @@ for _key in (
 ):
     os.environ.setdefault(_key, "dashboard-unused")
 
-from db.models import AgentAnalysis, CronRunLog, ExecutionLog, QCSnapshot, SystemConfig
+from db.models import AgentAnalysis, AgentStepLog, CronRunLog, ExecutionLog, QCSnapshot, SystemConfig
 from db.session import AsyncSessionLocal
 from services.operational_health import build_operational_health_snapshot
 from services.playground import _recent_snapshot_row_limit
@@ -103,6 +103,7 @@ async def _latest_analysis() -> dict[str, Any]:
         ).scalar_one_or_none()
     if not row:
         return {"available": False}
+    stage_metrics = await _latest_stage_metrics(int(row.id))
 
     risk = row.risk_output or {}
     decision = row.decision or {}
@@ -129,8 +130,32 @@ async def _latest_analysis() -> dict[str, Any]:
         "strategy_detail": strategy_detail,
         "position_governance": _compact_governance(governance),
         "decision_ledger": _compact_ledger(ledger),
+        "stage_metrics": stage_metrics,
         "rejection_reasons": (risk.get("rejection_reasons") if isinstance(risk, dict) else []) or [],
     }
+
+
+async def _latest_stage_metrics(analysis_id: int) -> list[dict[str, Any]]:
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.execute(
+                select(AgentStepLog)
+                .where(AgentStepLog.analysis_id == analysis_id)
+                .order_by(AgentStepLog.created_at, AgentStepLog.id)
+            )
+        ).scalars().all()
+    return [
+        {
+            "stage": row.stage,
+            "agent": row.agent_name,
+            "duration_ms": row.duration_ms,
+            "model": row.model,
+            "prompt_tokens": (row.token_usage or {}).get("prompt_tokens"),
+            "completion_tokens": (row.token_usage or {}).get("completion_tokens"),
+            "failed": bool(row.failed),
+        }
+        for row in rows
+    ]
 
 
 async def _latest_cron_runs() -> list[dict[str, Any]]:
@@ -334,11 +359,44 @@ def _sort_by_current_weight(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _compact_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
     if not ledger:
         return {"available": False}
+    rows = ledger.get("top_decisions")
+    if not rows:
+        rows = _ledger_rows_from_tickers(ledger.get("tickers") or {})
     return {
         "available": True,
         "portfolio_summary": ledger.get("portfolio_summary") or {},
-        "top_decisions": ledger.get("top_decisions") or [],
+        "top_decisions": rows,
     }
+
+
+def _ledger_rows_from_tickers(tickers: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for ticker, raw in tickers.items():
+        if not isinstance(raw, dict):
+            continue
+        lifecycle = raw.get("trade_lifecycle") or {}
+        advisory = raw.get("llm_advisory") or {}
+        rows.append({
+            "ticker": raw.get("ticker") or ticker,
+            "proposed_action": raw.get("proposed_action"),
+            "final_action": raw.get("final_action"),
+            "execution_status": raw.get("execution_status"),
+            "risk_result": raw.get("risk_result"),
+            "final_target": lifecycle.get("final_target"),
+            "target_builder_target": lifecycle.get("target_builder_target"),
+            "diagnostic_llm_target": lifecycle.get("diagnostic_llm_target"),
+            "validated_advisory_delta": lifecycle.get("validated_advisory_delta"),
+            "changed_by": lifecycle.get("changed_by") or [],
+            "advisory_validator_result": advisory.get("validator_result"),
+            "source_effects": raw.get("source_effects") or {},
+        })
+    return sorted(
+        rows,
+        key=lambda row: (
+            str(row.get("final_action") or "") not in {"none", "unknown"},
+            str(row.get("ticker") or ""),
+        ),
+    )
 
 
 def render_dashboard(summary: dict[str, Any]) -> str:
@@ -427,7 +485,8 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
       <h3>Manual Review Hints</h3>{_render_table(hints, ["ticker", "suggested_action", "current_weight", "suggested_target", "delta"])}
       <h3>Thesis Problems</h3>{_render_table(thesis, ["ticker", "status", "validator"])}
       <h3>Position Explanations</h3>{_render_table(governance.get("position_explanations") or [], ["ticker", "position_state", "decision", "current_weight", "target_after", "unrealized_pnl_pct", "risk_budget_status", "strategy_support", "action_permission", "why_hold", "why_not_add", "why_not_exit", "next_trigger"])}
-      <h3>Decision Ledger</h3>{_render_table((latest.get("decision_ledger") or {}).get("top_decisions") or [], ["ticker", "proposed_action", "final_action", "execution_status", "risk_result"])}
+      <h3>Decision Ledger</h3>{_render_table((latest.get("decision_ledger") or {}).get("top_decisions") or [], ["ticker", "proposed_action", "final_action", "execution_status", "risk_result", "final_target", "target_builder_target", "diagnostic_llm_target", "validated_advisory_delta", "advisory_validator_result", "changed_by"])}
+      <h3>Pipeline Stage Telemetry</h3>{_render_table(latest.get("stage_metrics") or [], ["stage", "agent", "duration_ms", "model", "prompt_tokens", "completion_tokens", "failed"])}
     """
 
 
