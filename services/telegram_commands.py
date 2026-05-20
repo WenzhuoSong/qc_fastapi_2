@@ -3,11 +3,13 @@
 Telegram 命令处理。由 web 服务的 telegram_webhook 调用。
 """
 import logging
+from datetime import datetime, timedelta
 
 from db.session         import AsyncSessionLocal
 from db.queries         import get_system_config, upsert_system_config, get_latest_portfolio
 from tools.db_tools     import tool_verify_approval_token
 from tools.qc_tools     import tool_send_weight_command
+from tools.notify_tools import tool_send_telegram
 from services.proposal  import load_pending_proposal, mark_proposal_done
 from config             import get_settings
 
@@ -44,7 +46,7 @@ async def handle_telegram_command(text: str, from_chat_id: str) -> str:
 async def _cmd_confirm() -> str:
     pending = await load_pending_proposal()
     if not pending or pending.get("status") != "pending":
-        return "No pending proposal."
+        return await _cmd_confirm_circuit_override()
 
     weights = pending.get("weights", {})
     token   = pending.get("token", "")
@@ -60,6 +62,36 @@ async def _cmd_confirm() -> str:
         await mark_proposal_done(pending.get("analysis_id"), "executed_user_confirmed")
         return "✅ Execution confirmed."
     return f"❌ Execution failed: {result.get('error')}"
+
+
+async def _cmd_confirm_circuit_override() -> str:
+    async with AsyncSessionLocal() as db:
+        circuit_cfg = await get_system_config(db, "circuit_state")
+    circuit = _circuit_state_from_cfg(circuit_cfg)
+    if circuit not in {"ALERT", "DEFENSIVE"}:
+        return "No pending proposal."
+
+    now = datetime.utcnow()
+    expires_at = now + timedelta(minutes=30)
+    async with AsyncSessionLocal() as db:
+        await upsert_system_config(
+            db,
+            "circuit_override",
+            {
+                "value": "ONE_SHOT",
+                "circuit_state": circuit,
+                "uses_remaining": 1,
+                "created_at": now.isoformat(),
+                "expires_at": expires_at.isoformat(),
+                "reason": "human_confirmed_circuit_override",
+            },
+            "user",
+        )
+    return (
+        f"✅ Circuit override armed for the next FULL_AUTO run "
+        f"while Circuit={circuit}. Risk manager will still run in DEFENSIVE mode. "
+        f"Use /reset_circuit only after the condition is resolved."
+    )
 
 
 async def _cmd_skip() -> str:
@@ -124,6 +156,10 @@ async def _cmd_reset_circuit() -> str:
     })
     logger.warning("[circuit_breaker] Circuit manually reset to CLOSED by human command")
     return "🟢 Circuit breaker reset to CLOSED. Pipeline will resume normal operation."
+
+
+def _circuit_state_from_cfg(circuit_cfg) -> str:
+    return str((circuit_cfg.value if circuit_cfg else {}).get("value", "CLOSED"))
 
 
 async def _cmd_config(text: str) -> str:

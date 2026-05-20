@@ -429,6 +429,8 @@ async def _guard_and_config(trigger: str) -> dict | None:
         alerts_cfg      = await get_system_config(db, "pending_critical_alerts")
         pm_cfg          = await get_system_config(db, "position_manager_config")
         pg_cfg          = await get_system_config(db, "position_governance_config")
+        override_cfg    = await get_system_config(db, "circuit_override")
+        alert_cfg       = await get_system_config(db, "circuit_pause_alert")
 
     paused = bool((paused_cfg.value if paused_cfg else {}).get("paused", False))
     if paused:
@@ -445,20 +447,17 @@ async def _guard_and_config(trigger: str) -> dict | None:
     # ── Phase 3: Circuit state — circuit is already evaluated at pipeline entry ─
     # circuit_cfg.value may be stale; we use it as fallback only
     circuit = (circuit_cfg.value if circuit_cfg else {"value": "CLOSED"}).get("value", "CLOSED")
+    circuit_override_consumed = False
 
     # Phase 3: In FULL_AUTO with circuit ALERT/DEFENSIVE, alert instead of running
     if auth_mode == "FULL_AUTO" and circuit in ("ALERT", "DEFENSIVE"):
-        from tools.notify_tools import tool_send_telegram
-        emoji = "🟡" if circuit == "ALERT" else "🔴"
-        await tool_send_telegram({
-            "text": (
-                f"{emoji} FULL_AUTO: Circuit={circuit} is open. "
-                f"Pipeline paused for {circuit}. "
-                f"Reply /confirm to override or /reset_circuit once resolved."
-            )
-        })
-        logger.warning(f"[pipeline] FULL_AUTO blocked by circuit={circuit}")
-        return None
+        circuit_override_consumed = await _consume_circuit_override(circuit, override_cfg)
+        if circuit_override_consumed:
+            logger.warning(f"[pipeline] FULL_AUTO circuit override consumed for circuit={circuit}")
+        else:
+            await _send_circuit_pause_alert_if_due(circuit, alert_cfg)
+            logger.warning(f"[pipeline] FULL_AUTO blocked by circuit={circuit}")
+            return None
 
     active_name = (active_cfg.value if active_cfg else {"value": "momentum_lite_v1"}).get(
         "value", "momentum_lite_v1"
@@ -479,6 +478,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "plan_id":           f"P-{datetime.utcnow().strftime('%Y%m%d-%H%M')}",
         "auth_mode":         auth_mode,
         "circuit_state":     circuit,
+        "circuit_override_consumed": circuit_override_consumed,
         "override_mode":     override_mode,
         "risk_params":       risk_params,
         "active_strategy":   active_name,
@@ -487,6 +487,64 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "position_manager_config": position_manager_config,
         "position_governance_config": position_governance_config,
     }
+
+
+async def _consume_circuit_override(circuit: str, override_cfg) -> bool:
+    value = (override_cfg.value if override_cfg else {}) or {}
+    if value.get("value") != "ONE_SHOT":
+        return False
+    if str(value.get("circuit_state") or "") != circuit:
+        return False
+    if int(value.get("uses_remaining") or 0) <= 0:
+        return False
+    expires_at = _parse_iso_datetime(value.get("expires_at"))
+    if expires_at and expires_at < datetime.utcnow():
+        return False
+
+    updated = dict(value)
+    updated["uses_remaining"] = 0
+    updated["consumed_at"] = datetime.utcnow().isoformat()
+    async with AsyncSessionLocal() as db:
+        await upsert_system_config(db, "circuit_override", updated, "pipeline")
+    return True
+
+
+async def _send_circuit_pause_alert_if_due(circuit: str, alert_cfg) -> None:
+    value = (alert_cfg.value if alert_cfg else {}) or {}
+    now = datetime.utcnow()
+    last_sent = _parse_iso_datetime(value.get("last_sent_at"))
+    last_circuit = str(value.get("circuit_state") or "")
+    if last_sent and last_circuit == circuit and now - last_sent < timedelta(minutes=30):
+        return
+
+    emoji = "🟡" if circuit == "ALERT" else "🔴"
+    await tool_send_telegram({
+        "text": (
+            f"{emoji} FULL_AUTO: Circuit={circuit} is open. "
+            f"Pipeline paused for {circuit}. "
+            f"Reply /confirm to override the next run or /reset_circuit once resolved."
+        )
+    })
+    async with AsyncSessionLocal() as db:
+        await upsert_system_config(
+            db,
+            "circuit_pause_alert",
+            {
+                "circuit_state": circuit,
+                "last_sent_at": now.isoformat(),
+                "min_interval_minutes": 30,
+            },
+            "pipeline",
+        )
+
+
+def _parse_iso_datetime(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
 
 
 # ─────────────────────────────── Step Log Helper ───────────────────────────────
@@ -1642,7 +1700,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         else:
             # Phase 3: Re-check circuit state — could have escalated during pipeline run
             circuit = pipeline_context.get("circuit_state", "CLOSED")
-            if circuit in ("ALERT", "DEFENSIVE"):
+            if circuit in ("ALERT", "DEFENSIVE") and not pipeline_context.get("circuit_override_consumed"):
                 # Circuit opened mid-pipeline — store as pending, alert human
                 await _send_semi_auto_proposal(pipeline_context, risk_out, comm_out, analysis_id)
                 pipeline_status = f"full_auto_circuit_{circuit.lower()}"
