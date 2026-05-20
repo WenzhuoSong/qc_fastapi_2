@@ -273,6 +273,18 @@ def _build_ticker_row(
         governance_decision=governance_decision if governance_available else None,
         risk_approved=risk_approved,
     )
+    explanation = _execution_explanation(
+        ticker=ticker,
+        current_weight=current_weight,
+        target_weight=target_weight,
+        risk_approved=risk_approved,
+        governance_explanation=governance_explanation,
+        governance_decision=governance_decision if governance_available else None,
+        advisory_override=advisory_override,
+        trade_lifecycle=trade_lifecycle,
+        reason_codes=reason_codes,
+        risk=risk,
+    )
 
     return {
         "ticker": ticker,
@@ -299,7 +311,7 @@ def _build_ticker_row(
         "risk_result": "approved" if risk_approved else "blocked",
         "governance_available": governance_available,
         "reason_codes": reason_codes,
-        "explanation": governance_explanation,
+        "explanation": explanation,
         "placeholders": {
             "scorecard": None,
             "execution_audit": None,
@@ -312,6 +324,168 @@ def _build_ticker_row(
             "target_builder_target": None if target_builder_target is not None else "missing",
         },
     }
+
+
+def _execution_explanation(
+    *,
+    ticker: str,
+    current_weight: float,
+    target_weight: float | None,
+    risk_approved: bool,
+    governance_explanation: dict[str, Any] | None,
+    governance_decision: dict[str, Any] | None,
+    advisory_override: dict[str, Any] | None,
+    trade_lifecycle: dict[str, Any],
+    reason_codes: list[str],
+    risk: dict[str, Any],
+) -> dict[str, Any] | None:
+    base = dict(governance_explanation or {})
+    if not base and not trade_lifecycle:
+        return None
+    base["strategy_intent"] = _strategy_intent_text(trade_lifecycle, governance_decision)
+    base["llm_effect"] = _llm_effect_text(
+        trade_lifecycle=trade_lifecycle,
+        advisory_override=advisory_override,
+        risk=risk,
+    )
+    base["construction_effect"] = _construction_effect_text(trade_lifecycle, reason_codes)
+    base["risk_governance_effect"] = _risk_governance_effect_text(
+        risk_approved=risk_approved,
+        governance_decision=governance_decision,
+        reason_codes=reason_codes,
+    )
+    base["final_explanation"] = _final_execution_explanation(
+        ticker=ticker,
+        current_weight=current_weight,
+        target_weight=target_weight,
+        governance_decision=governance_decision,
+        trade_lifecycle=trade_lifecycle,
+        risk_approved=risk_approved,
+        explanation=base,
+    )
+    base["execution_chain"] = {
+        "available_stages": trade_lifecycle.get("available_stages") or [],
+        "changed_by": trade_lifecycle.get("changed_by") or [],
+        "current_weight": trade_lifecycle.get("current_weight"),
+        "base_weight": trade_lifecycle.get("base_weight"),
+        "strategy_target": trade_lifecycle.get("strategy_target"),
+        "diagnostic_llm_target": trade_lifecycle.get("diagnostic_llm_target"),
+        "portfolio_construction_target": trade_lifecycle.get("portfolio_construction_target"),
+        "target_builder_target": trade_lifecycle.get("target_builder_target"),
+        "risk_target": trade_lifecycle.get("risk_target"),
+        "governance_target": trade_lifecycle.get("governance_target"),
+        "final_target": trade_lifecycle.get("final_target"),
+    }
+    return base
+
+
+def _strategy_intent_text(
+    trade_lifecycle: dict[str, Any],
+    governance_decision: dict[str, Any] | None,
+) -> str:
+    base = trade_lifecycle.get("base_weight")
+    strategy = trade_lifecycle.get("strategy_target")
+    support = (governance_decision or {}).get("strategy_support")
+    parts = []
+    if base is not None:
+        parts.append(f"quant baseline={_pct(base)}")
+    if strategy is not None:
+        parts.append(f"strategy consensus={_pct(strategy)}")
+    if support:
+        parts.append(f"support={support}")
+    return "; ".join(parts) if parts else "no strategy target evidence available"
+
+
+def _llm_effect_text(
+    *,
+    trade_lifecycle: dict[str, Any],
+    advisory_override: dict[str, Any] | None,
+    risk: dict[str, Any],
+) -> str:
+    raw_consumed = risk.get("raw_llm_adjusted_weights_consumed")
+    diagnostic = trade_lifecycle.get("diagnostic_llm_target")
+    validated_delta = trade_lifecycle.get("validated_advisory_delta")
+    validator = (advisory_override or {}).get("validator_result")
+    if raw_consumed is False:
+        if validated_delta not in (None, 0, 0.0):
+            return f"raw LLM weights not consumed; validated advisory delta={_pct(validated_delta)}"
+        if diagnostic is not None:
+            return f"raw LLM target {_pct(diagnostic)} recorded as diagnostic only"
+        return "raw LLM weights not consumed; advisory is semantic evidence only"
+    if validator:
+        return f"LLM advisory validator={validator}"
+    if diagnostic is not None:
+        return f"LLM diagnostic target={_pct(diagnostic)}"
+    return "no LLM weight effect recorded"
+
+
+def _construction_effect_text(trade_lifecycle: dict[str, Any], reason_codes: list[str]) -> str:
+    changed = set(str(item) for item in trade_lifecycle.get("changed_by") or [])
+    pc = trade_lifecycle.get("portfolio_construction_target")
+    tb = trade_lifecycle.get("target_builder_target")
+    if "portfolio_construction_target" in changed and pc is not None:
+        return f"portfolio construction target={_pct(pc)} after exposure, basket, and turnover constraints"
+    if "target_builder_target" in changed and tb is not None:
+        return f"target builder deterministic target={_pct(tb)}"
+    if any("basket" in str(code) for code in reason_codes):
+        return "basket review constrained additional exposure"
+    if any(str(code).endswith("_concentration_high") for code in reason_codes):
+        return "group concentration constrained additional exposure"
+    return "construction left target effectively unchanged"
+
+
+def _risk_governance_effect_text(
+    *,
+    risk_approved: bool,
+    governance_decision: dict[str, Any] | None,
+    reason_codes: list[str],
+) -> str:
+    decision = (governance_decision or {}).get("decision")
+    permission = (governance_decision or {}).get("action_permission")
+    if not risk_approved:
+        return "risk manager blocked execution; final target reverts to current weight"
+    if "scorecard_human_required" in reason_codes:
+        return f"governance decision={decision}; scorecard requires human confirmation"
+    if "hard_risk" in reason_codes:
+        return f"governance decision={decision}; hard-risk review allows trim/exit only"
+    if permission:
+        return f"governance decision={decision}; permission={permission}"
+    return f"governance decision={decision or 'unknown'}"
+
+
+def _final_execution_explanation(
+    *,
+    ticker: str,
+    current_weight: float,
+    target_weight: float | None,
+    governance_decision: dict[str, Any] | None,
+    trade_lifecycle: dict[str, Any],
+    risk_approved: bool,
+    explanation: dict[str, Any],
+) -> str:
+    final_target = trade_lifecycle.get("final_target")
+    decision = (governance_decision or {}).get("decision") or "hold"
+    state = explanation.get("position_state")
+    support = (governance_decision or {}).get("strategy_support")
+    pnl = (governance_decision or {}).get("unrealized_pnl_pct")
+    risk_budget = (governance_decision or {}).get("risk_budget_status")
+    bits = [
+        f"{ticker} {decision} at {_pct(final_target if final_target is not None else target_weight if target_weight is not None else current_weight)}",
+    ]
+    if isinstance(pnl, (int, float)):
+        bits.append(f"PnL={_pct(pnl)}")
+    if risk_budget:
+        bits.append(f"risk_budget={risk_budget}")
+    if support:
+        bits.append(f"strategy_support={support}")
+    if state:
+        bits.append(f"state={state}")
+    if not risk_approved:
+        bits.append("risk blocked execution")
+    changed = trade_lifecycle.get("changed_by") or []
+    if changed:
+        bits.append("changed_by=" + ",".join(str(item) for item in changed[:3]))
+    return "; ".join(bits)
 
 
 def _sparse_trade_lifecycle(
@@ -877,6 +1051,13 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return float(value) if value is not None else default
     except (TypeError, ValueError):
         return default
+
+
+def _pct(value: Any) -> str:
+    try:
+        return f"{float(value):.1%}"
+    except (TypeError, ValueError):
+        return "n/a"
 
 
 def _unique(values: list[str]) -> list[str]:

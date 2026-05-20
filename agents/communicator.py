@@ -710,6 +710,9 @@ def _compact_decision_ledger(ledger: dict) -> dict:
             "governance_decision": governance.get("decision"),
             "risk_rank": governance.get("risk_rank"),
             "position_state": explanation.get("position_state"),
+            "final_explanation": explanation.get("final_explanation"),
+            "llm_effect": explanation.get("llm_effect"),
+            "construction_effect": explanation.get("construction_effect"),
             "final_target": lifecycle.get("final_target"),
             "diagnostic_llm_target": lifecycle.get("diagnostic_llm_target"),
             "target_builder_target": lifecycle.get("target_builder_target"),
@@ -804,6 +807,8 @@ def _format_decision_ledger_line(ledger: dict) -> str:
             suffix_parts.append(f"changed_by={changed_by}")
         if sources:
             suffix_parts.append(f"sources={sources}")
+        if row.get("final_explanation"):
+            suffix_parts.append(str(row.get("final_explanation")))
         suffix = " | " + " | ".join(suffix_parts) if suffix_parts else ""
         lines.append(f"  {ticker}: {proposed} -> {final}{suffix}")
     if warnings:
