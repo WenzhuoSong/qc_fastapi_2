@@ -31,18 +31,35 @@ class TargetBuilderTest(unittest.TestCase):
             },
             validated_advisory=[],
             constraints={},
+            mode="target_builder_shadow",
         )
 
         first = build_target_weights(**payload).to_dict()
         second = build_target_weights(**payload).to_dict()
 
         self.assertEqual(first, second)
-        self.assertEqual(first["diagnostics"]["mode"], "shadow")
+        self.assertEqual(first["diagnostics"]["mode"], "target_builder_shadow")
         self.assertEqual(first["diagnostics"]["execution_effect"], "none")
         self.assertFalse(first["diagnostics"]["consumes_raw_llm_adjusted_weights"])
+        self.assertFalse(first["diagnostics"]["raw_llm_adjusted_weights_consumed"])
         self.assertEqual(first["target_weights"]["QQQ"], 0.11)
         self.assertEqual(first["per_ticker"]["QQQ"]["validated_llm_delta"], -0.01)
         self.assertIn("governance_adjustment", first["target_build_steps"])
+
+    def test_gated_mode_is_explicit_in_diagnostics(self):
+        out = build_target_weights(
+            base_weights={"QQQ": 0.14, "CASH": 0.86},
+            current_weights={"QQQ": 0.12, "CASH": 0.88},
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[],
+            constraints={},
+            mode="target_builder_gated",
+        ).to_dict()
+
+        self.assertEqual(out["diagnostics"]["mode"], "target_builder_gated")
+        self.assertFalse(out["diagnostics"]["raw_llm_adjusted_weights_consumed"])
 
     def test_scorecard_no_add_clips_base_target_to_current(self):
         out = build_target_weights(

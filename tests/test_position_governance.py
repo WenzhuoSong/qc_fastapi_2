@@ -337,6 +337,35 @@ class PositionGovernanceTest(unittest.TestCase):
         self.assertGreaterEqual(summary["counts"]["weakening"], 2)
         self.assertEqual(summary["execution_authority"], "none")
 
+    def test_thesis_review_queue_flags_loss_review_without_execution_authority(self):
+        out = apply_position_governance(
+            target_weights={"FTXL": 0.06, "CASH": 0.94},
+            current_weights={"FTXL": 0.06, "CASH": 0.94},
+            holdings_meta=[
+                {
+                    "ticker": "FTXL",
+                    "universe_role": "satellite",
+                    "unrealized_pnl_pct": -0.05,
+                    "atr_pct": 0.018,
+                    "holding_days": 18,
+                },
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {"strategy_name": "momentum_lite_v1", "suggested_use": "advisory", "selected_tickers": ["FTXL"]}
+                ],
+            },
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            news_evidence={},
+        )
+
+        queue = out.portfolio_summary["thesis_review_queue"]
+        self.assertEqual(queue[0]["ticker"], "FTXL")
+        self.assertTrue(queue[0]["required"])
+        self.assertEqual(queue[0]["execution_authority"], "none")
+        self.assertIn("loss_review", queue[0]["reason"])
+        self.assertEqual(queue[0]["review_input"]["current_state"]["holding_days"], 18)
+
     def test_advisory_basket_loss_escalates_to_manual_trim_review_without_auto_trim(self):
         out = apply_position_governance(
             target_weights={"FTXL": 0.06, "SOXX": 0.06, "CASH": 0.88},

@@ -31,12 +31,92 @@ def certify_strategies(strategy_evidence: dict[str, Any] | None) -> dict[str, An
     return {
         "items": certifications,
         "summary": summary,
+        "audit": build_strategy_certification_audit(certifications),
         "policy": {
             "min_historical_samples": MIN_HISTORICAL_SAMPLES,
             "min_live_samples": MIN_LIVE_SAMPLES,
             "max_advisory_turnover": MAX_ADVISORY_TURNOVER,
             "certified_status_deferred": True,
         },
+    }
+
+
+def build_strategy_certification_audit(certifications: dict[str, dict[str, Any]] | None) -> dict[str, Any]:
+    """Return an operator-facing audit view over certification output."""
+    rows: list[dict[str, Any]] = []
+    suggested_advisory_not_certified: list[str] = []
+    disabled_or_experimental: list[str] = []
+    promotion_candidates: list[str] = []
+
+    for name, row in sorted((certifications or {}).items()):
+        if not isinstance(row, dict):
+            continue
+        historical = row.get("historical") or {}
+        live = row.get("live") or {}
+        walk_forward = row.get("walk_forward") or {}
+        status = str(row.get("status") or "experimental")
+        suggested_use = str(row.get("suggested_use") or "watch_only")
+        approved_use = str(row.get("approved_use") or "none")
+        promotion_blockers = list(row.get("promotion_blockers") or [])
+        demotion_reasons = list(row.get("demotion_reasons") or [])
+        promotion_eligible = (
+            status == "advisory"
+            and approved_use == "advisory"
+            and not promotion_blockers
+            and not demotion_reasons
+        )
+        risk_flags: list[str] = []
+        if suggested_use in {"primary", "advisory"} and approved_use != "advisory":
+            risk_flags.append("suggested_use_not_certified_for_execution")
+            suggested_advisory_not_certified.append(name)
+        if status in {"disabled", "experimental"}:
+            risk_flags.append(f"status_{status}")
+            disabled_or_experimental.append(name)
+        if demotion_reasons:
+            risk_flags.append("has_demotion_reasons")
+        if promotion_blockers:
+            risk_flags.append("has_promotion_blockers")
+        if promotion_eligible:
+            promotion_candidates.append(name)
+
+        rows.append({
+            "strategy_name": name,
+            "status": status,
+            "suggested_use": suggested_use,
+            "approved_use": approved_use,
+            "confidence_score": row.get("confidence_score"),
+            "historical_samples": historical.get("samples"),
+            "historical_sharpe": historical.get("sharpe"),
+            "historical_hit_rate": historical.get("hit_rate"),
+            "live_samples": live.get("samples"),
+            "live_fit": live.get("fit"),
+            "walk_forward_level": walk_forward.get("level"),
+            "walk_forward_valid_folds": walk_forward.get("valid_folds"),
+            "walk_forward_pass_rate": walk_forward.get("pass_rate"),
+            "turnover": row.get("turnover"),
+            "promotion_eligible": promotion_eligible,
+            "promotion_blockers": promotion_blockers,
+            "demotion_reasons": demotion_reasons,
+            "risk_flags": _unique(risk_flags),
+        })
+
+    rows.sort(
+        key=lambda item: (
+            _status_rank(str(item.get("status") or "")),
+            -float(item.get("confidence_score") or 0.0),
+            str(item.get("strategy_name") or ""),
+        )
+    )
+    return {
+        "rows": rows,
+        "summary": {
+            "total": len(rows),
+            "promotion_candidates": promotion_candidates,
+            "suggested_advisory_not_certified": suggested_advisory_not_certified,
+            "disabled_or_experimental": disabled_or_experimental,
+            "requires_operator_review": bool(suggested_advisory_not_certified or disabled_or_experimental),
+        },
+        "execution_authority": "none",
     }
 
 
@@ -47,6 +127,10 @@ def _certify_one(*, row: dict[str, Any], evidence: dict[str, Any]) -> dict[str, 
     turnover = _to_float(row.get("turnover"), 0.0) or 0.0
     sharpe = _to_float(row.get("historical_sharpe"), None)
     hit_rate = _to_float(row.get("historical_hit_rate"), None)
+    walk_forward_level = str(row.get("walk_forward_level") or "missing")
+    walk_forward_valid_folds = int(_to_float(row.get("walk_forward_valid_folds"), 0) or 0)
+    walk_forward_pass_rate = _to_float(row.get("walk_forward_pass_rate"), None)
+    walk_forward_stability_score = _to_float(row.get("walk_forward_stability_score"), None)
     data_ready = bool(row.get("data_ready"))
     can_influence = bool(row.get("can_influence_allocation"))
     suggested_use = str(row.get("suggested_use") or "watch_only")
@@ -68,6 +152,10 @@ def _certify_one(*, row: dict[str, Any], evidence: dict[str, Any]) -> dict[str, 
         blockers.append("live_samples_insufficient")
     if live_fit in {"conflicted"}:
         demotion_reasons.append("live_fit_conflicted")
+    if walk_forward_level == "weak":
+        demotion_reasons.append("walk_forward_weak")
+    elif walk_forward_level == "insufficient":
+        blockers.append("walk_forward_insufficient")
     if turnover > MAX_ADVISORY_TURNOVER:
         demotion_reasons.append("turnover_high")
     if suggested_use in {"ignore"}:
@@ -83,6 +171,7 @@ def _certify_one(*, row: dict[str, Any], evidence: dict[str, Any]) -> dict[str, 
         turnover=turnover,
         suggested_use=suggested_use,
         sharpe=sharpe,
+        walk_forward_level=walk_forward_level,
     )
 
     return {
@@ -100,6 +189,12 @@ def _certify_one(*, row: dict[str, Any], evidence: dict[str, Any]) -> dict[str, 
         "live": {
             "samples": live_samples,
             "fit": live_fit,
+        },
+        "walk_forward": {
+            "level": walk_forward_level,
+            "valid_folds": walk_forward_valid_folds,
+            "pass_rate": walk_forward_pass_rate,
+            "stability_score": walk_forward_stability_score,
         },
         "turnover": turnover,
         "promotion_blockers": _unique(blockers),
@@ -152,6 +247,7 @@ def _status(
     turnover: float,
     suggested_use: str,
     sharpe: float | None,
+    walk_forward_level: str,
 ) -> str:
     if not data_ready or not can_influence or suggested_use == "ignore":
         return "disabled"
@@ -162,6 +258,8 @@ def _status(
     historical_supported = historical_evidence in {"strong", "medium", "historical_supported", "unknown"}
     if not historical_supported:
         return "experimental"
+    if walk_forward_level in {"weak", "insufficient"}:
+        return "research_supported"
     if (
         suggested_use == "advisory"
         and live_samples >= MIN_LIVE_SAMPLES
@@ -218,3 +316,12 @@ def _unique(values: list[str]) -> list[str]:
         seen.add(text)
         out.append(text)
     return out
+
+
+def _status_rank(status: str) -> int:
+    return {
+        "advisory": 0,
+        "research_supported": 1,
+        "experimental": 2,
+        "disabled": 3,
+    }.get(status, 9)

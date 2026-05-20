@@ -139,6 +139,34 @@ def format_rotation_for_prompt(rotation: dict[str, Any]) -> str:
     )
 
 
+def rotation_signal_strengths(rotation: dict[str, Any] | None) -> dict[str, float]:
+    """Return deterministic per-ticker rotation signals in [-1, 1].
+
+    Positive values indicate relative leadership, negative values indicate
+    lagging behavior. The scale is cross-sectional and deterministic for a
+    given rotation payload.
+    """
+    if not rotation or not rotation.get("has_signal"):
+        return {}
+    scores: dict[str, float] = {}
+    for bucket in ("leaders", "laggards", "sector_rank", "factor_rank"):
+        for row in rotation.get(bucket) or []:
+            if not isinstance(row, dict):
+                continue
+            ticker = str(row.get("ticker") or "").upper().strip()
+            score = _to_float(row.get("score"))
+            if not ticker or ticker == "CASH" or score is None:
+                continue
+            scores[ticker] = score
+    max_abs = max((abs(value) for value in scores.values()), default=0.0)
+    if max_abs <= 1e-12:
+        return {ticker: 0.0 for ticker in sorted(scores)}
+    return {
+        ticker: round(max(min(score / max_abs, 1.0), -1.0), 6)
+        for ticker, score in sorted(scores.items())
+    }
+
+
 def _build_rotation_row(raw: dict[str, Any]) -> dict[str, Any] | None:
     ticker = (raw.get("ticker") or "").upper().strip()
     if not ticker or ticker == "CASH":

@@ -35,6 +35,7 @@ def build_target_weights(
     position_governance: dict[str, Any] | None,
     validated_advisory: list[dict[str, Any]] | None,
     constraints: dict[str, Any] | None = None,
+    mode: str = "target_builder_shadow",
 ) -> TargetBuildResult:
     """Construct deterministic target weights from non-LLM execution contracts."""
     base = _clean_weights(base_weights)
@@ -128,6 +129,7 @@ def build_target_weights(
         row["final_target"] = round(float(normalized.get(ticker, 0.0) or 0.0), 6)
 
     turnover_after = _turnover(normalized, current)
+    clean_mode = _target_builder_mode(mode)
     return TargetBuildResult(
         target_weights=normalized,
         target_build_steps=steps,
@@ -140,9 +142,11 @@ def build_target_weights(
         },
         violations=violations,
         diagnostics={
-            "mode": "shadow",
-            "execution_effect": "none",
+            "mode": clean_mode,
+            "execution_effect": "risk_manager_input" if clean_mode == "target_builder_gated" else "none",
             "consumes_raw_llm_adjusted_weights": False,
+            "raw_llm_adjusted_weights_consumed": False,
+            "target_construction_source": "deterministic_target_builder",
             "ticker_count": len(per_ticker),
         },
     )
@@ -302,3 +306,10 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _target_builder_mode(mode: str) -> str:
+    clean = str(mode or "").strip()
+    if clean in {"target_builder_gated", "target_builder_shadow"}:
+        return clean
+    return "target_builder_shadow"

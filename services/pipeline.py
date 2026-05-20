@@ -54,6 +54,7 @@ from services.evidence_bundle import build_evidence_bundle
 from services.market_scorecard import build_market_scorecard
 from services.news_evidence   import build_news_evidence
 from services.decision_style  import resolve_decision_style
+from services.portfolio_construction import PortfolioConstructionModel, build_construction_signal_strengths
 from services.decision_ledger import (
     apply_execution_audit_to_decision_ledger,
     build_decision_ledger,
@@ -1122,6 +1123,43 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 llm_advisory_proposals=synthesizer_out.get("position_advisory_proposals") or [],
                 config=pipeline_context.get("position_governance_config") or {},
             )
+            try:
+                portfolio_construction_shadow = PortfolioConstructionModel().construct(
+                    base_weights=base_weights,
+                    current_weights=brief.get("current_weights") or {},
+                    signal_strengths=build_construction_signal_strengths(evidence_bundle),
+                    basket_reviews=(pre_risk_governance.portfolio_summary or {}).get("basket_reviews") or [],
+                    scorecard_permission=(market_scorecard or {}).get("investment_permission"),
+                    turnover_budget=_effective_portfolio_turnover_budget(market_scorecard, decision_style),
+                ).to_dict()
+                pipeline_context["portfolio_construction_shadow"] = portfolio_construction_shadow
+                await _save_step_log(
+                    analysis_id, "5e_portfolio_construction_shadow", "portfolio_construction",
+                    input_data={
+                        "mode": "shadow",
+                        "base_weights": base_weights,
+                        "current_weights": brief.get("current_weights") or {},
+                        "basket_reviews": (pre_risk_governance.portfolio_summary or {}).get("basket_reviews") or [],
+                        "market_scorecard": market_scorecard,
+                        "decision_style": decision_style,
+                    },
+                    output_data=portfolio_construction_shadow,
+                    duration_ms=0,
+                )
+            except Exception as pc_error:
+                pipeline_context["portfolio_construction_shadow_error"] = str(pc_error)
+                logger.warning("[Stage5→6] Portfolio Construction shadow failed; continuing target_builder: %s", pc_error)
+                await _save_step_log(
+                    analysis_id, "5e_portfolio_construction_shadow", "portfolio_construction",
+                    input_data={
+                        "mode": "shadow",
+                        "base_weights": base_weights,
+                        "current_weights": brief.get("current_weights") or {},
+                    },
+                    output_data={"error": str(pc_error), "execution_effect": "none"},
+                    duration_ms=0,
+                    failed=True,
+                )
             target_builder_gated = build_target_weights(
                 base_weights=base_weights,
                 current_weights=brief.get("current_weights") or {},
@@ -1138,6 +1176,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                     "max_turnover": (market_scorecard or {}).get("max_turnover_per_cycle"),
                     "max_single_delta": (market_scorecard or {}).get("max_adjustment_from_base"),
                 },
+                mode="target_builder_gated",
             ).to_dict()
             pipeline_context["target_builder_enabled"] = True
             pipeline_context["target_builder_gated"] = target_builder_gated
@@ -1178,6 +1217,10 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     risk_out = await run_risk_manager_async(
         pipeline_context, brief, quant_baseline, synthesizer_out
     )
+    if pipeline_context.get("portfolio_construction_shadow"):
+        risk_out["portfolio_construction_shadow"] = pipeline_context.get("portfolio_construction_shadow")
+    if pipeline_context.get("portfolio_construction_shadow_error"):
+        risk_out["portfolio_construction_shadow_error"] = pipeline_context.get("portfolio_construction_shadow_error")
     dur_risk = int((time.time() - t0) * 1000)
     approved = bool(risk_out.get("approved", False))
 
@@ -1412,6 +1455,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                     "max_turnover": (market_scorecard or {}).get("max_turnover_per_cycle"),
                     "max_single_delta": (market_scorecard or {}).get("max_adjustment_from_base"),
                 },
+                mode="target_builder_shadow",
             ).to_dict()
             target_builder_diff = compare_target_weights(
                 live_target_weights=risk_out.get("target_weights") or {},
@@ -1432,7 +1476,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             await _save_step_log(
                 analysis_id, "6bb_target_builder_shadow", "target_builder",
                 input_data={
-                    "mode": "shadow",
+                    "mode": "target_builder_shadow",
                     "base_weights": base_weights,
                     "current_weights": brief.get("current_weights") or {},
                     "market_scorecard": market_scorecard,
@@ -1448,7 +1492,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             await _save_step_log(
                 analysis_id, "6bb_target_builder_shadow", "target_builder",
                 input_data={
-                    "mode": "shadow",
+                    "mode": "target_builder_shadow",
                     "base_weights": base_weights,
                     "current_weights": brief.get("current_weights") or {},
                 },
@@ -1795,6 +1839,24 @@ def _merge_position_style_config(base_config: dict, decision_style: dict | None)
     if limits.get("allow_new_positions") is False:
         merged["max_new_buys_per_cycle"] = 0
     return merged
+
+
+def _effective_portfolio_turnover_budget(
+    market_scorecard: dict | None,
+    decision_style: dict | None,
+) -> float | None:
+    values: list[float] = []
+    for value in (
+        (market_scorecard or {}).get("max_turnover_per_cycle"),
+        ((decision_style or {}).get("style_limits") or {}).get("max_turnover_per_cycle"),
+    ):
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed >= 0:
+            values.append(parsed)
+    return min(values) if values else None
 
 
 async def _finalize_analysis(

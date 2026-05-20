@@ -163,6 +163,7 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
 
     replay_metrics = playground.get("replay_metrics") or {}
     historical_metrics = playground.get("historical_replay_metrics") or {}
+    walk_forward_validation = playground.get("walk_forward_validation") or {}
     forward_samples = _max_forward_samples(replay_metrics)
     historical_samples = _max_forward_samples(historical_metrics)
     strategy_results = _strategy_results(playground)
@@ -196,6 +197,7 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
         "consensus_top5": _top_weights(playground.get("consensus_weights") or {}),
         "consensus_weights": playground.get("consensus_weights") or {},
         "strategy_confidence": playground.get("strategy_confidence") or {},
+        "walk_forward_validation": walk_forward_validation,
         "strategy_use_summary": _strategy_use_summary(playground.get("strategy_confidence") or {}),
         "evidence_summary": playground.get("evidence_summary") or {},
         "strategy_results": strategy_results,
@@ -209,6 +211,7 @@ def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
     replay_metrics = playground.get("replay_metrics") or {}
     historical_metrics = playground.get("historical_replay_metrics") or {}
     confidence = playground.get("strategy_confidence") or {}
+    walk_forward_items = (playground.get("walk_forward_validation") or {}).get("items") or {}
     out: list[dict[str, Any]] = []
     for item in playground.get("strategies") or []:
         if not isinstance(item, dict):
@@ -217,6 +220,7 @@ def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
         metrics = replay_metrics.get(name) or {}
         hist_metrics = historical_metrics.get(name) or {}
         confidence_row = confidence.get(name) or {}
+        walk_forward_row = walk_forward_items.get(name) or {}
         risk_profile = item.get("risk_profile") or {}
         turnover = _to_float(
             risk_profile.get("turnover"),
@@ -239,6 +243,10 @@ def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
                 "historical_forward_return_samples": hist_metrics.get("n_forward_return_samples"),
                 "historical_sharpe": hist_metrics.get("sharpe"),
                 "historical_hit_rate": hist_metrics.get("hit_rate"),
+                "walk_forward_level": walk_forward_row.get("level"),
+                "walk_forward_valid_folds": walk_forward_row.get("valid_fold_count"),
+                "walk_forward_pass_rate": walk_forward_row.get("pass_rate"),
+                "walk_forward_stability_score": walk_forward_row.get("stability_score"),
                 "confidence_score": confidence_row.get("confidence_score"),
                 "suggested_use": confidence_row.get("suggested_use"),
                 "reason_codes": confidence_row.get("reason_codes") or [],

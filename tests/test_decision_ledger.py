@@ -454,6 +454,46 @@ class DecisionLedgerTests(unittest.TestCase):
         self.assertIn("target_builder_target", row["trade_lifecycle"]["changed_by"])
         self.assertIn("target_builder_target", row["source_effects"]["risk"])
 
+    def test_trade_lifecycle_includes_portfolio_construction_shadow_when_available(self):
+        ledger = build_decision_ledger(
+            risk_output={
+                "approved": True,
+                "target_construction_mode": "target_builder_gated",
+                "raw_llm_adjusted_weights_consumed": False,
+                "portfolio_construction_shadow": {
+                    "target_weights": {"QQQ": 0.10, "CASH": 0.90},
+                    "factor_exposures": {"tech_growth": 0.10},
+                    "effective_n": 10.0,
+                    "turnover": {"estimated": 0.02, "within_budget": True},
+                    "violations": [],
+                    "diagnostics": {
+                        "mode": "portfolio_construction",
+                        "active_basket_reviews": ["semiconductors"],
+                    },
+                },
+                "target_builder_input": {
+                    "target_weights": {"QQQ": 0.11, "CASH": 0.89},
+                },
+                "target_weights": {"QQQ": 0.11, "CASH": 0.89},
+                "position_governance": _governance(
+                    ticker="QQQ",
+                    decision="trim_review",
+                    target_after=0.11,
+                ),
+            },
+            strategy_output={"base_weights": {"QQQ": 0.12, "CASH": 0.88}},
+            current_holdings={"QQQ": 0.12, "CASH": 0.88},
+        )
+
+        row = ledger["tickers"]["QQQ"]
+        portfolio_construction = ledger["portfolio_summary"]["portfolio_construction"]
+        self.assertEqual(portfolio_construction["mode"], "portfolio_construction")
+        self.assertEqual(portfolio_construction["execution_effect"], "diagnostic_only")
+        self.assertEqual(portfolio_construction["active_basket_reviews"], ["semiconductors"])
+        self.assertEqual(row["trade_lifecycle"]["portfolio_construction_target"], 0.10)
+        self.assertIn("portfolio_construction_target", row["trade_lifecycle"]["changed_by"])
+        self.assertIn("portfolio_construction_target", row["source_effects"]["risk"])
+
     def test_execution_audit_attaches_accepted_status_without_changing_final_action(self):
         ledger = build_decision_ledger(
             risk_output={

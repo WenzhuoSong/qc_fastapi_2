@@ -29,7 +29,7 @@ from db.session import AsyncSessionLocal
 from services.feature_provenance import summarize_feature_provenance
 from services.market_brief_contexts import build_memory_context, build_scenario_context
 from services.market_snapshot_merge import merge_market_snapshots, normalize_feature_snapshot
-from services.sector_rotation import detect_sector_rotation, format_rotation_for_prompt
+from services.sector_rotation import detect_sector_rotation, format_rotation_for_prompt, rotation_signal_strengths
 from services.universe_policy import filter_tradable_research_rows
 
 logger = logging.getLogger("qc_fastapi_2.market_brief")
@@ -71,6 +71,7 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
 
     key_facts = _compute_key_facts(holdings, portfolio)
     sector_rotation = detect_sector_rotation(holdings)
+    sector_rotation["signals"] = rotation_signal_strengths(sector_rotation)
     feature_provenance = summarize_feature_provenance(holdings)
 
     prose = _build_prose(key_facts, holdings, sector_rotation)

@@ -57,6 +57,7 @@ class EvidenceBundleTest(unittest.TestCase):
             "consensus_weights": {"SPY": 0.2, "QQQ": 0.1, "CASH": 0.7},
             "evidence_summary": {
                 "historical_evidence": "strong",
+                "walk_forward_validation": "medium",
                 "live_fit": "insufficient",
                 "execution_permission": "advisory",
             },
@@ -90,6 +91,17 @@ class EvidenceBundleTest(unittest.TestCase):
                     "hit_rate": 0.52,
                 }
             },
+            "walk_forward_validation": {
+                "items": {
+                    "momentum_lite_v1": {
+                        "level": "medium",
+                        "valid_fold_count": 4,
+                        "pass_rate": 0.50,
+                        "stability_score": 0.68,
+                    }
+                },
+                "execution_authority": "none",
+            },
         }
 
         bundle = build_evidence_bundle(
@@ -119,6 +131,14 @@ class EvidenceBundleTest(unittest.TestCase):
         self.assertEqual(
             bundle["strategies"]["strategy_results"][0]["suggested_use"],
             "advisory",
+        )
+        self.assertEqual(
+            bundle["strategies"]["strategy_results"][0]["walk_forward_level"],
+            "medium",
+        )
+        self.assertEqual(
+            bundle["strategies"]["walk_forward_validation"]["execution_authority"],
+            "none",
         )
         self.assertIn("strategy_certification", bundle["strategies"])
         self.assertEqual(

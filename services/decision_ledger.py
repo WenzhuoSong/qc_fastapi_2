@@ -56,6 +56,7 @@ def build_decision_ledger(
     base_weights = _extract_base_weights(strategy_output or {})
     strategy_targets = _extract_strategy_targets(strategy_output or {}, evidence_bundle or {})
     synthesizer_targets = _clean_weight_map((synthesizer_output or {}).get("adjusted_weights") or {})
+    portfolio_construction_targets = _portfolio_construction_targets(risk)
     target_builder_targets = _target_builder_targets(risk)
     target_weights = _clean_weight_map(risk.get("target_weights") or {})
     proposed_actions = _actions_by_ticker(risk.get("rebalance_actions") or [])
@@ -99,6 +100,7 @@ def build_decision_ledger(
             base_weight=base_weights.get(ticker),
             strategy_target=strategy_targets.get(ticker),
             synthesizer_target=synthesizer_targets.get(ticker),
+            portfolio_construction_target=portfolio_construction_targets.get(ticker),
             target_builder_target=target_builder_targets.get(ticker),
         )
         for ticker in tickers
@@ -118,6 +120,7 @@ def build_decision_ledger(
             "execution_status": execution_status,
             "target_construction_mode": risk.get("target_construction_mode"),
             "raw_llm_adjusted_weights_consumed": risk.get("raw_llm_adjusted_weights_consumed"),
+            "portfolio_construction": _compact_portfolio_construction(risk.get("portfolio_construction_shadow")),
             "turnover": _turnover(risk.get("rebalance_actions") or []),
             "ticker_count": len(rows),
             "governance_available": governance_available,
@@ -234,6 +237,7 @@ def _build_ticker_row(
     base_weight: float | None,
     strategy_target: float | None,
     synthesizer_target: float | None,
+    portfolio_construction_target: float | None,
     target_builder_target: float | None,
 ) -> dict[str, Any]:
     proposed = _proposed_action(proposed_action, current_weight, target_weight)
@@ -262,6 +266,7 @@ def _build_ticker_row(
         base_weight=base_weight,
         strategy_target=strategy_target,
         synthesizer_target=synthesizer_target,
+        portfolio_construction_target=portfolio_construction_target,
         target_builder_target=target_builder_target,
         advisory_override=advisory_override,
         risk_target=target_weight,
@@ -303,6 +308,7 @@ def _build_ticker_row(
             "base_weight": None if base_weight is not None else "missing",
             "strategy_target": None if strategy_target is not None else "missing",
             "synthesizer_target": None if synthesizer_target is not None else "missing",
+            "portfolio_construction_target": None if portfolio_construction_target is not None else "missing",
             "target_builder_target": None if target_builder_target is not None else "missing",
         },
     }
@@ -314,6 +320,7 @@ def _sparse_trade_lifecycle(
     base_weight: float | None,
     strategy_target: float | None,
     synthesizer_target: float | None,
+    portfolio_construction_target: float | None,
     target_builder_target: float | None,
     advisory_override: dict[str, Any] | None,
     risk_target: float | None,
@@ -330,6 +337,7 @@ def _sparse_trade_lifecycle(
         "strategy_target": round(float(strategy_target), 6) if strategy_target is not None else None,
         "synthesizer_target": round(float(synthesizer_target), 6) if synthesizer_target is not None else None,
         "diagnostic_llm_target": round(float(synthesizer_target), 6) if synthesizer_target is not None else None,
+        "portfolio_construction_target": round(float(portfolio_construction_target), 6) if portfolio_construction_target is not None else None,
         "target_builder_target": round(float(target_builder_target), 6) if target_builder_target is not None else None,
         "validated_advisory_delta": _validated_advisory_delta(advisory_override),
         "risk_target": round(float(risk_target), 6) if risk_target is not None else None,
@@ -345,6 +353,8 @@ def _sparse_trade_lifecycle(
         changed_by.append("synthesizer_target")
     elif synthesizer_target is not None and base_weight is not None and abs(float(synthesizer_target) - float(base_weight)) > 1e-9:
         changed_by.append("synthesizer_target")
+    if portfolio_construction_target is not None and base_weight is not None and abs(float(portfolio_construction_target) - float(base_weight)) > 1e-9:
+        changed_by.append("portfolio_construction_target")
     if target_builder_target is not None and base_weight is not None and abs(float(target_builder_target) - float(base_weight)) > 1e-9:
         changed_by.append("target_builder_target")
     if stages["validated_advisory_delta"] is not None and abs(float(stages["validated_advisory_delta"])) > 1e-9:
@@ -364,6 +374,7 @@ def _sparse_trade_lifecycle(
                 "strategy_target",
                 "synthesizer_target",
                 "diagnostic_llm_target",
+                "portfolio_construction_target",
                 "target_builder_target",
                 "validated_advisory_delta",
                 "risk_target",
@@ -377,6 +388,7 @@ def _sparse_trade_lifecycle(
                 "base_weight",
                 "strategy_target",
                 "synthesizer_target",
+                "portfolio_construction_target",
                 "target_builder_target",
             )
             if stages.get(key) is None
@@ -559,6 +571,8 @@ def _lifecycle_stage_source(stage: str) -> str | None:
         return "strategy"
     if stage in {"synthesizer_target", "validated_llm_advisory"}:
         return "strategy"
+    if stage == "portfolio_construction_target":
+        return "risk"
     if stage == "target_builder_target":
         return "risk"
     if stage in {"risk_target", "risk_rejected_final_target_current"}:
@@ -781,6 +795,28 @@ def _target_builder_targets(risk: dict[str, Any]) -> dict[str, float]:
         if isinstance(payload, dict) and isinstance(payload.get("target_weights"), dict):
             return _clean_weight_map(payload.get("target_weights") or {})
     return {}
+
+
+def _portfolio_construction_targets(risk: dict[str, Any]) -> dict[str, float]:
+    payload = risk.get("portfolio_construction_shadow") or {}
+    if isinstance(payload, dict) and isinstance(payload.get("target_weights"), dict):
+        return _clean_weight_map(payload.get("target_weights") or {})
+    return {}
+
+
+def _compact_portfolio_construction(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(payload, dict) or not payload:
+        return None
+    return {
+        "mode": (payload.get("diagnostics") or {}).get("mode"),
+        "target_weights": payload.get("target_weights") or {},
+        "factor_exposures": payload.get("factor_exposures") or {},
+        "effective_n": payload.get("effective_n"),
+        "turnover": payload.get("turnover") or {},
+        "violations": payload.get("violations") or [],
+        "active_basket_reviews": (payload.get("diagnostics") or {}).get("active_basket_reviews") or [],
+        "execution_effect": "diagnostic_only",
+    }
 
 
 def _compact_advisory_override(row: dict[str, Any] | None) -> dict[str, Any] | None:

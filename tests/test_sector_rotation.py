@@ -52,7 +52,7 @@ from services.playground import (
     _run_one_strategy,
     PlaygroundBundle,
 )
-from services.sector_rotation import detect_sector_rotation, format_rotation_for_prompt
+from services.sector_rotation import detect_sector_rotation, format_rotation_for_prompt, rotation_signal_strengths
 from services.universe_policy import filter_tradable_research_rows
 
 
@@ -71,6 +71,21 @@ class SectorRotationTests(unittest.TestCase):
         self.assertEqual(result["rotation_label"], "risk_on_rotation")
         self.assertEqual(result["leaders"][0]["ticker"], "XLK")
         self.assertGreater(result["risk_appetite_score"], 0.015)
+
+    def test_rotation_signal_strengths_are_deterministic_and_signed(self):
+        holdings = [
+            {"ticker": "XLK", "mom_60d": 0.08, "mom_20d": 0.04, "return_5d": 0.02, "hist_vol_20d": 0.015},
+            {"ticker": "XLP", "mom_60d": -0.02, "mom_20d": -0.01, "return_5d": -0.004, "hist_vol_20d": 0.010},
+        ]
+
+        result = detect_sector_rotation(holdings)
+        first = rotation_signal_strengths(result)
+        second = rotation_signal_strengths(result)
+
+        self.assertEqual(first, second)
+        self.assertGreater(first["XLK"], 0)
+        self.assertLess(first["XLP"], 0)
+        self.assertLessEqual(abs(first["XLK"]), 1.0)
 
     def test_detects_defensive_rotation_when_safe_havens_lead(self):
         holdings = [

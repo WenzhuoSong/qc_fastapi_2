@@ -30,6 +30,11 @@ class StrategyCertificationTest(unittest.TestCase):
         self.assertEqual(row["status"], "advisory")
         self.assertEqual(row["approved_use"], "advisory")
         self.assertEqual(out["summary"]["actionable_count"], 1)
+        audit_row = out["audit"]["rows"][0]
+        self.assertEqual(audit_row["strategy_name"], "momentum_lite_v1")
+        self.assertTrue(audit_row["promotion_eligible"])
+        self.assertEqual(out["audit"]["summary"]["promotion_candidates"], ["momentum_lite_v1"])
+        self.assertFalse(out["audit"]["summary"]["requires_operator_review"])
 
     def test_research_supported_when_live_is_insufficient_or_turnover_high(self):
         out = certify_strategies({
@@ -57,6 +62,11 @@ class StrategyCertificationTest(unittest.TestCase):
         self.assertEqual(row["approved_use"], "research_only")
         self.assertIn("live_samples_insufficient", row["promotion_blockers"])
         self.assertIn("turnover_high", row["demotion_reasons"])
+        audit_row = out["audit"]["rows"][0]
+        self.assertFalse(audit_row["promotion_eligible"])
+        self.assertIn("suggested_use_not_certified_for_execution", audit_row["risk_flags"])
+        self.assertEqual(out["audit"]["summary"]["suggested_advisory_not_certified"], ["mean_reversion_lite"])
+        self.assertTrue(out["audit"]["summary"]["requires_operator_review"])
 
     def test_bundle_level_conflict_does_not_leak_to_aligned_strategy(self):
         out = certify_strategies({
@@ -119,6 +129,42 @@ class StrategyCertificationTest(unittest.TestCase):
         row = out["items"]["broken_strategy"]
         self.assertEqual(row["status"], "disabled")
         self.assertEqual(row["approved_use"], "none")
+        self.assertEqual(out["audit"]["summary"]["disabled_or_experimental"], ["broken_strategy"])
+        self.assertEqual(out["audit"]["execution_authority"], "none")
+
+    def test_walk_forward_weak_blocks_advisory_certification(self):
+        out = certify_strategies({
+            "evidence_summary": {
+                "historical_evidence": "strong",
+                "live_fit": "aligned",
+            },
+            "strategy_results": [
+                {
+                    "strategy_name": "unstable_strategy",
+                    "data_ready": True,
+                    "can_influence_allocation": True,
+                    "turnover": 0.20,
+                    "n_forward_return_samples": 30,
+                    "historical_forward_return_samples": 289,
+                    "historical_sharpe": 1.2,
+                    "historical_hit_rate": 0.55,
+                    "walk_forward_level": "weak",
+                    "walk_forward_valid_folds": 4,
+                    "walk_forward_pass_rate": 0.25,
+                    "walk_forward_stability_score": 0.35,
+                    "suggested_use": "advisory",
+                    "confidence_score": 0.7,
+                }
+            ],
+        })
+
+        row = out["items"]["unstable_strategy"]
+        self.assertEqual(row["status"], "research_supported")
+        self.assertEqual(row["approved_use"], "research_only")
+        self.assertIn("walk_forward_weak", row["demotion_reasons"])
+        audit_row = out["audit"]["rows"][0]
+        self.assertEqual(audit_row["walk_forward_level"], "weak")
+        self.assertIn("suggested_use_not_certified_for_execution", audit_row["risk_flags"])
 
 
 if __name__ == "__main__":

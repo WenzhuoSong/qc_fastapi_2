@@ -8,27 +8,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from services.group_contract import calc_primary_group_exposure, get_default_group_limit, get_primary_group
+
 
 LOSS_REVIEW_PCT = -0.04
 HIGH_ATR_PCT = 0.05
 HUMAN_OR_LIMITED_MAX_TURNOVER = 0.05
 HUMAN_OR_LIMITED_MAX_SINGLE_DELTA = 0.015
-
-SECTOR_GROUPS = {
-    "semiconductors": {"FTXL", "PSI", "SOXX", "XSD", "SMH", "SOXL", "SOXS", "DRAM"},
-    "tech_growth": {"QQQ", "XLK", "AIQ", "BOTZ", "CIBR"},
-    "defensive_bonds": {"BND", "IEF", "TLT", "SGOV"},
-    "cyclicals": {"XLE", "XLI", "IWM"},
-    "real_estate": {"XLRE"},
-}
-
-GROUP_LIMITS = {
-    "semiconductors": 0.25,
-    "tech_growth": 0.35,
-    "defensive_bonds": 0.35,
-    "cyclicals": 0.30,
-    "real_estate": 0.15,
-}
 
 NO_ADD_PERMISSIONS = {
     "hold_or_trim",
@@ -69,7 +55,7 @@ def shape_proposal_before_risk(
     over_limit_groups = {
         group
         for group, exposure in group_exposure.items()
-        if exposure >= GROUP_LIMITS.get(group, 1.0) - 1e-9
+        if exposure >= (get_default_group_limit(group) or 1.0) - 1e-9
     }
     no_add_all = _scorecard_blocks_add(scorecard)
 
@@ -201,20 +187,11 @@ def _basket_review_groups(loss_review: set[str]) -> set[str]:
 
 
 def _group_exposure(weights: dict[str, float]) -> dict[str, float]:
-    exposure: dict[str, float] = {}
-    for ticker, weight in weights.items():
-        group = _ticker_group(ticker)
-        if group:
-            exposure[group] = exposure.get(group, 0.0) + float(weight or 0.0)
-    return exposure
+    return calc_primary_group_exposure(weights)
 
 
 def _ticker_group(ticker: str) -> str | None:
-    clean = str(ticker or "").upper().strip()
-    for group, members in SECTOR_GROUPS.items():
-        if clean in members:
-            return group
-    return None
+    return get_primary_group(ticker)
 
 
 def _scorecard_blocks_add(scorecard: dict[str, Any]) -> bool:

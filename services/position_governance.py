@@ -12,15 +12,8 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from services.advisory_quality import build_advisory_quality_diagnostics
-
-
-SECTOR_GROUPS = {
-    "semiconductors": {"FTXL", "PSI", "SOXX", "XSD", "SMH", "SOXL", "SOXS", "DRAM"},
-    "tech_growth": {"QQQ", "XLK", "AIQ", "BOTZ", "CIBR"},
-    "defensive_bonds": {"BND", "IEF", "TLT", "SGOV"},
-    "cyclicals": {"XLE", "XLI", "IWM"},
-    "real_estate": {"XLRE"},
-}
+from services.group_contract import calc_primary_group_exposure, get_primary_group
+from services.thesis_scheduler import build_thesis_review_queue
 
 
 @dataclass
@@ -238,6 +231,9 @@ def apply_position_governance(
             "risk_budget_status": risk_budget_status,
             "unrealized_pnl_pct": pnl,
             "atr_pct": atr,
+            "holding_days": row.get("holding_days"),
+            "last_thesis_review_at": row.get("last_thesis_review_at"),
+            "pnl_at_last_thesis_review": row.get("pnl_at_last_thesis_review"),
             "current_weight": round(current_w, 6),
             "target_before": round(before, 6),
             "target_after": round(target_w, 6),
@@ -803,6 +799,7 @@ def _portfolio_summary(
         "basket_reviews": _basket_reviews(decisions),
         "manual_action_hints": manual_action_hints[:8],
         "thesis_status_summary": _thesis_status_summary(decisions),
+        "thesis_review_queue": build_thesis_review_queue(decisions)[:12],
         "position_explanations": _position_explanations(decisions, blocked_actions),
         "replacement_candidates": [
             {
@@ -1345,20 +1342,11 @@ def _loss_thresholds(role: str, cfg: GovernanceConfig) -> tuple[float, float]:
 
 
 def _group_exposure(current_weights: dict[str, float]) -> dict[str, float]:
-    exposure = {name: 0.0 for name in SECTOR_GROUPS}
-    for ticker, weight in current_weights.items():
-        group = _ticker_group(ticker)
-        if group:
-            exposure[group] += float(weight or 0.0)
-    return exposure
+    return calc_primary_group_exposure(current_weights)
 
 
 def _ticker_group(ticker: str) -> str | None:
-    key = str(ticker or "").upper().strip()
-    for group, members in SECTOR_GROUPS.items():
-        if key in members:
-            return group
-    return None
+    return get_primary_group(ticker)
 
 
 def _permission_from_actions(actions: set[str]) -> str:

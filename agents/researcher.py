@@ -542,6 +542,7 @@ def _compact_strategy_certification(certification: dict) -> dict:
     if not certification:
         return {}
     items = certification.get("items") or {}
+    audit = certification.get("audit") or {}
     compact_items = {}
     for name, row in items.items():
         if not isinstance(row, dict):
@@ -558,7 +559,31 @@ def _compact_strategy_certification(certification: dict) -> dict:
         }
     return {
         "summary": certification.get("summary") or {},
+        "audit": _compact_strategy_certification_audit(audit),
         "items": compact_items,
+    }
+
+
+def _compact_strategy_certification_audit(audit: dict) -> dict:
+    if not audit:
+        return {}
+    rows = {}
+    for row in audit.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("strategy_name") or "")
+        if not name:
+            continue
+        rows[name] = {
+            "promotion_eligible": bool(row.get("promotion_eligible")),
+            "risk_flags": row.get("risk_flags") or [],
+            "promotion_blockers": row.get("promotion_blockers") or [],
+            "demotion_reasons": row.get("demotion_reasons") or [],
+        }
+    return {
+        "summary": audit.get("summary") or {},
+        "execution_authority": audit.get("execution_authority"),
+        "rows": rows,
     }
 
 

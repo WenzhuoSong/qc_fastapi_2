@@ -573,6 +573,7 @@ def _compact_strategy_certification(certification: dict) -> dict:
     if not certification:
         return {}
     items = certification.get("items") or {}
+    audit = certification.get("audit") or {}
     compact_items = []
     for name, row in items.items():
         if not isinstance(row, dict):
@@ -586,7 +587,27 @@ def _compact_strategy_certification(certification: dict) -> dict:
         })
     return {
         "summary": certification.get("summary") or {},
+        "audit": _compact_strategy_certification_audit(audit),
         "items": compact_items[:5],
+    }
+
+
+def _compact_strategy_certification_audit(audit: dict) -> dict:
+    if not audit:
+        return {}
+    rows = []
+    for row in audit.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        rows.append({
+            "strategy_name": row.get("strategy_name"),
+            "promotion_eligible": bool(row.get("promotion_eligible")),
+            "risk_flags": (row.get("risk_flags") or [])[:3],
+        })
+    return {
+        "summary": audit.get("summary") or {},
+        "execution_authority": audit.get("execution_authority"),
+        "rows": rows[:5],
     }
 
 
@@ -614,9 +635,15 @@ def _format_strategy_certification_line(certification: dict) -> str:
         f"{key}={value}" for key, value in counts.items() if value
     )
     count_line = f"  counts: {count_text}\n" if count_text else ""
+    audit_summary = ((certification.get("audit") or {}).get("summary") or {})
+    review_line = (
+        "  audit: operator_review_required\n"
+        if audit_summary.get("requires_operator_review") else ""
+    )
     return (
         "<b>Strategy certification</b>\n"
         f"{count_line}"
+        f"{review_line}"
         f"  " + "; ".join(parts) + "\n\n"
     )
 

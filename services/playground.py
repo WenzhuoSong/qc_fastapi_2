@@ -27,6 +27,7 @@ from services.sector_rotation import detect_sector_rotation
 from services.strategy_feature_contract import build_strategy_feature_contract
 from services.universe_policy import filter_tradable_research_rows
 from services.feature_provenance import summarize_feature_provenance
+from services.walk_forward_validation import validate_walk_forward
 from strategies import ScoredTicker, compute_rebalance_actions, estimate_cost_pct, get_strategy
 
 logger = logging.getLogger("qc_fastapi_2.playground")
@@ -81,6 +82,7 @@ class PlaygroundBundle:
     strategy_confidence: dict[str, dict[str, Any]]
     evidence_summary: dict[str, Any]
     data_gaps: list[str]
+    walk_forward_validation: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -126,12 +128,14 @@ async def run_playground(
 
     historical_snapshots: list[dict[str, Any]] = []
     historical_metrics: dict[str, dict[str, Any]] = {}
+    walk_forward_validation: dict[str, Any] = {}
     strategy_confidence: dict[str, dict[str, Any]] = {}
     data_gaps = list(enrichment.get("data_gaps", []))
     if include_historical:
         try:
             historical_snapshots = await _read_yfinance_feature_snapshots(days=420)
             historical_metrics = _compute_replay_metrics(historical_snapshots, names) if historical_snapshots else {}
+            walk_forward_validation = _compute_walk_forward_validation(historical_snapshots, names) if historical_snapshots else {}
             data_gaps.extend(_detect_historical_data_gaps(historical_snapshots))
         except Exception as exc:
             logger.warning("[playground] historical replay for live bundle failed: %s", exc)
@@ -144,6 +148,7 @@ async def run_playground(
         historical_metrics,
         regime.regime.value,
         consensus_weights,
+        walk_forward_validation=walk_forward_validation,
     ) if include_historical else {}
 
     return PlaygroundBundle(
@@ -164,9 +169,11 @@ async def run_playground(
             replay_metrics={},
             historical_replay_metrics=historical_metrics,
             strategy_confidence=strategy_confidence,
+            walk_forward_validation=walk_forward_validation,
             data_gaps=data_gaps,
         ),
         data_gaps=list(dict.fromkeys(data_gaps)),
+        walk_forward_validation=walk_forward_validation,
     )
 
 
@@ -184,12 +191,14 @@ async def run_playground_analysis(
             bundle.snapshot_count = 0
             bundle.historical_snapshot_count = len(historical_snapshots)
             bundle.historical_replay_metrics = _compute_replay_metrics(historical_snapshots, names)
+            bundle.walk_forward_validation = _compute_walk_forward_validation(historical_snapshots, names)
             bundle.strategy_confidence = _compute_strategy_confidence(
                 bundle.strategies,
                 bundle.replay_metrics,
                 bundle.historical_replay_metrics,
                 bundle.regime_label,
                 bundle.consensus_weights,
+                walk_forward_validation=bundle.walk_forward_validation,
             )
             bundle.data_gaps = list(dict.fromkeys(
                 (bundle.data_gaps or [])
@@ -202,6 +211,7 @@ async def run_playground_analysis(
                 replay_metrics=bundle.replay_metrics,
                 historical_replay_metrics=bundle.historical_replay_metrics,
                 strategy_confidence=bundle.strategy_confidence,
+                walk_forward_validation=bundle.walk_forward_validation,
                 data_gaps=bundle.data_gaps,
             )
             return bundle
@@ -219,11 +229,13 @@ async def run_playground_analysis(
             strategy_confidence={},
             evidence_summary={
                 "historical_evidence": "missing",
+                "walk_forward_validation": "missing",
                 "live_fit": "insufficient",
                 "execution_permission": "blocked",
                 "summary_reasons": ["no QC snapshots available", "no yfinance historical replay rows available"],
             },
             data_gaps=["no QC snapshots available"],
+            walk_forward_validation={},
         )
 
     latest_brief = _brief_from_snapshot(snapshots[-1])
@@ -232,12 +244,14 @@ async def run_playground_analysis(
     bundle.replay_metrics = _compute_replay_metrics(snapshots, names)
     bundle.historical_snapshot_count = len(historical_snapshots)
     bundle.historical_replay_metrics = _compute_replay_metrics(historical_snapshots, names) if historical_snapshots else {}
+    bundle.walk_forward_validation = _compute_walk_forward_validation(historical_snapshots, names) if historical_snapshots else {}
     bundle.strategy_confidence = _compute_strategy_confidence(
         bundle.strategies,
         bundle.replay_metrics,
         bundle.historical_replay_metrics,
         bundle.regime_label,
         bundle.consensus_weights,
+        walk_forward_validation=bundle.walk_forward_validation,
     )
     bundle.evidence_summary = _build_playground_evidence_summary(
         snapshot_count=bundle.snapshot_count,
@@ -245,6 +259,7 @@ async def run_playground_analysis(
         replay_metrics=bundle.replay_metrics,
         historical_replay_metrics=bundle.historical_replay_metrics,
         strategy_confidence=bundle.strategy_confidence,
+        walk_forward_validation=bundle.walk_forward_validation,
         data_gaps=bundle.data_gaps,
     )
     bundle.data_gaps = list(dict.fromkeys(
@@ -259,6 +274,7 @@ async def run_playground_analysis(
         replay_metrics=bundle.replay_metrics,
         historical_replay_metrics=bundle.historical_replay_metrics,
         strategy_confidence=bundle.strategy_confidence,
+        walk_forward_validation=bundle.walk_forward_validation,
         data_gaps=bundle.data_gaps,
     )
     return bundle
@@ -713,25 +729,43 @@ def _compute_strategy_confidence(
     historical_metrics: dict[str, dict[str, Any]],
     regime: str,
     consensus_weights: dict[str, float],
+    walk_forward_validation: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     consensus_conflict = bool(_detect_consensus_regime_conflicts(regime, consensus_weights))
+    walk_forward_items = (walk_forward_validation or {}).get("items") or {}
     for result in results:
         name = result.strategy_name
         hist = historical_metrics.get(name) or {}
         live = live_metrics.get(name) or {}
+        walk_forward = walk_forward_items.get(name) or {}
         historical_score = _historical_evidence_score(hist)
         live_fit_score = _live_fit_score(result, live, regime)
+        walk_forward_score = _walk_forward_evidence_score(walk_forward)
         turnover_penalty = _turnover_penalty(result.expected_turnover_pct)
         data_penalty = 0.20 if not result.data_ready else 0.0
-        confidence_score = max(
-            0.0,
-            min(1.0, 0.55 * historical_score + 0.35 * live_fit_score - turnover_penalty - data_penalty),
-        )
+        if walk_forward:
+            confidence_score = max(
+                0.0,
+                min(
+                    1.0,
+                    0.45 * historical_score
+                    + 0.25 * live_fit_score
+                    + 0.20 * walk_forward_score
+                    - turnover_penalty
+                    - data_penalty,
+                ),
+            )
+        else:
+            confidence_score = max(
+                0.0,
+                min(1.0, 0.55 * historical_score + 0.35 * live_fit_score - turnover_penalty - data_penalty),
+            )
         suggested_use = _suggested_strategy_use(
             confidence_score=confidence_score,
             result=result,
             hist_metrics=hist,
+            walk_forward=walk_forward,
             turnover_penalty=turnover_penalty,
             consensus_conflict=consensus_conflict,
         )
@@ -739,11 +773,15 @@ def _compute_strategy_confidence(
             "strategy_name": name,
             "historical_score": round(historical_score, 4),
             "live_fit_score": round(live_fit_score, 4),
+            "walk_forward_score": round(walk_forward_score, 4),
             "turnover_penalty": round(turnover_penalty, 4),
             "data_penalty": round(data_penalty, 4),
             "confidence_score": round(confidence_score, 4),
             "suggested_use": suggested_use,
             "historical_reliability": (hist.get("metric_reliability") or {}).get("level", "unknown"),
+            "walk_forward_level": walk_forward.get("level", "missing"),
+            "walk_forward_valid_folds": walk_forward.get("valid_fold_count", 0),
+            "walk_forward_pass_rate": walk_forward.get("pass_rate"),
             "historical_samples": hist.get("n_forward_return_samples", 0),
             "live_samples": live.get("n_forward_return_samples", 0),
             "regime_fit": result.regime_fit,
@@ -752,9 +790,10 @@ def _compute_strategy_confidence(
                 result,
                 hist,
                 live,
+                walk_forward,
                 consensus_conflict,
             ),
-            "notes": _strategy_confidence_notes(result, hist, live, consensus_conflict),
+            "notes": _strategy_confidence_notes(result, hist, live, walk_forward, consensus_conflict),
         }
     return out
 
@@ -796,14 +835,18 @@ def _suggested_strategy_use(
     confidence_score: float,
     result: StrategyResult,
     hist_metrics: dict[str, Any],
+    walk_forward: dict[str, Any],
     turnover_penalty: float,
     consensus_conflict: bool,
 ) -> str:
     reliability = (hist_metrics.get("metric_reliability") or {}).get("level")
+    walk_forward_level = str(walk_forward.get("level") or "missing")
     if not result.data_ready:
         return "ignore"
-    if confidence_score >= 0.72 and reliability == "high" and turnover_penalty <= 0.08 and not consensus_conflict:
+    if confidence_score >= 0.72 and reliability == "high" and walk_forward_level in {"high", "missing"} and turnover_penalty <= 0.08 and not consensus_conflict:
         return "primary"
+    if walk_forward_level in {"weak", "insufficient"} and confidence_score < 0.62:
+        return "watch_only"
     if confidence_score >= 0.50:
         return "advisory"
     return "watch_only"
@@ -813,6 +856,7 @@ def _strategy_confidence_notes(
     result: StrategyResult,
     hist_metrics: dict[str, Any],
     live_metrics: dict[str, Any],
+    walk_forward: dict[str, Any],
     consensus_conflict: bool,
 ) -> list[str]:
     notes: list[str] = []
@@ -820,6 +864,8 @@ def _strategy_confidence_notes(
     live_level = (live_metrics.get("metric_reliability") or {}).get("level", "unknown")
     notes.append(f"historical_reliability={hist_level}")
     notes.append(f"live_qc_reliability={live_level}")
+    if walk_forward:
+        notes.append(f"walk_forward={walk_forward.get('level', 'unknown')}")
     if result.expected_turnover_pct > 0.50:
         notes.append("high_turnover")
     if consensus_conflict:
@@ -831,6 +877,7 @@ def _strategy_confidence_reason_codes(
     result: StrategyResult,
     hist_metrics: dict[str, Any],
     live_metrics: dict[str, Any],
+    walk_forward: dict[str, Any],
     consensus_conflict: bool,
 ) -> list[str]:
     codes: list[str] = []
@@ -865,6 +912,10 @@ def _strategy_confidence_reason_codes(
         codes.append("live_qc_limited")
     else:
         codes.append("live_qc_missing")
+    if walk_forward:
+        codes.extend(str(code) for code in walk_forward.get("reason_codes") or [])
+    else:
+        codes.append("walk_forward_missing")
     if result.expected_turnover_pct > 0.50:
         codes.append("high_turnover")
     elif result.expected_turnover_pct > 0.20:
@@ -876,6 +927,19 @@ def _strategy_confidence_reason_codes(
     return list(dict.fromkeys(codes))
 
 
+def _walk_forward_evidence_score(row: dict[str, Any]) -> float:
+    level = str(row.get("level") or "missing")
+    if level == "high":
+        return 1.0
+    if level == "medium":
+        return 0.70
+    if level == "weak":
+        return 0.30
+    if level == "insufficient":
+        return 0.20
+    return 0.0
+
+
 def _build_playground_evidence_summary(
     *,
     snapshot_count: int,
@@ -883,15 +947,19 @@ def _build_playground_evidence_summary(
     replay_metrics: dict[str, dict[str, Any]],
     historical_replay_metrics: dict[str, dict[str, Any]],
     strategy_confidence: dict[str, dict[str, Any]],
+    walk_forward_validation: dict[str, Any] | None = None,
     data_gaps: list[str],
 ) -> dict[str, Any]:
     historical = _historical_evidence_level(historical_snapshot_count, historical_replay_metrics)
+    walk_forward = _walk_forward_evidence_level(walk_forward_validation or {})
     live = _live_fit_level(snapshot_count, replay_metrics, strategy_confidence)
-    permission = _execution_permission_level(historical, live, strategy_confidence)
+    permission = _execution_permission_level(historical, walk_forward, live, strategy_confidence)
     return {
         "historical_evidence": historical["level"],
         "historical_samples": historical["samples"],
         "historical_reliability": historical["reliability"],
+        "walk_forward_validation": walk_forward["level"],
+        "walk_forward_valid_folds": walk_forward["valid_folds"],
         "live_fit": live["level"],
         "live_samples": live["samples"],
         "qc_snapshot_count": int(snapshot_count or 0),
@@ -899,6 +967,7 @@ def _build_playground_evidence_summary(
         "best_strategy": _best_strategy_summary(strategy_confidence),
         "summary_reasons": list(dict.fromkeys(
             historical["reasons"]
+            + walk_forward["reasons"]
             + live["reasons"]
             + permission["reasons"]
             + [str(gap) for gap in data_gaps[:3]]
@@ -934,6 +1003,28 @@ def _historical_evidence_level(
         level = "missing"
         reasons.append("no yfinance historical replay evidence")
     return {"level": level, "samples": samples, "reliability": best_reliability, "reasons": reasons}
+
+
+def _walk_forward_evidence_level(validation: dict[str, Any]) -> dict[str, Any]:
+    items = validation.get("items") or {}
+    if not items:
+        return {
+            "level": "missing",
+            "valid_folds": 0,
+            "reasons": ["no walk-forward validation available"],
+        }
+    rows = [row for row in items.values() if isinstance(row, dict)]
+    rank = {"high": 3, "medium": 2, "weak": 1, "insufficient": 0, "missing": 0}
+    best = max(rows, key=lambda row: rank.get(str(row.get("level") or "missing"), 0))
+    level = str(best.get("level") or "missing")
+    valid_folds = max([int(row.get("valid_fold_count") or 0) for row in rows] or [0])
+    return {
+        "level": level,
+        "valid_folds": valid_folds,
+        "reasons": [
+            f"walk-forward validation {level} across {valid_folds} valid folds"
+        ],
+    }
 
 
 def _live_fit_level(
@@ -973,6 +1064,7 @@ def _live_fit_level(
 
 def _execution_permission_level(
     historical: dict[str, Any],
+    walk_forward: dict[str, Any],
     live: dict[str, Any],
     strategy_confidence: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
@@ -989,7 +1081,12 @@ def _execution_permission_level(
             "level": "human_required",
             "reasons": ["strategy evidence conflicts with live regime/consensus"],
         }
-    if primary and historical["level"] == "strong" and live["level"] == "aligned":
+    if walk_forward["level"] == "weak":
+        return {
+            "level": "human_required",
+            "reasons": ["walk-forward validation is weak across historical folds"],
+        }
+    if primary and historical["level"] == "strong" and walk_forward["level"] in {"high", "missing"} and live["level"] == "aligned":
         return {
             "level": "allowed",
             "reasons": ["primary strategy has strong historical evidence and aligned live fit"],
@@ -1258,6 +1355,86 @@ def _replay_metric_reliability(
         "min_samples_for_strong_evidence": MIN_REPLAY_SAMPLES_FOR_STRONG_EVIDENCE,
         "reasons": reasons,
     }
+
+
+def _compute_walk_forward_validation(
+    snapshots: list[dict[str, Any]],
+    strategy_names: list[str],
+    *,
+    fold_count: int = 4,
+) -> dict[str, Any]:
+    if len(snapshots) < 2 or not strategy_names:
+        return {}
+    clean_snapshots = [snapshot for snapshot in snapshots if _snapshot_rows(snapshot)]
+    if len(clean_snapshots) < 2:
+        return {}
+    folds = _walk_forward_snapshot_folds(clean_snapshots, fold_count=fold_count)
+    returns_by_strategy: dict[str, list[list[float]]] = {name: [] for name in strategy_names}
+    for fold in folds:
+        fold_returns = _strategy_forward_returns_for_snapshots(fold, strategy_names)
+        for name in strategy_names:
+            returns_by_strategy.setdefault(name, []).append(fold_returns.get(name, []))
+    return validate_walk_forward(returns_by_strategy)
+
+
+def _walk_forward_snapshot_folds(
+    snapshots: list[dict[str, Any]],
+    *,
+    fold_count: int,
+) -> list[list[dict[str, Any]]]:
+    if fold_count <= 1:
+        return [snapshots]
+    min_fold_size = 2
+    fold_count = max(1, min(int(fold_count), max(1, len(snapshots) // min_fold_size)))
+    base_size = len(snapshots) // fold_count
+    remainder = len(snapshots) % fold_count
+    folds: list[list[dict[str, Any]]] = []
+    start = 0
+    for idx in range(fold_count):
+        size = base_size + (1 if idx < remainder else 0)
+        end = start + size
+        fold = snapshots[start:end]
+        if len(fold) >= min_fold_size:
+            folds.append(fold)
+        start = end
+    return folds
+
+
+def _strategy_forward_returns_for_snapshots(
+    snapshots: list[dict[str, Any]],
+    strategy_names: list[str],
+) -> dict[str, list[float]]:
+    returns_by_strategy: dict[str, list[float]] = {name: [] for name in strategy_names}
+    previous_weights: dict[str, dict[str, float]] = {}
+    for idx, snapshot in enumerate(snapshots[:-1]):
+        brief = _brief_from_snapshot(snapshot)
+        holdings = brief.get("holdings") or []
+        if not holdings:
+            continue
+        portfolio = brief.get("portfolio") or {}
+        spy = next((h for h in holdings if (h.get("ticker") or "").upper() == "SPY"), {})
+        regime = classify_market_regime(portfolio, spy)
+        context = {
+            "regime": regime.regime.value,
+            "confidence": _confidence_to_float(regime.confidence),
+            "uncertainty_flag": regime.confidence == "low",
+            "stance": _stance_for_regime(regime.regime.value),
+            "direction_bias": _direction_bias_for_regime(regime.regime.value),
+            "risk_params": {},
+            "current_weights": brief.get("current_weights") or {},
+            "sector_rotation": brief.get("sector_rotation") or {},
+        }
+        next_returns = _extract_daily_returns(_snapshot_rows(snapshots[idx + 1]))
+        if not next_returns:
+            continue
+        for name in strategy_names:
+            result = _run_one_strategy(name, holdings, context, previous_weights.get(name, {}))
+            weights = result.weights
+            previous_weights[name] = weights
+            returns_by_strategy.setdefault(name, []).append(
+                sum(float(weights.get(ticker, 0.0)) * ret for ticker, ret in next_returns.items())
+            )
+    return returns_by_strategy
 
 
 def _brief_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
