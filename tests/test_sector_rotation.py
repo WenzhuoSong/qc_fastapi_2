@@ -174,17 +174,17 @@ class SectorRotationTests(unittest.TestCase):
         self.assertEqual(_recent_snapshot_row_limit(1), 180)
         self.assertEqual(_recent_snapshot_row_limit(30), 1200)
 
-    def test_watchlist_and_leveraged_inverse_products_are_not_research_tradable(self):
+    def test_hedge_products_are_not_ordinary_research_tradable(self):
         rows = [
             {"ticker": "SPY", "universe_role": "core"},
-            {"ticker": "DRAM", "universe_role": "watchlist"},
-            {"ticker": "SPXS", "universe_role": "watchlist"},
-            {"ticker": "SQQQ", "universe_role": "watchlist"},
+            {"ticker": "DRAM", "universe_role": "satellite"},
+            {"ticker": "SPXS", "universe_role": "hedge"},
+            {"ticker": "SQQQ", "universe_role": "hedge"},
         ]
 
         filtered = filter_tradable_research_rows(rows)
 
-        self.assertEqual([row["ticker"] for row in filtered], ["SPY"])
+        self.assertEqual([row["ticker"] for row in filtered], ["SPY", "DRAM"])
 
     def test_yfinance_feature_map_fills_strategy_required_fields(self):
         holdings = [{"ticker": "SPY", "mom_20d": None, "mom_60d": None, "mom_252d": None}]

@@ -98,7 +98,7 @@ class StrategyRegistryTest(unittest.TestCase):
         self.assertIn("mom_252d", readiness["missing_fields"])
         self.assertIn("hist_vol_20d", readiness["missing_fields"])
 
-    def test_watchlist_tickers_are_not_strategy_eligible(self):
+    def test_hedge_tickers_are_not_strategy_eligible(self):
         strategy = get_strategy("momentum_lite_v1")
         readiness = strategy.data_readiness([
             {
@@ -115,7 +115,7 @@ class StrategyRegistryTest(unittest.TestCase):
             },
             {
                 "ticker": "SPXS",
-                "universe_role": "watchlist",
+                "universe_role": "hedge",
                 "mom_20d": 0.50,
                 "mom_60d": 0.50,
                 "mom_252d": 0.50,

@@ -4,9 +4,9 @@ from __future__ import annotations
 from typing import Any
 
 
-BLOCKED_RESEARCH_TICKERS = {
+HEDGE_RESEARCH_TICKERS = {
     # Leveraged / inverse / volatility products: useful as stress indicators,
-    # not eligible for strategy weights in this system.
+    # and tightly capped hedges, not eligible for ordinary strategy scoring.
     "TQQQ", "SQQQ", "SOXL", "SOXS", "SPXL", "SPXS", "UVXY", "VIXY",
 }
 
@@ -15,9 +15,9 @@ def is_tradable_research_row(row: dict[str, Any]) -> bool:
     ticker = (row.get("ticker") or "").upper().strip()
     if not ticker or ticker == "CASH":
         return False
-    if ticker in BLOCKED_RESEARCH_TICKERS:
+    if ticker in HEDGE_RESEARCH_TICKERS:
         return False
-    if str(row.get("universe_role") or "").lower().strip() == "watchlist":
+    if str(row.get("universe_role") or "").lower().strip() in {"watchlist", "hedge"}:
         return False
     return True
 
