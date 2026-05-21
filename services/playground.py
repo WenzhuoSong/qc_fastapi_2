@@ -101,7 +101,7 @@ async def run_playground(
     current_weights = brief.get("current_weights") or _extract_current_weights(holdings)
     sector_rotation = brief.get("sector_rotation") or detect_sector_rotation(holdings)
     spy_holding = next((h for h in holdings if (h.get("ticker") or "").upper() == "SPY"), {})
-    regime = classify_market_regime(portfolio, spy_holding)
+    regime = classify_market_regime(portfolio, spy_holding, holdings=holdings)
     context = {
         "regime": regime.regime.value,
         "confidence": _confidence_to_float(regime.confidence),
@@ -744,6 +744,7 @@ def _compute_strategy_confidence(
         walk_forward_score = _walk_forward_evidence_score(walk_forward)
         turnover_penalty = _turnover_penalty(result.expected_turnover_pct)
         data_penalty = 0.20 if not result.data_ready else 0.0
+        strategy_conflict = bool(_detect_strategy_regime_conflicts(regime, result.weights))
         if walk_forward:
             confidence_score = max(
                 0.0,
@@ -759,7 +760,7 @@ def _compute_strategy_confidence(
         else:
             confidence_score = max(
                 0.0,
-                min(1.0, 0.55 * historical_score + 0.35 * live_fit_score - turnover_penalty - data_penalty),
+                min(1.0, 0.70 * historical_score + 0.20 * live_fit_score - turnover_penalty - data_penalty),
             )
         suggested_use = _suggested_strategy_use(
             confidence_score=confidence_score,
@@ -767,7 +768,7 @@ def _compute_strategy_confidence(
             hist_metrics=hist,
             walk_forward=walk_forward,
             turnover_penalty=turnover_penalty,
-            consensus_conflict=consensus_conflict,
+            strategy_conflict=strategy_conflict,
         )
         out[name] = {
             "strategy_name": name,
@@ -784,16 +785,19 @@ def _compute_strategy_confidence(
             "walk_forward_pass_rate": walk_forward.get("pass_rate"),
             "historical_samples": hist.get("n_forward_return_samples", 0),
             "live_samples": live.get("n_forward_return_samples", 0),
+            "execution_intel_status": _execution_intel_status_from_metrics(live),
             "regime_fit": result.regime_fit,
             "consensus_conflict": consensus_conflict,
+            "strategy_regime_conflict": strategy_conflict,
+            "defensive_weight": round(_defensive_exposure(result.weights)["weight"], 4),
             "reason_codes": _strategy_confidence_reason_codes(
                 result,
                 hist,
                 live,
                 walk_forward,
-                consensus_conflict,
+                strategy_conflict,
             ),
-            "notes": _strategy_confidence_notes(result, hist, live, walk_forward, consensus_conflict),
+            "notes": _strategy_confidence_notes(result, hist, live, walk_forward, strategy_conflict),
         }
     return out
 
@@ -815,9 +819,14 @@ def _historical_evidence_score(metrics: dict[str, Any]) -> float:
 def _live_fit_score(result: StrategyResult, live_metrics: dict[str, Any], regime: str) -> float:
     fit_score = {"strong": 0.85, "medium": 0.60, "benchmark": 0.45, "unknown": 0.35}.get(result.regime_fit, 0.35)
     readiness_score = 1.0 if result.data_ready else 0.0
-    live_reliability = (live_metrics.get("metric_reliability") or {}).get("level")
-    live_sample_score = {"high": 0.85, "medium": 0.60, "insufficient": 0.25}.get(live_reliability, 0.15)
-    return 0.55 * fit_score + 0.30 * readiness_score + 0.15 * live_sample_score
+    return 0.65 * fit_score + 0.35 * readiness_score
+
+
+def _execution_intel_status_from_metrics(live_metrics: dict[str, Any]) -> str:
+    samples = int((live_metrics or {}).get("n_forward_return_samples") or 0)
+    if samples <= 0:
+        return "insufficient_data"
+    return "live_available"
 
 
 def _turnover_penalty(turnover: float) -> float:
@@ -837,13 +846,13 @@ def _suggested_strategy_use(
     hist_metrics: dict[str, Any],
     walk_forward: dict[str, Any],
     turnover_penalty: float,
-    consensus_conflict: bool,
+    strategy_conflict: bool,
 ) -> str:
     reliability = (hist_metrics.get("metric_reliability") or {}).get("level")
     walk_forward_level = str(walk_forward.get("level") or "missing")
     if not result.data_ready:
         return "ignore"
-    if confidence_score >= 0.72 and reliability == "high" and walk_forward_level in {"high", "missing"} and turnover_penalty <= 0.08 and not consensus_conflict:
+    if confidence_score >= 0.72 and reliability == "high" and walk_forward_level in {"high", "missing"} and turnover_penalty <= 0.08 and not strategy_conflict:
         return "primary"
     if walk_forward_level in {"weak", "insufficient"} and confidence_score < 0.62:
         return "watch_only"
@@ -857,7 +866,7 @@ def _strategy_confidence_notes(
     hist_metrics: dict[str, Any],
     live_metrics: dict[str, Any],
     walk_forward: dict[str, Any],
-    consensus_conflict: bool,
+    strategy_conflict: bool,
 ) -> list[str]:
     notes: list[str] = []
     hist_level = (hist_metrics.get("metric_reliability") or {}).get("level", "unknown")
@@ -868,8 +877,8 @@ def _strategy_confidence_notes(
         notes.append(f"walk_forward={walk_forward.get('level', 'unknown')}")
     if result.expected_turnover_pct > 0.50:
         notes.append("high_turnover")
-    if consensus_conflict:
-        notes.append("live_consensus_conflicts_with_regime")
+    if strategy_conflict:
+        notes.append("strategy_weights_conflict_with_regime")
     return notes
 
 
@@ -878,7 +887,7 @@ def _strategy_confidence_reason_codes(
     hist_metrics: dict[str, Any],
     live_metrics: dict[str, Any],
     walk_forward: dict[str, Any],
-    consensus_conflict: bool,
+    strategy_conflict: bool,
 ) -> list[str]:
     codes: list[str] = []
     hist_level = (hist_metrics.get("metric_reliability") or {}).get("level")
@@ -922,8 +931,8 @@ def _strategy_confidence_reason_codes(
         codes.append("moderate_turnover")
     else:
         codes.append("low_turnover")
-    if consensus_conflict:
-        codes.append("consensus_regime_conflict")
+    if strategy_conflict:
+        codes.append("strategy_regime_conflict")
     return list(dict.fromkeys(codes))
 
 
@@ -952,23 +961,30 @@ def _build_playground_evidence_summary(
 ) -> dict[str, Any]:
     historical = _historical_evidence_level(historical_snapshot_count, historical_replay_metrics)
     walk_forward = _walk_forward_evidence_level(walk_forward_validation or {})
-    live = _live_fit_level(snapshot_count, replay_metrics, strategy_confidence)
-    permission = _execution_permission_level(historical, walk_forward, live, strategy_confidence)
+    execution_intel = _execution_intel_level(snapshot_count, replay_metrics, strategy_confidence)
+    permission = _execution_permission_level(historical, walk_forward, execution_intel, strategy_confidence)
     return {
         "historical_evidence": historical["level"],
         "historical_samples": historical["samples"],
         "historical_reliability": historical["reliability"],
         "walk_forward_validation": walk_forward["level"],
         "walk_forward_valid_folds": walk_forward["valid_folds"],
-        "live_fit": live["level"],
-        "live_samples": live["samples"],
+        "live_fit": execution_intel["legacy_live_fit"],
+        "execution_intel_status": execution_intel["level"],
+        "live_samples": execution_intel["samples"],
         "qc_snapshot_count": int(snapshot_count or 0),
+        "execution_intel": {
+            "qc_snapshot_count": int(snapshot_count or 0),
+            "forward_return_samples": execution_intel["samples"],
+            "status": execution_intel["level"],
+            "reason": execution_intel["reasons"][0] if execution_intel["reasons"] else None,
+        },
         "execution_permission": permission["level"],
         "best_strategy": _best_strategy_summary(strategy_confidence),
         "summary_reasons": list(dict.fromkeys(
             historical["reasons"]
             + walk_forward["reasons"]
-            + live["reasons"]
+            + execution_intel["reasons"]
             + permission["reasons"]
             + [str(gap) for gap in data_gaps[:3]]
         )),
@@ -1027,7 +1043,7 @@ def _walk_forward_evidence_level(validation: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _live_fit_level(
+def _execution_intel_level(
     snapshot_count: int,
     replay_metrics: dict[str, dict[str, Any]],
     strategy_confidence: dict[str, dict[str, Any]],
@@ -1036,36 +1052,39 @@ def _live_fit_level(
         [int((row or {}).get("n_forward_return_samples") or 0) for row in replay_metrics.values()]
         or [0]
     )
-    rows = [row for row in strategy_confidence.values() if isinstance(row, dict)]
-    if any(bool(row.get("consensus_conflict")) for row in rows):
-        return {
-            "level": "conflicted",
-            "samples": samples,
-            "reasons": ["live consensus conflicts with current regime"],
-        }
     if snapshot_count < 20 or samples < MIN_REPLAY_SAMPLES_FOR_PERFORMANCE:
         return {
-            "level": "insufficient",
+            "level": "insufficient_data",
+            "legacy_live_fit": "insufficient",
             "samples": samples,
             "reasons": [f"QC live replay has {snapshot_count} snapshots and {samples} forward samples"],
         }
-    if any(row.get("suggested_use") in {"primary", "advisory"} for row in rows):
-        return {
-            "level": "aligned",
-            "samples": samples,
-            "reasons": ["QC live fit has actionable strategy support"],
-        }
     return {
-        "level": "conflicted",
+        "level": "live_available",
+        "legacy_live_fit": "aligned",
         "samples": samples,
-        "reasons": ["QC live fit has no actionable strategy support"],
+        "reasons": ["QC live replay is available for execution monitoring"],
+    }
+
+
+def _live_fit_level(
+    snapshot_count: int,
+    replay_metrics: dict[str, dict[str, Any]],
+    strategy_confidence: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Backward-compatible view over execution intel for older tests/tools."""
+    execution_intel = _execution_intel_level(snapshot_count, replay_metrics, strategy_confidence)
+    return {
+        "level": execution_intel["legacy_live_fit"],
+        "samples": execution_intel["samples"],
+        "reasons": execution_intel["reasons"],
     }
 
 
 def _execution_permission_level(
     historical: dict[str, Any],
     walk_forward: dict[str, Any],
-    live: dict[str, Any],
+    execution_intel: dict[str, Any],
     strategy_confidence: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     rows = [row for row in strategy_confidence.values() if isinstance(row, dict)]
@@ -1076,20 +1095,20 @@ def _execution_permission_level(
             "level": "blocked",
             "reasons": ["no actionable strategy confidence"],
         }
-    if live["level"] == "conflicted" or any(bool(row.get("consensus_conflict")) for row in rows):
+    if any(bool(row.get("consensus_conflict")) for row in rows):
         return {
             "level": "human_required",
-            "reasons": ["strategy evidence conflicts with live regime/consensus"],
+            "reasons": ["strategy evidence conflicts with regime/consensus"],
         }
     if walk_forward["level"] == "weak":
         return {
             "level": "human_required",
             "reasons": ["walk-forward validation is weak across historical folds"],
         }
-    if primary and historical["level"] == "strong" and walk_forward["level"] in {"high", "missing"} and live["level"] == "aligned":
+    if primary and historical["level"] == "strong" and walk_forward["level"] in {"high", "missing"}:
         return {
             "level": "allowed",
-            "reasons": ["primary strategy has strong historical evidence and aligned live fit"],
+            "reasons": ["primary strategy has strong historical evidence"],
         }
     if primary or advisory:
         return {
@@ -1238,7 +1257,7 @@ def _compute_replay_metrics(
                 continue
             portfolio = brief.get("portfolio") or {}
             spy = next((h for h in holdings if (h.get("ticker") or "").upper() == "SPY"), {})
-            regime = classify_market_regime(portfolio, spy)
+            regime = classify_market_regime(portfolio, spy, holdings=holdings)
             context = {
                 "regime": regime.regime.value,
                 "confidence": _confidence_to_float(regime.confidence),
@@ -1413,7 +1432,7 @@ def _strategy_forward_returns_for_snapshots(
             continue
         portfolio = brief.get("portfolio") or {}
         spy = next((h for h in holdings if (h.get("ticker") or "").upper() == "SPY"), {})
-        regime = classify_market_regime(portfolio, spy)
+        regime = classify_market_regime(portfolio, spy, holdings=holdings)
         context = {
             "regime": regime.regime.value,
             "confidence": _confidence_to_float(regime.confidence),
@@ -1522,7 +1541,7 @@ def _detect_consensus_regime_conflicts(
     regime: str,
     consensus_weights: dict[str, float],
 ) -> list[str]:
-    defensive_assets = {"BND", "IEF", "TLT", "SGOV", "GLD"}
+    exposure = _defensive_exposure(consensus_weights)
     top3 = [
         ticker for ticker, _ in sorted(
             ((ticker, weight) for ticker, weight in consensus_weights.items() if ticker != "CASH"),
@@ -1530,11 +1549,42 @@ def _detect_consensus_regime_conflicts(
             reverse=True,
         )[:3]
     ]
-    if regime == "trending_bull" and top3 and all(ticker in defensive_assets for ticker in top3):
+    if regime == "trending_bull" and top3 and all(ticker in DEFENSIVE_ASSETS for ticker in top3):
         return [
-            "live consensus conflicts with trending_bull regime: top weights are defensive assets"
+            "live consensus conflicts with trending_bull regime: "
+            f"top3={','.join(top3)}, defensive_weight={exposure['weight']:.1%}"
         ]
     return []
+
+
+DEFENSIVE_ASSETS = {"BND", "IEF", "TLT", "SGOV", "GLD"}
+
+
+def _detect_strategy_regime_conflicts(
+    regime: str,
+    weights: dict[str, float],
+) -> list[str]:
+    exposure = _defensive_exposure(weights)
+    if regime == "trending_bull" and exposure["top_non_cash"] and exposure["weight"] >= 0.50:
+        return [
+            "strategy weights conflict with trending_bull regime: "
+            f"defensive_weight={exposure['weight']:.1%}"
+        ]
+    return []
+
+
+def _defensive_exposure(weights: dict[str, float]) -> dict[str, Any]:
+    non_cash = {
+        str(ticker).upper(): float(weight or 0.0)
+        for ticker, weight in (weights or {}).items()
+        if str(ticker).upper() != "CASH"
+    }
+    return {
+        "weight": sum(weight for ticker, weight in non_cash.items() if ticker in DEFENSIVE_ASSETS),
+        "top_non_cash": [
+            ticker for ticker, _ in sorted(non_cash.items(), key=lambda item: item[1], reverse=True)[:3]
+        ],
+    }
 
 
 def _format_report_for_telegram(text: str, bundle: PlaygroundBundle) -> str:
@@ -1615,10 +1665,12 @@ def _format_evidence_summary(summary: dict[str, Any] | None) -> str:
     reason_text = f"\nWhy: {escape(reasons)}" if reasons else ""
     return (
         "<b>Evidence Summary</b>\n"
+        "<b>Strategy Analysis (yfinance)</b>\n"
         f"Historical evidence: {escape(str(summary.get('historical_evidence') or 'unknown'))} "
         f"({int(summary.get('historical_samples') or 0)} samples, "
         f"{escape(str(summary.get('historical_reliability') or 'unknown'))})\n"
-        f"Live fit: {escape(str(summary.get('live_fit') or 'unknown'))} "
+        f"<b>Execution Intel (QC Live)</b>\n"
+        f"Status: {escape(str(summary.get('execution_intel_status') or 'unknown'))} "
         f"(QC snapshots={int(summary.get('qc_snapshot_count') or 0)}, "
         f"forward={int(summary.get('live_samples') or 0)})\n"
         f"Execution permission: {escape(str(summary.get('execution_permission') or 'unknown'))}"
@@ -1667,6 +1719,7 @@ def _format_strategy_confidence_summary(bundle: PlaygroundBundle, limit: int = 4
 def _prioritize_reason_codes(codes: list[Any]) -> list[str]:
     priority = {
         "consensus_regime_conflict": 0,
+        "strategy_regime_conflict": 0,
         "high_turnover": 1,
         "moderate_turnover": 2,
         "data_not_ready": 3,

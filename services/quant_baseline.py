@@ -280,7 +280,7 @@ async def run_quant_baseline_async(
         (h for h in holdings if (h.get("ticker") or "").upper() == "SPY"),
         {},
     )
-    regime_result = classify_market_regime(portfolio, spy_holding)
+    regime_result = classify_market_regime(portfolio, spy_holding, holdings=holdings)
     logger.info(
         f"[Stage2] Regime: {regime_result.regime.value} "
         f"(confidence={regime_result.confidence}) | {regime_result.reasoning}"
@@ -399,6 +399,7 @@ class RegimeResult:
 def classify_market_regime(
     portfolio_data: dict[str, Any],
     spy_holding: dict[str, Any],
+    holdings: list[dict[str, Any]] | None = None,
 ) -> RegimeResult:
     """
     纯数学 regime 分类，无 LLM 依赖。
@@ -420,6 +421,8 @@ def classify_market_regime(
     spy_mom_252d = _safe_float(spy_holding.get("mom_252d"))
     spy_rsi      = _safe_float(spy_holding.get("rsi_14"), 50.0)
     spy_atr_pct  = _safe_float(spy_holding.get("atr_pct"), 0.01)
+    bond_relative_strength = _bond_relative_strength_20d(holdings or [], spy_mom_20d)
+    breadth_pct = _safe_float(portfolio_data.get("breadth_pct"), None)
 
     signals = {
         "drawdown":    drawdown,
@@ -429,6 +432,8 @@ def classify_market_regime(
         "spy_mom_252d": spy_mom_252d,
         "spy_rsi":      spy_rsi,
         "spy_atr_pct":  spy_atr_pct,
+        "ief_vs_spy_relative_strength_20d": bond_relative_strength,
+        "spy_breadth_pct_above_200ma": breadth_pct,
     }
 
     # 1. 防御模式
@@ -482,6 +487,15 @@ def classify_market_regime(
         spy_rsi < 72,
     ])
     if bull_score >= 4:
+        regime_subtype = None
+        regime_bond_adjusted = False
+        if bond_relative_strength is not None and bond_relative_strength > 0.02:
+            regime_subtype = "bull_with_defensive_rotation"
+            regime_bond_adjusted = True
+        elif breadth_pct is not None and breadth_pct >= 0.60:
+            regime_subtype = "bull_broad_participation"
+        signals["regime_subtype"] = regime_subtype
+        signals["regime_bond_adjusted"] = regime_bond_adjusted
         return RegimeResult(
             regime=MarketRegime.TRENDING_BULL,
             confidence="high" if bull_score == 5 else "medium",
@@ -497,7 +511,10 @@ def classify_market_regime(
                     "but monitor RSI overbought risk."
                 ),
             },
-            reasoning=f"Bull trend: mom20={spy_mom_20d:.2%}, mom60={spy_mom_60d:.2%}, RSI={spy_rsi:.1f}",
+            reasoning=(
+                f"Bull trend: mom20={spy_mom_20d:.2%}, mom60={spy_mom_60d:.2%}, RSI={spy_rsi:.1f}"
+                + (f", subtype={regime_subtype}" if regime_subtype else "")
+            ),
         )
 
     # 4. 趋势下跌
@@ -551,3 +568,18 @@ def _safe_float(val: Any, default: float = 0.0) -> float:
         return float(val) if val is not None else default
     except (TypeError, ValueError):
         return default
+
+
+def _bond_relative_strength_20d(
+    holdings: list[dict[str, Any]],
+    spy_mom_20d: float,
+) -> float | None:
+    bond_momentums = [
+        _safe_float(row.get("mom_20d"), None)
+        for row in holdings
+        if str(row.get("ticker") or "").upper() in {"IEF", "BND", "TLT", "SGOV"}
+    ]
+    bond_momentums = [value for value in bond_momentums if value is not None]
+    if not bond_momentums:
+        return None
+    return max(bond_momentums) - spy_mom_20d

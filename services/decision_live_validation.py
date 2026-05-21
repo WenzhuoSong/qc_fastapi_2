@@ -112,12 +112,16 @@ def _check_data_quality_detail(text: str, evidence: dict[str, Any]) -> dict[str,
         return _row("data_quality_detail", "pass", "Telegram shows source-specific data quality detail")
     strategies = (evidence.get("evidence_bundle") or {}).get("strategies") or evidence.get("strategies") or {}
     summary = strategies.get("evidence_summary") or {}
-    live_fit = summary.get("live_fit")
-    if live_fit == "insufficient" and strategies.get("snapshot_count") is not None:
+    execution_status = summary.get("execution_intel_status")
+    legacy_live_fit = summary.get("live_fit")
+    if (
+        execution_status == "insufficient_data"
+        or (execution_status is None and legacy_live_fit == "insufficient")
+    ) and strategies.get("snapshot_count") is not None:
         return _row(
             "data_quality_detail",
             "fail",
-            "QC live fit is insufficient but Telegram did not show Data quality detail",
+            "QC execution intel is insufficient but Telegram did not show Data quality detail",
         )
     return _row("data_quality_detail", "warn", "Data quality detail not found in Telegram text")
 

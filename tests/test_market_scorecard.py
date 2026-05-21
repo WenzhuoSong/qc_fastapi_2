@@ -122,6 +122,24 @@ class MarketScorecardTest(unittest.TestCase):
         self.assertIn("bullish_but_mixed_rotation", scorecard["triggered_rules"])
         self.assertEqual(scorecard["investment_permission"], "small_overweight_only")
 
+    def test_bull_with_defensive_rotation_subtype_does_not_double_count_conflict(self):
+        evidence = fresh_evidence(
+            market={
+                "regime": "trending_bull",
+                "regime_subtype": "bull_with_defensive_rotation",
+            },
+            rotation={
+                "rotation_label": "mixed_rotation",
+                "risk_appetite_score": 0.0,
+                "leaders": [{"ticker": "IEF"}, {"ticker": "TLT"}, {"ticker": "BND"}],
+            },
+        )
+
+        scorecard = build_market_scorecard(evidence)
+
+        self.assertNotIn("bullish_but_mixed_rotation", scorecard["triggered_rules"])
+        self.assertEqual(scorecard["investment_permission"], "normal_rebalance")
+
     def test_advisory_only_strategy_confidence_caps_action(self):
         evidence = fresh_evidence(
             strategies={

@@ -81,7 +81,12 @@ def build_market_scorecard(evidence_bundle: dict[str, Any] | None) -> dict[str, 
     triggered = [_base_rule(base)]
     triggered.extend(_staleness_rules(evidence))
     triggered.extend(_data_quality_rules(strategies, data_quality))
-    triggered.extend(_market_conflict_rules(regime, rotation_label, rotation))
+    triggered.extend(_market_conflict_rules(
+        regime,
+        rotation_label,
+        rotation,
+        regime_subtype=str(market.get("regime_subtype") or ""),
+    ))
     triggered.extend(_volatility_rules(market))
     triggered.extend(_drawdown_rules(market))
     triggered.extend(_turnover_rules(strategies))
@@ -166,8 +171,13 @@ def _staleness_rules(evidence: dict[str, Any]) -> list[dict[str, Any]]:
 def _data_quality_rules(strategies: dict[str, Any], data_quality: dict[str, Any]) -> list[dict[str, Any]]:
     rules: list[dict[str, Any]] = []
     playground_available = bool(strategies.get("playground_available", False))
-    snapshot_count = int(_safe_float(strategies.get("snapshot_count"), 0))
-    forward_samples = int(_safe_float(strategies.get("forward_return_samples"), 0))
+    has_historical_samples = "historical_forward_return_samples" in strategies
+    historical_sample_value = strategies.get(
+        "historical_forward_return_samples",
+        strategies.get("forward_return_samples", 0),
+    )
+    historical_samples = int(_safe_float(historical_sample_value, 0))
+    min_samples = 30 if has_historical_samples else 10
     overall = str(data_quality.get("overall") or strategies.get("data_quality") or "").lower()
 
     if not playground_available:
@@ -182,12 +192,10 @@ def _data_quality_rules(strategies: dict[str, Any], data_quality: dict[str, Any]
             }
         )
 
-    if snapshot_count < 20 or forward_samples < 10 or overall in {"limited", "missing", "stale"}:
+    if historical_samples < min_samples or overall in {"limited", "missing", "stale"}:
         reasons = []
-        if snapshot_count < 20:
-            reasons.append(f"Only {snapshot_count} daily snapshots available")
-        if forward_samples < 10:
-            reasons.append(f"Only {forward_samples} forward return samples available")
+        if historical_samples < min_samples:
+            reasons.append(f"Only {historical_samples} historical forward return samples available")
         if overall in {"limited", "missing", "stale"}:
             reasons.append(f"Overall data quality is {overall}")
         rules.append(
@@ -208,8 +216,12 @@ def _market_conflict_rules(
     regime: str,
     rotation_label: str,
     rotation: dict[str, Any],
+    *,
+    regime_subtype: str = "",
 ) -> list[dict[str, Any]]:
     if regime != "trending_bull":
+        return []
+    if regime_subtype == "bull_with_defensive_rotation":
         return []
     leader_tickers = {str((item or {}).get("ticker", "")).upper() for item in rotation.get("leaders") or []}
     bond_heavy = bool(leader_tickers & {"IEF", "TLT", "BND", "SGOV", "GLD"})

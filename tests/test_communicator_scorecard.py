@@ -92,6 +92,19 @@ class CommunicatorScorecardTest(unittest.TestCase):
                         },
                     },
                     "strategies": {
+                        "execution_gateway": {
+                            "final_permission": "human_required",
+                            "primary_reason": "regime_consensus_mismatch",
+                            "source": "strategy_layer",
+                            "strategy_layer": {
+                                "verdict": "watch_only",
+                                "reason": "regime_consensus_mismatch",
+                            },
+                            "execution_intel_layer": {
+                                "verdict": "acceptable",
+                                "reason": "execution_intel_available",
+                            },
+                        },
                         "strategy_certification": {
                             "summary": {"counts": {"research_supported": 1, "advisory": 0}},
                             "items": {
@@ -148,6 +161,7 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertEqual(payload["strategy_use_enforcement"]["evidence_summary"]["historical_evidence"], "strong")
         self.assertEqual(payload["knowledge_resolution"]["conflicts"][0]["id"], "regime_strategy_conflict")
         self.assertEqual(payload["knowledge_resolution"]["calibration"]["summary"]["accepted"], 1)
+        self.assertEqual(payload["execution_gateway"]["final_permission"], "human_required")
         self.assertEqual(payload["strategy_certification"]["items"][0]["status"], "research_supported")
         self.assertEqual(
             payload["strategy_use_enforcement"]["violations"][0],
@@ -191,7 +205,7 @@ class CommunicatorScorecardTest(unittest.TestCase):
                     "news_data_quality": "fresh",
                     "evidence_summary": {
                         "historical_evidence": "strong",
-                        "live_fit": "insufficient",
+                        "execution_intel_status": "insufficient_data",
                     },
                 },
                 "scorecard_enforcement": {
@@ -223,7 +237,7 @@ class CommunicatorScorecardTest(unittest.TestCase):
                     },
                     "evidence_summary": {
                         "historical_evidence": "strong",
-                        "live_fit": "insufficient",
+                        "execution_intel_status": "insufficient_data",
                         "execution_permission": "advisory",
                     },
                 },
@@ -257,6 +271,19 @@ class CommunicatorScorecardTest(unittest.TestCase):
                         }
                     ],
                 },
+                "execution_gateway": {
+                    "final_permission": "human_required",
+                    "primary_reason": "regime_consensus_mismatch",
+                    "source": "strategy_layer",
+                    "strategy_layer": {
+                        "verdict": "watch_only",
+                        "reason": "regime_consensus_mismatch",
+                    },
+                    "execution_intel_layer": {
+                        "verdict": "acceptable",
+                        "reason": "execution_intel_available",
+                    },
+                },
             }
         )
 
@@ -266,7 +293,7 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("QC heartbeat fields=12", text)
         self.assertIn("Daily snapshot fields=34", text)
         self.assertIn("QC live snapshots=7/3 forward", text)
-        self.assertIn("QC live fit=insufficient", text)
+        self.assertIn("QC execution intel=insufficient_data", text)
         self.assertIn("yfinance history=290/289 forward", text)
         self.assertIn("yfinance evidence=strong", text)
         self.assertIn("News cache=fresh", text)
@@ -281,9 +308,12 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("style_new_position_blocked:XLF", text)
         self.assertIn("Strategy-use clipping", text)
         self.assertIn("historical=strong", text)
-        self.assertIn("live=insufficient", text)
+        self.assertIn("execution=insufficient_data", text)
         self.assertIn("permission=advisory", text)
         self.assertIn("strategy_advisory_only:max_delta:SPY", text)
+        self.assertIn("Execution gateway", text)
+        self.assertIn("final=human_required", text)
+        self.assertIn("strategy=watch_only:regime_consensus_mismatch", text)
         self.assertIn("Knowledge resolution", text)
         self.assertIn("regime_strategy_conflict:momentum_lite_v1", text)
         self.assertIn("confidence calibration: accepted=1, rejected=0", text)

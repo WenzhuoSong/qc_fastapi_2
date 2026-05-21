@@ -466,6 +466,53 @@ class SectorRotationTests(unittest.TestCase):
         self.assertIn("high_turnover", reason_line)
         self.assertLess(reason_line.index("consensus_regime_conflict"), reason_line.index("historical_strong"))
 
+    def test_bundle_consensus_conflict_does_not_leak_to_aligned_strategy_reasons(self):
+        result = _run_one_strategy(
+            "momentum_lite_v1",
+            [
+                {
+                    "ticker": "SPY",
+                    "mom_20d": 0.02,
+                    "mom_60d": 0.05,
+                    "mom_252d": 0.12,
+                    "rsi_14": 55,
+                    "atr_pct": 0.011,
+                    "hist_vol_20d": 0.14,
+                },
+                {
+                    "ticker": "QQQ",
+                    "mom_20d": 0.04,
+                    "mom_60d": 0.08,
+                    "mom_252d": 0.20,
+                    "rsi_14": 68,
+                    "atr_pct": 0.018,
+                    "hist_vol_20d": 0.22,
+                },
+            ],
+            {"regime": "trending_bull", "risk_params": {"max_single_position": 0.2}},
+            {},
+        )
+        confidence = _compute_strategy_confidence(
+            [result],
+            {"momentum_lite_v1": {"metric_reliability": {"level": "high"}, "n_forward_return_samples": 30}},
+            {
+                "momentum_lite_v1": {
+                    "metric_reliability": {"level": "high"},
+                    "n_forward_return_samples": 100,
+                    "sharpe": 1.2,
+                    "hit_rate": 0.55,
+                }
+            },
+            "trending_bull",
+            {"IEF": 0.4, "BND": 0.3, "TLT": 0.2, "CASH": 0.1},
+        )
+
+        row = confidence["momentum_lite_v1"]
+        self.assertTrue(row["consensus_conflict"])
+        self.assertFalse(row["strategy_regime_conflict"])
+        self.assertNotIn("consensus_regime_conflict", row["reason_codes"])
+        self.assertNotIn("strategy_regime_conflict", row["reason_codes"])
+
     def test_playground_evidence_summary_labels_historical_live_and_permission(self):
         summary = _build_playground_evidence_summary(
             snapshot_count=8,
@@ -490,12 +537,42 @@ class SectorRotationTests(unittest.TestCase):
         )
 
         self.assertEqual(summary["historical_evidence"], "strong")
-        self.assertEqual(summary["live_fit"], "insufficient")
+        self.assertEqual(summary["execution_intel_status"], "insufficient_data")
         self.assertEqual(summary["execution_permission"], "advisory")
         rendered = _format_evidence_summary(summary)
         self.assertIn("Historical evidence: strong", rendered)
-        self.assertIn("Live fit: insufficient", rendered)
+        self.assertIn("Status: insufficient_data", rendered)
         self.assertIn("Execution permission: advisory", rendered)
+
+    def test_consensus_conflict_blocks_permission_without_polluting_execution_intel(self):
+        summary = _build_playground_evidence_summary(
+            snapshot_count=30,
+            historical_snapshot_count=100,
+            replay_metrics={
+                "momentum_lite_v1": {
+                    "metric_reliability": {"level": "high"},
+                    "n_forward_return_samples": 30,
+                }
+            },
+            historical_replay_metrics={
+                "momentum_lite_v1": {
+                    "metric_reliability": {"level": "high"},
+                    "n_forward_return_samples": 100,
+                }
+            },
+            strategy_confidence={
+                "momentum_lite_v1": {
+                    "strategy_name": "momentum_lite_v1",
+                    "suggested_use": "advisory",
+                    "confidence_score": 0.63,
+                    "consensus_conflict": True,
+                }
+            },
+            data_gaps=[],
+        )
+
+        self.assertEqual(summary["execution_intel_status"], "live_available")
+        self.assertEqual(summary["execution_permission"], "human_required")
 
     def test_replay_metric_reliability_boundaries(self):
         insufficient = _replay_metric_reliability(

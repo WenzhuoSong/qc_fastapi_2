@@ -232,6 +232,7 @@ def _build_payload(
             "pre_clip": strategy_use_enforcement.get("target_weights_pre_strategy_use_clip") or {},
             "post_clip": strategy_use_enforcement.get("target_weights_post_strategy_use_clip") or {},
         },
+        "execution_gateway": strategies.get("execution_gateway") or {},
         "strategy_certification": _compact_strategy_certification(
             strategies.get("strategy_certification") or {}
         ),
@@ -276,6 +277,7 @@ def _fallback_template(p: dict) -> str:
     proposal_shaping = p.get("proposal_shaping") or {}
     style_enforcement = p.get("style_enforcement") or {}
     strategy_use_enforcement = p.get("strategy_use_enforcement") or {}
+    execution_gateway = p.get("execution_gateway") or {}
     strategy_certification = p.get("strategy_certification") or {}
     knowledge_resolution = p.get("knowledge_resolution") or {}
     position_governance = p.get("position_governance") or {}
@@ -307,6 +309,7 @@ def _fallback_template(p: dict) -> str:
     proposal_shaping_line = _format_proposal_shaping_line(proposal_shaping)
     style_enforcement_line = _format_style_enforcement_line(style_enforcement)
     strategy_use_line = _format_strategy_use_enforcement_line(strategy_use_enforcement)
+    execution_gateway_line = _format_execution_gateway_line(execution_gateway)
     strategy_certification_line = _format_strategy_certification_line(strategy_certification)
     knowledge_line = _format_knowledge_resolution_line(knowledge_resolution)
     decision_ledger_line = _format_decision_ledger_line(decision_ledger)
@@ -328,6 +331,7 @@ def _fallback_template(p: dict) -> str:
             f"{enforcement_line}"
             f"{style_enforcement_line}"
             f"{strategy_use_line}"
+            f"{execution_gateway_line}"
             f"{strategy_certification_line}"
             f"{knowledge_line}"
             f"{decision_ledger_line}"
@@ -369,6 +373,7 @@ def _fallback_template(p: dict) -> str:
         f"{enforcement_line}"
         f"{style_enforcement_line}"
         f"{strategy_use_line}"
+        f"{execution_gateway_line}"
         f"{strategy_certification_line}"
         f"{knowledge_line}"
         f"{decision_ledger_line}"
@@ -419,8 +424,8 @@ def _format_data_quality_detail_line(detail: dict) -> str:
         bits.append(f"Daily snapshot fields={int(source_counts.get('qc_daily_snapshot') or 0)}")
     if qc_snapshots is not None:
         bits.append(f"QC live snapshots={int(qc_snapshots or 0)}/{int(qc_forward or 0)} forward")
-    if evidence.get("live_fit"):
-        bits.append(f"QC live fit={evidence.get('live_fit')}")
+    if evidence.get("execution_intel_status"):
+        bits.append(f"QC execution intel={evidence.get('execution_intel_status')}")
     if hist is not None:
         bits.append(f"yfinance history={int(hist or 0)}/{int(hist_forward or 0)} forward")
     if evidence.get("historical_evidence"):
@@ -530,8 +535,8 @@ def _format_strategy_use_enforcement_line(enforcement: dict) -> str:
     evidence_bits = []
     if evidence.get("historical_evidence"):
         evidence_bits.append(f"historical={evidence.get('historical_evidence')}")
-    if evidence.get("live_fit"):
-        evidence_bits.append(f"live={evidence.get('live_fit')}")
+    if evidence.get("execution_intel_status"):
+        evidence_bits.append(f"execution={evidence.get('execution_intel_status')}")
     if evidence.get("execution_permission"):
         evidence_bits.append(f"permission={evidence.get('execution_permission')}")
     if best:
@@ -552,6 +557,20 @@ def _format_strategy_use_enforcement_line(enforcement: dict) -> str:
         f"<b>Strategy-use clipping</b>\n"
         + "\n".join(lines)
         + "\n\n"
+    )
+
+
+def _format_execution_gateway_line(gateway: dict) -> str:
+    if not gateway or not gateway.get("final_permission"):
+        return ""
+    strategy = gateway.get("strategy_layer") or {}
+    execution = gateway.get("execution_intel_layer") or {}
+    return (
+        f"<b>Execution gateway</b>\n"
+        f"  final={gateway.get('final_permission')} | source={gateway.get('source')} "
+        f"| reason={gateway.get('primary_reason')}\n"
+        f"  strategy={strategy.get('verdict', 'unknown')}:{strategy.get('reason', 'unknown')} "
+        f"| execution={execution.get('verdict', 'unknown')}:{execution.get('reason', 'unknown')}\n\n"
     )
 
 

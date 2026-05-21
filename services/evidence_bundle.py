@@ -13,6 +13,7 @@ from typing import Any
 from services.knowledge_base import build_knowledge_context
 from services.knowledge_resolver import resolve_knowledge
 from services.news_evidence import build_news_evidence
+from services.execution_gateway import build_execution_gateway
 from services.strategy_confidence_calibrator import calibrate_strategy_confidence
 from services.strategy_certification import certify_strategies
 
@@ -54,6 +55,7 @@ def build_evidence_bundle(
         calibration=calibration,
     )
     strategies["strategy_certification"] = certify_strategies(strategies)
+    strategies["execution_gateway"] = build_execution_gateway(strategies)
     knowledge["strategy_confidence_calibration"] = {
         "records": calibration.get("records") or [],
         "summary": calibration.get("summary") or {},
@@ -90,7 +92,9 @@ def _build_market_section(brief: dict[str, Any], quant: dict[str, Any]) -> dict[
 
     return {
         "regime": regime_result.get("regime") or "unknown",
+        "regime_subtype": signals.get("regime_subtype"),
         "regime_confidence": regime_result.get("confidence") or "low",
+        "regime_bond_adjusted": bool(signals.get("regime_bond_adjusted")),
         "regime_reasoning": regime_result.get("reasoning"),
         "spy_mom_20d": _first_number(signals, "spy_mom_20d"),
         "spy_mom_60d": _first_number(signals, "spy_mom_60d", fallback=key_facts.get("spy_mom_60d")),
@@ -146,6 +150,12 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
             "playground_available": False,
             "snapshot_count": 0,
             "forward_return_samples": 0,
+            "execution_intel": {
+                "qc_snapshot_count": 0,
+                "forward_return_samples": 0,
+                "status": "insufficient_data",
+                "reason": "No recent Playground result available",
+            },
             "consensus_top5": [],
             "strategy_results": [],
             "turnover_warnings": [],
@@ -153,6 +163,7 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
             "evidence_summary": {
                 "historical_evidence": "missing",
                 "live_fit": "insufficient",
+                "execution_intel_status": "insufficient_data",
                 "execution_permission": "blocked",
                 "summary_reasons": ["No recent Playground result available"],
             },
@@ -177,7 +188,7 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
 
     snapshot_count = int(_to_float(playground.get("snapshot_count"), 0))
     data_quality = "fresh"
-    if snapshot_count < 20 or forward_samples < 10:
+    if historical_samples < 30:
         data_quality = "limited"
     if historical_samples >= 30:
         data_quality = "historical_supported"
@@ -192,6 +203,7 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
         "regime_confidence": playground.get("regime_confidence"),
         "snapshot_count": snapshot_count,
         "forward_return_samples": forward_samples,
+        "execution_intel": _execution_intel_section(playground, snapshot_count, forward_samples),
         "historical_snapshot_count": int(_to_float(playground.get("historical_snapshot_count"), 0)),
         "historical_forward_return_samples": historical_samples,
         "consensus_top5": _top_weights(playground.get("consensus_weights") or {}),
@@ -253,6 +265,32 @@ def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _execution_intel_section(
+    playground: dict[str, Any],
+    snapshot_count: int,
+    forward_samples: int,
+) -> dict[str, Any]:
+    summary = playground.get("evidence_summary") or {}
+    prebuilt = summary.get("execution_intel") or playground.get("execution_intel") or {}
+    if isinstance(prebuilt, dict) and prebuilt:
+        status = str(prebuilt.get("status") or summary.get("execution_intel_status") or "live_available")
+        return {
+            **prebuilt,
+            "qc_snapshot_count": int(_to_float(prebuilt.get("qc_snapshot_count"), snapshot_count) or 0),
+            "forward_return_samples": int(_to_float(prebuilt.get("forward_return_samples"), forward_samples) or 0),
+            "status": status,
+        }
+    status = str(summary.get("execution_intel_status") or "")
+    if not status:
+        status = "live_available" if snapshot_count > 0 else "insufficient_data"
+    return {
+        "qc_snapshot_count": snapshot_count,
+        "forward_return_samples": forward_samples,
+        "status": status,
+        "reason": None if status == "live_available" else "QC live data is not sufficient for execution monitoring",
+    }
 
 
 def _strategy_use_summary(confidence: dict[str, Any]) -> dict[str, Any]:

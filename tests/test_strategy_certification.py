@@ -36,7 +36,7 @@ class StrategyCertificationTest(unittest.TestCase):
         self.assertEqual(out["audit"]["summary"]["promotion_candidates"], ["momentum_lite_v1"])
         self.assertFalse(out["audit"]["summary"]["requires_operator_review"])
 
-    def test_research_supported_when_live_is_insufficient_or_turnover_high(self):
+    def test_research_supported_when_turnover_high(self):
         out = certify_strategies({
             "evidence_summary": {
                 "historical_evidence": "strong",
@@ -60,7 +60,7 @@ class StrategyCertificationTest(unittest.TestCase):
         row = out["items"]["mean_reversion_lite"]
         self.assertEqual(row["status"], "research_supported")
         self.assertEqual(row["approved_use"], "research_only")
-        self.assertIn("live_samples_insufficient", row["promotion_blockers"])
+        self.assertNotIn("live_samples_insufficient", row["promotion_blockers"])
         self.assertIn("turnover_high", row["demotion_reasons"])
         audit_row = out["audit"]["rows"][0]
         self.assertFalse(audit_row["promotion_eligible"])

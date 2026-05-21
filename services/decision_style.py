@@ -383,14 +383,19 @@ def _news_rules(news: dict[str, Any]) -> list[dict[str, Any]]:
 def _strategy_rules(strategies: dict[str, Any]) -> list[dict[str, Any]]:
     rules: list[dict[str, Any]] = []
     data_quality = str(strategies.get("data_quality") or "").lower()
-    snapshot_count = int(_safe_float(strategies.get("snapshot_count"), 999))
-    forward_samples = int(_safe_float(strategies.get("forward_return_samples"), 999))
+    has_historical_samples = "historical_forward_return_samples" in strategies
+    historical_sample_value = strategies.get(
+        "historical_forward_return_samples",
+        strategies.get("forward_return_samples", 999),
+    )
+    historical_samples = int(_safe_float(historical_sample_value, 999))
+    min_samples = 30 if has_historical_samples else 10
     historical_supported = data_quality == "historical_supported"
     if (
         data_quality in {"limited", "missing", "stale"}
-        or ((snapshot_count < 20 or forward_samples < 10) and not historical_supported)
+        or (historical_samples < min_samples and not historical_supported)
     ):
-        reason = f"Strategy evidence limited: snapshots={snapshot_count}, forward_samples={forward_samples}, data_quality={data_quality or 'unknown'}"
+        reason = f"Strategy evidence limited: historical_forward_samples={historical_samples}, data_quality={data_quality or 'unknown'}"
         rules.append(_limited_data_rule("strategy_data_quality", reason))
 
     max_turnover = _max_strategy_turnover(strategies)

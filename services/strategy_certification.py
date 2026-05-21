@@ -11,7 +11,6 @@ from typing import Any
 
 
 MIN_HISTORICAL_SAMPLES = 120
-MIN_LIVE_SAMPLES = 20
 MAX_ADVISORY_TURNOVER = 0.50
 
 
@@ -34,7 +33,6 @@ def certify_strategies(strategy_evidence: dict[str, Any] | None) -> dict[str, An
         "audit": build_strategy_certification_audit(certifications),
         "policy": {
             "min_historical_samples": MIN_HISTORICAL_SAMPLES,
-            "min_live_samples": MIN_LIVE_SAMPLES,
             "max_advisory_turnover": MAX_ADVISORY_TURNOVER,
             "certified_status_deferred": True,
         },
@@ -148,8 +146,6 @@ def _certify_one(*, row: dict[str, Any], evidence: dict[str, Any]) -> dict[str, 
         blockers.append("historical_samples_insufficient")
     if sharpe is not None and sharpe <= 0:
         blockers.append("historical_sharpe_nonpositive")
-    if live_samples < MIN_LIVE_SAMPLES:
-        blockers.append("live_samples_insufficient")
     if live_fit in {"conflicted"}:
         demotion_reasons.append("live_fit_conflicted")
     if walk_forward_level == "weak":
@@ -166,7 +162,6 @@ def _certify_one(*, row: dict[str, Any], evidence: dict[str, Any]) -> dict[str, 
         can_influence=can_influence,
         historical_samples=historical_samples,
         historical_evidence=historical_evidence,
-        live_samples=live_samples,
         live_fit=live_fit,
         turnover=turnover,
         suggested_use=suggested_use,
@@ -208,7 +203,7 @@ def _strategy_live_fit(*, row: dict[str, Any], evidence_summary: dict[str, Any])
     live_samples = int(_to_float(row.get("n_forward_return_samples"), 0) or 0)
     reliability = str(((row.get("metric_reliability") or {}).get("level")) or "")
     summary_fit = str(evidence_summary.get("live_fit") or "unknown")
-    if "consensus_regime_conflict" in reason_codes:
+    if reason_codes.intersection({"consensus_regime_conflict", "strategy_regime_conflict"}):
         return "conflicted"
     if "live_qc_supported" in reason_codes or reliability == "high":
         return "aligned"
@@ -242,7 +237,6 @@ def _status(
     can_influence: bool,
     historical_samples: int,
     historical_evidence: str,
-    live_samples: int,
     live_fit: str,
     turnover: float,
     suggested_use: str,
@@ -262,8 +256,7 @@ def _status(
         return "research_supported"
     if (
         suggested_use == "advisory"
-        and live_samples >= MIN_LIVE_SAMPLES
-        and live_fit == "aligned"
+        and live_fit != "conflicted"
         and turnover <= MAX_ADVISORY_TURNOVER
     ):
         return "advisory"

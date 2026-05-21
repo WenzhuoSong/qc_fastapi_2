@@ -698,7 +698,7 @@ def _validate_thesis_status(
 
     evidence_summary = strategy_evidence.get("evidence_summary") or {}
     live_fit = str(evidence_summary.get("live_fit") or "")
-    if live_fit in {"conflicted", "insufficient"}:
+    if live_fit in {"conflicted"}:
         evidence.append(f"live_fit:{live_fit}")
     if market_scorecard.get("dominant_constraint"):
         evidence.append(f"scorecard:{market_scorecard.get('dominant_constraint')}")

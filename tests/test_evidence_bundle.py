@@ -143,7 +143,7 @@ class EvidenceBundleTest(unittest.TestCase):
         self.assertIn("strategy_certification", bundle["strategies"])
         self.assertEqual(
             bundle["strategies"]["strategy_certification"]["items"]["momentum_lite_v1"]["status"],
-            "research_supported",
+            "advisory",
         )
         self.assertEqual(
             bundle["strategies"]["strategy_results"][0]["reason_codes"],
