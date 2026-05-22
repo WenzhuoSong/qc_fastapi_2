@@ -1,22 +1,20 @@
+import importlib
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 
-def _install_import_stubs() -> None:
+def _load_position_manager_exports():
     """Allow importing services.position_manager without DB dependencies."""
-    sqlalchemy = types.ModuleType("sqlalchemy")
+    sqlalchemy = type(sys)("sqlalchemy")
     sqlalchemy.select = lambda *args, **kwargs: None
     sqlalchemy.desc = lambda *args, **kwargs: None
-    sys.modules.setdefault("sqlalchemy", sqlalchemy)
 
-    sys.modules.setdefault("db", types.ModuleType("db"))
-
-    session = types.ModuleType("db.session")
+    session = type(sys)("db.session")
     session.AsyncSessionLocal = object
-    sys.modules.setdefault("db.session", session)
 
-    models = sys.modules.setdefault("db.models", types.ModuleType("db.models"))
+    models = type(sys)("db.models")
     for name in (
         "HoldingsFactor",
         "QCSnapshot",
@@ -27,22 +25,32 @@ def _install_import_stubs() -> None:
     ):
         setattr(models, name, type(name, (), {}))
 
-    queries = types.ModuleType("db.queries")
+    queries = type(sys)("db.queries")
     queries.upsert_alert = lambda *args, **kwargs: None
-    sys.modules.setdefault("db.queries", queries)
 
-    config = types.ModuleType("config")
+    config = type(sys)("config")
     config.get_settings = lambda: object()
-    sys.modules.setdefault("config", config)
+
+    with patch.dict(
+        "sys.modules",
+        {
+            "sqlalchemy": sqlalchemy,
+            "db": type(sys)("db"),
+            "db.session": session,
+            "db.models": models,
+            "db.queries": queries,
+            "config": config,
+        },
+    ):
+        module = importlib.import_module("services.position_manager")
+        return (
+            module.apply_position_constraints,
+            module._build_position_monitor_diagnostics,
+            module._holding_days_are_trusted,
+        )
 
 
-_install_import_stubs()
-
-from services.position_manager import (  # noqa: E402
-    apply_position_constraints,
-    _build_position_monitor_diagnostics,
-    _holding_days_are_trusted,
-)
+apply_position_constraints, _build_position_monitor_diagnostics, _holding_days_are_trusted = _load_position_manager_exports()
 
 
 class PositionManagerTest(unittest.TestCase):

@@ -77,8 +77,8 @@ class TargetBuilderTest(unittest.TestCase):
 
     def test_single_delta_and_turnover_caps_are_deterministic(self):
         out = build_target_weights(
-            base_weights={"AAA": 0.50, "CASH": 0.50},
-            current_weights={"AAA": 0.10, "CASH": 0.90},
+            base_weights={"SPY": 0.50, "CASH": 0.50},
+            current_weights={"SPY": 0.10, "CASH": 0.90},
             market_scorecard={},
             decision_style={},
             position_governance={"position_decisions": []},
@@ -86,10 +86,53 @@ class TargetBuilderTest(unittest.TestCase):
             constraints={"max_single_delta": 0.05, "max_turnover": 0.04},
         ).to_dict()
 
-        self.assertLessEqual(out["target_weights"]["AAA"] - 0.10, 0.0401)
-        self.assertTrue(any(item.startswith("single_delta_clip:AAA") for item in out["violations"]))
+        self.assertLessEqual(out["target_weights"]["SPY"] - 0.10, 0.0401)
+        self.assertTrue(any(item.startswith("single_delta_clip:SPY") for item in out["violations"]))
         self.assertTrue(any(item.startswith("turnover_clip:") for item in out["violations"]))
         self.assertTrue(out["turnover"]["within_budget"])
+
+    def test_policy_caps_release_excess_to_cash(self):
+        out = build_target_weights(
+            base_weights={"PSI": 0.08, "CASH": 0.92},
+            current_weights={"PSI": 0.05, "CASH": 0.95},
+            market_scorecard={},
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[],
+            constraints={},
+        ).to_dict()
+
+        self.assertEqual(out["target_weights"]["PSI"], 0.075)
+        self.assertAlmostEqual(out["target_weights"]["CASH"], 0.925)
+        self.assertGreater(out["diagnostics"]["cash_raised_by_policy_cap"], 0)
+        self.assertTrue(out["diagnostics"]["policy_cap_events"])
+
+    def test_hedge_intent_overlay_trims_before_adding_hedge(self):
+        out = build_target_weights(
+            base_weights={"QQQ": 0.12, "SPY": 0.60, "CASH": 0.28},
+            current_weights={"QQQ": 0.12, "SPY": 0.60, "CASH": 0.28},
+            market_scorecard={},
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[],
+            constraints={
+                "hedge_intent": {
+                    "triggered": True,
+                    "reasons": ["test stress"],
+                    "severity": 0.8,
+                    "trim_targets": ["QQQ"],
+                    "cash_raise_pct": 0.05,
+                    "add_hedge_etf": True,
+                    "hedge_instrument": "SQQQ",
+                    "hedge_weight": 0.015,
+                }
+            },
+        ).to_dict()
+
+        self.assertLess(out["target_weights"]["QQQ"], 0.12)
+        self.assertEqual(out["target_weights"]["SQQQ"], 0.015)
+        self.assertTrue(out["diagnostics"]["hedge_intent"]["applied"])
+        self.assertTrue(any(item.startswith("hedge_intent_trim:QQQ") for item in out["violations"]))
 
     def test_compare_target_weights_marks_review_thresholds(self):
         out = compare_target_weights(

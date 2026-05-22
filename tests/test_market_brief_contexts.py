@@ -1,6 +1,6 @@
 import unittest
 import sys
-import types
+from unittest.mock import patch
 
 from services.market_brief_contexts import build_memory_context, build_scenario_context
 
@@ -15,17 +15,10 @@ class MarketBriefContextsTests(unittest.IsolatedAsyncioTestCase):
         async def failing_context():
             raise RuntimeError("boom")
 
-        stub = types.ModuleType("services.context_assembler")
+        stub = type(sys)("services.context_assembler")
         stub.assemble_memory_context = failing_context
-        previous = sys.modules.get("services.context_assembler")
-        sys.modules["services.context_assembler"] = stub
-        try:
+        with patch.dict("sys.modules", {"services.context_assembler": stub}):
             result = await build_memory_context()
-        finally:
-            if previous is not None:
-                sys.modules["services.context_assembler"] = previous
-            else:
-                sys.modules.pop("services.context_assembler", None)
 
         self.assertFalse(result["has_memory"])
         self.assertIn("memory context unavailable", result["data_gaps"][0])

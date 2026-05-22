@@ -1,34 +1,35 @@
+import importlib
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 
-def _install_import_stubs() -> None:
-    openai = types.ModuleType("openai")
+def _load_prompt_builders():
+    openai = type(sys)("openai")
     openai.AsyncOpenAI = object
-    sys.modules["openai"] = openai
 
-    config = types.ModuleType("config")
+    config = type(sys)("config")
     config.get_settings = lambda: types.SimpleNamespace(
         openai_api_key="test",
         openai_model_heavy="test-model",
     )
-    sys.modules["config"] = config
+
+    with patch.dict("sys.modules", {"openai": openai, "config": config}):
+        return (
+            importlib.import_module("agents.bear_researcher")._build_user_message,
+            importlib.import_module("agents.bull_researcher")._build_user_message,
+            importlib.import_module("agents.researcher")._build_user_message,
+            importlib.import_module("agents.synthesizer")._build_user_message,
+        )
 
 
-_install_import_stubs()
-for module in (
-    "agents.researcher",
-    "agents.bull_researcher",
-    "agents.bear_researcher",
-    "agents.synthesizer",
-):
-    sys.modules.pop(module, None)
-
-from agents.bear_researcher import _build_user_message as _build_bear_message  # noqa: E402
-from agents.bull_researcher import _build_user_message as _build_bull_message  # noqa: E402
-from agents.researcher import _build_user_message as _build_researcher_message  # noqa: E402
-from agents.synthesizer import _build_user_message as _build_synthesizer_message  # noqa: E402
+(
+    _build_bear_message,
+    _build_bull_message,
+    _build_researcher_message,
+    _build_synthesizer_message,
+) = _load_prompt_builders()
 
 
 NEWS_EVIDENCE = {

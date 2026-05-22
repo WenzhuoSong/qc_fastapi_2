@@ -1,7 +1,7 @@
 import sys
-import types
 import unittest
 from datetime import date, timedelta
+from unittest.mock import patch
 
 from services.empirical_profile_store import (
     build_empirical_profiles_from_feature_store,
@@ -59,21 +59,14 @@ class EmpiricalProfileStoreTest(unittest.IsolatedAsyncioTestCase):
                 ])
             return rows
 
-        stub = types.ModuleType("services.market_feature_store")
+        stub = type(sys)("services.market_feature_store")
         stub.get_market_daily_feature_rows = fake_get_market_daily_feature_rows
-        previous = sys.modules.get("services.market_feature_store")
-        sys.modules["services.market_feature_store"] = stub
-        try:
+        with patch.dict("sys.modules", {"services.market_feature_store": stub}):
             profiles = await build_empirical_profiles_from_feature_store(
                 db=object(),
                 tickers=["QQQ"],
                 lookback_days=70,
             )
-        finally:
-            if previous is not None:
-                sys.modules["services.market_feature_store"] = previous
-            else:
-                sys.modules.pop("services.market_feature_store", None)
 
         self.assertIn("QQQ", profiles)
         self.assertEqual(profiles["QQQ"]["samples"], 69)

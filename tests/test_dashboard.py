@@ -33,6 +33,10 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('"diagnostic_llm_target": lifecycle.get("diagnostic_llm_target")', function_source)
         self.assertIn('"validated_advisory_delta": lifecycle.get("validated_advisory_delta")', function_source)
         self.assertIn('"advisory_validator_result": advisory.get("validator_result")', function_source)
+        self.assertIn('"ticker_role": policy.get("ticker_role")', function_source)
+        self.assertIn('"policy_cap_applied": policy.get("policy_cap_applied")', function_source)
+        self.assertIn('"qc_status": raw.get("qc_status")', function_source)
+        self.assertIn('"entered_via_hedge_path": hedge_path.get("entered_via_hedge_path")', function_source)
 
     def test_dashboard_reads_stage_telemetry_from_agent_step_log(self):
         source = Path("dashboard/app.py").read_text()
@@ -41,6 +45,17 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("def _latest_stage_metrics", source)
         self.assertIn('"prompt_tokens": (row.token_usage or {}).get("prompt_tokens")', source)
         self.assertIn("Pipeline Stage Telemetry", source)
+
+    def test_dashboard_surfaces_portfolio_construction_evaluation(self):
+        source = Path("dashboard/app.py").read_text()
+
+        self.assertIn("portfolio_construction_evaluation", source)
+        self.assertIn("def _compact_portfolio_construction_evaluation", source)
+        self.assertIn("Portfolio Construction Evaluation", source)
+        self.assertIn("portfolio_construction_readiness", source)
+        self.assertIn("Portfolio Construction Readiness", source)
+        self.assertIn("portfolio_construction_promotion_gate", source)
+        self.assertIn("Portfolio Construction Promotion Gate", source)
 
 
 if __name__ == "__main__":

@@ -1,26 +1,27 @@
+import importlib
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 
-def _install_import_stubs() -> None:
+def _load_synthesizer_exports():
     """Allow importing agents.synthesizer without external settings."""
-    openai = types.ModuleType("openai")
+    openai = type(sys)("openai")
     openai.AsyncOpenAI = object
-    sys.modules["openai"] = openai
 
-    config = types.ModuleType("config")
+    config = type(sys)("config")
     config.get_settings = lambda: types.SimpleNamespace(
         openai_api_key="test",
         openai_model_heavy="test-model",
     )
-    sys.modules["config"] = config
+
+    with patch.dict("sys.modules", {"openai": openai, "config": config}):
+        module = importlib.import_module("agents.synthesizer")
+        return module._normalize, module._validate
 
 
-_install_import_stubs()
-sys.modules.pop("agents.synthesizer", None)
-
-from agents.synthesizer import _normalize, _validate  # noqa: E402
+_normalize, _validate = _load_synthesizer_exports()
 
 
 def _valid_reasoning_chain() -> dict:

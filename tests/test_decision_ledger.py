@@ -570,6 +570,74 @@ class DecisionLedgerTests(unittest.TestCase):
         self.assertEqual(row["actual_execution_action"], "none")
         self.assertEqual(row["execution_audit"]["reason"], "aborted_no_token")
 
+    def test_ledger_exposes_policy_ack_and_hedge_path_fields(self):
+        ledger = build_decision_ledger(
+            risk_output={
+                "approved": True,
+                "target_weights": {"SQQQ": 0.03, "CASH": 0.97},
+                "rebalance_actions": [
+                    {"ticker": "SQQQ", "action": "buy", "weight_delta": 0.03}
+                ],
+                "target_builder_input": {
+                    "target_weights": {"SQQQ": 0.03, "CASH": 0.97},
+                    "diagnostics": {
+                        "policy_version": "sprint8a",
+                        "cash_raised_by_policy_cap": 0.01,
+                        "policy_cap_events": [
+                            {
+                                "ticker": "SQQQ",
+                                "role": "hedge",
+                                "original": 0.04,
+                                "capped_to": 0.03,
+                            }
+                        ],
+                        "hedge_intent": {
+                            "triggered": True,
+                            "applied": True,
+                            "severity": 0.8,
+                            "hedge_instrument": "SQQQ",
+                            "reasons": ["vix_high"],
+                        },
+                    },
+                },
+                "position_governance": _governance(
+                    ticker="SQQQ",
+                    decision="add",
+                    target_after=0.03,
+                ),
+            },
+            current_holdings={"CASH": 1.0},
+        )
+
+        row = ledger["tickers"]["SQQQ"]
+        self.assertEqual(row["execution_policy"]["ticker_role"], "hedge")
+        self.assertEqual(row["execution_policy"]["single_cap"], 0.03)
+        self.assertTrue(row["execution_policy"]["policy_cap_applied"])
+        self.assertEqual(row["execution_policy"]["policy_cap_original"], 0.04)
+        self.assertEqual(row["execution_policy"]["cash_raised_by_policy_cap"], 0.01)
+        self.assertTrue(row["hedge_path"]["entered_via_hedge_path"])
+        self.assertEqual(row["hedge_path"]["hedge_trigger_reasons"], ["vix_high"])
+        self.assertTrue(row["explanation"]["entered_via_hedge_path"])
+        self.assertEqual(ledger["portfolio_summary"]["policy_version"], "sprint8a")
+        self.assertEqual(ledger["portfolio_summary"]["cash_raised_by_policy_cap"], 0.01)
+
+        updated = apply_execution_audit_to_decision_ledger(
+            ledger,
+            {
+                "action_status": "rejected",
+                "command_id": "analysis_99",
+                "qc_status": "rejected",
+                "qc_rejection_reason": "single weight rejected",
+                "qc_timestamp": "2026-05-20T14:06:08+00:00",
+                "sent_weights": {"SQQQ": 0.03, "CASH": 0.97},
+            },
+        )
+        updated_row = updated["tickers"]["SQQQ"]
+        self.assertEqual(updated_row["cmd_id"], "analysis_99")
+        self.assertEqual(updated_row["qc_status"], "rejected")
+        self.assertEqual(updated_row["qc_rejection_reason"], "single weight rejected")
+        self.assertEqual(updated["portfolio_summary"]["qc_status"], "rejected")
+
 
 def _governance(
     *,

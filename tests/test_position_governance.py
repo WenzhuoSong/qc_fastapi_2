@@ -693,6 +693,89 @@ class PositionGovernanceTest(unittest.TestCase):
         self.assertAlmostEqual(decision["target_after"], 0.10, places=4)
         self.assertEqual(out.advisory_overrides[0]["validator_result"], "converted_exit_to_hold_review")
 
+    def test_hedge_only_add_blocked_without_hedge_intent(self):
+        out = apply_position_governance(
+            target_weights={"SQQQ": 0.02, "CASH": 0.98},
+            current_weights={"CASH": 1.0},
+            holdings_meta=[],
+            strategy_evidence={
+                "strategy_results": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "suggested_use": "advisory",
+                        "selected_tickers": ["SQQQ"],
+                    }
+                ]
+            },
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            news_evidence={},
+            config={"replacement_enabled": 0},
+        )
+
+        decision = _decision(out, "SQQQ")
+        self.assertEqual(decision["decision"], "hold")
+        self.assertAlmostEqual(decision["target_after"], 0.0, places=4)
+        self.assertNotIn("add", decision["allowed_actions"])
+        self.assertIn("hedge_only_requires_hedge_intent", decision["reason_codes"])
+        self.assertIn("hedge_only_add_blocked:SQQQ", out.blocked_actions)
+
+    def test_hedge_only_add_allowed_from_hedge_intent_path(self):
+        out = apply_position_governance(
+            target_weights={"SQQQ": 0.02, "CASH": 0.98},
+            current_weights={"CASH": 1.0},
+            holdings_meta=[],
+            strategy_evidence={
+                "strategy_results": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "suggested_use": "advisory",
+                        "selected_tickers": ["SQQQ"],
+                    }
+                ]
+            },
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            news_evidence={},
+            hedge_intent={
+                "triggered": True,
+                "add_hedge_etf": True,
+                "hedge_instrument": "SQQQ",
+            },
+            config={"replacement_enabled": 0},
+        )
+
+        decision = _decision(out, "SQQQ")
+        self.assertEqual(decision["decision"], "add")
+        self.assertAlmostEqual(decision["target_after"], 0.02, places=4)
+        self.assertIn("add", decision["allowed_actions"])
+        self.assertNotIn("hedge_only_add_blocked:SQQQ", out.blocked_actions)
+
+    def test_llm_advisory_cannot_add_hedge_only_without_hedge_intent(self):
+        out = apply_position_governance(
+            target_weights={"SQQQ": 0.0, "CASH": 1.0},
+            current_weights={"CASH": 1.0},
+            holdings_meta=[],
+            strategy_evidence={
+                "strategy_results": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "suggested_use": "advisory",
+                        "selected_tickers": ["SQQQ"],
+                    }
+                ]
+            },
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            news_evidence={},
+            llm_advisory_proposals=[
+                {"ticker": "SQQQ", "llm_advisory": "add", "target_weight": 0.01}
+            ],
+            config={"replacement_enabled": 0},
+        )
+
+        decision = _decision(out, "SQQQ")
+        self.assertAlmostEqual(decision["target_after"], 0.0, places=4)
+        self.assertEqual(out.advisory_overrides[0]["validator_result"], "rejected_hedge_only_requires_hedge_intent")
+        self.assertIn("llm_advisory_rejected:SQQQ:hedge_only_requires_hedge_intent", out.blocked_actions)
+
 
 def _decision(out, ticker):
     return next(row for row in out.position_decisions if row["ticker"] == ticker)

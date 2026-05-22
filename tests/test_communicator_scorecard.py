@@ -1,27 +1,28 @@
+import importlib
 import sys
 import types
 import unittest
 import asyncio
+from unittest.mock import patch
 
 
-def _install_import_stubs() -> None:
-    openai = types.ModuleType("openai")
+def _load_communicator_exports():
+    openai = type(sys)("openai")
     openai.AsyncOpenAI = lambda api_key=None: object()
-    sys.modules["openai"] = openai
 
-    config = types.ModuleType("config")
+    config = type(sys)("config")
     config.get_settings = lambda: types.SimpleNamespace(
         openai_api_key="test",
         openai_model="test-model",
         semi_auto_timeout_minutes=20,
     )
-    sys.modules["config"] = config
+
+    with patch.dict("sys.modules", {"openai": openai, "config": config}):
+        module = importlib.import_module("agents.communicator")
+        return module._build_payload, module._fallback_template, module.run_communicator_async
 
 
-_install_import_stubs()
-sys.modules.pop("agents.communicator", None)
-
-from agents.communicator import _build_payload, _fallback_template, run_communicator_async  # noqa: E402
+_build_payload, _fallback_template, run_communicator_async = _load_communicator_exports()
 
 
 class CommunicatorScorecardTest(unittest.TestCase):
@@ -402,8 +403,6 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertNotIn("replacements:", text)
 
     def test_decision_ledger_payload_compacts_top_five_decisions(self):
-        from agents.communicator import _build_payload
-
         ledger_rows = {
             f"T{i}": {
                 "ticker": f"T{i}",
@@ -511,6 +510,159 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("final=12.0%,tb=11.0%,adv=-1.0%", text)
         self.assertIn("advisory=accepted_as_trim_1.00%", text)
         self.assertIn("changed_by=target_builder_target,validated_llm_advisory", text)
+
+    def test_decision_ledger_line_shows_policy_ack_and_hedge_path(self):
+        text = _fallback_template(
+            {
+                "approved": True,
+                "regime": "defensive",
+                "stance": "reduce risk",
+                "rebalance_actions": [],
+                "estimated_cost": 0,
+                "overlays_applied": [],
+                "rejection_reasons": [],
+                "auth_mode": "FULL_AUTO",
+                "timeout_minutes": 20,
+                "debate_summary": {},
+                "market_scorecard": {},
+                "scorecard_enforcement": {},
+                "news_evidence": {},
+                "decision_style": {},
+                "decision_ledger": {
+                    "portfolio_summary": {
+                        "risk_approved": True,
+                        "execution_status": "rejected",
+                        "qc_status": "rejected",
+                        "governance_available": True,
+                        "target_construction_mode": "target_builder_gated",
+                        "policy_version": "sprint8a",
+                    },
+                    "top_decisions": [
+                        {
+                            "ticker": "SQQQ",
+                            "proposed_action": "add",
+                            "final_action": "add",
+                            "execution_status": "rejected",
+                            "qc_status": "rejected",
+                            "qc_rejection_reason": "single weight rejected",
+                            "reason_codes": ["hedge_only_requires_hedge_intent"],
+                            "final_target": 0.03,
+                            "policy_cap_applied": True,
+                            "policy_cap_original": 0.04,
+                            "entered_via_hedge_path": True,
+                        }
+                    ],
+                },
+            }
+        )
+
+        self.assertIn("qc=rejected", text)
+        self.assertIn("policy=sprint8a", text)
+        self.assertIn("policy_cap=0.04->0.03", text)
+        self.assertIn("hedge_path=true", text)
+        self.assertIn("qc_reject=single weight rejected", text)
+
+    def test_portfolio_construction_evaluation_line_shows_status_and_blockers(self):
+        text = _fallback_template(
+            {
+                "approved": False,
+                "regime": "neutral",
+                "stance": "maintain",
+                "rebalance_actions": [],
+                "estimated_cost": 0,
+                "overlays_applied": [],
+                "rejection_reasons": [],
+                "auth_mode": "FULL_AUTO",
+                "timeout_minutes": 20,
+                "debate_summary": {},
+                "market_scorecard": {},
+                "scorecard_enforcement": {},
+                "news_evidence": {},
+                "decision_style": {},
+                "style_enforcement": {},
+                "decision_ledger": {},
+                "portfolio_construction_evaluation": {
+                    "status": "shadow_only",
+                    "promotion_ready": False,
+                    "mean_abs_weight_deviation": 0.012,
+                    "turnover_delta": 0.01,
+                    "shadow_policy_allowed": False,
+                    "blockers": ["shadow_policy_violation"],
+                    "warnings": ["shadow_reduces_turnover"],
+                },
+            }
+        )
+
+        self.assertIn("Portfolio construction evaluation", text)
+        self.assertIn("status=shadow_only", text)
+        self.assertIn("blockers=shadow_policy_violation", text)
+
+    def test_portfolio_construction_readiness_line_shows_rolling_status(self):
+        text = _fallback_template(
+            {
+                "approved": False,
+                "regime": "neutral",
+                "stance": "maintain",
+                "rebalance_actions": [],
+                "estimated_cost": 0,
+                "overlays_applied": [],
+                "rejection_reasons": [],
+                "auth_mode": "FULL_AUTO",
+                "timeout_minutes": 20,
+                "debate_summary": {},
+                "market_scorecard": {},
+                "scorecard_enforcement": {},
+                "news_evidence": {},
+                "decision_style": {},
+                "style_enforcement": {},
+                "decision_ledger": {},
+                "portfolio_construction_readiness": {
+                    "status": "collecting_evidence",
+                    "promotion_ready": False,
+                    "cycles": 7,
+                    "pass_rate": 0.57,
+                    "blocker_counts": {"shadow_policy_violation": 2},
+                },
+            }
+        )
+
+        self.assertIn("Portfolio construction rolling readiness", text)
+        self.assertIn("cycles=7", text)
+        self.assertIn("blockers=shadow_policy_violation:2", text)
+
+    def test_portfolio_construction_promotion_gate_line_shows_auto_status(self):
+        text = _fallback_template(
+            {
+                "approved": False,
+                "regime": "neutral",
+                "stance": "maintain",
+                "rebalance_actions": [],
+                "estimated_cost": 0,
+                "overlays_applied": [],
+                "rejection_reasons": [],
+                "auth_mode": "FULL_AUTO",
+                "timeout_minutes": 20,
+                "debate_summary": {},
+                "market_scorecard": {},
+                "scorecard_enforcement": {},
+                "news_evidence": {},
+                "decision_style": {},
+                "style_enforcement": {},
+                "decision_ledger": {},
+                "portfolio_construction_promotion_gate": {
+                    "status": "auto_approved",
+                    "eligible": True,
+                    "enabled": True,
+                    "approval_mode": "auto",
+                    "blockers": [],
+                    "execution_authority": "none",
+                },
+            }
+        )
+
+        self.assertIn("Portfolio construction promotion gate", text)
+        self.assertIn("status=auto_approved", text)
+        self.assertIn("approval=auto", text)
 
     def test_manual_trim_review_shows_advisory_as_weak_positive(self):
         text = _fallback_template(

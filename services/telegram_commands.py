@@ -11,6 +11,7 @@ from tools.db_tools     import tool_verify_approval_token
 from tools.qc_tools     import tool_send_weight_command
 from tools.notify_tools import tool_send_telegram
 from services.proposal  import load_pending_proposal, mark_proposal_done
+from services.pc_promotion_config import default_pc_promotion_config, format_pc_promotion_config
 from config             import get_settings
 
 logger   = logging.getLogger("qc_fastapi_2.tg_cmd")
@@ -40,7 +41,9 @@ async def handle_telegram_command(text: str, from_chat_id: str) -> str:
         return await _cmd_skip_strategy()
     if cmd == "/config":
         return await _cmd_config(text)
-    return "Unknown command. Available: /confirm /skip /pause /status /reset_circuit /approve_strategy /skip_strategy /config"
+    if cmd == "/pc_promotion":
+        return await _cmd_pc_promotion(text)
+    return "Unknown command. Available: /confirm /skip /pause /status /reset_circuit /approve_strategy /skip_strategy /config /pc_promotion"
 
 
 async def _cmd_confirm() -> str:
@@ -220,6 +223,49 @@ def _parse_config_value(raw: str) -> int | float:
     if value < 0:
         raise ValueError("value must be non-negative")
     return value
+
+
+async def _cmd_pc_promotion(text: str) -> str:
+    """
+    Configure Portfolio Construction promotion gate.
+
+    Usage:
+      /pc_promotion
+      /pc_promotion status
+      /pc_promotion on
+      /pc_promotion off
+      /pc_promotion auto
+      /pc_promotion manual
+    """
+    parts = text.strip().lower().split()
+    async with AsyncSessionLocal() as db:
+        cfg = await get_system_config(db, "portfolio_construction_promotion_config")
+        current = default_pc_promotion_config((cfg.value if cfg else {}) or {})
+
+    if len(parts) == 1 or parts[1] == "status":
+        return format_pc_promotion_config(current)
+
+    if len(parts) != 2 or parts[1] not in {"on", "off", "auto", "manual"}:
+        return "Usage: /pc_promotion status|on|off|auto|manual"
+
+    updated = dict(current)
+    if parts[1] == "on":
+        updated["enabled"] = True
+    elif parts[1] == "off":
+        updated["enabled"] = False
+    elif parts[1] == "auto":
+        updated["enabled"] = True
+        updated["require_manual_approval"] = False
+    elif parts[1] == "manual":
+        updated["enabled"] = True
+        updated["require_manual_approval"] = True
+
+    updated["updated_at"] = datetime.utcnow().isoformat()
+    updated["updated_by"] = "telegram"
+    async with AsyncSessionLocal() as db:
+        await upsert_system_config(db, "portfolio_construction_promotion_config", updated, "telegram_config")
+
+    return "✅ Updated Portfolio Construction promotion gate\n" + format_pc_promotion_config(updated)
 
 
 async def _cmd_approve_strategy() -> str:

@@ -13,6 +13,7 @@ from tools.db_tools import (
 )
 from tools.qc_tools import (
     tool_send_weight_command,
+    tool_send_policy_sync,
     tool_emergency_liquidate,
 )
 from tools.notify_tools import tool_send_telegram
@@ -26,6 +27,7 @@ ALL_TOOLS: dict[str, callable] = {
     "write_approval_token":     tool_write_approval_token,
     "verify_approval_token":    tool_verify_approval_token,
     "send_weight_command":      tool_send_weight_command,
+    "send_policy_sync":         tool_send_policy_sync,
     "emergency_liquidate":      tool_emergency_liquidate,
     "send_telegram":            tool_send_telegram,
 }

@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from services.execution_policy import get_policy, get_role, policy_snapshot
+
 
 STATIC_REASON_SOURCE_EFFECTS: dict[str, tuple[tuple[str, str], ...]] = {
     "advisory_basket_loss_review": (
@@ -20,6 +22,7 @@ STATIC_REASON_SOURCE_EFFECTS: dict[str, tuple[tuple[str, str], ...]] = {
     "basket_review": (("knowledge", "correlated_basket_review"),),
     "hard_risk": (("news", "hard_risk"),),
     "high_atr": (("qc", "high_atr"),),
+    "hedge_only_requires_hedge_intent": (("risk", "hedge_only_guard"),),
     "human_required": (("scorecard", "human_required"),),
     "position_governance_missing": (("risk", "position_governance_missing"),),
     "replacement_candidate": (("strategy", "replacement_candidate"),),
@@ -58,6 +61,8 @@ def build_decision_ledger(
     synthesizer_targets = _clean_weight_map((synthesizer_output or {}).get("adjusted_weights") or {})
     portfolio_construction_targets = _portfolio_construction_targets(risk)
     target_builder_targets = _target_builder_targets(risk)
+    target_builder_diagnostics = _target_builder_diagnostics(risk)
+    hedge_intent = _hedge_intent_payload(risk)
     target_weights = _clean_weight_map(risk.get("target_weights") or {})
     proposed_actions = _actions_by_ticker(risk.get("rebalance_actions") or [])
     approved = bool(risk.get("approved", False))
@@ -102,6 +107,8 @@ def build_decision_ledger(
             synthesizer_target=synthesizer_targets.get(ticker),
             portfolio_construction_target=portfolio_construction_targets.get(ticker),
             target_builder_target=target_builder_targets.get(ticker),
+            target_builder_diagnostics=target_builder_diagnostics,
+            hedge_intent=hedge_intent,
         )
         for ticker in tickers
     }
@@ -120,6 +127,10 @@ def build_decision_ledger(
             "execution_status": execution_status,
             "target_construction_mode": risk.get("target_construction_mode"),
             "raw_llm_adjusted_weights_consumed": risk.get("raw_llm_adjusted_weights_consumed"),
+            "policy_version": target_builder_diagnostics.get("policy_version") or policy_snapshot()["version"],
+            "cash_raised_by_policy_cap": target_builder_diagnostics.get("cash_raised_by_policy_cap"),
+            "policy_cap_events": target_builder_diagnostics.get("policy_cap_events") or [],
+            "hedge_intent": _compact_hedge_intent(hedge_intent),
             "portfolio_construction": _compact_portfolio_construction(risk.get("portfolio_construction_shadow")),
             "turnover": _turnover(risk.get("rebalance_actions") or []),
             "ticker_count": len(rows),
@@ -154,6 +165,10 @@ def apply_execution_audit_to_decision_ledger(
     status = audit.get("action_status") or "unknown"
     summary["execution_status"] = status
     summary["execution_audit_attached"] = True
+    summary["cmd_id"] = audit.get("command_id")
+    summary["qc_status"] = audit.get("qc_status") or status
+    summary["qc_rejection_reason"] = audit.get("qc_rejection_reason") or audit.get("reason")
+    summary["qc_timestamp"] = audit.get("qc_timestamp") or audit.get("recorded_at")
     out["portfolio_summary"] = summary
     placeholders = dict(out.get("placeholders") or {})
     placeholders["execution_audit"] = "hydrated"
@@ -169,6 +184,10 @@ def apply_execution_audit_to_decision_ledger(
         key = str(row_out.get("ticker") or ticker).upper()
         if not affected or key in affected:
             row_out["execution_status"] = status
+            row_out["cmd_id"] = audit.get("command_id")
+            row_out["qc_status"] = audit.get("qc_status") or status
+            row_out["qc_rejection_reason"] = audit.get("qc_rejection_reason") or audit.get("reason")
+            row_out["qc_timestamp"] = audit.get("qc_timestamp") or audit.get("recorded_at")
             row_out["execution_audit"] = audit
             row_out["actual_execution_action"] = _actual_execution_action(row_out, status)
             row_placeholders = dict(row_out.get("placeholders") or {})
@@ -185,6 +204,9 @@ def _compact_execution_audit(audit: dict[str, Any]) -> dict[str, Any]:
     return {
         "action_status": audit.get("action_status"),
         "command_id": audit.get("command_id"),
+        "qc_status": audit.get("qc_status") or audit.get("action_status"),
+        "qc_rejection_reason": audit.get("qc_rejection_reason") or audit.get("reason"),
+        "qc_timestamp": audit.get("qc_timestamp") or audit.get("recorded_at"),
         "reason": audit.get("reason"),
         "estimated_cost_pct": audit.get("estimated_cost_pct"),
         "recorded_at": audit.get("recorded_at"),
@@ -239,6 +261,8 @@ def _build_ticker_row(
     synthesizer_target: float | None,
     portfolio_construction_target: float | None,
     target_builder_target: float | None,
+    target_builder_diagnostics: dict[str, Any],
+    hedge_intent: dict[str, Any],
 ) -> dict[str, Any]:
     proposed = _proposed_action(proposed_action, current_weight, target_weight)
     governance_reason_codes = list((governance_decision or {}).get("reason_codes") or [])
@@ -285,6 +309,14 @@ def _build_ticker_row(
         reason_codes=reason_codes,
         risk=risk,
     )
+    execution_policy = _execution_policy_context(
+        ticker=ticker,
+        target_builder_diagnostics=target_builder_diagnostics,
+    )
+    hedge_path = _hedge_path_context(ticker, hedge_intent)
+    if explanation is not None:
+        explanation["entered_via_hedge_path"] = hedge_path["entered_via_hedge_path"]
+        explanation["hedge_trigger_reasons"] = hedge_path["hedge_trigger_reasons"]
 
     return {
         "ticker": ticker,
@@ -305,6 +337,8 @@ def _build_ticker_row(
         ),
         "trade_lifecycle": trade_lifecycle,
         "llm_advisory": _compact_advisory_override(advisory_override),
+        "execution_policy": execution_policy,
+        "hedge_path": hedge_path,
         "proposed_action": proposed,
         "final_action": final_action,
         "execution_status": "not_sent" if not risk_approved else "unknown",
@@ -969,6 +1003,103 @@ def _target_builder_targets(risk: dict[str, Any]) -> dict[str, float]:
         if isinstance(payload, dict) and isinstance(payload.get("target_weights"), dict):
             return _clean_weight_map(payload.get("target_weights") or {})
     return {}
+
+
+def _target_builder_diagnostics(risk: dict[str, Any]) -> dict[str, Any]:
+    for key in ("target_builder_input", "target_builder_shadow"):
+        payload = risk.get(key) or {}
+        if isinstance(payload, dict) and isinstance(payload.get("diagnostics"), dict):
+            return dict(payload.get("diagnostics") or {})
+    return {}
+
+
+def _hedge_intent_payload(risk: dict[str, Any]) -> dict[str, Any]:
+    diagnostics = _target_builder_diagnostics(risk)
+    hedge = diagnostics.get("hedge_intent")
+    if isinstance(hedge, dict) and hedge:
+        return dict(hedge)
+    payload = risk.get("hedge_intent") or {}
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _policy_cap_event_for_ticker(
+    ticker: str,
+    target_builder_diagnostics: dict[str, Any],
+) -> dict[str, Any] | None:
+    ticker = str(ticker or "").upper().strip()
+    for event in target_builder_diagnostics.get("policy_cap_events") or []:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("ticker") or "").upper().strip() == ticker:
+            return event
+    return None
+
+
+def _execution_policy_context(
+    *,
+    ticker: str,
+    target_builder_diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    policy = get_policy(ticker)
+    cap_event = _policy_cap_event_for_ticker(ticker, target_builder_diagnostics)
+    return {
+        "ticker_role": get_role(ticker).value,
+        "single_cap": policy.max_single_weight,
+        "group_cap": policy.max_total_group_weight,
+        "hedge_only": policy.hedge_only,
+        "policy_version": target_builder_diagnostics.get("policy_version") or policy_snapshot()["version"],
+        "policy_cap_applied": bool(cap_event),
+        "policy_cap_original": (cap_event or {}).get("original"),
+        "policy_cap_target": (cap_event or {}).get("capped_to"),
+        "policy_group_scaled": False,
+        "cash_raised_by_policy_cap": target_builder_diagnostics.get("cash_raised_by_policy_cap"),
+    }
+
+
+def _hedge_path_context(ticker: str, hedge_intent: dict[str, Any]) -> dict[str, Any]:
+    ticker = str(ticker or "").upper().strip()
+    hedge_instrument = str(hedge_intent.get("hedge_instrument") or "").upper().strip()
+    touched = {
+        str(item or "").upper().strip()
+        for item in (hedge_intent.get("touched_tickers") or [])
+    }
+    touched.update(
+        str(item or "").upper().strip()
+        for item in (hedge_intent.get("trim_targets") or [])
+    )
+    entered = bool(
+        hedge_intent.get("applied")
+        and (
+            ticker == hedge_instrument
+            or ticker in touched
+            or ticker in {
+                str(item or "").upper().strip()
+                for item in (
+                    hedge_intent.get("hedge_tickers")
+                    or hedge_intent.get("allowed_hedge_tickers")
+                    or []
+                )
+            }
+        )
+    )
+    return {
+        "entered_via_hedge_path": entered,
+        "hedge_trigger_reasons": list(hedge_intent.get("reasons") or hedge_intent.get("trigger_reasons") or []),
+        "hedge_severity": hedge_intent.get("severity"),
+        "hedge_instrument": hedge_instrument or None,
+    }
+
+
+def _compact_hedge_intent(hedge_intent: dict[str, Any]) -> dict[str, Any] | None:
+    if not hedge_intent:
+        return None
+    return {
+        "triggered": hedge_intent.get("triggered"),
+        "applied": hedge_intent.get("applied"),
+        "severity": hedge_intent.get("severity"),
+        "hedge_instrument": hedge_intent.get("hedge_instrument"),
+        "reasons": list(hedge_intent.get("reasons") or hedge_intent.get("trigger_reasons") or []),
+    }
 
 
 def _portfolio_construction_targets(risk: dict[str, Any]) -> dict[str, float]:

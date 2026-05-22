@@ -252,6 +252,15 @@ def _build_payload(
             "portfolio_summary": position_governance.get("portfolio_summary") or {},
         },
         "decision_ledger": _compact_decision_ledger(decision_ledger),
+        "portfolio_construction_evaluation": _compact_portfolio_construction_evaluation(
+            risk_out.get("portfolio_construction_evaluation") or {}
+        ),
+        "portfolio_construction_readiness": _compact_portfolio_construction_readiness(
+            risk_out.get("portfolio_construction_readiness") or {}
+        ),
+        "portfolio_construction_promotion_gate": _compact_portfolio_construction_promotion_gate(
+            risk_out.get("portfolio_construction_promotion_gate") or {}
+        ),
         "auth_mode":        pipeline_context.get("auth_mode", "SEMI_AUTO"),
         "timeout_minutes":  settings.semi_auto_timeout_minutes,
         "debate_summary":   debate,
@@ -282,6 +291,9 @@ def _fallback_template(p: dict) -> str:
     knowledge_resolution = p.get("knowledge_resolution") or {}
     position_governance = p.get("position_governance") or {}
     decision_ledger = p.get("decision_ledger") or {}
+    pc_eval = p.get("portfolio_construction_evaluation") or {}
+    pc_readiness = p.get("portfolio_construction_readiness") or {}
+    pc_gate = p.get("portfolio_construction_promotion_gate") or {}
 
     up, down = "\u25b2", "\u25bc"
 
@@ -312,6 +324,9 @@ def _fallback_template(p: dict) -> str:
     execution_gateway_line = _format_execution_gateway_line(execution_gateway)
     strategy_certification_line = _format_strategy_certification_line(strategy_certification)
     knowledge_line = _format_knowledge_resolution_line(knowledge_resolution)
+    pc_eval_line = _format_portfolio_construction_evaluation_line(pc_eval)
+    pc_readiness_line = _format_portfolio_construction_readiness_line(pc_readiness)
+    pc_gate_line = _format_portfolio_construction_promotion_gate_line(pc_gate)
     decision_ledger_line = _format_decision_ledger_line(decision_ledger)
     position_governance_line = _format_position_governance_line(position_governance)
 
@@ -334,6 +349,9 @@ def _fallback_template(p: dict) -> str:
             f"{execution_gateway_line}"
             f"{strategy_certification_line}"
             f"{knowledge_line}"
+            f"{pc_eval_line}"
+            f"{pc_readiness_line}"
+            f"{pc_gate_line}"
             f"{decision_ledger_line}"
             f"{position_governance_line}"
             f"<b>Failed checks:</b>\n{reasons_text}\n\n"
@@ -376,6 +394,9 @@ def _fallback_template(p: dict) -> str:
         f"{execution_gateway_line}"
         f"{strategy_certification_line}"
         f"{knowledge_line}"
+        f"{pc_eval_line}"
+        f"{pc_readiness_line}"
+        f"{pc_gate_line}"
         f"{decision_ledger_line}"
         f"{position_governance_line}"
         f"<b>Suggested actions</b>\n"
@@ -719,13 +740,29 @@ def _compact_decision_ledger(ledger: dict) -> dict:
         governance = (row.get("evidence_used") or {}).get("position_governance") or {}
         explanation = row.get("explanation") or {}
         advisory = row.get("llm_advisory") or {}
+        policy = row.get("execution_policy") or {}
+        hedge_path = row.get("hedge_path") or {}
         rows.append({
             "ticker": row.get("ticker") or ticker,
             "proposed_action": row.get("proposed_action"),
             "final_action": row.get("final_action"),
             "execution_status": row.get("execution_status"),
+            "cmd_id": row.get("cmd_id"),
+            "qc_status": row.get("qc_status"),
+            "qc_rejection_reason": row.get("qc_rejection_reason"),
+            "qc_timestamp": row.get("qc_timestamp"),
             "risk_result": row.get("risk_result"),
             "reason_codes": (row.get("reason_codes") or [])[:4],
+            "ticker_role": policy.get("ticker_role"),
+            "single_cap": policy.get("single_cap"),
+            "group_cap": policy.get("group_cap"),
+            "policy_version": policy.get("policy_version"),
+            "policy_cap_applied": policy.get("policy_cap_applied"),
+            "policy_cap_original": policy.get("policy_cap_original"),
+            "policy_group_scaled": policy.get("policy_group_scaled"),
+            "cash_raised_by_policy_cap": policy.get("cash_raised_by_policy_cap"),
+            "entered_via_hedge_path": hedge_path.get("entered_via_hedge_path"),
+            "hedge_trigger_reasons": hedge_path.get("hedge_trigger_reasons") or [],
             "governance_decision": governance.get("decision"),
             "risk_rank": governance.get("risk_rank"),
             "position_state": explanation.get("position_state"),
@@ -748,9 +785,16 @@ def _compact_decision_ledger(ledger: dict) -> dict:
         "portfolio_summary": {
             "risk_approved": summary.get("risk_approved"),
             "execution_status": summary.get("execution_status"),
+            "cmd_id": summary.get("cmd_id"),
+            "qc_status": summary.get("qc_status"),
+            "qc_rejection_reason": summary.get("qc_rejection_reason"),
+            "qc_timestamp": summary.get("qc_timestamp"),
             "governance_available": summary.get("governance_available"),
             "target_construction_mode": summary.get("target_construction_mode"),
             "raw_llm_adjusted_weights_consumed": summary.get("raw_llm_adjusted_weights_consumed"),
+            "policy_version": summary.get("policy_version"),
+            "cash_raised_by_policy_cap": summary.get("cash_raised_by_policy_cap"),
+            "hedge_intent": summary.get("hedge_intent"),
             "ticker_count": summary.get("ticker_count"),
         },
         "top_decisions": rows[:5],
@@ -799,10 +843,14 @@ def _format_decision_ledger_line(ledger: dict) -> str:
         status_bits.append(f"risk_approved={bool(summary.get('risk_approved'))}")
     if summary.get("execution_status"):
         status_bits.append(f"execution={summary.get('execution_status')}")
+    if summary.get("qc_status"):
+        status_bits.append(f"qc={summary.get('qc_status')}")
     if summary.get("governance_available") is not None:
         status_bits.append(f"governance={bool(summary.get('governance_available'))}")
     if summary.get("target_construction_mode"):
         status_bits.append(f"target={summary.get('target_construction_mode')}")
+    if summary.get("policy_version"):
+        status_bits.append(f"policy={summary.get('policy_version')}")
     if summary.get("raw_llm_adjusted_weights_consumed") is not None:
         status_bits.append(f"raw_llm={bool(summary.get('raw_llm_adjusted_weights_consumed'))}")
     if status_bits:
@@ -822,6 +870,12 @@ def _format_decision_ledger_line(ledger: dict) -> str:
             suffix_parts.append(reasons)
         if row.get("advisory_validator_result"):
             suffix_parts.append(f"advisory={row.get('advisory_validator_result')}")
+        if row.get("policy_cap_applied"):
+            suffix_parts.append(f"policy_cap={row.get('policy_cap_original')}->{row.get('final_target')}")
+        if row.get("entered_via_hedge_path"):
+            suffix_parts.append("hedge_path=true")
+        if row.get("qc_rejection_reason"):
+            suffix_parts.append(f"qc_reject={row.get('qc_rejection_reason')}")
         if changed_by:
             suffix_parts.append(f"changed_by={changed_by}")
         if sources:
@@ -833,6 +887,106 @@ def _format_decision_ledger_line(ledger: dict) -> str:
     if warnings:
         lines.append("  warnings: " + "; ".join(str(item) for item in warnings[:3]))
     return "\n".join(lines) + "\n\n"
+
+
+def _compact_portfolio_construction_evaluation(evaluation: dict) -> dict:
+    if not evaluation:
+        return {}
+    metrics = evaluation.get("metrics") or {}
+    return {
+        "status": evaluation.get("status"),
+        "promotion_ready": bool(evaluation.get("promotion_ready")),
+        "execution_authority": evaluation.get("execution_authority"),
+        "blockers": list(evaluation.get("blockers") or []),
+        "warnings": list(evaluation.get("warnings") or []),
+        "mean_abs_weight_deviation": metrics.get("mean_abs_weight_deviation"),
+        "turnover_delta": metrics.get("turnover_delta"),
+        "shadow_policy_allowed": metrics.get("shadow_policy_allowed"),
+        "shadow_high_risk_tickers_added": metrics.get("shadow_high_risk_tickers_added") or [],
+    }
+
+
+def _compact_portfolio_construction_readiness(readiness: dict) -> dict:
+    if not readiness:
+        return {}
+    return {
+        "status": readiness.get("status"),
+        "promotion_ready": bool(readiness.get("promotion_ready")),
+        "cycles": readiness.get("cycles"),
+        "pass_rate": readiness.get("pass_rate"),
+        "blocker_counts": readiness.get("blocker_counts") or {},
+        "warning_counts": readiness.get("warning_counts") or {},
+        "execution_authority": readiness.get("execution_authority"),
+    }
+
+
+def _compact_portfolio_construction_promotion_gate(gate: dict) -> dict:
+    if not gate:
+        return {}
+    return {
+        "status": gate.get("status"),
+        "eligible": bool(gate.get("eligible")),
+        "enabled": bool(gate.get("enabled")),
+        "approval_mode": gate.get("approval_mode"),
+        "blockers": list(gate.get("blockers") or []),
+        "would_promote_to": gate.get("would_promote_to"),
+        "execution_authority": gate.get("execution_authority"),
+    }
+
+
+def _format_portfolio_construction_evaluation_line(evaluation: dict) -> str:
+    if not evaluation:
+        return ""
+    blockers = evaluation.get("blockers") or []
+    warnings = evaluation.get("warnings") or []
+    status = evaluation.get("status") or "unknown"
+    ready = bool(evaluation.get("promotion_ready"))
+    parts = [
+        f"status={status}",
+        f"ready={ready}",
+        f"mean_dev={float(evaluation.get('mean_abs_weight_deviation') or 0.0):.2%}",
+        f"turnover_delta={float(evaluation.get('turnover_delta') or 0.0):+.2%}",
+        f"policy_ok={bool(evaluation.get('shadow_policy_allowed'))}",
+    ]
+    if blockers:
+        parts.append("blockers=" + ",".join(str(item) for item in blockers[:4]))
+    if warnings:
+        parts.append("warnings=" + ",".join(str(item) for item in warnings[:3]))
+    return "<b>Portfolio construction evaluation</b>\n  " + " | ".join(parts) + "\n\n"
+
+
+def _format_portfolio_construction_readiness_line(readiness: dict) -> str:
+    if not readiness:
+        return ""
+    blockers = readiness.get("blocker_counts") or {}
+    blocker_bits = ",".join(f"{key}:{value}" for key, value in sorted(blockers.items())[:4])
+    parts = [
+        f"status={readiness.get('status') or 'unknown'}",
+        f"ready={bool(readiness.get('promotion_ready'))}",
+        f"cycles={int(readiness.get('cycles') or 0)}",
+        f"pass_rate={float(readiness.get('pass_rate') or 0.0):.0%}",
+    ]
+    if blocker_bits:
+        parts.append(f"blockers={blocker_bits}")
+    return "<b>Portfolio construction rolling readiness</b>\n  " + " | ".join(parts) + "\n\n"
+
+
+def _format_portfolio_construction_promotion_gate_line(gate: dict) -> str:
+    if not gate:
+        return ""
+    blockers = gate.get("blockers") or []
+    parts = [
+        f"status={gate.get('status') or 'unknown'}",
+        f"enabled={bool(gate.get('enabled'))}",
+        f"eligible={bool(gate.get('eligible'))}",
+        f"approval={gate.get('approval_mode') or 'auto'}",
+        f"authority={gate.get('execution_authority') or 'none'}",
+    ]
+    if gate.get("would_promote_to"):
+        parts.append(f"would_promote_to={gate.get('would_promote_to')}")
+    if blockers:
+        parts.append("blockers=" + ",".join(str(item) for item in blockers[:4]))
+    return "<b>Portfolio construction promotion gate</b>\n  " + " | ".join(parts) + "\n\n"
 
 
 def _format_lifecycle_targets(row: dict) -> str:

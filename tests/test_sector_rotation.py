@@ -1,59 +1,75 @@
+import importlib
 import unittest
 from datetime import date, datetime
 import sys
 import types
 from types import SimpleNamespace
+from unittest.mock import patch
 
-openai_stub = types.ModuleType("openai")
-openai_stub.AsyncOpenAI = object
-sys.modules.setdefault("openai", openai_stub)
 
-config_stub = types.ModuleType("config")
-config_stub.get_settings = lambda: SimpleNamespace(
-    openai_api_key="test",
-    openai_model="test-model",
-)
-sys.modules.setdefault("config", config_stub)
+def _load_sector_rotation_exports():
+    openai_stub = type(sys)("openai")
+    openai_stub.AsyncOpenAI = object
 
-try:
-    import sqlalchemy  # noqa: F401
-except ImportError:
-    sqlalchemy_stub = types.ModuleType("sqlalchemy")
+    config_stub = type(sys)("config")
+    config_stub.get_settings = lambda: SimpleNamespace(
+        openai_api_key="test",
+        openai_model="test-model",
+    )
+
+    sqlalchemy_stub = type(sys)("sqlalchemy")
     sqlalchemy_stub.select = lambda *args, **kwargs: None
     sqlalchemy_stub.desc = lambda *args, **kwargs: None
-    sys.modules.setdefault("sqlalchemy", sqlalchemy_stub)
 
-    sys.modules.setdefault("db", types.ModuleType("db"))
-
-    session_stub = types.ModuleType("db.session")
+    session_stub = type(sys)("db.session")
     session_stub.AsyncSessionLocal = object
     session_stub.Base = object
-    sys.modules.setdefault("db.session", session_stub)
 
-    models_stub = types.ModuleType("db.models")
+    models_stub = type(sys)("db.models")
     for name in ("MacroNewsCache", "MarketDailyFeature", "QCSnapshot", "TickerNewsLibrary"):
         setattr(models_stub, name, type(name, (), {}))
-    sys.modules.setdefault("db.models", models_stub)
 
-from services.market_snapshot_merge import _merge_market_snapshots, _normalize_feature_snapshot
-from services.playground import (
-    _brief_from_snapshot,
-    _compute_strategy_confidence,
-    _build_playground_evidence_summary,
-    _compute_replay_metrics,
-    _dedupe_market_snapshots,
-    _feature_rows_to_snapshots,
-    _format_evidence_summary,
-    _format_strategy_confidence_summary,
-    _max_drawdown,
-    _merge_feature_map,
-    _recent_snapshot_row_limit,
-    _replay_metric_reliability,
-    _run_one_strategy,
-    PlaygroundBundle,
-)
-from services.sector_rotation import detect_sector_rotation, format_rotation_for_prompt, rotation_signal_strengths
-from services.universe_policy import filter_tradable_research_rows
+    with patch.dict(
+        "sys.modules",
+        {
+            "openai": openai_stub,
+            "config": config_stub,
+            "sqlalchemy": sqlalchemy_stub,
+            "db": type(sys)("db"),
+            "db.session": session_stub,
+            "db.models": models_stub,
+        },
+    ):
+        market_snapshot_merge = importlib.import_module("services.market_snapshot_merge")
+        playground = importlib.import_module("services.playground")
+        sector_rotation = importlib.import_module("services.sector_rotation")
+        universe_policy = importlib.import_module("services.universe_policy")
+        return {
+            "_merge_market_snapshots": market_snapshot_merge._merge_market_snapshots,
+            "_normalize_feature_snapshot": market_snapshot_merge._normalize_feature_snapshot,
+            "_brief_from_snapshot": playground._brief_from_snapshot,
+            "_compute_strategy_confidence": playground._compute_strategy_confidence,
+            "_build_playground_evidence_summary": playground._build_playground_evidence_summary,
+            "_compute_replay_metrics": playground._compute_replay_metrics,
+            "_dedupe_market_snapshots": playground._dedupe_market_snapshots,
+            "_feature_rows_to_snapshots": playground._feature_rows_to_snapshots,
+            "_format_evidence_summary": playground._format_evidence_summary,
+            "_format_strategy_confidence_summary": playground._format_strategy_confidence_summary,
+            "_max_drawdown": playground._max_drawdown,
+            "_merge_feature_map": playground._merge_feature_map,
+            "_recent_snapshot_row_limit": playground._recent_snapshot_row_limit,
+            "_replay_metric_reliability": playground._replay_metric_reliability,
+            "_run_one_strategy": playground._run_one_strategy,
+            "compute_consensus_weights": playground.compute_consensus_weights,
+            "PlaygroundBundle": playground.PlaygroundBundle,
+            "detect_sector_rotation": sector_rotation.detect_sector_rotation,
+            "format_rotation_for_prompt": sector_rotation.format_rotation_for_prompt,
+            "rotation_signal_strengths": sector_rotation.rotation_signal_strengths,
+            "filter_tradable_research_rows": universe_policy.filter_tradable_research_rows,
+        }
+
+
+globals().update(_load_sector_rotation_exports())
 
 
 class SectorRotationTests(unittest.TestCase):
@@ -672,8 +688,6 @@ class SectorRotationTests(unittest.TestCase):
             {},
             memory_feedback={"discount_multiplier": 0.5, "advisory_note": "discounted"},
         )
-
-        from services.playground import compute_consensus_weights
 
         consensus = compute_consensus_weights([strong, weak])
 

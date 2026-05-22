@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from services.execution_policy import apply_policy_caps, policy_snapshot
+
 
 NO_ADD_PERMISSIONS = {"hold_or_trim", "reduce_risk_only", "defensive_only", "cash_only"}
 
@@ -61,6 +63,7 @@ def build_target_weights(
         "governance_adjustment",
         "validated_llm_delta",
         "single_delta_clip",
+        "hedge_intent_overlay",
         "turnover_clip",
         "normalization",
     ]
@@ -115,6 +118,32 @@ def build_target_weights(
             "advisory_validator_result": (advisory_row or {}).get("validator_result"),
         }
 
+    hedge_overlay = _apply_hedge_intent_overlay(work, current, cfg.get("hedge_intent"))
+    if hedge_overlay["applied"]:
+        work = hedge_overlay["weights"]
+        violations.extend(hedge_overlay["violations"])
+        for ticker in set(per_ticker) | set(hedge_overlay["touched_tickers"]):
+            per_ticker.setdefault(
+                ticker,
+                {
+                    "base_weight": round(float(base.get(ticker, 0.0) or 0.0), 6),
+                    "current_weight": round(float(current.get(ticker, 0.0) or 0.0), 6),
+                    "scorecard_permission": permission,
+                    "governance_adjustment": 0.0,
+                    "validated_llm_delta": 0.0,
+                    "governance_target": None,
+                    "pre_normalized_target": None,
+                    "final_target": None,
+                    "reason_codes": [],
+                    "allowed_actions": [],
+                    "advisory_validator_result": None,
+                },
+            )
+            per_ticker[ticker]["hedge_intent_adjustment"] = round(
+                float(work.get(ticker, 0.0) or 0.0) - float(base.get(ticker, 0.0) or 0.0),
+                6,
+            )
+
     work["CASH"] = max(1.0 - sum(work.values()), 0.0)
     normalized = _normalize_cash_first(work)
     turnover_before = _turnover(work, current)
@@ -125,6 +154,13 @@ def build_target_weights(
         violations.append(f"turnover_clip:{turnover_before:.2%}->{turnover_cap:.2%}")
 
     normalized = _normalize_cash_first(normalized)
+    capped_targets, cap_events, cash_raised = apply_policy_caps(normalized)
+    if cash_raised > 0:
+        capped_targets["CASH"] = float(capped_targets.get("CASH", 0.0) or 0.0) + cash_raised
+    normalized = _normalize_cash_first(capped_targets)
+    if cap_events:
+        violations.append(f"policy_cap:{len(cap_events)}")
+
     for ticker, row in per_ticker.items():
         row["final_target"] = round(float(normalized.get(ticker, 0.0) or 0.0), 6)
 
@@ -147,6 +183,10 @@ def build_target_weights(
             "consumes_raw_llm_adjusted_weights": False,
             "raw_llm_adjusted_weights_consumed": False,
             "target_construction_source": "deterministic_target_builder",
+            "policy_version": policy_snapshot()["version"],
+            "policy_cap_events": cap_events,
+            "cash_raised_by_policy_cap": cash_raised,
+            "hedge_intent": hedge_overlay["diagnostics"],
             "ticker_count": len(per_ticker),
         },
     )
@@ -198,6 +238,65 @@ def _advisory_by_ticker(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]
         if ticker:
             out[ticker] = row
     return out
+
+
+def _apply_hedge_intent_overlay(
+    weights: dict[str, float],
+    current_weights: dict[str, float],
+    hedge_intent: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(hedge_intent, dict) or not hedge_intent.get("triggered"):
+        return {
+            "applied": False,
+            "weights": weights,
+            "violations": [],
+            "touched_tickers": [],
+            "diagnostics": {"triggered": False, "applied": False},
+        }
+
+    result = dict(weights)
+    violations: list[str] = []
+    touched: set[str] = set()
+    cash_raise_target = max(float(hedge_intent.get("cash_raise_pct") or 0.0), 0.0)
+    trim_targets = [str(t).upper().strip() for t in hedge_intent.get("trim_targets") or []]
+    raised = 0.0
+
+    for ticker in trim_targets:
+        if raised >= cash_raise_target - 1e-12:
+            break
+        current = float(result.get(ticker, current_weights.get(ticker, 0.0)) or 0.0)
+        if current <= 0.0:
+            continue
+        trim_amount = min(current * 0.25, cash_raise_target - raised)
+        result[ticker] = max(float(result.get(ticker, current) or 0.0) - trim_amount, 0.0)
+        raised += trim_amount
+        touched.add(ticker)
+        violations.append(f"hedge_intent_trim:{ticker} -{trim_amount:.2%}")
+
+    hedge_instrument = str(hedge_intent.get("hedge_instrument") or "").upper().strip()
+    hedge_weight = max(float(hedge_intent.get("hedge_weight") or 0.0), 0.0)
+    if hedge_intent.get("add_hedge_etf") and hedge_instrument and hedge_weight > 0.0:
+        result[hedge_instrument] = max(float(result.get(hedge_instrument, 0.0) or 0.0), hedge_weight)
+        touched.add(hedge_instrument)
+        violations.append(f"hedge_intent_add:{hedge_instrument} {hedge_weight:.2%}")
+
+    return {
+        "applied": True,
+        "weights": result,
+        "violations": violations,
+        "touched_tickers": sorted(touched),
+        "diagnostics": {
+            "triggered": True,
+            "applied": True,
+            "reasons": list(hedge_intent.get("reasons") or hedge_intent.get("trigger_reasons") or []),
+            "severity": hedge_intent.get("severity"),
+            "cash_raise_target": cash_raise_target,
+            "cash_raised_by_trim": round(raised, 6),
+            "trim_targets": trim_targets,
+            "hedge_instrument": hedge_instrument or None,
+            "hedge_weight": hedge_weight,
+        },
+    }
 
 
 def _validated_advisory_delta(row: dict[str, Any] | None) -> float:

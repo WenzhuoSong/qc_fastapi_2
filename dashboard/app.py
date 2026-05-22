@@ -79,6 +79,7 @@ async def index(_: str = Depends(require_dashboard_auth)) -> str:
 async def build_dashboard_summary() -> dict[str, Any]:
     ops = await build_operational_health_snapshot()
     latest_analysis = await _latest_analysis()
+    pc_readiness = await _portfolio_construction_readiness()
     cron_runs = await _latest_cron_runs()
     execution = await _latest_execution()
     replay = await _replay_diagnostics()
@@ -87,6 +88,7 @@ async def build_dashboard_summary() -> dict[str, Any]:
         "generated_at": datetime.utcnow().isoformat(),
         "ops": ops,
         "latest_analysis": latest_analysis,
+        "portfolio_construction_readiness": pc_readiness,
         "cron_runs": cron_runs,
         "execution": execution,
         "replay": replay,
@@ -131,9 +133,24 @@ async def _latest_analysis() -> dict[str, Any]:
         "strategy_detail": strategy_detail,
         "position_governance": _compact_governance(governance, ledger),
         "decision_ledger": compact_ledger,
+        "portfolio_construction_evaluation": _compact_portfolio_construction_evaluation(
+            (risk.get("portfolio_construction_evaluation") if isinstance(risk, dict) else None) or {}
+        ),
+        "portfolio_construction_promotion_gate": _compact_portfolio_construction_promotion_gate(
+            (risk.get("portfolio_construction_promotion_gate") if isinstance(risk, dict) else None) or {}
+        ),
         "stage_metrics": stage_metrics,
         "rejection_reasons": (risk.get("rejection_reasons") if isinstance(risk, dict) else []) or [],
     }
+
+
+async def _portfolio_construction_readiness() -> dict[str, Any]:
+    try:
+        from services.portfolio_construction_evaluator import load_portfolio_construction_readiness
+
+        return await load_portfolio_construction_readiness(limit=20, min_cycles=20, min_pass_rate=0.80)
+    except Exception as exc:
+        return {"status": "unavailable", "error": str(exc), "execution_authority": "none"}
 
 
 async def _latest_stage_metrics(analysis_id: int) -> list[dict[str, Any]]:
@@ -351,6 +368,38 @@ def _compact_governance(governance: dict[str, Any], ledger: dict[str, Any] | Non
     }
 
 
+def _compact_portfolio_construction_evaluation(evaluation: dict[str, Any]) -> dict[str, Any]:
+    if not evaluation:
+        return {}
+    metrics = evaluation.get("metrics") or {}
+    return {
+        "status": evaluation.get("status"),
+        "promotion_ready": evaluation.get("promotion_ready"),
+        "execution_authority": evaluation.get("execution_authority"),
+        "blockers": evaluation.get("blockers") or [],
+        "warnings": evaluation.get("warnings") or [],
+        "mean_abs_weight_deviation": metrics.get("mean_abs_weight_deviation"),
+        "turnover_delta": metrics.get("turnover_delta"),
+        "shadow_policy_allowed": metrics.get("shadow_policy_allowed"),
+        "actual_policy_allowed": metrics.get("actual_policy_allowed"),
+        "shadow_high_risk_tickers_added": metrics.get("shadow_high_risk_tickers_added") or [],
+    }
+
+
+def _compact_portfolio_construction_promotion_gate(gate: dict[str, Any]) -> dict[str, Any]:
+    if not gate:
+        return {}
+    return {
+        "status": gate.get("status"),
+        "eligible": gate.get("eligible"),
+        "enabled": gate.get("enabled"),
+        "approval_mode": gate.get("approval_mode"),
+        "blockers": gate.get("blockers") or [],
+        "would_promote_to": gate.get("would_promote_to"),
+        "execution_authority": gate.get("execution_authority"),
+    }
+
+
 def _enrich_position_explanations_from_ledger(
     explanations: list[dict[str, Any]],
     ledger: dict[str, Any],
@@ -416,12 +465,28 @@ def _ledger_rows_from_tickers(tickers: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         lifecycle = raw.get("trade_lifecycle") or {}
         advisory = raw.get("llm_advisory") or {}
+        policy = raw.get("execution_policy") or {}
+        hedge_path = raw.get("hedge_path") or {}
         rows.append({
             "ticker": raw.get("ticker") or ticker,
             "proposed_action": raw.get("proposed_action"),
             "final_action": raw.get("final_action"),
             "execution_status": raw.get("execution_status"),
+            "cmd_id": raw.get("cmd_id"),
+            "qc_status": raw.get("qc_status"),
+            "qc_rejection_reason": raw.get("qc_rejection_reason"),
+            "qc_timestamp": raw.get("qc_timestamp"),
             "risk_result": raw.get("risk_result"),
+            "ticker_role": policy.get("ticker_role"),
+            "single_cap": policy.get("single_cap"),
+            "group_cap": policy.get("group_cap"),
+            "policy_version": policy.get("policy_version"),
+            "policy_cap_applied": policy.get("policy_cap_applied"),
+            "policy_cap_original": policy.get("policy_cap_original"),
+            "policy_group_scaled": policy.get("policy_group_scaled"),
+            "cash_raised_by_policy_cap": policy.get("cash_raised_by_policy_cap"),
+            "entered_via_hedge_path": hedge_path.get("entered_via_hedge_path"),
+            "hedge_trigger_reasons": hedge_path.get("hedge_trigger_reasons") or [],
             "final_target": lifecycle.get("final_target"),
             "target_builder_target": lifecycle.get("target_builder_target"),
             "diagnostic_llm_target": lifecycle.get("diagnostic_llm_target"),
@@ -443,6 +508,7 @@ def render_dashboard(summary: dict[str, Any]) -> str:
     ops = summary["ops"]
     latest = summary["latest_analysis"]
     replay = summary["replay"]
+    pc_readiness = summary.get("portfolio_construction_readiness") or {}
     html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -470,6 +536,11 @@ def render_dashboard(summary: dict[str, Any]) -> str:
     <section>
       <h2>Latest Decision</h2>
       {_render_latest_analysis(latest)}
+    </section>
+
+    <section>
+      <h2>Portfolio Construction Readiness</h2>
+      {_render_kv(pc_readiness)}
     </section>
 
     <section>
@@ -514,6 +585,8 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
         return "<p class=\"muted\">No analysis available.</p>"
     scorecard = latest.get("scorecard") or {}
     governance = latest.get("position_governance") or {}
+    pc_eval = latest.get("portfolio_construction_evaluation") or {}
+    pc_gate = latest.get("portfolio_construction_promotion_gate") or {}
     thesis = (governance.get("thesis_status_summary") or {}).get("problem_tickers") or []
     hints = governance.get("manual_action_hints") or []
     return f"""
@@ -522,10 +595,12 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
         <article class="card"><h3>Scorecard</h3>{_render_kv(scorecard)}</article>
       </div>
       <h3>Rejection Reasons</h3>{_render_list("", latest.get("rejection_reasons") or [])}
+      <h3>Portfolio Construction Evaluation</h3>{_render_kv(pc_eval)}
+      <h3>Portfolio Construction Promotion Gate</h3>{_render_kv(pc_gate)}
       <h3>Manual Review Hints</h3>{_render_table(hints, ["ticker", "suggested_action", "current_weight", "suggested_target", "delta"])}
       <h3>Thesis Problems</h3>{_render_table(thesis, ["ticker", "status", "validator"])}
       <h3>Position Explanations</h3>{_render_table(governance.get("position_explanations") or [], ["ticker", "position_state", "decision", "current_weight", "target_after", "unrealized_pnl_pct", "risk_budget_status", "strategy_support", "action_permission", "strategy_intent", "llm_effect", "construction_effect", "risk_governance_effect", "final_explanation", "why_hold", "why_not_add", "why_not_exit", "next_trigger"])}
-      <h3>Decision Ledger</h3>{_render_table((latest.get("decision_ledger") or {}).get("top_decisions") or [], ["ticker", "proposed_action", "final_action", "execution_status", "risk_result", "final_target", "target_builder_target", "diagnostic_llm_target", "validated_advisory_delta", "advisory_validator_result", "changed_by"])}
+      <h3>Decision Ledger</h3>{_render_table((latest.get("decision_ledger") or {}).get("top_decisions") or [], ["ticker", "proposed_action", "final_action", "execution_status", "qc_status", "qc_rejection_reason", "risk_result", "ticker_role", "single_cap", "group_cap", "policy_version", "policy_cap_applied", "policy_cap_original", "cash_raised_by_policy_cap", "entered_via_hedge_path", "hedge_trigger_reasons", "final_target", "target_builder_target", "diagnostic_llm_target", "validated_advisory_delta", "advisory_validator_result", "changed_by"])}
       <h3>Pipeline Stage Telemetry</h3>{_render_table(latest.get("stage_metrics") or [], ["stage", "agent", "duration_ms", "model", "prompt_tokens", "completion_tokens", "failed"])}
     """
 

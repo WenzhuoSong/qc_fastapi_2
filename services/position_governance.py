@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from services.advisory_quality import build_advisory_quality_diagnostics
+from services.execution_policy import get_policy
 from services.group_contract import calc_primary_group_exposure, get_primary_group
 from services.thesis_scheduler import build_thesis_review_queue
 
@@ -75,6 +76,24 @@ class PositionGovernanceOutput:
     config: dict[str, Any]
 
 
+def _entered_via_hedge_intent(ticker: str, hedge_intent: dict[str, Any] | None) -> bool:
+    if not isinstance(hedge_intent, dict) or not hedge_intent.get("triggered"):
+        return False
+    ticker = str(ticker or "").upper().strip()
+    hedge_instrument = str(hedge_intent.get("hedge_instrument") or "").upper().strip()
+    if hedge_intent.get("add_hedge_etf") and ticker and ticker == hedge_instrument:
+        return True
+    hedge_tickers = {
+        str(item or "").upper().strip()
+        for item in (
+            hedge_intent.get("hedge_tickers")
+            or hedge_intent.get("allowed_hedge_tickers")
+            or []
+        )
+    }
+    return ticker in hedge_tickers
+
+
 def apply_position_governance(
     *,
     target_weights: dict[str, float],
@@ -84,6 +103,7 @@ def apply_position_governance(
     market_scorecard: dict[str, Any] | None,
     news_evidence: dict[str, Any] | None,
     llm_advisory_proposals: list[dict[str, Any]] | None = None,
+    hedge_intent: dict[str, Any] | None = None,
     config: dict[str, Any] | None = None,
 ) -> PositionGovernanceOutput:
     cfg = GovernanceConfig.from_config(config)
@@ -136,6 +156,7 @@ def apply_position_governance(
         exits: list[str] = []
         allowed_actions = {"hold", "trim"}
         decision = "hold"
+        policy = get_policy(ticker)
 
         if support_level in {"primary", "advisory"} and permission not in {"hold_or_trim", "reduce_risk_only", "cash_only"}:
             allowed_actions.add("add")
@@ -193,6 +214,13 @@ def apply_position_governance(
             if support_level in {"none", "watch_only", "ignore"} and current_w > 0.01:
                 target_w = min(target_w, max(current_w - cfg.review_trim_pct, 0.0))
                 decision = "trim_review" if decision == "hold" else decision
+
+        if policy.hedge_only and target_w > current_w + 1e-9 and not _entered_via_hedge_intent(ticker, hedge_intent):
+            reasons.append("hedge_only_requires_hedge_intent")
+            allowed_actions.discard("add")
+            target_w = current_w
+            blocked_actions.append(f"hedge_only_add_blocked:{ticker}")
+            decision = "hold_review" if current_w > 0.01 and decision == "hold" else decision
 
         if "add" not in allowed_actions and target_w > current_w:
             blocked_actions.append(f"buy_blocked:{ticker}:{','.join(sorted(reasons)) or 'permission'}")
@@ -268,6 +296,7 @@ def apply_position_governance(
             cfg=cfg,
             permission=permission,
             require_human=require_human,
+            hedge_intent=hedge_intent,
         )
     if cfg.replacement_enabled and _replacement_allowed(permission, require_human):
         replacement_candidates = _replacement_candidates(strategy_evidence or {}, decisions)
@@ -335,6 +364,7 @@ def _apply_llm_advisory_overrides(
     cfg: GovernanceConfig,
     permission: str,
     require_human: bool,
+    hedge_intent: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     if not proposals:
         return []
@@ -365,6 +395,10 @@ def _apply_llm_advisory_overrides(
             continue
 
         if action == "add":
+            if get_policy(ticker).hedge_only and not _entered_via_hedge_intent(ticker, hedge_intent):
+                blocked_actions.append(f"llm_advisory_rejected:{ticker}:hedge_only_requires_hedge_intent")
+                results.append(_advisory_result(ticker, action, raw, "rejected_hedge_only_requires_hedge_intent", reason, row))
+                continue
             if "add" not in allowed:
                 blocked_actions.append(f"llm_advisory_rejected:{ticker}:add_not_allowed")
                 results.append(_advisory_result(ticker, action, raw, "rejected_add_not_allowed", reason, row))
@@ -1193,6 +1227,8 @@ def _replacement_candidates(
         for order, ticker in enumerate(row.get("selected_tickers") or []):
             key = str(ticker or "").upper().strip()
             if not key or key == "CASH":
+                continue
+            if get_policy(key).hedge_only:
                 continue
             decision = decision_by_ticker.get(key, {})
             if decision.get("action_permission") not in {"hold_or_add_or_trim"}:

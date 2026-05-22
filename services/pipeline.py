@@ -76,7 +76,7 @@ from strategies              import compute_rebalance_actions, estimate_cost_pct
 from tracking.monitor_client import PipelineRunTracker
 from db.session          import AsyncSessionLocal
 from db.queries          import get_system_config, upsert_system_config
-from db.models           import AgentAnalysis, AgentStepLog, ExecutionLog
+from db.models           import AgentAnalysis, AgentStepLog
 from tools.notify_tools  import tool_send_telegram
 from services.proposal   import save_pending_proposal, validate_proposal_still_relevant
 from config              import get_settings
@@ -429,6 +429,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         alerts_cfg      = await get_system_config(db, "pending_critical_alerts")
         pm_cfg          = await get_system_config(db, "position_manager_config")
         pg_cfg          = await get_system_config(db, "position_governance_config")
+        pc_promo_cfg    = await get_system_config(db, "portfolio_construction_promotion_config")
         override_cfg    = await get_system_config(db, "circuit_override")
         alert_cfg       = await get_system_config(db, "circuit_pause_alert")
 
@@ -465,6 +466,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
     pending_alerts = (alerts_cfg.value if alerts_cfg else {}).get("alerts", []) or []
     position_manager_config = (pm_cfg.value if pm_cfg else {}) or {}
     position_governance_config = (pg_cfg.value if pg_cfg else {}) or {}
+    portfolio_construction_promotion_config = (pc_promo_cfg.value if pc_promo_cfg else {}) or {}
 
     params_key = f"strategy_{active_name}_params"
     async with AsyncSessionLocal() as db:
@@ -486,6 +488,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "pending_alerts":    pending_alerts,
         "position_manager_config": position_manager_config,
         "position_governance_config": position_governance_config,
+        "portfolio_construction_promotion_config": portfolio_construction_promotion_config,
     }
 
 
@@ -1218,6 +1221,22 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                     duration_ms=0,
                     failed=True,
                 )
+            hedge_intent = _build_hedge_intent_plan(
+                brief=brief,
+                evidence_bundle=evidence_bundle,
+                market_scorecard=market_scorecard,
+            )
+            pipeline_context["hedge_intent"] = hedge_intent
+            await _save_step_log(
+                analysis_id, "5e_hedge_intent", "hedge_intent",
+                input_data={
+                    "current_weights": brief.get("current_weights") or {},
+                    "market": (evidence_bundle.get("market") or {}),
+                    "market_scorecard": market_scorecard,
+                },
+                output_data=hedge_intent,
+                duration_ms=0,
+            )
             target_builder_gated = build_target_weights(
                 base_weights=base_weights,
                 current_weights=brief.get("current_weights") or {},
@@ -1233,6 +1252,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 constraints={
                     "max_turnover": (market_scorecard or {}).get("max_turnover_per_cycle"),
                     "max_single_delta": (market_scorecard or {}).get("max_adjustment_from_base"),
+                    "hedge_intent": hedge_intent,
                 },
                 mode="target_builder_gated",
             ).to_dict()
@@ -1279,6 +1299,57 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         risk_out["portfolio_construction_shadow"] = pipeline_context.get("portfolio_construction_shadow")
     if pipeline_context.get("portfolio_construction_shadow_error"):
         risk_out["portfolio_construction_shadow_error"] = pipeline_context.get("portfolio_construction_shadow_error")
+    if risk_out.get("target_weights") and pipeline_context.get("portfolio_construction_shadow"):
+        try:
+            from services.portfolio_construction_evaluator import evaluate_portfolio_construction_shadow
+
+            pc_eval = evaluate_portfolio_construction_shadow(
+                shadow_weights=(pipeline_context.get("portfolio_construction_shadow") or {}).get("target_weights") or {},
+                actual_weights=risk_out.get("target_weights") or {},
+                current_weights=brief.get("current_weights") or {},
+                hard_risk_tickers=_hard_risk_tickers_from_governance(risk_out.get("position_governance") or {}),
+            ).to_dict()
+            risk_out["portfolio_construction_evaluation"] = pc_eval
+            try:
+                from services.portfolio_construction_evaluator import (
+                    build_portfolio_construction_promotion_gate,
+                    load_portfolio_construction_readiness,
+                )
+
+                risk_out["portfolio_construction_readiness"] = await load_portfolio_construction_readiness(
+                    limit=20,
+                    min_cycles=20,
+                    min_pass_rate=0.80,
+                )
+                risk_out["portfolio_construction_promotion_gate"] = build_portfolio_construction_promotion_gate(
+                    risk_out["portfolio_construction_readiness"],
+                    pipeline_context.get("portfolio_construction_promotion_config") or {},
+                )
+            except Exception as readiness_error:
+                risk_out["portfolio_construction_readiness"] = {
+                    "status": "unavailable",
+                    "error": str(readiness_error),
+                    "execution_authority": "none",
+                }
+                risk_out["portfolio_construction_promotion_gate"] = {
+                    "status": "unavailable",
+                    "eligible": False,
+                    "blockers": ["readiness_unavailable"],
+                    "execution_authority": "none",
+                }
+            await _save_step_log(
+                analysis_id, "6c_portfolio_construction_evaluation", "portfolio_construction_evaluator",
+                input_data={
+                    "shadow_weights": (pipeline_context.get("portfolio_construction_shadow") or {}).get("target_weights") or {},
+                    "actual_weights": risk_out.get("target_weights") or {},
+                    "current_weights": brief.get("current_weights") or {},
+                },
+                output_data=pc_eval,
+                duration_ms=0,
+            )
+        except Exception as pc_eval_error:
+            risk_out["portfolio_construction_evaluation_error"] = str(pc_eval_error)
+            logger.warning("[Stage6] Portfolio Construction evaluation failed: %s", pc_eval_error)
     dur_risk = int((time.time() - t0) * 1000)
     approved = bool(risk_out.get("approved", False))
 
@@ -1370,6 +1441,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             market_scorecard=market_scorecard,
             news_evidence=news_evidence,
             llm_advisory_proposals=synthesizer_out.get("position_advisory_proposals") or [],
+            hedge_intent=pipeline_context.get("hedge_intent"),
             config=governance_config,
         )
         risk_out["position_governance"] = {
@@ -1512,6 +1584,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 constraints={
                     "max_turnover": (market_scorecard or {}).get("max_turnover_per_cycle"),
                     "max_single_delta": (market_scorecard or {}).get("max_adjustment_from_base"),
+                    "hedge_intent": pipeline_context.get("hedge_intent"),
                 },
                 mode="target_builder_shadow",
             ).to_dict()
@@ -1805,6 +1878,52 @@ def _rejected_pipeline_fingerprint(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _build_hedge_intent_plan(
+    *,
+    brief: dict,
+    evidence_bundle: dict,
+    market_scorecard: dict | None,
+) -> dict:
+    from services.hedge_intent import evaluate_hedge_intent
+
+    current_weights = brief.get("current_weights") or {}
+    market = evidence_bundle.get("market") or {}
+    key_facts = brief.get("key_facts") or {}
+    net_long = 0.0
+    for weight in current_weights.values():
+        try:
+            value = float(weight or 0.0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0.0:
+            net_long += value
+    plan = evaluate_hedge_intent(
+        vix_level=market.get("vix", 20.0),
+        portfolio_drawdown_pct=market.get("drawdown_pct", key_facts.get("drawdown_pct", 0.0)),
+        net_long_exposure=net_long,
+        market_regime_raw=market.get("regime") or (market_scorecard or {}).get("market_condition") or "normal",
+        current_holdings=current_weights,
+        scorecard_requires_human=bool((market_scorecard or {}).get("require_human_confirmation")),
+        market_breadth_pct=market.get("breadth_pct", key_facts.get("breadth_pct", 0.5)),
+    )
+    return plan.to_dict()
+
+
+def _hard_risk_tickers_from_governance(position_governance: dict | None) -> list[str]:
+    tickers: list[str] = []
+    for row in (position_governance or {}).get("position_decisions") or []:
+        if not isinstance(row, dict):
+            continue
+        state = str(row.get("position_state") or "").lower()
+        permission = str(row.get("action_permission") or "").lower()
+        reasons = " ".join(str(item).lower() for item in row.get("why_hold") or [])
+        if "hard_risk" in state or "hard-risk" in reasons or permission == "trim_or_exit":
+            ticker = str(row.get("ticker") or "").upper().strip()
+            if ticker:
+                tickers.append(ticker)
+    return tickers
+
+
 async def _send_semi_auto_proposal(
     pipeline_context: dict,
     risk_out:         dict,
@@ -1963,20 +2082,23 @@ def _append_live_validation_report(text: str, validation_out: dict) -> str:
 
 
 async def _save_execution(analysis_id: int, result: dict) -> None:
+    from services.execution_log_store import update_execution_result
+
     audit_payload = result.get("execution_audit") or build_execution_audit_payload(
         action_status=result.get("execution_status", "failed"),
         sent_weights=result.get("weights_sent") or {},
         command_id=result.get("command_id"),
         reason=result.get("error"),
     )
+    command_id = audit_payload.get("command_id") or result.get("command_id") or f"analysis_{analysis_id}"
+    await update_execution_result(
+        command_id=command_id,
+        analysis_id=analysis_id,
+        audit_payload=audit_payload,
+        qc_response=result.get("qc_response"),
+        status=result.get("execution_status", "unknown"),
+    )
     async with AsyncSessionLocal() as db:
-        db.add(ExecutionLog(
-            analysis_id     = analysis_id,
-            command_type    = "weight_adjustment",
-            command_payload = audit_payload,
-            qc_response     = result.get("qc_response"),
-            status          = result.get("execution_status", "unknown"),
-        ))
         analysis = await db.get(AgentAnalysis, analysis_id)
         if analysis:
             risk_output = dict(analysis.risk_output or {})

@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     # Webhook鉴权
     webhook_user: str = "qc"
     webhook_secret: str
+    qc_webhook_secret: str = ""
 
     # QC REST API
     qc_api_url: str = "https://www.quantconnect.com/api/v2"

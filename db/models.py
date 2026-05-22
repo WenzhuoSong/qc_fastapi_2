@@ -155,10 +155,14 @@ class ExecutionLog(Base):
     id              = Column(BigInteger, primary_key=True, autoincrement=True)
     analysis_id     = Column(BigInteger, ForeignKey("agent_analysis.id"))
     executed_at     = Column(DateTime, nullable=False, default=func.now())
+    command_id      = Column(String(64), index=True)
     command_type    = Column(String(30))
     command_payload = Column(JSONB, nullable=False)
     qc_response     = Column(JSONB)
     status          = Column(String(20))  # success|failed|timeout
+    qc_status       = Column(String(32), default="submitted")
+    qc_ack_at       = Column(DateTime)
+    qc_rejection_reason = Column(Text)
     retry_count     = Column(Integer, default=0)
 
 

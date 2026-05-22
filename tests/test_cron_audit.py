@@ -1,31 +1,33 @@
+import importlib
 import sys
-import types
 import unittest
+from unittest.mock import patch
 
 
-def _install_import_stubs() -> None:
-    sqlalchemy = types.ModuleType("sqlalchemy")
+def _load_cron_audit_run():
+    sqlalchemy = type(sys)("sqlalchemy")
     sqlalchemy.select = lambda *args, **kwargs: None
-    sys.modules["sqlalchemy"] = sqlalchemy
 
-    sys.modules.setdefault("db", types.ModuleType("db"))
-
-    models = types.ModuleType("db.models")
+    models = type(sys)("db.models")
     models.CronRunLog = type("CronRunLog", (), {})
-    sys.modules["db.models"] = models
 
-    session = types.ModuleType("db.session")
+    session = type(sys)("db.session")
     session.AsyncSessionLocal = object
-    sys.modules["db.session"] = session
+
+    with patch.dict(
+        "sys.modules",
+        {
+            "sqlalchemy": sqlalchemy,
+            "db": type(sys)("db"),
+            "db.models": models,
+            "db.session": session,
+        },
+    ):
+        module = importlib.import_module("services.cron_audit")
+        return module.CronAuditRun
 
 
-_install_import_stubs()
-sys.modules.pop("services.cron_audit", None)
-
-from services.cron_audit import CronAuditRun  # noqa: E402
-
-for module_name in ("sqlalchemy", "db.models", "db.session"):
-    sys.modules.pop(module_name, None)
+CronAuditRun = _load_cron_audit_run()
 
 
 class CronAuditRunTest(unittest.TestCase):

@@ -1,26 +1,31 @@
+import importlib
 import sys
-import types
 import unittest
+from unittest.mock import patch
 
 
-def _install_import_stubs() -> None:
-    tools = types.ModuleType("tools")
-    sys.modules.setdefault("tools", tools)
-
-    db_tools = types.ModuleType("tools.db_tools")
+def _load_risk_manager_exports():
+    db_tools = type(sys)("tools.db_tools")
     async def _token(_input):
         return {"approval_token": "test", "expires_at": "2099-01-01T00:00:00"}
     db_tools.tool_write_approval_token = _token
-    sys.modules.setdefault("tools.db_tools", db_tools)
+
+    with patch.dict(
+        "sys.modules",
+        {
+            "tools": type(sys)("tools"),
+            "tools.db_tools": db_tools,
+        },
+    ):
+        module = importlib.import_module("agents.risk_manager")
+        return (
+            module.apply_scorecard_constraints,
+            module.apply_style_constraints,
+            module.run_risk_manager_async,
+        )
 
 
-_install_import_stubs()
-
-from agents.risk_manager import (  # noqa: E402
-    apply_scorecard_constraints,
-    apply_style_constraints,
-    run_risk_manager_async,
-)
+apply_scorecard_constraints, apply_style_constraints, run_risk_manager_async = _load_risk_manager_exports()
 
 
 class RiskScorecardEnforcementTest(unittest.TestCase):
