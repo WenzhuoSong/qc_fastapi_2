@@ -1340,7 +1340,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                     "execution_authority": "none",
                 }
             await _save_step_log(
-                analysis_id, "6c_portfolio_construction_evaluation", "portfolio_construction_evaluator",
+                analysis_id, "6c_pc_eval", "pc_evaluator",
                 input_data={
                     "shadow_weights": (pipeline_context.get("portfolio_construction_shadow") or {}).get("target_weights") or {},
                     "actual_weights": risk_out.get("target_weights") or {},
@@ -1914,7 +1914,7 @@ async def _apply_final_execution_policy_cap(
     if not cap_events:
         await _save_step_log(
             analysis_id,
-            "6cb_final_execution_policy_cap",
+            "6cb_final_policy_cap",
             "execution_policy",
             input_data={"target_weights_raw": pre_cap},
             output_data={
@@ -1941,7 +1941,7 @@ async def _apply_final_execution_policy_cap(
 
     await _save_step_log(
         analysis_id,
-        "6cb_final_execution_policy_cap",
+        "6cb_final_policy_cap",
         "execution_policy",
         input_data={"target_weights_raw": pre_cap},
         output_data={

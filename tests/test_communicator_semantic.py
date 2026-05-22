@@ -15,6 +15,8 @@ class CommunicatorSemanticTest(unittest.TestCase):
         self.assertIn("Command submitted", text)
         self.assertIn("QC command submission failed", text)
         self.assertIn("Awaiting QC algorithm confirmation", text)
+        self.assertIn("_command_label(command_id)", text)
+        self.assertNotIn("command_id[:8]", text)
 
 
 if __name__ == "__main__":

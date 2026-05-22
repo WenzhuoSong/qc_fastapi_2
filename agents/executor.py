@@ -12,6 +12,10 @@ from services.execution_preflight import preflight_execution_weights
 logger = logging.getLogger("qc_fastapi_2.executor")
 
 
+def _command_label(command_id: str) -> str:
+    return str(command_id or "unknown")
+
+
 async def run_executor_async(
     pipeline_context: dict,
     risk_out:         dict,
@@ -145,7 +149,7 @@ async def run_executor_async(
             qc_response=result.get("response"),
         )
         msg = (
-            f"📤 Command submitted to QC `{command_id[:8]}`\n"
+            f"📤 Command submitted to QC `{_command_label(command_id)}`\n"
             + "\n".join(f"  {k}: {float(v):.1%}" for k, v in equity_w.items())
             + f"\nCost: {float(risk_out.get('estimated_cost_pct', 0) or 0):.2%}"
             + "\nAwaiting QC algorithm confirmation."
@@ -153,13 +157,13 @@ async def run_executor_async(
         await tool_send_telegram({"text": msg})
         qc_status = await wait_for_qc_ack(command_id)
         if qc_status == "accepted":
-            await tool_send_telegram({"text": f"✅ QC accepted `{command_id[:8]}`"})
+            await tool_send_telegram({"text": f"✅ QC accepted `{_command_label(command_id)}`"})
         elif qc_status == "rejected":
-            await tool_send_telegram({"text": f"❌ QC rejected `{command_id[:8]}`. Positions unchanged."})
+            await tool_send_telegram({"text": f"❌ QC rejected `{_command_label(command_id)}`. Positions unchanged."})
         else:
             await tool_send_telegram({
                 "text": (
-                    f"⚠️ QC ACK timeout `{command_id[:8]}`\n"
+                    f"⚠️ QC ACK timeout `{_command_label(command_id)}`\n"
                     "No QC algorithm confirmation within 30s. Verify positions manually."
                 )
             })

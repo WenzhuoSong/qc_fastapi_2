@@ -40,11 +40,16 @@ class DashboardTests(unittest.TestCase):
 
     def test_dashboard_reads_stage_telemetry_from_agent_step_log(self):
         source = Path("dashboard/app.py").read_text()
+        pipeline_source = Path("services/pipeline.py").read_text()
 
         self.assertIn("AgentStepLog", source)
         self.assertIn("def _latest_stage_metrics", source)
         self.assertIn('"prompt_tokens": (row.token_usage or {}).get("prompt_tokens")', source)
         self.assertIn("Pipeline Stage Telemetry", source)
+        self.assertIn('"6c_pc_eval"', pipeline_source)
+        self.assertIn('"6cb_final_policy_cap"', pipeline_source)
+        self.assertNotIn('"6c_portfolio_construction_evaluation"', pipeline_source)
+        self.assertNotIn('"6cb_final_execution_policy_cap"', pipeline_source)
 
     def test_dashboard_surfaces_portfolio_construction_evaluation(self):
         source = Path("dashboard/app.py").read_text()
