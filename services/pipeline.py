@@ -67,6 +67,8 @@ from services.decision_live_validation import (
 from services.strategy_use_constraints import apply_strategy_use_constraints
 from services.proposal_shaper import shape_proposal_before_risk
 from services.position_governance import apply_position_governance
+from services.execution_policy import policy_snapshot
+from services.final_execution_policy_cap import apply_final_execution_policy_cap
 from services.empirical_profile_store import (
     build_empirical_profiles_from_feature_store,
     collect_empirical_profile_tickers,
@@ -1572,6 +1574,13 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             duration_ms=0,
         )
 
+    await _apply_final_execution_policy_cap(
+        analysis_id=analysis_id,
+        risk_out=risk_out,
+        current_weights=brief.get("current_weights") or {},
+        rebalance_threshold=float((pipeline_context.get("risk_params") or {}).get("rebalance_threshold", 0.02)),
+    )
+
     if risk_out.get("position_governance"):
         try:
             target_builder_out = build_target_weights(
@@ -1876,6 +1885,76 @@ def _rejected_pipeline_fingerprint(
     }
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def _apply_final_execution_policy_cap(
+    *,
+    analysis_id: int,
+    risk_out: dict,
+    current_weights: dict,
+    rebalance_threshold: float,
+) -> None:
+    """Final execution-policy clamp after governance and position manager edits."""
+    if not risk_out.get("approved") or not risk_out.get("target_weights"):
+        return
+
+    pre_cap = dict(risk_out.get("target_weights") or {})
+    final_cap = apply_final_execution_policy_cap(
+        target_weights=pre_cap,
+        current_weights=current_weights,
+        rebalance_threshold=rebalance_threshold,
+    )
+    capped = final_cap["target_weights"]
+    cap_events = final_cap["cap_events"]
+    risk_out["final_policy_version"] = final_cap["policy_version"]
+    risk_out["final_policy_cap_events"] = cap_events
+    risk_out["final_policy_cash_raised"] = final_cap["cash_raised"]
+    risk_out["final_policy_cap_triggered"] = final_cap["triggered"]
+
+    if not cap_events:
+        await _save_step_log(
+            analysis_id,
+            "6cb_final_execution_policy_cap",
+            "execution_policy",
+            input_data={"target_weights_raw": pre_cap},
+            output_data={
+                "target_weights": capped,
+                "policy_version": risk_out["final_policy_version"],
+                "cap_events": [],
+                "cash_raised": 0.0,
+                "triggered": False,
+            },
+            duration_ms=0,
+        )
+        return
+
+    logger.warning(
+        "[FINAL_CAP] Post-governance weights required capping: %s. "
+        "This indicates a policy gap upstream.",
+        cap_events,
+    )
+    risk_out["target_weights"] = capped
+    risk_out["rebalance_actions"] = final_cap["rebalance_actions"]
+    risk_out["estimated_cost_pct"] = final_cap["estimated_cost_pct"]
+    risk_out["n_holdings"] = final_cap["n_holdings"]
+    risk_out.setdefault("overlays_applied", []).append("final_execution_policy_cap")
+
+    await _save_step_log(
+        analysis_id,
+        "6cb_final_execution_policy_cap",
+        "execution_policy",
+        input_data={"target_weights_raw": pre_cap},
+        output_data={
+            "target_weights": capped,
+            "policy_version": risk_out["final_policy_version"],
+            "cap_events": cap_events,
+            "cash_raised": final_cap["cash_raised"],
+            "triggered": True,
+            "rebalance_actions": final_cap["rebalance_actions"],
+            "estimated_cost_pct": risk_out["estimated_cost_pct"],
+        },
+        duration_ms=0,
+    )
 
 
 def _build_hedge_intent_plan(

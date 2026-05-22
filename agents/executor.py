@@ -113,7 +113,9 @@ async def run_executor_async(
         await tool_send_telegram(
             {
                 "text": (
-                    f"⛔ Execution blocked by preflight `{analysis_id}`\n"
+                    f"⛔ Executor preflight blocked `{analysis_id}`\n"
+                    "final_policy_cap stage failed to enforce execution limits. "
+                    "This is a system bug, not a business decision. Do not retry without investigation.\n"
                     f"Policy: {preflight['policy_version']}\n"
                     f"Cap violations:\n{cap_lines}\n"
                     f"Group violations: {preflight['group_violations']}\n"

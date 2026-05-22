@@ -794,6 +794,10 @@ def _compact_decision_ledger(ledger: dict) -> dict:
             "raw_llm_adjusted_weights_consumed": summary.get("raw_llm_adjusted_weights_consumed"),
             "policy_version": summary.get("policy_version"),
             "cash_raised_by_policy_cap": summary.get("cash_raised_by_policy_cap"),
+            "final_policy_version": summary.get("final_policy_version"),
+            "final_policy_cap_triggered": summary.get("final_policy_cap_triggered"),
+            "final_policy_cap_events": summary.get("final_policy_cap_events") or [],
+            "final_policy_cash_raised": summary.get("final_policy_cash_raised"),
             "hedge_intent": summary.get("hedge_intent"),
             "ticker_count": summary.get("ticker_count"),
         },
@@ -835,7 +839,7 @@ def _format_decision_ledger_line(ledger: dict) -> str:
     rows = ledger.get("top_decisions") or []
     summary = ledger.get("portfolio_summary") or {}
     warnings = ledger.get("warnings") or []
-    if not rows and not warnings:
+    if not rows and not warnings and not (summary.get("final_policy_cap_events") or []):
         return ""
     lines = ["<b>Decision ledger</b>"]
     status_bits = []
@@ -851,10 +855,15 @@ def _format_decision_ledger_line(ledger: dict) -> str:
         status_bits.append(f"target={summary.get('target_construction_mode')}")
     if summary.get("policy_version"):
         status_bits.append(f"policy={summary.get('policy_version')}")
+    if summary.get("final_policy_cap_triggered"):
+        status_bits.append("final_cap=true")
     if summary.get("raw_llm_adjusted_weights_consumed") is not None:
         status_bits.append(f"raw_llm={bool(summary.get('raw_llm_adjusted_weights_consumed'))}")
     if status_bits:
         lines.append("  " + " | ".join(status_bits))
+    final_cap_events = summary.get("final_policy_cap_events") or []
+    if final_cap_events:
+        lines.append("  " + _format_final_policy_cap_warning(final_cap_events))
     for row in rows[:5]:
         ticker = row.get("ticker")
         proposed = row.get("proposed_action") or "hold"
@@ -887,6 +896,26 @@ def _format_decision_ledger_line(ledger: dict) -> str:
     if warnings:
         lines.append("  warnings: " + "; ".join(str(item) for item in warnings[:3]))
     return "\n".join(lines) + "\n\n"
+
+
+def _format_final_policy_cap_warning(events: list[dict]) -> str:
+    bits = []
+    for event in events[:4]:
+        if not isinstance(event, dict):
+            continue
+        ticker = event.get("ticker") or event.get("group_role")
+        original = event.get("original", event.get("original_total"))
+        capped = event.get("capped_to", event.get("cap"))
+        if ticker and original is not None and capped is not None:
+            try:
+                bits.append(f"{ticker} ({float(original):.2%} -> {float(capped):.2%})")
+            except (TypeError, ValueError):
+                bits.append(str(ticker))
+    shown = ", ".join(bits) if bits else "unknown"
+    return (
+        "WARNING: post-governance policy cap triggered for "
+        f"{shown}. Upstream governance/position_manager introduced out-of-policy weights."
+    )
 
 
 def _compact_portfolio_construction_evaluation(evaluation: dict) -> dict:

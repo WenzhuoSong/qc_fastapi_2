@@ -130,6 +130,10 @@ def build_decision_ledger(
             "policy_version": target_builder_diagnostics.get("policy_version") or policy_snapshot()["version"],
             "cash_raised_by_policy_cap": target_builder_diagnostics.get("cash_raised_by_policy_cap"),
             "policy_cap_events": target_builder_diagnostics.get("policy_cap_events") or [],
+            "final_policy_version": risk.get("final_policy_version"),
+            "final_policy_cap_events": risk.get("final_policy_cap_events") or [],
+            "final_policy_cash_raised": risk.get("final_policy_cash_raised"),
+            "final_policy_cap_triggered": bool(risk.get("final_policy_cap_triggered")),
             "hedge_intent": _compact_hedge_intent(hedge_intent),
             "portfolio_construction": _compact_portfolio_construction(risk.get("portfolio_construction_shadow")),
             "turnover": _turnover(risk.get("rebalance_actions") or []),
@@ -1009,8 +1013,15 @@ def _target_builder_diagnostics(risk: dict[str, Any]) -> dict[str, Any]:
     for key in ("target_builder_input", "target_builder_shadow"):
         payload = risk.get(key) or {}
         if isinstance(payload, dict) and isinstance(payload.get("diagnostics"), dict):
-            return dict(payload.get("diagnostics") or {})
-    return {}
+            diagnostics = dict(payload.get("diagnostics") or {})
+            break
+    else:
+        diagnostics = {}
+    diagnostics["final_policy_cap_events"] = risk.get("final_policy_cap_events") or []
+    diagnostics["final_policy_cash_raised"] = risk.get("final_policy_cash_raised")
+    diagnostics["final_policy_version"] = risk.get("final_policy_version")
+    diagnostics["final_policy_cap_triggered"] = bool(risk.get("final_policy_cap_triggered"))
+    return diagnostics
 
 
 def _hedge_intent_payload(risk: dict[str, Any]) -> dict[str, Any]:
@@ -1035,6 +1046,22 @@ def _policy_cap_event_for_ticker(
     return None
 
 
+def _final_policy_cap_event_for_ticker(
+    ticker: str,
+    target_builder_diagnostics: dict[str, Any],
+) -> dict[str, Any] | None:
+    ticker = str(ticker or "").upper().strip()
+    role = get_role(ticker).value
+    for event in target_builder_diagnostics.get("final_policy_cap_events") or []:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("ticker") or "").upper().strip() == ticker:
+            return event
+        if str(event.get("group_role") or "") == role:
+            return event
+    return None
+
+
 def _execution_policy_context(
     *,
     ticker: str,
@@ -1042,6 +1069,7 @@ def _execution_policy_context(
 ) -> dict[str, Any]:
     policy = get_policy(ticker)
     cap_event = _policy_cap_event_for_ticker(ticker, target_builder_diagnostics)
+    final_cap_event = _final_policy_cap_event_for_ticker(ticker, target_builder_diagnostics)
     return {
         "ticker_role": get_role(ticker).value,
         "single_cap": policy.max_single_weight,
@@ -1053,6 +1081,11 @@ def _execution_policy_context(
         "policy_cap_target": (cap_event or {}).get("capped_to"),
         "policy_group_scaled": False,
         "cash_raised_by_policy_cap": target_builder_diagnostics.get("cash_raised_by_policy_cap"),
+        "final_policy_cap_applied": bool(final_cap_event),
+        "final_policy_cap_original": (final_cap_event or {}).get("original"),
+        "final_policy_cap_target": (final_cap_event or {}).get("capped_to"),
+        "final_policy_group_scaled": bool(final_cap_event and final_cap_event.get("group_role")),
+        "final_policy_cash_raised": target_builder_diagnostics.get("final_policy_cash_raised"),
     }
 
 
