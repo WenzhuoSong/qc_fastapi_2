@@ -10,6 +10,11 @@ from db.models import ExecutionLog
 from db.session import AsyncSessionLocal
 
 
+def _utcnow_db_naive() -> datetime:
+    """Return UTC time in the naive form expected by DateTime columns."""
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 async def create_or_update_submitted_log(
     *,
     command_id: str,
@@ -87,7 +92,7 @@ async def update_qc_status(
 ) -> None:
     values: dict[str, Any] = {
         "qc_status": qc_status,
-        "qc_ack_at": datetime.now(UTC),
+        "qc_ack_at": _utcnow_db_naive(),
     }
     if rejection_reason is not None:
         values["qc_rejection_reason"] = rejection_reason
