@@ -1446,6 +1446,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             hedge_intent=pipeline_context.get("hedge_intent"),
             config=governance_config,
         )
+        governance_feature_summary = risk_out.get("feature_source_summary") or {}
         risk_out["position_governance"] = {
             "mode": governance_mode,
             "position_decisions": governance_out.position_decisions,
@@ -1457,6 +1458,8 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             "trade_summary": governance_out.trade_summary,
             "portfolio_summary": governance_out.portfolio_summary,
             "config": governance_out.config,
+            "feature_source_summary": governance_feature_summary,
+            "data_source_policy": risk_out.get("data_source_policy") or {},
         }
 
         if run_governance_execution:
@@ -1516,6 +1519,8 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 "manual_action_hints": governance_out.manual_action_hints,
                 "trade_summary": governance_out.trade_summary,
                 "portfolio_summary": governance_out.portfolio_summary,
+                "feature_source_summary": governance_feature_summary,
+                "data_source_policy": risk_out.get("data_source_policy") or {},
             },
             duration_ms=0,
         )

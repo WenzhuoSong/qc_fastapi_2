@@ -35,6 +35,7 @@ from strategies import (
 )
 from tools.db_tools import tool_write_approval_token
 from services.market_scorecard import is_evidence_stale
+from services.feature_authority import build_feature_source_summary, source_of_truth_policy
 
 logger = logging.getLogger("qc_fastapi_2.risk_mgr")
 
@@ -106,6 +107,10 @@ async def run_risk_manager_async(
         or {}
     )
     evidence_bundle = brief.get("evidence_bundle") or {}
+    feature_source_summary = build_feature_source_summary(
+        brief.get("feature_provenance") or pipeline_context.get("feature_provenance") or {},
+        brief.get("schema_capabilities") or {},
+    )
 
     # ═══ target input / overlay chain ═══
     overlays_applied: list[str] = []
@@ -276,6 +281,15 @@ async def run_risk_manager_async(
         "target_construction_mode": _target_builder_mode(target_builder_payload),
         "raw_llm_adjusted_weights_consumed": False,
         "target_builder_input": target_builder_payload,
+        "feature_source_summary": feature_source_summary,
+        "data_source_policy": source_of_truth_policy(),
+        "data_quality_detail": {
+            "feature_source_summary": feature_source_summary,
+            "feature_source_counts": feature_source_summary.get("source_counts") or {},
+            "feature_authority_counts": feature_source_summary.get("authority_counts") or {},
+            "stale_fields": feature_source_summary.get("stale_fields") or {},
+            "has_stale_fields": feature_source_summary.get("has_stale_fields"),
+        },
         "reviewed_at":         datetime.utcnow().isoformat(),
     }
 

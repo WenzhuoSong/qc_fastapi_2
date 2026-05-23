@@ -7,6 +7,7 @@ Run as a separate Railway service:
 from __future__ import annotations
 
 import os
+import json
 import secrets
 from datetime import datetime
 from html import escape
@@ -32,6 +33,8 @@ from db.models import AgentAnalysis, AgentStepLog, CronRunLog, ExecutionLog, QCS
 from db.session import AsyncSessionLocal
 from services.operational_health import build_operational_health_snapshot
 from services.playground import _recent_snapshot_row_limit
+
+DATA_QUALITY_AUDIT_NAME = "qc_yfinance_feature_parity"
 
 
 app = FastAPI(
@@ -81,6 +84,7 @@ async def build_dashboard_summary() -> dict[str, Any]:
     latest_analysis = await _latest_analysis()
     pc_readiness = await _portfolio_construction_readiness()
     cron_runs = await _latest_cron_runs()
+    data_quality_audit = await _data_quality_audit_trend()
     execution = await _latest_execution()
     replay = await _replay_diagnostics()
     config = await _dashboard_config()
@@ -90,6 +94,7 @@ async def build_dashboard_summary() -> dict[str, Any]:
         "latest_analysis": latest_analysis,
         "portfolio_construction_readiness": pc_readiness,
         "cron_runs": cron_runs,
+        "data_quality_audit": data_quality_audit,
         "execution": execution,
         "replay": replay,
         "config": config,
@@ -120,6 +125,11 @@ async def _latest_analysis() -> dict[str, Any]:
         or (decision.get("data_quality_detail") if isinstance(decision, dict) else None)
         or {}
     )
+    feature_source_summary = (
+        (risk.get("feature_source_summary") if isinstance(risk, dict) else None)
+        or strategy_detail.get("feature_source_summary")
+        or {}
+    )
     ledger = (risk.get("decision_ledger") if isinstance(risk, dict) else None) or {}
     compact_ledger = _compact_ledger(ledger)
     return {
@@ -131,6 +141,7 @@ async def _latest_analysis() -> dict[str, Any]:
         "execution_status": row.execution_status,
         "scorecard": _compact_scorecard(scorecard),
         "strategy_detail": strategy_detail,
+        "feature_source_summary": feature_source_summary,
         "position_governance": _compact_governance(governance, ledger),
         "decision_ledger": compact_ledger,
         "portfolio_construction_evaluation": _compact_portfolio_construction_evaluation(
@@ -195,6 +206,126 @@ async def _latest_cron_runs() -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+async def _data_quality_audit_trend(limit: int = 20) -> dict[str, Any]:
+    limit = max(min(int(limit or 20), 100), 1)
+    try:
+        async with AsyncSessionLocal() as db:
+            exists = (
+                await db.execute(text("select to_regclass('public.data_quality_audit')"))
+            ).scalar_one_or_none()
+            if not exists:
+                return {
+                    "available": False,
+                    "reason": "data_quality_audit table not found",
+                    "recent": [],
+                    "trend": {},
+                }
+            rows = (
+                await db.execute(
+                    text("""
+                        select id, created_at, audit_name, lookback_days, status, summary
+                        from data_quality_audit
+                        where audit_name = :audit_name
+                        order by created_at desc
+                        limit :limit
+                    """),
+                    {"audit_name": DATA_QUALITY_AUDIT_NAME, "limit": limit},
+                )
+            ).mappings().all()
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"{type(exc).__name__}: {exc}",
+            "recent": [],
+            "trend": {},
+        }
+
+    recent = [_compact_data_quality_audit_row(row) for row in rows]
+    if not recent:
+        return {
+            "available": False,
+            "reason": "no QC/yfinance audit rows",
+            "recent": [],
+            "trend": {},
+        }
+    return {
+        "available": True,
+        "latest": recent[0],
+        "recent": recent,
+        "trend": _data_quality_audit_trend_summary(recent),
+    }
+
+
+def _compact_data_quality_audit_row(row: Any) -> dict[str, Any]:
+    summary = _coerce_json_dict(row.get("summary") if hasattr(row, "get") else None)
+    packet_totals = summary.get("packet_totals") or {}
+    unit_risks = summary.get("unit_risks") or []
+    high_drift = summary.get("high_drift_classes") or []
+    return {
+        "id": row.get("id"),
+        "created_at": _iso(row.get("created_at")),
+        "status": row.get("status") or summary.get("status"),
+        "lookback_days": row.get("lookback_days") or summary.get("lookback_days"),
+        "joined_rows": sum(int(v or 0) for v in packet_totals.values()),
+        "unit_risk_count": int(summary.get("unit_risk_count") or len(unit_risks)),
+        "high_drift_classes": len(high_drift),
+        "max_raw_momentum_error": summary.get("max_raw_momentum_error"),
+        "max_normalized_momentum_error": summary.get("max_normalized_momentum_error"),
+        "packet_totals": packet_totals,
+        "unit_risk_fields": _audit_unit_risk_labels(unit_risks),
+        "high_drift_labels": _audit_high_drift_labels(high_drift),
+    }
+
+
+def _data_quality_audit_trend_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "runs": len(rows),
+        "latest_status": rows[0].get("status") if rows else None,
+        "unit_risk_runs": sum(1 for row in rows if int(row.get("unit_risk_count") or 0) > 0),
+        "high_drift_runs": sum(1 for row in rows if int(row.get("high_drift_classes") or 0) > 0),
+        "max_joined_rows": max((int(row.get("joined_rows") or 0) for row in rows), default=0),
+        "latest_unit_risk_count": rows[0].get("unit_risk_count") if rows else None,
+    }
+
+
+def _audit_unit_risk_labels(unit_risks: list[dict[str, Any]]) -> list[str]:
+    labels = []
+    for item in unit_risks[:8]:
+        labels.append(
+            "/".join(
+                str(part)
+                for part in (item.get("packet_type"), item.get("ticker_role"), item.get("field"))
+                if part
+            )
+        )
+    return labels
+
+
+def _audit_high_drift_labels(high_drift: list[dict[str, Any]]) -> list[str]:
+    labels = []
+    for item in high_drift[:8]:
+        labels.append(
+            "/".join(
+                str(part)
+                for part in (item.get("packet_type"), item.get("ticker_role"))
+                if part
+            )
+        )
+    return labels
+
+
+def _coerce_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
 
 
 async def _latest_execution() -> dict[str, Any]:
@@ -549,6 +680,11 @@ def render_dashboard(summary: dict[str, Any]) -> str:
     </section>
 
     <section>
+      <h2>Data Quality Audit Trend</h2>
+      {_render_data_quality_audit(summary.get("data_quality_audit") or {})}
+    </section>
+
+    <section>
       <h2>Cron Runs</h2>
       {_render_crons(summary.get("cron_runs") or [])}
     </section>
@@ -585,6 +721,7 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
         return "<p class=\"muted\">No analysis available.</p>"
     scorecard = latest.get("scorecard") or {}
     governance = latest.get("position_governance") or {}
+    feature_sources = latest.get("feature_source_summary") or {}
     pc_eval = latest.get("portfolio_construction_evaluation") or {}
     pc_gate = latest.get("portfolio_construction_promotion_gate") or {}
     thesis = (governance.get("thesis_status_summary") or {}).get("problem_tickers") or []
@@ -593,6 +730,7 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
       <div class="grid">
         <article class="card">{_render_kv(latest, keys=["id", "analyzed_at", "trigger_type", "risk_approved", "execution_status"])}</article>
         <article class="card"><h3>Scorecard</h3>{_render_kv(scorecard)}</article>
+        <article class="card"><h3>Feature Source Summary</h3>{_render_kv(feature_sources)}</article>
       </div>
       <h3>Rejection Reasons</h3>{_render_list("", latest.get("rejection_reasons") or [])}
       <h3>Portfolio Construction Evaluation</h3>{_render_kv(pc_eval)}
@@ -613,6 +751,21 @@ def _render_replay(replay: dict[str, Any]) -> str:
         <article class="card"><h3>Deduped Without Limit</h3>{_render_kv(replay.get("deduped_without_limit") or {})}</article>
       </div>
       <h3>Raw QC Rows</h3>{_render_table(replay.get("raw_by_type") or [], ["packet_type", "rows", "trading_days", "first_received", "last_received"])}
+    """
+
+
+def _render_data_quality_audit(audit: dict[str, Any]) -> str:
+    if not audit.get("available"):
+        return f"<p class=\"muted\">{escape(str(audit.get('reason') or 'No audit rows.'))}</p>"
+    latest = audit.get("latest") or {}
+    trend = audit.get("trend") or {}
+    recent = audit.get("recent") or []
+    return f"""
+      <div class="grid">
+        <article class="card"><h3>Latest Audit</h3>{_render_kv(latest, keys=["created_at", "status", "lookback_days", "joined_rows", "unit_risk_count", "high_drift_classes"])}</article>
+        <article class="card"><h3>Trend</h3>{_render_kv(trend)}</article>
+      </div>
+      <h3>Recent Audit Runs</h3>{_render_table(recent, ["created_at", "status", "lookback_days", "joined_rows", "unit_risk_count", "high_drift_classes", "max_raw_momentum_error", "max_normalized_momentum_error", "unit_risk_fields", "high_drift_labels"])}
     """
 
 

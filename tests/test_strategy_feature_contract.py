@@ -19,7 +19,7 @@ class StrategyFeatureContractTest(unittest.TestCase):
                 "feature_sources": [
                     {
                         "source": "yfinance",
-                        "filled_fields": ["mom_252d"],
+                        "filled_fields": ["mom_20d", "mom_60d", "mom_252d", "rsi_14", "atr_pct"],
                         "trading_date": "2026-05-13",
                     }
                 ],
@@ -31,6 +31,13 @@ class StrategyFeatureContractTest(unittest.TestCase):
                 "mom_252d": 0.20,
                 "rsi_14": 68,
                 "atr_pct": 0.018,
+                "feature_sources": [
+                    {
+                        "source": "yfinance",
+                        "filled_fields": ["mom_20d", "mom_60d", "mom_252d", "rsi_14", "atr_pct"],
+                        "trading_date": "2026-05-13",
+                    }
+                ],
             },
         ]
 
@@ -45,8 +52,9 @@ class StrategyFeatureContractTest(unittest.TestCase):
         self.assertEqual(contract["verdict"], "ready")
         mom252 = next(item for item in contract["field_contracts"] if item["field"] == "mom_252d")
         self.assertEqual(mom252["coverage"], 1.0)
-        self.assertEqual(mom252["source_counts"]["yfinance"], 1)
-        self.assertEqual(mom252["source_counts"]["qc_snapshot"], 1)
+        self.assertEqual(mom252["authoritative_coverage"], 1.0)
+        self.assertEqual(mom252["source_counts"]["yfinance"], 2)
+        self.assertEqual(mom252["authority_counts"]["daily_research"], 2)
         self.assertEqual(mom252["freshness"], "fresh")
 
     def test_contract_blocks_missing_required_fields(self):
@@ -120,6 +128,84 @@ class StrategyFeatureContractTest(unittest.TestCase):
         self.assertEqual(contract["verdict"], "blocked_stale_required_fields")
         self.assertIn("hist_vol_20d", contract["stale_required_fields"])
         self.assertIn("mom_252d", contract["stale_required_fields"])
+
+    def test_contract_blocks_required_fields_without_authoritative_research_source(self):
+        strategy = get_strategy("momentum_lite_v1")
+        holdings = [
+            {
+                "ticker": "SPY",
+                "mom_20d": 0.02,
+                "mom_60d": 0.05,
+                "mom_252d": 0.12,
+                "rsi_14": 55,
+                "atr_pct": 0.011,
+            },
+            {
+                "ticker": "QQQ",
+                "mom_20d": 0.04,
+                "mom_60d": 0.08,
+                "mom_252d": 0.20,
+                "rsi_14": 68,
+                "atr_pct": 0.018,
+            },
+        ]
+
+        contract = build_strategy_feature_contract(
+            strategy,
+            holdings,
+            as_of=date(2026, 5, 14),
+        )
+
+        self.assertFalse(contract["ready"])
+        self.assertFalse(contract["can_influence_allocation"])
+        self.assertEqual(contract["verdict"], "blocked_non_authoritative_required_fields")
+        self.assertIn("mom_60d", contract["non_authoritative_required_fields"])
+
+    def test_contract_accepts_canonical_return_aliases_with_yfinance_authority(self):
+        strategy = get_strategy("momentum_lite_v1")
+        holdings = [
+            {
+                "ticker": "SPY",
+                "return_20d": 0.02,
+                "return_60d": 0.05,
+                "return_252d": 0.12,
+                "rsi_14": 55,
+                "atr_pct": 0.011,
+                "feature_sources": [
+                    {
+                        "source": "yfinance",
+                        "filled_fields": ["return_20d", "return_60d", "return_252d", "rsi_14", "atr_pct"],
+                        "trading_date": "2026-05-13",
+                    }
+                ],
+            },
+            {
+                "ticker": "QQQ",
+                "return_20d": 0.04,
+                "return_60d": 0.08,
+                "return_252d": 0.20,
+                "rsi_14": 68,
+                "atr_pct": 0.018,
+                "feature_sources": [
+                    {
+                        "source": "yfinance",
+                        "filled_fields": ["return_20d", "return_60d", "return_252d", "rsi_14", "atr_pct"],
+                        "trading_date": "2026-05-13",
+                    }
+                ],
+            },
+        ]
+
+        contract = build_strategy_feature_contract(
+            strategy,
+            holdings,
+            as_of=date(2026, 5, 14),
+        )
+
+        self.assertTrue(contract["ready"])
+        mom60 = next(item for item in contract["field_contracts"] if item["field"] == "mom_60d")
+        self.assertEqual(mom60["coverage"], 1.0)
+        self.assertEqual(mom60["authoritative_coverage"], 1.0)
 
 
 if __name__ == "__main__":

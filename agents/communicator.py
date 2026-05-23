@@ -34,6 +34,7 @@ Hard format:
 - Include 5 blocks: long/short debate summary / market view / rebalance / risk result / command hints (only include command hints if approved is true)
 - Debate summary: Bull/Bear confidence and resolution (1–2 lines)
 - Include market scorecard condition, permission, data quality, and any clipping/blocking details when present
+- Include feature source summary when present, especially live_state/research/fallback/stale details
 - Include strategy-use evidence and strategy-use clipping/blocking details when present
 - Include news bias/confidence, analysis style, trade style, and style clipping/blocking details when present
 - Do not invent numbers — only repeat fields you are given
@@ -172,6 +173,9 @@ def _build_payload(
             "warnings": (bundle_data_quality.get("warnings") or [])[:3],
             "source_timestamps": source_timestamps,
             "feature_source_counts": feature_provenance.get("source_counts") or {},
+            "feature_authority_counts": feature_provenance.get("authority_counts") or {},
+            "stale_fields": feature_provenance.get("stale_fields") or {},
+            "has_stale_fields": feature_provenance.get("has_stale_fields"),
             "qc_snapshots": strategies.get("snapshot_count"),
             "qc_forward_samples": strategies.get("forward_return_samples"),
             "historical_snapshots": strategies.get("historical_snapshot_count"),
@@ -315,6 +319,7 @@ def _fallback_template(p: dict) -> str:
 
     scorecard_line = _format_scorecard_line(scorecard)
     data_quality_line = _format_data_quality_detail_line(data_quality_detail)
+    feature_source_line = _format_feature_source_summary_line(data_quality_detail)
     enforcement_line = _format_enforcement_line(enforcement)
     news_line = _format_news_line(news)
     style_line = _format_style_line(style)
@@ -343,6 +348,7 @@ def _fallback_template(p: dict) -> str:
             f"{proposal_shaping_line}"
             f"{scorecard_line}"
             f"{data_quality_line}"
+            f"{feature_source_line}"
             f"{enforcement_line}"
             f"{style_enforcement_line}"
             f"{strategy_use_line}"
@@ -388,6 +394,7 @@ def _fallback_template(p: dict) -> str:
         f"{proposal_shaping_line}"
         f"{scorecard_line}"
         f"{data_quality_line}"
+        f"{feature_source_line}"
         f"{enforcement_line}"
         f"{style_enforcement_line}"
         f"{strategy_use_line}"
@@ -443,6 +450,8 @@ def _format_data_quality_detail_line(detail: dict) -> str:
         bits.append(f"QC heartbeat fields={int(source_counts.get('qc_heartbeat') or 0)}")
     if source_counts.get("qc_daily_snapshot") is not None:
         bits.append(f"Daily snapshot fields={int(source_counts.get('qc_daily_snapshot') or 0)}")
+    if source_counts.get("yfinance") is not None:
+        bits.append(f"yfinance fields={int(source_counts.get('yfinance') or 0)}")
     if qc_snapshots is not None:
         bits.append(f"QC live snapshots={int(qc_snapshots or 0)}/{int(qc_forward or 0)} forward")
     if evidence.get("execution_intel_status"):
@@ -464,6 +473,50 @@ def _format_data_quality_detail_line(detail: dict) -> str:
     return (
         f"<b>Data quality detail</b>\n"
         f"  {' | '.join(bits)}\n\n"
+    )
+
+
+def _format_feature_source_summary_line(detail: dict) -> str:
+    if not detail:
+        return ""
+    source_counts = detail.get("feature_source_counts") or {}
+    authority_counts = detail.get("feature_authority_counts") or {}
+    stale_fields = detail.get("stale_fields") or {}
+
+    live_fields = int(authority_counts.get("live_state") or 0)
+    intraday_fields = int(authority_counts.get("intraday") or 0)
+    research_fields = int(authority_counts.get("daily_research") or 0)
+    fallback_fields = (
+        int(authority_counts.get("qc_eod_audit") or 0)
+        + int(authority_counts.get("legacy_debug") or 0)
+        + int(authority_counts.get("unknown") or 0)
+    )
+    stale_count = sum(len(fields or []) for fields in stale_fields.values())
+
+    if not any([source_counts, authority_counts, stale_count]):
+        return ""
+
+    live_source = "QC heartbeat" if source_counts.get("qc_heartbeat") is not None or live_fields or intraday_fields else "missing"
+    research_source = "yfinance" if source_counts.get("yfinance") is not None or research_fields else "missing"
+    if fallback_fields:
+        fallback = f"{fallback_fields} fields"
+    else:
+        fallback = "none"
+
+    bits = [
+        f"live_state={live_source}",
+        f"research={research_source}",
+        f"fallback={fallback}",
+    ]
+    if intraday_fields:
+        bits.append(f"intraday={intraday_fields} fields")
+    if stale_count:
+        tickers = ",".join(sorted(stale_fields)[:4])
+        bits.append(f"stale={stale_count} fields ({tickers})")
+
+    return (
+        f"<b>Feature source summary</b>\n"
+        f"  Data: {' | '.join(bits)}\n\n"
     )
 
 

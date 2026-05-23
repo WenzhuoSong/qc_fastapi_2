@@ -70,6 +70,12 @@ class CommunicatorScorecardTest(unittest.TestCase):
                         "execution_permission": "advisory",
                     },
                 },
+                "feature_provenance": {
+                    "source_counts": {"qc_heartbeat": 12, "yfinance": 20},
+                    "authority_counts": {"live_state": 8, "intraday": 4, "daily_research": 20},
+                    "stale_fields": {},
+                    "has_stale_fields": False,
+                },
                 "evidence_bundle": {
                     "knowledge": {
                         "resolution": {
@@ -164,6 +170,7 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertEqual(payload["knowledge_resolution"]["calibration"]["summary"]["accepted"], 1)
         self.assertEqual(payload["execution_gateway"]["final_permission"], "human_required")
         self.assertEqual(payload["strategy_certification"]["items"][0]["status"], "research_supported")
+        self.assertEqual(payload["data_quality_detail"]["feature_authority_counts"]["daily_research"], 20)
         self.assertEqual(
             payload["strategy_use_enforcement"]["violations"][0],
             "strategy_advisory_only:max_delta:SPY 60.00%->53.00%",
@@ -193,8 +200,17 @@ class CommunicatorScorecardTest(unittest.TestCase):
                     "overall": "limited",
                     "feature_source_counts": {
                         "qc_heartbeat": 12,
+                        "yfinance": 20,
                         "qc_daily_snapshot": 34,
                     },
+                    "feature_authority_counts": {
+                        "live_state": 8,
+                        "intraday": 4,
+                        "daily_research": 20,
+                        "qc_eod_audit": 2,
+                        "legacy_debug": 1,
+                    },
+                    "stale_fields": {"XSD": ["return_60d"]},
                     "source_timestamps": {
                         "macro_news_cache": "2026-05-20T12:00:00Z",
                     },
@@ -291,8 +307,14 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("Market scorecard", text)
         self.assertIn("bullish_but_mixed", text)
         self.assertIn("Data quality detail", text)
+        self.assertIn("Feature source summary", text)
+        self.assertIn("live_state=QC heartbeat", text)
+        self.assertIn("research=yfinance", text)
+        self.assertIn("fallback=3 fields", text)
+        self.assertIn("stale=1 fields (XSD)", text)
         self.assertIn("QC heartbeat fields=12", text)
         self.assertIn("Daily snapshot fields=34", text)
+        self.assertIn("yfinance fields=20", text)
         self.assertIn("QC live snapshots=7/3 forward", text)
         self.assertIn("QC execution intel=insufficient_data", text)
         self.assertIn("yfinance history=290/289 forward", text)

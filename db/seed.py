@@ -21,6 +21,7 @@ _DEFAULTS = {
     },
     "authorization_mode": {"value": "SEMI_AUTO"},
     "circuit_state":      {"value": "CLOSED"},
+    "feature_authority_mode": {"value": "audit_only"},
 
     # 活跃策略指针
     "active_strategy": {"value": "momentum_lite_v1"},

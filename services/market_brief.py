@@ -24,11 +24,14 @@ from typing import Any
 from sqlalchemy import desc, select
 
 from constants import RISK_ON_SECTORS, RISK_OFF_SECTORS
+from db.queries import get_system_config
 from db.models import MacroNewsCache, QCSnapshot, TickerNewsLibrary
 from db.session import AsyncSessionLocal
+from services.feature_authority_mode import normalize_feature_authority_mode
 from services.feature_provenance import summarize_feature_provenance
+from services.market_feature_store import latest_feature_map
 from services.market_brief_contexts import build_memory_context, build_scenario_context
-from services.market_snapshot_merge import merge_market_snapshots, normalize_feature_snapshot
+from services.market_snapshot_merge import merge_market_snapshots
 from services.sector_rotation import detect_sector_rotation, format_rotation_for_prompt, rotation_signal_strengths
 from services.universe_policy import filter_tradable_research_rows
 
@@ -146,16 +149,32 @@ async def _read_latest_market_snapshot() -> dict | None:
         heartbeat_row = (await db.execute(heartbeat_stmt)).scalar_one_or_none()
         feature_row = (await db.execute(feature_stmt)).scalar_one_or_none()
 
-    heartbeat_payload = (heartbeat_row.raw_payload or {}) if heartbeat_row else {}
-    feature_payload = (feature_row.raw_payload or {}) if feature_row else {}
+        heartbeat_payload = (heartbeat_row.raw_payload or {}) if heartbeat_row else {}
+        feature_payload = (feature_row.raw_payload or {}) if feature_row else {}
+        mode_cfg = await get_system_config(db, "feature_authority_mode")
+        feature_authority_mode = normalize_feature_authority_mode(mode_cfg.value if mode_cfg else None)
+        tickers = _snapshot_tickers(heartbeat_payload) | _snapshot_tickers(feature_payload)
+        yfinance_features = await latest_feature_map(
+            db,
+            tickers=sorted(tickers),
+            source="yfinance",
+            max_age_days=14,
+        ) if tickers else {}
 
-    if not heartbeat_payload and not feature_payload:
+    if not heartbeat_payload and not feature_payload and not yfinance_features:
         return None
     if not heartbeat_payload:
-        return normalize_feature_snapshot(feature_payload)
-    if not feature_payload:
-        return heartbeat_payload
-    return merge_market_snapshots(heartbeat_payload, feature_payload)
+        return merge_market_snapshots({}, feature_payload, yfinance_features, mode=feature_authority_mode)
+    return merge_market_snapshots(heartbeat_payload, feature_payload, yfinance_features, mode=feature_authority_mode)
+
+
+def _snapshot_tickers(snapshot: dict[str, Any]) -> set[str]:
+    rows = (snapshot.get("holdings") or []) + (snapshot.get("features") or [])
+    return {
+        (row.get("ticker") or "").upper().strip()
+        for row in rows
+        if row.get("ticker")
+    }
 
 
 def _extract_current_weights(holdings: list[dict]) -> dict[str, float]:
@@ -368,7 +387,7 @@ def _compute_key_facts(holdings: list[dict], portfolio: dict) -> dict[str, Any]:
             return None
 
     mom60 = {
-        (h.get("ticker") or "").upper(): _f(h.get("mom_60d"))
+        (h.get("ticker") or "").upper(): _f(h.get("return_60d", h.get("mom_60d")))
         for h in etf_rows
     }
     mom60 = {k: v for k, v in mom60.items() if v is not None}

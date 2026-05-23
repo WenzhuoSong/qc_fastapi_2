@@ -22,11 +22,12 @@ from sqlalchemy import desc, select
 from config import get_settings
 from db.models import MarketDailyFeature, QCSnapshot
 from db.session import AsyncSessionLocal
+from services.feature_authority import authority_for_field, canonical_field_name
+from services.feature_provenance import summarize_feature_provenance
 from services.quant_baseline import classify_market_regime
 from services.sector_rotation import detect_sector_rotation
 from services.strategy_feature_contract import build_strategy_feature_contract
 from services.universe_policy import filter_tradable_research_rows
-from services.feature_provenance import summarize_feature_provenance
 from services.walk_forward_validation import validate_walk_forward
 from strategies import ScoredTicker, compute_rebalance_actions, estimate_cost_pct, get_strategy
 
@@ -525,10 +526,20 @@ def _merge_feature_map(
                 merged[key] = value
                 filled_fields.append(key)
         if filled_fields:
+            source = feature.get("source", "yfinance")
             sources = list(merged.get("feature_sources") or [])
             sources.append({
-                "source": feature.get("source", "yfinance"),
+                "source": source,
                 "filled_fields": sorted(filled_fields),
+                "authority_by_field": {
+                    field: authority_for_field(field, source).value
+                    for field in sorted(filled_fields)
+                },
+                "canonical_aliases": {
+                    field: canonical_field_name(field)
+                    for field in sorted(filled_fields)
+                    if canonical_field_name(field) != field
+                },
                 "trading_date": feature.get("trading_date"),
             })
             merged["feature_sources"] = sources

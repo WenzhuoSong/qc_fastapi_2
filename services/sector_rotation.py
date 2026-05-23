@@ -55,8 +55,9 @@ def detect_sector_rotation(holdings: list[dict[str, Any]]) -> dict[str, Any]:
     """
     Compute a compact rotation signal from current ETF feature rows.
 
-    Expected input fields are best-effort: ticker, mom_20d, mom_60d,
-    daily_return_pct, return_5d, hist_vol_20d, universe_role.
+    Expected input fields are best-effort: ticker, return_20d, return_60d,
+    return_1d, return_5d, hist_vol_20d, universe_role. Legacy mom_* fields
+    are fallback only.
     Missing fields degrade gracefully.
     """
     rows = [_build_rotation_row(row) for row in holdings]
@@ -75,6 +76,8 @@ def detect_sector_rotation(holdings: list[dict[str, Any]]) -> dict[str, Any]:
             "laggards": [],
             "sector_rank": [],
             "factor_rank": [],
+            "data_quality": "missing",
+            "legacy_fallback_tickers": [],
             "notes": ["No usable ETF momentum or return fields were available."],
         }
 
@@ -96,6 +99,12 @@ def detect_sector_rotation(holdings: list[dict[str, Any]]) -> dict[str, Any]:
     strongest = leaders[0]["ticker"] if leaders else None
     weakest = laggards[0]["ticker"] if laggards else None
     rotation_label = _classify_rotation(risk_appetite_score, safe_haven_score, leaders)
+    legacy_fallback_tickers = sorted({
+        row["ticker"]
+        for row in rows
+        if row.get("data_quality") == "legacy_fallback"
+    })
+    data_quality = "legacy_fallback" if legacy_fallback_tickers else "canonical"
 
     return {
         "has_signal": bool(rows),
@@ -110,6 +119,8 @@ def detect_sector_rotation(holdings: list[dict[str, Any]]) -> dict[str, Any]:
         "laggards": laggards,
         "sector_rank": sector_rank,
         "factor_rank": factor_rank,
+        "data_quality": data_quality,
+        "legacy_fallback_tickers": legacy_fallback_tickers,
         "notes": _build_notes(rotation_label, leaders, laggards, risk_appetite_score),
     }
 
@@ -125,7 +136,7 @@ def format_rotation_for_prompt(rotation: dict[str, Any]) -> str:
             parts.append(
                 f"{row['ticker']}({row.get('label', 'unknown')}, "
                 f"score={row.get('score'):+.3f}, "
-                f"mom60={_fmt_pct(row.get('mom_60d'))}, "
+                f"r60={_fmt_pct(row.get('return_60d'))}, "
                 f"r5={_fmt_pct(row.get('return_5d'))})"
             )
         return "; ".join(parts) if parts else "(none)"
@@ -172,10 +183,10 @@ def _build_rotation_row(raw: dict[str, Any]) -> dict[str, Any] | None:
     if not ticker or ticker == "CASH":
         return None
 
-    mom60 = _to_float(raw.get("mom_60d"))
-    mom20 = _to_float(raw.get("mom_20d"))
+    mom60, mom60_quality = _canonical_or_legacy(raw, "return_60d", "mom_60d")
+    mom20, mom20_quality = _canonical_or_legacy(raw, "return_20d", "mom_20d")
     ret5 = _to_float(raw.get("return_5d"))
-    ret1 = _to_float(raw.get("daily_return_pct"))
+    ret1, ret1_quality = _canonical_or_legacy(raw, "return_1d", "daily_return_pct")
     vol = _to_float(raw.get("hist_vol_20d")) or _to_float(raw.get("atr_pct")) or 0.02
 
     if all(value is None for value in (mom60, mom20, ret5, ret1)):
@@ -189,12 +200,13 @@ def _build_rotation_row(raw: dict[str, Any]) -> dict[str, Any] | None:
         "ticker": ticker,
         "label": SECTOR_LABELS.get(ticker) or FACTOR_LABELS.get(ticker) or raw.get("universe_role") or "other",
         "score": round(score, 6),
-        "mom_60d": mom60,
-        "mom_20d": mom20,
+        "return_60d": mom60,
+        "return_20d": mom20,
         "return_5d": ret5,
-        "daily_return_pct": ret1,
+        "return_1d": ret1,
         "hist_vol_20d": vol,
         "universe_role": raw.get("universe_role"),
+        "data_quality": "legacy_fallback" if "legacy_fallback" in {mom60_quality, mom20_quality, ret1_quality} else "canonical",
     }
 
 
@@ -203,12 +215,21 @@ def _public_row(row: dict[str, Any]) -> dict[str, Any]:
         "ticker": row["ticker"],
         "label": row["label"],
         "score": row["score"],
-        "mom_60d": _round_or_none(row.get("mom_60d")),
-        "mom_20d": _round_or_none(row.get("mom_20d")),
+        "return_60d": _round_or_none(row.get("return_60d")),
+        "return_20d": _round_or_none(row.get("return_20d")),
         "return_5d": _round_or_none(row.get("return_5d")),
-        "daily_return_pct": _round_or_none(row.get("daily_return_pct")),
+        "return_1d": _round_or_none(row.get("return_1d")),
         "universe_role": row.get("universe_role"),
+        "data_quality": row.get("data_quality"),
     }
+
+
+def _canonical_or_legacy(raw: dict[str, Any], canonical: str, legacy: str) -> tuple[float | None, str]:
+    if raw.get(canonical) is not None:
+        return _to_float(raw.get(canonical)), "canonical"
+    if raw.get(legacy) is not None:
+        return _to_float(raw.get(legacy)), "legacy_fallback"
+    return None, "missing"
 
 
 def _classify_rotation(

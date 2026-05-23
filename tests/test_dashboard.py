@@ -62,6 +62,27 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("portfolio_construction_promotion_gate", source)
         self.assertIn("Portfolio Construction Promotion Gate", source)
 
+    def test_dashboard_surfaces_data_quality_audit_trend(self):
+        source = Path("dashboard/app.py").read_text()
+
+        self.assertIn("DATA_QUALITY_AUDIT_NAME", source)
+        self.assertIn("def _data_quality_audit_trend", source)
+        self.assertIn("to_regclass('public.data_quality_audit')", source)
+        self.assertIn("Data Quality Audit Trend", source)
+        self.assertIn("def _render_data_quality_audit", source)
+        self.assertIn('"unit_risk_count"', source)
+        self.assertIn('"high_drift_classes"', source)
+
+    def test_qc_yfinance_audit_cron_writes_audit_and_cron_telemetry(self):
+        source = Path("cron/qc_yfinance_feature_audit.py").read_text()
+
+        self.assertIn('audit_cron_run("qc_yfinance_feature_audit")', source)
+        self.assertIn("run_audit(", source)
+        self.assertIn("write_db=True", source)
+        self.assertIn("audit.add_rows(1)", source)
+        self.assertIn("unit_risk_count", source)
+        self.assertIn("QC_YFINANCE_AUDIT_LOOKBACK_DAYS", source)
+
 
 if __name__ == "__main__":
     unittest.main()

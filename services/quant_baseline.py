@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from services.feature_authority import FeatureAuthority, authority_for_field, canonical_field_name
+
 logger = logging.getLogger("qc_fastapi_2.quant_baseline")
 
 
@@ -109,9 +111,9 @@ def compute_layered_signals(
     Compute three-layer (short/medium/long) separated signals per ticker,
     blended by regime.
 
-    Short-term factors:   mom_20d, RSI (direction varies by regime), BB position (mean-reversion)
-    Medium-term factors: mom_60d, hist_vol (low-vol premium), RSI confirmation
-    Long-term factors:   mom_252d, ATR (low-ATR stability)
+    Short-term factors:   return_20d, RSI (direction varies by regime), BB position (mean-reversion)
+    Medium-term factors: return_60d, hist_vol (low-vol premium), RSI confirmation
+    Long-term factors:   return_252d, ATR (low-ATR stability)
     """
     blend = REGIME_BLEND_WEIGHTS.get(regime, DEFAULT_BLEND_WEIGHTS)
 
@@ -120,9 +122,9 @@ def compute_layered_signals(
     tickers = [h["ticker"] for h in valid]
 
     # Extract raw series
-    mom_20d  = [float(h.get("mom_20d", 0) or 0) for h in valid]
-    mom_60d  = [float(h.get("mom_60d", 0) or 0) for h in valid]
-    mom_252d = [float(h.get("mom_252d", 0) or 0) for h in valid]
+    mom_20d  = [float(h.get("return_20d", h.get("mom_20d", 0)) or 0) for h in valid]
+    mom_60d  = [float(h.get("return_60d", h.get("mom_60d", 0)) or 0) for h in valid]
+    mom_252d = [float(h.get("return_252d", h.get("mom_252d", 0)) or 0) for h in valid]
     rsi      = [float(h.get("rsi_14", 50) or 50) for h in valid]
     bb_pos   = [float(h.get("bb_position", 0.5) or 0.5) for h in valid]
     hist_vol = [float(h.get("hist_vol_20d", 0.15) or 0.15) for h in valid]
@@ -416,9 +418,9 @@ def classify_market_regime(
     if vix is not None:
         vix = float(vix)
 
-    spy_mom_20d  = _safe_float(spy_holding.get("mom_20d"))
-    spy_mom_60d  = _safe_float(spy_holding.get("mom_60d"))
-    spy_mom_252d = _safe_float(spy_holding.get("mom_252d"))
+    spy_mom_20d  = _safe_float(spy_holding.get("return_20d", spy_holding.get("mom_20d")))
+    spy_mom_60d  = _safe_float(spy_holding.get("return_60d", spy_holding.get("mom_60d")))
+    spy_mom_252d = _safe_float(spy_holding.get("return_252d", spy_holding.get("mom_252d")))
     spy_rsi      = _safe_float(spy_holding.get("rsi_14"), 50.0)
     spy_atr_pct  = _safe_float(spy_holding.get("atr_pct"), 0.01)
     bond_relative_strength = _bond_relative_strength_20d(holdings or [], spy_mom_20d)
@@ -435,6 +437,11 @@ def classify_market_regime(
         "ief_vs_spy_relative_strength_20d": bond_relative_strength,
         "spy_breadth_pct_above_200ma": breadth_pct,
     }
+    signals["feature_authority"] = _research_authority_summary(
+        spy_holding,
+        ("return_20d", "return_60d", "return_252d", "rsi_14", "atr_pct"),
+    )
+    confidence_cap = _confidence_cap_from_authority(signals["feature_authority"])
 
     # 1. 防御模式
     if drawdown > 0.10:
@@ -461,7 +468,7 @@ def classify_market_regime(
     if high_vol_trigger:
         return RegimeResult(
             regime=MarketRegime.HIGH_VOL,
-            confidence="high" if (vix is not None and vix > 35) else "medium",
+            confidence=_cap_confidence("high" if (vix is not None and vix > 35) else "medium", confidence_cap),
             signals=signals,
             constraints={
                 "max_equity_weight":    0.65,
@@ -498,7 +505,7 @@ def classify_market_regime(
         signals["regime_bond_adjusted"] = regime_bond_adjusted
         return RegimeResult(
             regime=MarketRegime.TRENDING_BULL,
-            confidence="high" if bull_score == 5 else "medium",
+            confidence=_cap_confidence("high" if bull_score == 5 else "medium", confidence_cap),
             signals=signals,
             constraints={
                 "max_equity_weight":    0.90,
@@ -527,7 +534,7 @@ def classify_market_regime(
     if bear_score >= 3:
         return RegimeResult(
             regime=MarketRegime.TRENDING_BEAR,
-            confidence="high" if bear_score == 4 else "medium",
+            confidence=_cap_confidence("high" if bear_score == 4 else "medium", confidence_cap),
             signals=signals,
             constraints={
                 "max_equity_weight":    0.55,
@@ -570,12 +577,61 @@ def _safe_float(val: Any, default: float = 0.0) -> float:
         return default
 
 
+def _research_authority_summary(row: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    by_field = {field: _authority_for_row_field(row, field) for field in fields}
+    return {
+        "by_field": by_field,
+        "has_daily_research": any(value == FeatureAuthority.DAILY_RESEARCH.value for value in by_field.values()),
+        "has_fallback_or_unknown": any(
+            value in {
+                FeatureAuthority.QC_EOD_AUDIT.value,
+                FeatureAuthority.LEGACY_DEBUG.value,
+                FeatureAuthority.UNKNOWN.value,
+            }
+            for value in by_field.values()
+        ),
+    }
+
+
+def _authority_for_row_field(row: dict[str, Any], field: str) -> str:
+    canonical = canonical_field_name(field)
+    if row.get(field) is None and row.get(canonical) is None:
+        return FeatureAuthority.UNKNOWN.value
+    for source_info in row.get("feature_sources") or []:
+        source = str(source_info.get("source") or "unknown")
+        filled_fields = set(source_info.get("filled_fields") or [])
+        by_field = source_info.get("authority_by_field") or {}
+        if field in by_field:
+            return str(by_field[field])
+        if canonical in by_field:
+            return str(by_field[canonical])
+        if field in filled_fields:
+            return authority_for_field(field, source).value
+        if canonical in filled_fields:
+            return authority_for_field(canonical, source).value
+    return authority_for_field(field if row.get(field) is not None else canonical, "qc_snapshot").value
+
+
+def _confidence_cap_from_authority(summary: dict[str, Any]) -> str | None:
+    if not summary.get("has_fallback_or_unknown"):
+        return None
+    return "medium" if summary.get("has_daily_research") else "low"
+
+
+def _cap_confidence(confidence: str, cap: str | None) -> str:
+    if not cap:
+        return confidence
+    order = {"low": 0, "medium": 1, "high": 2}
+    inverse = {value: key for key, value in order.items()}
+    return inverse[min(order.get(confidence, 1), order.get(cap, 1))]
+
+
 def _bond_relative_strength_20d(
     holdings: list[dict[str, Any]],
     spy_mom_20d: float,
 ) -> float | None:
     bond_momentums = [
-        _safe_float(row.get("mom_20d"), None)
+        _safe_float(row.get("return_20d", row.get("mom_20d")), None)
         for row in holdings
         if str(row.get("ticker") or "").upper() in {"IEF", "BND", "TLT", "SGOV"}
     ]

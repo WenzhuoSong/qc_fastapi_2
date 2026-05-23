@@ -103,6 +103,17 @@ class SectorRotationTests(unittest.TestCase):
         self.assertLess(first["XLP"], 0)
         self.assertLessEqual(abs(first["XLK"]), 1.0)
 
+    def test_rotation_marks_legacy_fallback_when_only_old_momentum_fields_exist(self):
+        result = detect_sector_rotation([
+            {"ticker": "XLK", "mom_60d": 0.08, "mom_20d": 0.04},
+            {"ticker": "XLP", "return_60d": -0.02, "return_20d": -0.01},
+        ])
+
+        self.assertEqual(result["data_quality"], "legacy_fallback")
+        self.assertEqual(result["legacy_fallback_tickers"], ["XLK"])
+        xlk = next(row for row in result["leaders"] if row["ticker"] == "XLK")
+        self.assertEqual(xlk["data_quality"], "legacy_fallback")
+
     def test_detects_defensive_rotation_when_safe_havens_lead(self):
         holdings = [
             {"ticker": "TLT", "mom_60d": 0.07, "mom_20d": 0.03, "return_5d": 0.02, "hist_vol_20d": 0.012},
@@ -144,7 +155,9 @@ class SectorRotationTests(unittest.TestCase):
         xlk = next(row for row in merged["holdings"] if row["ticker"] == "XLK")
         self.assertEqual(xlk["weight_current"], 0.2)
         self.assertEqual(xlk["volume"], 123)
-        self.assertEqual(xlk["mom_60d"], 0.01)
+        self.assertEqual(xlk["return_60d"], 0.08)
+        self.assertNotIn("mom_60d", xlk)
+        self.assertEqual(xlk["legacy_qc_indicators"]["mom_60d"], 0.01)
         sources = {item["source"] for item in xlk["feature_sources"]}
         self.assertEqual(sources, {"qc_heartbeat", "qc_daily_snapshot"})
         self.assertTrue(any(row["ticker"] == "XLP" for row in merged["holdings"]))
@@ -155,11 +168,106 @@ class SectorRotationTests(unittest.TestCase):
         normalized = _normalize_feature_snapshot(payload)
 
         self.assertEqual(normalized["holdings"][0]["ticker"], "XLK")
-        self.assertEqual(normalized["holdings"][0]["mom_60d"], 0.08)
+        self.assertEqual(normalized["holdings"][0]["return_60d"], 0.08)
+        self.assertNotIn("mom_60d", normalized["holdings"][0])
+        self.assertEqual(normalized["holdings"][0]["legacy_qc_indicators"]["mom_60d"], 0.08)
         self.assertEqual(
             normalized["holdings"][0]["feature_sources"][0]["source"],
             "qc_daily_snapshot",
         )
+
+    def test_yfinance_research_overrides_qc_daily_and_keeps_live_state(self):
+        heartbeat = {
+            "packet_type": "heartbeat",
+            "schema_version": "1.5",
+            "holdings": [
+                {
+                    "ticker": "XLK",
+                    "price": 210.0,
+                    "weight_current": 0.2,
+                    "mom_60d": 99.0,
+                    "intraday_open_price": 209.0,
+                },
+            ],
+        }
+        feature_snapshot = {
+            "packet_type": "daily_feature_snapshot",
+            "features": [{"ticker": "XLK", "mom_60d": 0.08, "open_price": 200.0}],
+        }
+        yfinance = {
+            "XLK": {
+                "ticker": "XLK",
+                "return_60d": 0.06,
+                "open_price": 201.0,
+                "trading_date": "2026-05-14",
+            }
+        }
+
+        merged = _merge_market_snapshots(heartbeat, feature_snapshot, yfinance)
+        xlk = merged["holdings"][0]
+
+        self.assertEqual(xlk["weight_current"], 0.2)
+        self.assertEqual(xlk["price"], 210.0)
+        self.assertEqual(xlk["intraday_open_price"], 209.0)
+        self.assertEqual(xlk["open_price"], 201.0)
+        self.assertEqual(xlk["return_60d"], 0.06)
+        self.assertNotIn("mom_60d", xlk)
+        self.assertEqual(xlk["legacy_qc_indicators"]["mom_60d"], 99.0)
+        self.assertEqual(merged["schema_capabilities"]["intraday_live_state"], "available")
+        self.assertEqual(merged["schema_capabilities"]["daily_research_authority"], "yfinance")
+
+    def test_yfinance_research_still_merges_when_qc_daily_missing(self):
+        heartbeat = {
+            "packet_type": "heartbeat",
+            "holdings": [
+                {"ticker": "SPY", "weight_current": 0.1, "price": 630.0, "mom_60d": 99.0},
+            ],
+        }
+        yfinance = {
+            "SPY": {
+                "ticker": "SPY",
+                "return_60d": 0.05,
+                "open_price": 625.0,
+                "trading_date": "2026-05-14",
+            }
+        }
+
+        merged = _merge_market_snapshots(heartbeat, {}, yfinance)
+        spy = merged["holdings"][0]
+
+        self.assertEqual(spy["weight_current"], 0.1)
+        self.assertEqual(spy["price"], 630.0)
+        self.assertEqual(spy["open_price"], 625.0)
+        self.assertEqual(spy["return_60d"], 0.05)
+        self.assertNotIn("mom_60d", spy)
+        self.assertEqual(spy["legacy_qc_indicators"]["mom_60d"], 99.0)
+        self.assertEqual(merged["schema_capabilities"]["daily_research_authority"], "yfinance")
+
+    def test_old_schema_heartbeat_marks_intraday_partial_without_inference(self):
+        heartbeat = {
+            "packet_type": "heartbeat",
+            "schema_version": "1.4",
+            "holdings": [{"ticker": "SPY", "price": 630.0, "weight_current": 0.1}],
+        }
+
+        merged = _merge_market_snapshots(heartbeat, {}, {})
+        spy = merged["holdings"][0]
+
+        self.assertEqual(merged["schema_capabilities"]["heartbeat_schema_version"], "1.4")
+        self.assertEqual(merged["schema_capabilities"]["intraday_live_state"], "partial")
+        self.assertNotIn("intraday_open_price", spy)
+        self.assertNotIn("open_price", spy)
+
+    def test_missing_heartbeat_schema_marks_intraday_unavailable_without_price(self):
+        heartbeat = {
+            "packet_type": "heartbeat",
+            "holdings": [{"ticker": "SPY", "weight_current": 0.1}],
+        }
+
+        merged = _merge_market_snapshots(heartbeat, {}, {})
+
+        self.assertEqual(merged["schema_capabilities"]["heartbeat_schema_version"], "legacy")
+        self.assertEqual(merged["schema_capabilities"]["intraday_live_state"], "unavailable")
 
     def test_playground_prefers_daily_feature_snapshot_for_same_day(self):
         heartbeat_row = SimpleNamespace(
@@ -223,6 +331,8 @@ class SectorRotationTests(unittest.TestCase):
         self.assertEqual(enriched[0]["mom_252d"], 0.18)
         self.assertEqual(enriched[0]["hist_vol_20d"], 0.01)
         self.assertEqual(enriched[0]["feature_sources"][0]["source"], "yfinance")
+        self.assertEqual(enriched[0]["feature_sources"][0]["authority_by_field"]["mom_60d"], "daily_research")
+        self.assertEqual(enriched[0]["feature_sources"][0]["canonical_aliases"]["mom_60d"], "return_60d")
 
     def test_replay_metrics_suppress_sharpe_until_enough_samples(self):
         snapshots = []
