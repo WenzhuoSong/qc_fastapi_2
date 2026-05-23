@@ -1,7 +1,7 @@
 # agents/executor.py
 import logging
 
-from tools.qc_tools import tool_send_weight_command
+from tools.qc_tools import tool_send_policy_sync, tool_send_weight_command
 from tools.notify_tools import tool_send_telegram
 from tools.db_tools import tool_verify_approval_token
 from services.execution_audit import build_execution_audit_payload
@@ -139,6 +139,29 @@ async def run_executor_async(
 
     # Send weights
     command_id = f"analysis_{analysis_id}"
+    policy_sync_id = f"{command_id}_policy"
+    policy_sync = await tool_send_policy_sync({"command_id": policy_sync_id})
+    if not policy_sync.get("success"):
+        err = policy_sync.get("error", "policy sync failed")
+        await tool_send_telegram({
+            "text": (
+                f"⛔ PolicySync failed before `{_command_label(command_id)}`\n"
+                f"{err}\nNo command sent to QC."
+            )
+        })
+        return {
+            "execution_status": "failed",
+            "error": err,
+            "execution_audit": build_execution_audit_payload(
+                action_status="failed",
+                proposed_weights=weights,
+                command_id=command_id,
+                rebalance_actions=risk_out.get("rebalance_actions") or [],
+                estimated_cost_pct=risk_out.get("estimated_cost_pct"),
+                reason="policy_sync_failed",
+            ),
+        }
+
     result = await tool_send_weight_command({"weights": weights, "command_id": command_id})
 
     if result.get("success"):

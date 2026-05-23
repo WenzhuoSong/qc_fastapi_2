@@ -41,12 +41,15 @@ async def tool_send_weight_command(inp: dict) -> dict:
     """
     weights = inp.get("weights", {})
     command_id = inp.get("command_id") or inp.get("analysis_id") or f"weights_{int(time.time())}"
+    policy = inp.get("policy") or policy_snapshot()
     url = f"{settings.qc_api_url}/live/commands/create"
 
     command_payload = {
         "target":     "SetWeights",
         "command_id": command_id,
         "weights":    {k: v for k, v in weights.items() if k != "CASH"},
+        "policy_version": policy.get("version"),
+        "policy": policy,
     }
     body = {
         "projectId": int(settings.qc_project_id),

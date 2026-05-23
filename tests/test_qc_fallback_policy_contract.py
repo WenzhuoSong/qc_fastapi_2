@@ -38,8 +38,20 @@ class QCFallbackPolicyContractTest(unittest.TestCase):
 
         self.assertIn('"version": "sprint8a_fallback"', text)
         self.assertIn('target == "PolicySync"', text)
+        self.assertIn("_apply_inline_policy(data)", text)
+        self.assertIn('"policy_source={self._policy_source}', text)
+        self.assertIn('"policy_version={self._execution_policy.get', text)
         self.assertIn("[POLICY] Synced from FastAPI version=", text)
+        self.assertIn("[POLICY] Inline SetWeights policy applied version=", text)
         self.assertIn("[POLICY] source=", text)
+
+    def test_qc_thematic_fallback_cap_is_not_legacy_five_percent(self):
+        qc_policy = _load_qc_policy_constants()
+
+        self.assertEqual(qc_policy["TICKER_ROLES"]["FTXL"], "thematic")
+        self.assertEqual(qc_policy["TICKER_ROLES"]["PSI"], "thematic")
+        self.assertEqual(qc_policy["ROLE_CAPS"]["thematic"]["max_single"], 0.075)
+        self.assertGreater(qc_policy["ROLE_CAPS"]["thematic"]["max_single"], 0.051)
 
 
 def _load_qc_policy_constants() -> dict:
