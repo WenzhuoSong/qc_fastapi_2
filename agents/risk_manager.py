@@ -36,6 +36,7 @@ from strategies import (
 from tools.db_tools import tool_write_approval_token
 from services.market_scorecard import is_evidence_stale
 from services.feature_authority import build_feature_source_summary, source_of_truth_policy
+from services.execution_policy import evaluate_policy
 
 logger = logging.getLogger("qc_fastapi_2.risk_mgr")
 
@@ -66,18 +67,20 @@ async def run_risk_manager_async(
     risk_params = pipeline_context.get("risk_params") or {}
     override_mode = pipeline_context.get("override_mode")
     target_builder_payload = _target_builder_payload(pipeline_context, researcher_out)
+    target_builder_missing = not bool(target_builder_payload)
     if not target_builder_payload:
-        logger.warning("RiskMgr: target_builder input empty, falling back to deterministic base_weights")
+        logger.warning("RiskMgr: target_builder input empty; rejecting instead of constructing fallback target")
         target_builder_payload = {
-            "target_weights": quant_baseline.get("base_weights") or {"CASH": 1.0},
+            "target_weights": {},
             "diagnostics": {
-                "mode": "deterministic_base_fallback",
-                "source": "quant_baseline.base_weights",
+                "mode": "target_builder_missing",
+                "source": "none",
                 "consumes_raw_llm_adjusted_weights": False,
+                "raw_llm_adjusted_weights_consumed": False,
             },
         }
     deterministic_target_mode = True
-    adjusted_weights = target_builder_payload.get("target_weights") or {"CASH": 1.0}
+    adjusted_weights = target_builder_payload.get("target_weights") or {}
 
     market_judgment = researcher_out.get("market_judgment") or {}
     regime = str(market_judgment.get("regime", "neutral"))
@@ -163,7 +166,7 @@ async def run_risk_manager_async(
                 overlays_applied=overlays_applied,
             )
 
-    target_weights = _normalize_weights(working)
+    target_weights = _clean_weight_map(working) if deterministic_target_mode else _normalize_weights(working)
     if deterministic_target_mode:
         scorecard_enforcement = validate_scorecard_constraints(
             target_weights=target_weights,
@@ -224,6 +227,8 @@ async def run_risk_manager_async(
     )
     checks.update(deterministic_input_checks)
     reasons.extend(deterministic_input_reasons)
+    if target_builder_missing:
+        reasons.append("Target builder input missing; risk manager is validate-only and will not construct fallback targets")
     scorecard_check = scorecard_enforcement["post_clip_compliance"]
     checks["scorecard_ok"] = {
         "pass": bool(scorecard_check.get("compliant", True)),
@@ -263,6 +268,31 @@ async def run_risk_manager_async(
         }
         reasons.append("Market scorecard requires human confirmation; FULL_AUTO execution blocked")
 
+    policy_context = {
+        "min_cash_pct": risk_params.get("min_cash_pct"),
+        "max_single_position": risk_params.get("max_single_position"),
+    }
+    if market_scorecard.get("min_cash_weight") is not None:
+        policy_context["min_cash_weight"] = market_scorecard.get("min_cash_weight")
+    if market_scorecard.get("max_equity_weight") is not None:
+        policy_context["max_equity_weight"] = market_scorecard.get("max_equity_weight")
+    if market_scorecard.get("max_turnover_per_cycle") is not None:
+        policy_context["max_turnover_per_cycle"] = market_scorecard.get("max_turnover_per_cycle")
+    if market_scorecard.get("max_adjustment_from_base") is not None:
+        policy_context["max_single_delta"] = market_scorecard.get("max_adjustment_from_base")
+    policy_evaluation = evaluate_policy(
+        weights=target_weights,
+        current_weights=current_weights,
+        context=policy_context,
+    )
+    checks["execution_policy_ok"] = {
+        "pass": bool(policy_evaluation.get("allowed")),
+        "actual": policy_evaluation.get("violations") or [],
+        "threshold": "canonical execution_policy",
+    }
+    if not policy_evaluation.get("allowed"):
+        reasons.extend(policy_evaluation.get("violations") or [])
+
     approved = all(c["pass"] for c in checks.values())
     failed_checks = {name: c for name, c in checks.items() if not c["pass"]}
 
@@ -281,6 +311,9 @@ async def run_risk_manager_async(
         "target_construction_mode": _target_builder_mode(target_builder_payload),
         "raw_llm_adjusted_weights_consumed": False,
         "target_builder_input": target_builder_payload,
+        "risk_manager_input_target_weights": _clean_weight_map(adjusted_weights),
+        "no_mutation": True,
+        "policy_evaluation": policy_evaluation,
         "feature_source_summary": feature_source_summary,
         "data_source_policy": source_of_truth_policy(),
         "data_quality_detail": {
@@ -455,6 +488,8 @@ def _target_builder_payload(
 def _target_builder_mode(payload: dict[str, Any]) -> str:
     diagnostics = payload.get("diagnostics") or {}
     mode = str(diagnostics.get("mode") or "").strip()
+    if mode == "target_builder_missing":
+        return mode
     if mode == "deterministic_base_fallback":
         return mode
     return "target_builder_gated"

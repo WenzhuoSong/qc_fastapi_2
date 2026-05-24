@@ -69,6 +69,7 @@ from services.proposal_shaper import shape_proposal_before_risk
 from services.position_governance import apply_position_governance
 from services.execution_policy import policy_snapshot
 from services.final_execution_policy_cap import apply_final_execution_policy_cap
+from services.final_risk_validation import validate_final_execution_target
 from services.empirical_profile_store import (
     build_empirical_profiles_from_feature_store,
     collect_empirical_profile_tickers,
@@ -1354,6 +1355,8 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             logger.warning("[Stage6] Portfolio Construction evaluation failed: %s", pc_eval_error)
     dur_risk = int((time.time() - t0) * 1000)
     approved = bool(risk_out.get("approved", False))
+    if approved and risk_out.get("target_weights"):
+        risk_out["risk_approved_target_weights"] = dict(risk_out.get("target_weights") or {})
 
     # Phase 3: Record rejection for circuit breaker monitoring
     if not approved:
@@ -1485,6 +1488,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 risk_out["approval_source"] = "full_auto_position_governance_risk_reduction"
                 risk_out["original_risk_approved"] = False
                 risk_out.setdefault("overlays_applied", []).append("full_auto_position_governance_risk_reduction")
+                risk_out.setdefault("post_risk_mutation_types", []).append("emergency_reduce_only")
                 risk_out.setdefault("governance_execution_notes", []).append(
                     "FULL_AUTO executed deterministic risk-reducing position governance trims only"
                 )
@@ -1554,7 +1558,9 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             "violations": pm_out.violations,
             "trade_summary": pm_out.trade_summary,
             "constraints": pm_out.constraints,
+            "mutation_types": pm_out.mutation_types,
         }
+        risk_out.setdefault("post_risk_mutation_types", []).extend(pm_out.mutation_types)
 
         if pm_out.violations:
             logger.warning(
@@ -1575,6 +1581,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 "adjusted_weights": pm_out.adjusted_weights,
                 "violations": pm_out.violations,
                 "trade_summary": pm_out.trade_summary,
+                "mutation_types": pm_out.mutation_types,
             },
             duration_ms=0,
         )
@@ -1585,6 +1592,14 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         current_weights=brief.get("current_weights") or {},
         rebalance_threshold=float((pipeline_context.get("risk_params") or {}).get("rebalance_threshold", 0.02)),
     )
+    await _apply_final_risk_validation(
+        analysis_id=analysis_id,
+        risk_out=risk_out,
+        current_weights=brief.get("current_weights") or {},
+        hard_risks_map=brief.get("hard_risks_map") or {},
+        pipeline_context=pipeline_context,
+    )
+    approved = bool(risk_out.get("approved", False))
 
     if risk_out.get("position_governance"):
         try:
@@ -1915,6 +1930,9 @@ async def _apply_final_execution_policy_cap(
     risk_out["final_policy_cap_events"] = cap_events
     risk_out["final_policy_cash_raised"] = final_cap["cash_raised"]
     risk_out["final_policy_cap_triggered"] = final_cap["triggered"]
+    risk_out["final_policy_evaluation"] = final_cap.get("policy_evaluation") or {}
+    if final_cap.get("mutation_types"):
+        risk_out.setdefault("post_risk_mutation_types", []).extend(final_cap.get("mutation_types") or [])
 
     if not cap_events:
         await _save_step_log(
@@ -1928,6 +1946,7 @@ async def _apply_final_execution_policy_cap(
                 "cap_events": [],
                 "cash_raised": 0.0,
                 "triggered": False,
+                "policy_evaluation": final_cap.get("policy_evaluation") or {},
             },
             duration_ms=0,
         )
@@ -1955,10 +1974,84 @@ async def _apply_final_execution_policy_cap(
             "cap_events": cap_events,
             "cash_raised": final_cap["cash_raised"],
             "triggered": True,
+            "mutation_types": final_cap.get("mutation_types") or [],
+            "policy_evaluation": final_cap.get("policy_evaluation") or {},
             "rebalance_actions": final_cap["rebalance_actions"],
             "estimated_cost_pct": risk_out["estimated_cost_pct"],
         },
         duration_ms=0,
+    )
+
+
+async def _apply_final_risk_validation(
+    *,
+    analysis_id: int,
+    risk_out: dict,
+    current_weights: dict,
+    hard_risks_map: dict,
+    pipeline_context: dict,
+) -> None:
+    """Observe final target validation after all post-risk mutations."""
+    if not risk_out.get("approved") or not risk_out.get("target_weights"):
+        return
+
+    risk_params = pipeline_context.get("risk_params") or {}
+    market_scorecard = pipeline_context.get("market_scorecard") or {}
+    policy_context = {
+        "post_risk_mutation_types": risk_out.get("post_risk_mutation_types") or [],
+        "hard_risk_tickers": [
+            str(ticker or "").upper().strip()
+            for ticker, risk in (hard_risks_map or {}).items()
+            if ticker and risk
+        ],
+        "execution_policy_context": {
+            "min_cash_pct": risk_params.get("min_cash_pct"),
+            "max_single_position": risk_params.get("max_single_position"),
+            "min_cash_weight": market_scorecard.get("min_cash_weight"),
+            "max_equity_weight": market_scorecard.get("max_equity_weight"),
+            "max_turnover_per_cycle": market_scorecard.get("max_turnover_per_cycle"),
+            "max_single_delta": market_scorecard.get("max_adjustment_from_base"),
+        },
+    }
+    validation = validate_final_execution_target(
+        risk_approved_target=(
+            risk_out.get("risk_approved_target_weights")
+            or risk_out.get("risk_manager_input_target_weights")
+            or {}
+        ),
+        final_target=risk_out.get("target_weights") or {},
+        current_weights=current_weights or {},
+        risk_context={
+            "target_construction_mode": risk_out.get("target_construction_mode"),
+            "approval_source": risk_out.get("approval_source"),
+        },
+        policy_context=policy_context,
+        mode="observe",
+    )
+    risk_out["final_validation"] = validation
+    if not validation.get("approved"):
+        risk_out["approved"] = False
+        risk_out.pop("approval_token", None)
+        risk_out.pop("token_expires_at", None)
+        risk_out.setdefault("rejection_reasons", []).append(
+            "Final validation hard-blocked execution target: "
+            + ", ".join(str(row) for row in validation.get("severe_violations") or [])
+        )
+        risk_out.setdefault("overlays_applied", []).append("final_validation_hard_block")
+
+    await _save_step_log(
+        analysis_id,
+        "6cc_final_risk_validation",
+        "final_risk_validation",
+        input_data={
+            "risk_approved_target": risk_out.get("risk_approved_target_weights") or {},
+            "final_target": risk_out.get("target_weights") or {},
+            "current_weights": current_weights or {},
+            "policy_context": policy_context,
+        },
+        output_data=validation,
+        duration_ms=0,
+        failed=not bool(validation.get("approved")),
     )
 
 

@@ -5,6 +5,7 @@ from services.execution_policy import (
     apply_policy_caps,
     check_portfolio_exposure,
     check_weight_allowed,
+    evaluate_policy,
     get_role,
     policy_snapshot,
 )
@@ -58,6 +59,31 @@ class ExecutionPolicyTests(unittest.TestCase):
         rows = check_portfolio_exposure({"PSI": 0.075, "SOXX": 0.075, "FTXL": 0.075, "SMH": 0.075})
         thematic = next(row for row in rows if row["role"] == "thematic")
         self.assertTrue(thematic["violated"])
+
+    def test_evaluate_policy_reports_structured_violations(self):
+        result = evaluate_policy(
+            weights={"COMPLETELY_UNKNOWN": 0.02, "PSI": 0.08, "CASH": 0.90},
+            current_weights={"CASH": 1.0},
+            context={"min_cash_weight": 0.95, "max_turnover_per_cycle": 0.03},
+        )
+
+        self.assertFalse(result["allowed"])
+        self.assertEqual(result["policy_version"], "sprint8a")
+        self.assertFalse(result["checks"]["unknown_ticker_ok"]["pass"])
+        self.assertFalse(result["checks"]["single_cap_ok"]["pass"])
+        self.assertFalse(result["checks"]["cash_floor_ok"]["pass"])
+        self.assertFalse(result["checks"]["turnover_ok"]["pass"])
+        self.assertTrue(result["cap_violations"])
+
+    def test_evaluate_policy_allows_valid_weights(self):
+        result = evaluate_policy(
+            weights={"SPY": 0.20, "PSI": 0.075, "SQQQ": 0.03, "CASH": 0.695},
+            current_weights={"SPY": 0.18, "PSI": 0.07, "SQQQ": 0.02, "CASH": 0.73},
+            context={"min_cash_weight": 0.05, "max_turnover_per_cycle": 0.10},
+        )
+
+        self.assertTrue(result["allowed"], result["violations"])
+        self.assertTrue(result["checks"]["role_group_cap_ok"]["pass"])
 
     def test_policy_snapshot_contains_version_and_roles(self):
         snapshot = policy_snapshot()

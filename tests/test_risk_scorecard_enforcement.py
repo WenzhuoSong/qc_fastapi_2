@@ -136,7 +136,7 @@ class RiskStyleEnforcementTest(unittest.TestCase):
 
 
 class RiskManagerTargetBuilderGatedTest(unittest.IsolatedAsyncioTestCase):
-    async def test_risk_manager_does_not_require_llm_adjusted_weights(self):
+    async def test_risk_manager_rejects_missing_target_builder_input(self):
         out = await run_risk_manager_async(
             pipeline_context={
                 "risk_params": {
@@ -159,9 +159,13 @@ class RiskManagerTargetBuilderGatedTest(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        self.assertEqual(out["target_construction_mode"], "deterministic_base_fallback")
+        self.assertEqual(out["target_construction_mode"], "target_builder_missing")
+        self.assertFalse(out["approved"])
         self.assertFalse(out["raw_llm_adjusted_weights_consumed"])
-        self.assertEqual(out["target_weights"], {"SPY": 0.1, "CASH": 0.9})
+        self.assertEqual(out["target_weights"], {})
+        self.assertTrue(out["no_mutation"])
+        self.assertFalse(out["quantitative_checks"]["target_builder_input_ok"]["pass"])
+        self.assertIn("Target builder input missing", " ".join(out["rejection_reasons"]))
 
     async def test_target_builder_gated_path_does_not_consume_raw_llm_weights(self):
         out = await run_risk_manager_async(
@@ -195,6 +199,8 @@ class RiskManagerTargetBuilderGatedTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["target_construction_mode"], "target_builder_gated")
         self.assertFalse(out["raw_llm_adjusted_weights_consumed"])
         self.assertEqual(out["target_weights"], {"SPY": 0.2, "CASH": 0.8})
+        self.assertEqual(out["risk_manager_input_target_weights"], {"SPY": 0.2, "CASH": 0.8})
+        self.assertTrue(out["no_mutation"])
         self.assertIn("target_builder_gated", out["overlays_applied"])
         self.assertEqual(out["scorecard_enforcement"]["mode"], "validation_only")
         self.assertEqual(out["style_enforcement"]["mode"], "validation_only")

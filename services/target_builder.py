@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from services.execution_policy import apply_policy_caps, policy_snapshot
+from services.execution_policy import apply_policy_caps, evaluate_policy, policy_snapshot
 
 
 NO_ADD_PERMISSIONS = {"hold_or_trim", "reduce_risk_only", "defensive_only", "cash_only"}
@@ -158,6 +158,14 @@ def build_target_weights(
     if cash_raised > 0:
         capped_targets["CASH"] = float(capped_targets.get("CASH", 0.0) or 0.0) + cash_raised
     normalized = _normalize_cash_first(capped_targets)
+    policy_evaluation = evaluate_policy(
+        weights=normalized,
+        current_weights=current,
+        context={
+            "max_turnover_per_cycle": turnover_cap,
+            "max_single_delta": max_single_delta,
+        },
+    )
     if cap_events:
         violations.append(f"policy_cap:{len(cap_events)}")
 
@@ -184,6 +192,7 @@ def build_target_weights(
             "raw_llm_adjusted_weights_consumed": False,
             "target_construction_source": "deterministic_target_builder",
             "policy_version": policy_snapshot()["version"],
+            "policy_evaluation": policy_evaluation,
             "policy_cap_events": cap_events,
             "cash_raised_by_policy_cap": cash_raised,
             "hedge_intent": hedge_overlay["diagnostics"],

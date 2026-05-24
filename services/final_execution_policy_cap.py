@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from services.execution_policy import apply_policy_caps, policy_snapshot
+from services.execution_policy import apply_policy_caps, evaluate_policy, policy_snapshot
 from strategies import compute_rebalance_actions, estimate_cost_pct
 
 
@@ -18,12 +18,15 @@ def apply_final_execution_policy_cap(
     if cash_raised > 0:
         capped["CASH"] = float(capped.get("CASH", 0.0) or 0.0) + cash_raised
     capped = _normalize_weights(capped)
+    policy_evaluation = evaluate_policy(weights=capped, current_weights=current_weights)
     rebalance_actions = compute_rebalance_actions(capped, current_weights or {}, rebalance_threshold)
     return {
         "target_weights": capped,
         "policy_version": policy_snapshot()["version"],
         "cap_events": cap_events,
         "cash_raised": cash_raised,
+        "mutation_types": ["cash_raise_from_policy_cap"] if cap_events else [],
+        "policy_evaluation": policy_evaluation,
         "triggered": bool(cap_events),
         "rebalance_actions": rebalance_actions,
         "estimated_cost_pct": estimate_cost_pct(rebalance_actions),

@@ -172,6 +172,200 @@ def check_portfolio_exposure(weights: dict[str, Any]) -> list[dict[str, Any]]:
     return results
 
 
+def evaluate_policy(
+    *,
+    weights: dict[str, Any],
+    current_weights: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Evaluate a proposed target against the canonical execution policy.
+
+    This function is intentionally read-only. It reports violations and
+    suggested cap events but does not repair weights.
+    """
+    clean = _clean_weight_map(weights)
+    current = _clean_weight_map(current_weights or {})
+    ctx = context or {}
+    violations: list[str] = []
+    cap_violations: list[dict[str, Any]] = []
+    cap_events: list[dict[str, Any]] = []
+
+    unknown_positive: list[str] = []
+    watchlist_positive: list[str] = []
+    single_cap_violations: list[dict[str, Any]] = []
+    hedge_policy_violations: list[str] = []
+
+    hedge_allowed = bool(ctx.get("hedge_allowed", True))
+    for ticker, weight in sorted(clean.items()):
+        if ticker == "CASH" or weight <= 0.0:
+            continue
+        role = get_role(ticker)
+        policy = ROLE_POLICIES[role]
+        allowed, reason = check_weight_allowed(ticker, weight)
+        if not allowed:
+            row = {
+                "ticker": ticker,
+                "weight": round(weight, 6),
+                "role": role.value,
+                "cap": policy.max_single_weight,
+                "reason": reason,
+            }
+            cap_violations.append(row)
+            cap_events.append(row)
+            violations.append(reason)
+        if role == TickerRole.UNKNOWN:
+            unknown_positive.append(ticker)
+        if role == TickerRole.WATCHLIST:
+            watchlist_positive.append(ticker)
+        if role not in {TickerRole.UNKNOWN, TickerRole.WATCHLIST} and weight > policy.max_single_weight + 1e-12:
+            single_cap_violations.append(
+                {
+                    "ticker": ticker,
+                    "weight": round(weight, 6),
+                    "role": role.value,
+                    "cap": policy.max_single_weight,
+                    "ratio_to_cap": round(weight / policy.max_single_weight, 6)
+                    if policy.max_single_weight > 0
+                    else None,
+                }
+            )
+        if policy.hedge_only and not hedge_allowed and weight > current.get(ticker, 0.0) + 1e-12:
+            reason = f"{ticker} hedge-only exposure cannot be increased in this context"
+            hedge_policy_violations.append(ticker)
+            violations.append(reason)
+
+    exposure_rows = check_portfolio_exposure(clean)
+    group_violations = [row for row in exposure_rows if row["violated"]]
+    for row in group_violations:
+        reason = (
+            f"{row['role']} exposure {float(row['current_total']):.2%} "
+            f"> cap {float(row['cap']):.2%}"
+        )
+        violations.append(reason)
+        cap_events.append(
+            {
+                "group_role": row["role"],
+                "current_total": round(float(row["current_total"]), 6),
+                "cap": round(float(row["cap"]), 6),
+                "reason": reason,
+            }
+        )
+
+    min_cash = _optional_float(ctx.get("min_cash_weight", ctx.get("min_cash_pct")))
+    cash = float(clean.get("CASH", 0.0) or 0.0)
+    cash_ok = True
+    if min_cash is not None and cash < min_cash - 1e-9:
+        cash_ok = False
+        violations.append(f"cash {cash:.2%} below floor {min_cash:.2%}")
+
+    max_equity = _optional_float(ctx.get("max_equity_weight", ctx.get("max_equity_pct")))
+    equity = sum(weight for ticker, weight in clean.items() if ticker != "CASH")
+    equity_ok = True
+    if max_equity is not None and equity > max_equity + 1e-9:
+        equity_ok = False
+        violations.append(f"equity {equity:.2%} exceeds cap {max_equity:.2%}")
+
+    max_single_position = _optional_float(ctx.get("max_single_position"))
+    max_single_position_violations: list[dict[str, Any]] = []
+    if max_single_position is not None:
+        for ticker, weight in sorted(clean.items()):
+            if ticker == "CASH" or weight <= max_single_position + 1e-9:
+                continue
+            max_single_position_violations.append(
+                {"ticker": ticker, "weight": round(weight, 6), "cap": max_single_position}
+            )
+            violations.append(f"{ticker} weight {weight:.2%} exceeds context single cap {max_single_position:.2%}")
+
+    max_turnover = _optional_float(ctx.get("max_turnover_per_cycle"))
+    turnover = _turnover(clean, current)
+    turnover_ok = True
+    if max_turnover is not None and turnover > max_turnover + 1e-9:
+        turnover_ok = False
+        violations.append(f"turnover {turnover:.2%} exceeds cap {max_turnover:.2%}")
+
+    max_single_delta = _optional_float(ctx.get("max_single_delta", ctx.get("max_adjustment_from_base")))
+    single_delta_violations: list[dict[str, Any]] = []
+    if max_single_delta is not None:
+        for ticker in sorted((set(clean) | set(current)) - {"CASH"}):
+            delta = float(clean.get(ticker, 0.0) or 0.0) - float(current.get(ticker, 0.0) or 0.0)
+            if abs(delta) <= max_single_delta + 1e-9:
+                continue
+            single_delta_violations.append(
+                {
+                    "ticker": ticker,
+                    "delta": round(delta, 6),
+                    "cap": max_single_delta,
+                }
+            )
+            violations.append(f"{ticker} delta {delta:.2%} exceeds cap {max_single_delta:.2%}")
+
+    role_exposure = {
+        row["role"]: {
+            "current_total": round(float(row["current_total"]), 6),
+            "cap": round(float(row["cap"]), 6),
+            "violated": bool(row["violated"]),
+        }
+        for row in exposure_rows
+    }
+    checks = {
+        "unknown_ticker_ok": {
+            "pass": not unknown_positive,
+            "actual": unknown_positive,
+            "threshold": "registered ticker required for positive weight",
+        },
+        "watchlist_ticker_ok": {
+            "pass": not watchlist_positive,
+            "actual": watchlist_positive,
+            "threshold": "watchlist positive weight forbidden",
+        },
+        "single_cap_ok": {
+            "pass": not single_cap_violations and not max_single_position_violations,
+            "actual": single_cap_violations + max_single_position_violations,
+            "threshold": "role/context single cap",
+        },
+        "role_group_cap_ok": {
+            "pass": not group_violations,
+            "actual": group_violations,
+            "threshold": "role group cap",
+        },
+        "hedge_only_ok": {
+            "pass": not hedge_policy_violations,
+            "actual": hedge_policy_violations,
+            "threshold": "hedge increase requires hedge_allowed context",
+        },
+        "cash_floor_ok": {
+            "pass": cash_ok,
+            "actual": round(cash, 6),
+            "threshold": min_cash,
+        },
+        "max_equity_ok": {
+            "pass": equity_ok,
+            "actual": round(equity, 6),
+            "threshold": max_equity,
+        },
+        "turnover_ok": {
+            "pass": turnover_ok,
+            "actual": round(turnover, 6),
+            "threshold": max_turnover,
+        },
+        "single_delta_ok": {
+            "pass": not single_delta_violations,
+            "actual": single_delta_violations,
+            "threshold": max_single_delta,
+        },
+    }
+    return {
+        "allowed": all(row["pass"] for row in checks.values()),
+        "policy_version": POLICY_VERSION,
+        "violations": violations,
+        "cap_violations": cap_violations,
+        "group_violations": group_violations,
+        "cap_events": cap_events,
+        "role_exposure": role_exposure,
+        "checks": checks,
+    }
+
+
 def apply_policy_caps(raw_targets: dict[str, Any]) -> tuple[dict[str, float], list[dict[str, Any]], float]:
     capped: dict[str, float] = {}
     cap_events: list[dict[str, Any]] = []
@@ -252,3 +446,32 @@ def policy_snapshot() -> dict[str, Any]:
             for role, policy in ROLE_POLICIES.items()
         },
     }
+
+
+def _clean_weight_map(weights: dict[str, Any] | None) -> dict[str, float]:
+    cleaned: dict[str, float] = {}
+    for raw_ticker, raw_weight in (weights or {}).items():
+        ticker = _clean_ticker(raw_ticker)
+        if not ticker:
+            continue
+        try:
+            weight = float(raw_weight or 0.0)
+        except (TypeError, ValueError):
+            weight = 0.0
+        cleaned[ticker] = max(weight, 0.0)
+    return cleaned
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _turnover(target: dict[str, float], current: dict[str, float]) -> float:
+    tickers = set(target) | set(current)
+    return sum(
+        abs(float(target.get(ticker, 0.0) or 0.0) - float(current.get(ticker, 0.0) or 0.0))
+        for ticker in tickers
+    ) / 2.0

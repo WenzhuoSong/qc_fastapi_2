@@ -60,6 +60,7 @@ class PositionManagerOutput:
     violations: list[str]
     trade_summary: dict[str, Any]
     constraints: dict[str, Any]
+    mutation_types: list[str]
 
 
 class PositionManager:
@@ -87,6 +88,7 @@ class PositionManager:
         target.setdefault("CASH", 0.0)
 
         violations: list[str] = []
+        mutation_types: list[str] = []
         hold_days = _extract_hold_days(holdings_meta or [])
 
         # Protect young positions from sells before applying buy/turnover caps.
@@ -103,12 +105,13 @@ class PositionManager:
                     violations.append(
                         f"min_hold_days:{ticker} held {days}d < {constraints.min_hold_days}d, sell skipped"
                     )
+                    mutation_types.append("defer_sell_due_to_min_hold_days")
 
-        target = self._cap_new_buys(target, current, constraints, violations)
-        target = self._cap_position_count(target, current, constraints, violations)
-        target = self._cap_single_buys(target, current, constraints, violations)
-        target = self._cap_trade_count(target, current, constraints, violations, actual_daily_trades)
-        target = self._cap_turnover(target, current, constraints, violations)
+        target = self._cap_new_buys(target, current, constraints, violations, mutation_types)
+        target = self._cap_position_count(target, current, constraints, violations, mutation_types)
+        target = self._cap_single_buys(target, current, constraints, violations, mutation_types)
+        target = self._cap_trade_count(target, current, constraints, violations, mutation_types, actual_daily_trades)
+        target = self._cap_turnover(target, current, constraints, violations, mutation_types)
 
         adjusted = _normalize_weights(target)
         final_deltas = _weight_deltas(adjusted, current)
@@ -133,6 +136,7 @@ class PositionManager:
             violations=violations,
             trade_summary=summary,
             constraints=asdict(constraints),
+            mutation_types=_unique(mutation_types),
         )
 
     def _cap_new_buys(
@@ -141,6 +145,7 @@ class PositionManager:
         current: dict[str, float],
         constraints: PositionConstraints,
         violations: list[str],
+        mutation_types: list[str],
     ) -> dict[str, float]:
         deltas = _weight_deltas(target, current)
         new_positions = [
@@ -161,6 +166,7 @@ class PositionManager:
             out[ticker] = replacement
         out["CASH"] = out.get("CASH", 0.0) + freed
         violations.append(f"new_buys_capped:{blocked}")
+        mutation_types.append("cap_new_buy_to_current")
         return out
 
     def _cap_position_count(
@@ -169,6 +175,7 @@ class PositionManager:
         current: dict[str, float],
         constraints: PositionConstraints,
         violations: list[str],
+        mutation_types: list[str],
     ) -> dict[str, float]:
         projected = [t for t, w in target.items() if t != "CASH" and w > self.trade_threshold]
         if len(projected) <= constraints.max_positions:
@@ -192,6 +199,7 @@ class PositionManager:
             out[ticker] = 0.0
         out["CASH"] = out.get("CASH", 0.0) + freed
         violations.append(f"max_positions_capped:{blocked}")
+        mutation_types.append("cap_new_buy_to_current")
         return out
 
     def _cap_single_buys(
@@ -200,6 +208,7 @@ class PositionManager:
         current: dict[str, float],
         constraints: PositionConstraints,
         violations: list[str],
+        mutation_types: list[str],
     ) -> dict[str, float]:
         out = dict(target)
         for ticker, delta in _weight_deltas(target, current).items():
@@ -211,6 +220,7 @@ class PositionManager:
             violations.append(
                 f"single_buy_capped:{ticker} {delta:.2%}->{constraints.max_single_trade_pct:.2%}"
             )
+            mutation_types.append("cap_single_buy_delta")
         return out
 
     def _cap_turnover(
@@ -219,6 +229,7 @@ class PositionManager:
         current: dict[str, float],
         constraints: PositionConstraints,
         violations: list[str],
+        mutation_types: list[str],
     ) -> dict[str, float]:
         turnover = _turnover(target, current)
         if turnover <= constraints.max_turnover_per_cycle + 1e-9:
@@ -231,6 +242,7 @@ class PositionManager:
         violations.append(
             f"turnover_scaled:{turnover:.2%}->{constraints.max_turnover_per_cycle:.2%}"
         )
+        mutation_types.append("turnover_scale_toward_current")
         return out
 
     def _cap_trade_count(
@@ -239,6 +251,7 @@ class PositionManager:
         current: dict[str, float],
         constraints: PositionConstraints,
         violations: list[str],
+        mutation_types: list[str],
         actual_daily_trades: int = 0,
     ) -> dict[str, float]:
         deltas = _weight_deltas(target, current)
@@ -257,6 +270,7 @@ class PositionManager:
             violations.append(
                 f"daily_trade_count_exhausted:{actual_daily_trades}>={constraints.max_daily_trades}"
             )
+            mutation_types.append("cap_trade_count_buys")
             return out
 
         if len(sells) >= remaining_daily_trades:
@@ -277,6 +291,7 @@ class PositionManager:
             out[ticker] = replacement
         out["CASH"] = out.get("CASH", 0.0) + freed
         violations.append(f"daily_trade_count_capped:{blocked}")
+        mutation_types.append("cap_trade_count_buys")
         return out
 
 
@@ -332,6 +347,14 @@ def _turnover(target: dict[str, float], current: dict[str, float]) -> float:
 
 def _position_count(weights: dict[str, float]) -> int:
     return sum(1 for ticker, weight in weights.items() if ticker != "CASH" and weight > PositionManager.trade_threshold)
+
+
+def _unique(values: list[str]) -> list[str]:
+    out: list[str] = []
+    for value in values:
+        if value and value not in out:
+            out.append(value)
+    return out
 
 
 def _extract_hold_days(holdings_meta: list[dict]) -> dict[str, int]:

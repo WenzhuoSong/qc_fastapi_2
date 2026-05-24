@@ -118,6 +118,7 @@ class PositionManagerTest(unittest.TestCase):
 
         self.assertAlmostEqual(out.adjusted_weights["AAA"], 0.20, places=4)
         self.assertTrue(any(v.startswith("min_hold_days:AAA") for v in out.violations))
+        self.assertIn("defer_sell_due_to_min_hold_days", out.mutation_types)
         self.assertAlmostEqual(sum(out.adjusted_weights.values()), 1.0, places=4)
 
     def test_turnover_cap_scales_toward_current_weights(self):
@@ -134,6 +135,7 @@ class PositionManagerTest(unittest.TestCase):
         self.assertLessEqual(out.trade_summary["total_turnover"], 0.2001)
         self.assertAlmostEqual(out.adjusted_weights["AAA"], 0.20, places=4)
         self.assertTrue(any(v.startswith("turnover_scaled:") for v in out.violations))
+        self.assertIn("turnover_scale_toward_current", out.mutation_types)
 
     def test_max_daily_trades_caps_extra_buys(self):
         out = apply_position_constraints(
@@ -151,6 +153,7 @@ class PositionManagerTest(unittest.TestCase):
         self.assertEqual(held, ["AAA", "BBB"])
         self.assertEqual(out.trade_summary["total_trades"], 2)
         self.assertTrue(any(v.startswith("daily_trade_count_capped:") for v in out.violations))
+        self.assertIn("cap_trade_count_buys", out.mutation_types)
 
     def test_actual_daily_trades_reduce_remaining_trade_slots(self):
         out = apply_position_constraints(

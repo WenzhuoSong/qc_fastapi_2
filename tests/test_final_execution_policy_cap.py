@@ -13,6 +13,8 @@ class FinalExecutionPolicyCapTest(unittest.TestCase):
 
         self.assertTrue(out["triggered"])
         self.assertEqual(out["policy_version"], "sprint8a")
+        self.assertEqual(out["mutation_types"], ["cash_raise_from_policy_cap"])
+        self.assertTrue(out["policy_evaluation"]["allowed"])
         self.assertAlmostEqual(out["target_weights"]["XLK"], 0.15, places=4)
         self.assertAlmostEqual(out["target_weights"]["XLE"], 0.15, places=4)
         self.assertGreaterEqual(out["target_weights"]["CASH"], 0.70)
@@ -28,6 +30,7 @@ class FinalExecutionPolicyCapTest(unittest.TestCase):
 
         self.assertFalse(out["triggered"])
         self.assertEqual(out["cap_events"], [])
+        self.assertEqual(out["mutation_types"], [])
         self.assertEqual(out["target_weights"], {"XLK": 0.14, "XLE": 0.12, "CASH": 0.74})
 
 
