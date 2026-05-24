@@ -81,6 +81,31 @@ class HoldingsFactor(Base):
     holding_days   = Column(Integer)
 
 
+class AccountStateSnapshot(Base):
+    __tablename__ = "account_state_snapshots"
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    qc_snapshot_id  = Column(BigInteger, ForeignKey("qc_snapshots.id"), index=True)
+    recorded_at     = Column(DateTime, nullable=False)
+    account_timestamp = Column(DateTime)
+    source_packet_type = Column(String(40), nullable=False)
+    contract_version = Column(String(20), nullable=False)
+    account_status  = Column(String(40))
+    data_status     = Column(String(40))
+    policy_version  = Column(String(50))
+    total_value     = Column(Numeric(15, 2))
+    cash            = Column(Numeric(15, 2))
+    cash_pct        = Column(Numeric(8, 6))
+    buying_power    = Column(Numeric(15, 2))
+    open_order_count = Column(Integer)
+    has_open_orders = Column(Boolean)
+    is_market_open  = Column(Boolean)
+    holdings_weights = Column(JSONB)
+    target_weights  = Column(JSONB)
+    raw_snapshot    = Column(JSONB, nullable=False)
+    created_at      = Column(DateTime, nullable=False, default=func.now())
+
+
 class MarketDailyFeature(Base):
     __tablename__ = "market_daily_features"
     __table_args__ = (

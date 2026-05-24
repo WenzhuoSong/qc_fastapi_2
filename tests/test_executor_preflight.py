@@ -83,6 +83,8 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn("policy_version: str | None", text)
         self.assertIn("policy_mismatch: bool = False", text)
         self.assertIn("actual_target_weights: dict[str, float] | None", text)
+        self.assertIn("actual_holdings_weights: dict[str, float] | None", text)
+        self.assertIn("account_state: dict[str, Any] | None", text)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,234 @@ The system has evolved into a runnable research-oriented trading pipeline:
 The remaining risk is not lack of agents. The main risk is incomplete closure of
 data quality, replay validity, runtime auditability, and memory feedback.
 
+## Next Professional Execution Optimization Roadmap
+
+Updated: 2026-05-24
+
+The next optimization target is not paper-live versus real-money behavior. The
+target is a professional execution-control system where paper and real accounts
+use the same decision core, while QC remains the final account-state authority.
+
+Core principle:
+
+```text
+FastAPI / agents create compliant intent.
+QuantConnect validates the live account state and decides whether execution is safe.
+```
+
+The revised priority order is:
+
+1. QC Account State Guard
+2. Auto Pause / Circuit Rules
+3. Command Lifecycle Ledger
+4. Portfolio Construction objective dashboard
+5. ETF / Strategy EvidenceCard dashboard
+6. Live signal conviction dashboard
+
+Auto Pause is intentionally ahead of the full command ledger. The ledger is
+needed for observability, but automatic pause is the more urgent safety
+mechanism during live canary operation.
+
+### Sprint N: QC Account State Guard
+
+Goal:
+Prevent the pipeline from constructing or sending targets when the account state
+is stale, inconsistent, or mid-execution.
+
+Current implementation status:
+
+- PR1 `account_state_snapshot` contract implemented locally on 2026-05-24.
+  FastAPI now normalizes QC heartbeat/daily snapshots into
+  `account_state_snapshots`, accepts account-state fields in QC ACK payloads,
+  and the QC algorithm exports `account_state` plus `actual_holdings_weights`.
+  This PR is observational only; it does not yet block target construction or
+  execution.
+
+This is a guard stage, not just execution preflight. It should run after the
+latest QC heartbeat/account snapshot is loaded and before target construction
+or command submission can proceed.
+
+Pre-decision checks:
+
+- latest QC heartbeat age is below threshold, default 5 minutes
+- QC reported holdings and FastAPI last-known weights differ by less than a
+  configured tolerance
+- no blocking open orders exist
+- cash and buying power are present and fresh
+- account/data status is healthy
+- QC policy version is present and compatible
+
+Pre-execution checks on QC side:
+
+- command id has not been processed before
+- QC-local policy version check passes, or mismatch command is reduce-only
+- actual holdings are still close to the command's assumed starting weights
+- no blocking open orders or pending fills exist
+- buying power is sufficient for buy targets
+- daily command, turnover, buy-delta, and sell-delta caps are not exceeded
+- data/account state is not stale
+
+Post-execution checks:
+
+- accepted/rejected/partial/filled status is reported with structured reasons
+- partial fill leaves the account in a known state
+- actual post-order weights are compared with intended target weights
+- reconciliation drift above threshold triggers circuit alert or pause
+
+Proposed implementation PRs:
+
+1. `account_state_snapshot` contract
+   - Extend QC heartbeat/ACK payloads with account facts: as-of timestamp,
+     cash, buying power, total portfolio value, holdings weights, open order
+     count, policy version, and stale/account-health flags.
+   - Store the latest account snapshot in FastAPI without making it an
+     execution authority.
+2. FastAPI `account_state_guard`
+   - Add a deterministic guard service that returns `allowed`, `blockers`,
+     `warnings`, and `snapshot_age_seconds`.
+   - Pipeline blocks before target construction when the guard fails.
+   - Telegram/dashboard receives a concise account-state failure reason.
+3. QC-local execution guard
+   - Revalidate account state immediately before order placement.
+   - Reject unsafe commands with machine-readable reason codes.
+4. Post-execution reconciliation
+   - Compare target weights, submitted orders, fills, and actual holdings.
+   - Emit reconciliation status into ACK/execution audit.
+
+Acceptance criteria:
+
+- stale heartbeat blocks execution before target construction
+- open orders block new SetWeights commands unless explicitly reduce-only and
+  safe
+- holdings drift above tolerance blocks or pauses the pipeline
+- QC can reject a command because account state changed after FastAPI approval
+- post-execution ACK includes enough information to classify filled, partial,
+  rejected, or reconciliation-drift outcomes
+
+### Sprint N P0: Auto Pause / Circuit Rules
+
+Goal:
+Make the system pause itself when execution trust is degraded.
+
+Auto-pause rules should be config driven, with conservative defaults:
+
+```json
+{
+  "auto_pause_after_consecutive_qc_rejects": 2,
+  "policy_mismatch_alert_after_minutes": 5,
+  "heartbeat_stale_pause_after_minutes": 5,
+  "open_order_stale_pause_after_minutes": 10,
+  "max_reconciliation_drift": 0.01,
+  "pause_on_account_state_guard_failure": true
+}
+```
+
+Trigger conditions:
+
+- consecutive QC rejects exceed threshold
+- policy sync mismatch persists beyond tolerance
+- QC heartbeat/account snapshot is stale
+- open orders remain unresolved beyond tolerance
+- actual holdings diverge from expected holdings beyond tolerance
+- daily command, turnover, buy-delta, or sell-delta cap is exceeded
+- QC reports broker/data/account unhealthy state
+
+Acceptance criteria:
+
+- auto pause writes a structured circuit event with reason code and evidence
+- pipeline refuses new automatic execution while paused
+- Telegram shows the exact pause reason and reset requirement
+- `/reset_circuit` or equivalent operator action is required after hard pause
+- tests cover consecutive rejects, stale heartbeat, policy mismatch timeout,
+  open-order timeout, and reconciliation drift
+
+### Sprint N+1: Command Lifecycle Ledger
+
+Goal:
+Turn execution audit from a single-row outcome into a full command lifecycle.
+
+Target lifecycle:
+
+```text
+created
+-> preflight_passed
+-> submitted_to_qc
+-> qc_accepted / qc_rejected
+-> order_submitted
+-> filled / partial / expired / canceled
+-> reconciled / reconciliation_drift
+```
+
+Implementation direction:
+
+- Either extend `execution_log` with event-style rows or add a
+  `command_lifecycle_events` table.
+- Use `command_id` as the stable join key across FastAPI, QC ACK, order events,
+  and reconciliation.
+- Store assumed starting weights, intended target weights, submitted order
+  details, fill details, actual ending weights, and final status.
+
+Acceptance criteria:
+
+- every command has an ordered event trail
+- partial fills are visible as first-class states, not collapsed into success
+- daily report can summarize created/submitted/rejected/filled/reconciled
+  counts
+- auto-pause can read lifecycle history instead of parsing text logs
+
+### Sprint N+2: Observability Dashboards
+
+Goal:
+Expose the professional controls in operator-facing surfaces.
+
+Portfolio Construction dashboard:
+
+- objective: `maximize_effective_n`
+- subject-to constraints: factor cap, active basket cap, turnover budget,
+  no-add constraints, ETF-specific limits
+- before/after effective N
+- factor and basket exposure before/after
+- reason each weight changed
+
+ETF / Strategy Evidence dashboard:
+
+- EvidenceCards by strategy, ticker, role, action, confidence, and mapping
+  reason
+- missing mapping and safety-field warnings
+- conviction fields shown only as diagnostics with sample count/status/source
+
+Live Signal Conviction dashboard:
+
+- FrozenSignal and SignalOutcome counts by strategy/ticker/branch
+- insufficient, early, and calibrated conviction status
+- data-lag filtering status
+- recent degradation flags
+
+Acceptance criteria:
+
+- operator can answer why a ticker changed weight without reading logs
+- conviction is never displayed as a naked number without sample count and
+  source/status
+- dashboard separates execution-blocking issues from research-quality issues
+
+### CI/CD Hardening
+
+Add policy-sync checks to prevent FastAPI and QC fallback policy drift.
+
+Minimum CI check:
+
+- generate FastAPI `policy_snapshot()`
+- parse or import the QC fallback policy
+- compare ticker roles, role caps, and key execution limits
+- fail CI if policy version or role/cap contracts diverge unexpectedly
+
+Acceptance criteria:
+
+- changes to `services/execution_policy.py` cannot merge without updating the
+  QC fallback policy or explicitly documenting why no QC fallback change is
+  needed
+- CI failure message identifies the exact ticker/role/cap mismatch
+
 ## P0 Issues
 
 ### 1. Synthesizer market_judgment schema mismatch

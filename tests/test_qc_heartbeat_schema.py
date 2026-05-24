@@ -11,8 +11,8 @@ class QCHeartbeatSchemaTests(unittest.TestCase):
     def setUpClass(cls):
         cls.source = QC_ALGO_PATH.read_text(encoding="utf-8")
 
-    def test_qc_heartbeat_schema_is_v15(self):
-        self.assertRegex(self.source, r'SCHEMA_VERSION\s*=\s*"1\.5"')
+    def test_qc_heartbeat_schema_is_v16(self):
+        self.assertRegex(self.source, r'SCHEMA_VERSION\s*=\s*"1\.6"')
 
     def test_qc_heartbeat_exports_required_intraday_fields(self):
         for field in [
@@ -45,6 +45,23 @@ class QCHeartbeatSchemaTests(unittest.TestCase):
     def test_portfolio_exports_market_session_fields(self):
         for field in ["is_market_open", "minutes_since_open"]:
             self.assertIn(f'"{field}"', self.source)
+
+    def test_heartbeat_exports_account_state_contract(self):
+        for field in [
+            '"account_state"',
+            '"contract_version"',
+            '"buying_power"',
+            '"open_order_count"',
+            '"has_open_orders"',
+            '"policy_version"',
+            '"holdings_weights"',
+            '"target_weights"',
+        ]:
+            self.assertIn(field, self.source)
+
+    def test_ack_exports_account_state_contract(self):
+        for field in ['"actual_holdings_weights"', '"account_state"']:
+            self.assertIn(field, self.source)
 
 
 if __name__ == "__main__":

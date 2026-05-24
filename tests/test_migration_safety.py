@@ -65,6 +65,9 @@ class MigrationSafetyTests(unittest.TestCase):
         self.assertIn('class StrategyConvictionProfile', models)
         self.assertIn('__tablename__ = "strategy_conviction_profiles"', models)
         self.assertRegex(models, r"\brequires_live_confirmation\s*=\s*Column\(")
+        self.assertIn('class AccountStateSnapshot', models)
+        self.assertIn('__tablename__ = "account_state_snapshots"', models)
+        self.assertRegex(models, r"\braw_snapshot\s*=\s*Column\(JSONB,\s*nullable=False\)")
 
     def test_holdings_factors_legacy_fields_remain_modeled(self):
         models = (REPO_ROOT / "db" / "models.py").read_text(encoding="utf-8")

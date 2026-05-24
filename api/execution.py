@@ -1,6 +1,8 @@
 """Execution lifecycle endpoints."""
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Request
 
@@ -18,6 +20,8 @@ class QCExecutionAck(BaseModel):
     policy_version: str | None = None
     policy_mismatch: bool = False
     actual_target_weights: dict[str, float] | None = None
+    actual_holdings_weights: dict[str, float] | None = None
+    account_state: dict[str, Any] | None = None
     qc_timestamp: str | None = None
     rejected_tickers: list[str] | None = None
 

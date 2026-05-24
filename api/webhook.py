@@ -11,8 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from db.session import get_db
-from db.models import QCSnapshot, PortfolioTimeseries, HoldingsFactor, AlertLog, AgentAnalysis
+from db.models import QCSnapshot, PortfolioTimeseries, HoldingsFactor, AccountStateSnapshot, AlertLog, AgentAnalysis
 from db.queries import upsert_system_config, upsert_alert, get_recent_alerts
+from services.account_state_snapshot import build_account_state_snapshot
 from tools.notify_tools import tool_send_telegram
 from tools.qc_tools import tool_emergency_liquidate
 
@@ -198,6 +199,28 @@ async def _process_market_snapshot(db: AsyncSession, snapshot_id: int, payload: 
             unrealized_pnl_pct = _numeric_or_none(h, "unrealized_pnl_pct", 8, 6, ticker),
             holding_days       = h.get("holding_days"),
         ))
+
+    account_state = build_account_state_snapshot(payload, qc_snapshot_id=snapshot_id, received_at=now)
+    db.add(AccountStateSnapshot(
+        qc_snapshot_id=account_state["qc_snapshot_id"],
+        recorded_at=account_state["recorded_at"],
+        account_timestamp=account_state["account_timestamp"],
+        source_packet_type=account_state["source_packet_type"],
+        contract_version=account_state["contract_version"],
+        account_status=account_state["account_status"],
+        data_status=account_state["data_status"],
+        policy_version=account_state["policy_version"],
+        total_value=account_state["total_value"],
+        cash=account_state["cash"],
+        cash_pct=account_state["cash_pct"],
+        buying_power=account_state["buying_power"],
+        open_order_count=account_state["open_order_count"],
+        has_open_orders=account_state["has_open_orders"],
+        is_market_open=account_state["is_market_open"],
+        holdings_weights=account_state["holdings_weights"],
+        target_weights=account_state["target_weights"],
+        raw_snapshot=account_state["raw_snapshot"],
+    ))
 
     # 更新 last_vix（QC Phase 2 接入后会有实际值）
     vix = portfolio.get("vix")
