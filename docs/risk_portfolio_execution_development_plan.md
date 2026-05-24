@@ -687,9 +687,11 @@ Implemented on 2026-05-24:
 Implemented on 2026-05-24 after expert review:
 
 - R2: Portfolio Construction now emits an explicit `ConstructionObjective`
-  with `primary`, `turnover_budget`, `effective_n_target`,
-  `allow_cash_raise`, and `rationale`. This is diagnostic only and does not
-  change the construction algorithm.
+  with `primary = maximize_effective_n`, `subject_to`, `turnover_budget`,
+  `effective_n_target`, `allow_cash_raise`, and `rationale`. Factor and
+  active-basket concentration are expressed as constraints, not as the primary
+  objective. This is diagnostic only and does not change the construction
+  algorithm.
 - R6: Target Builder exposes `ALLOWED_EVIDENCE_FIELDS` and
   `FORBIDDEN_EVIDENCE_FIELDS`. Conviction fields such as `conviction`,
   `conviction_status`, `conviction_n`, and `effective_confidence` are recorded
@@ -701,6 +703,17 @@ Implemented on 2026-05-24 after expert review:
   high-decay holding exceeds its profile-specific holding window. Final Risk
   Validation treats that mutation as an allowed tighten-only post-risk
   adjustment.
+
+### Known Gaps Planned for Next Sprint
+
+These are not open design questions; they are acknowledged hardening items that
+should be implemented before increasing live risk:
+
+- Consecutive QC reject auto-pause: automatically pause canary execution after
+  a configured number of consecutive QC rejections, then require operator
+  review before resuming.
+- Policy sync mismatch alerting: monitor FastAPI-to-QC policy sync latency and
+  raise a circuit alert if mismatch persists beyond the configured tolerance.
 
 ## 12. Test Plan
 
@@ -748,6 +761,18 @@ Do not enable portfolio construction gated mode until:
 - no recurring policy violations
 - operator has reviewed dashboard evidence
 
+For paper-live canary, the operator may deliberately use a smaller observation
+window because no real capital is at risk. The current paper-live canary policy
+uses:
+
+- `min_shadow_cycles = 5`
+- `min_pass_rate = 0.7`
+- `max_material_diff = 0.015`
+- `max_turnover_diff = 0.02`
+- canary daily limits: `max_daily_commands = 2`,
+  `max_gross_turnover_per_day = 0.10`, `max_buy_delta = 0.05`,
+  `max_sell_delta = 0.10`
+
 Do not enable portfolio construction gated mode in FULL_AUTO until:
 
 - gated mode has run in SEMI_AUTO
@@ -755,6 +780,22 @@ Do not enable portfolio construction gated mode in FULL_AUTO until:
   skipped for understood reasons
 - no final-validation or QC policy-version mismatch violations occurred in that
   SEMI_AUTO window
+
+### Real-Money Rollout Requirements Draft
+
+Paper-live success is not sufficient by itself for real-money deployment. Before
+real capital is enabled, require:
+
+- paper-live stability for a defined number of weeks with no unexpected QC
+  rejects
+- enough calibrated conviction samples to distinguish current signal quality
+  from backtest-only evidence
+- conditional post-risk mutation thresholds calibrated from observe-mode data
+- consecutive QC reject auto-pause implemented and tested
+- policy sync mismatch circuit alert implemented and tested
+- daily command and turnover caps reassessed from paper-live data
+- real-money-specific max single-position limits that are more conservative
+  than the paper-live canary limits
 
 ## 14. Open Questions
 

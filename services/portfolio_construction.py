@@ -5,7 +5,7 @@ does not consume raw LLM weights and does not approve execution.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from services.execution_policy import evaluate_policy
@@ -17,13 +17,19 @@ NO_ADD_PERMISSIONS = {"hold_or_trim", "reduce_risk_only", "defensive_only", "cas
 
 @dataclass
 class ConstructionObjective:
-    primary: str = "minimize_factor_concentration"
+    primary: str = "maximize_effective_n"
+    subject_to: list[str] = field(default_factory=lambda: [
+        "factor_concentration_within_group_limits",
+        "active_basket_exposure_within_multiplier_limit",
+        "turnover_within_budget",
+        "execution_policy_allowed",
+    ])
     turnover_budget: float | None = None
     effective_n_target: int = 8
     allow_cash_raise: bool = True
     rationale: str = (
-        "Paper-live canary objective: reduce factor and active-basket concentration "
-        "while respecting scorecard permissions and turnover budget."
+        "Paper-live canary objective: improve diversification by increasing effective N "
+        "subject to factor concentration, active-basket, execution-policy, and turnover constraints."
     )
 
     def to_dict(self) -> dict[str, Any]:
