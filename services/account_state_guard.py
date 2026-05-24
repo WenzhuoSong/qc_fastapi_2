@@ -33,6 +33,31 @@ def default_account_state_guard_config(config: dict[str, Any] | None = None) -> 
     return merged
 
 
+def account_state_guard_pipeline_effect(verdict: dict[str, Any] | None) -> dict[str, Any]:
+    """Translate a guard verdict into pipeline enforcement behavior."""
+    verdict = verdict or {}
+    mode = str(verdict.get("mode") or "observe").lower().strip()
+    enabled = bool(verdict.get("enabled", True))
+    if not enabled or mode == "off":
+        return {
+            "pipeline_enforcement": "none",
+            "should_block_pipeline": False,
+            "pipeline_effect_status": "disabled",
+        }
+    if mode == "blocking":
+        should_block = not bool(verdict.get("allowed", True))
+        return {
+            "pipeline_enforcement": "blocking",
+            "should_block_pipeline": should_block,
+            "pipeline_effect_status": "blocked" if should_block else "pass",
+        }
+    return {
+        "pipeline_enforcement": "observe_only",
+        "should_block_pipeline": False,
+        "pipeline_effect_status": "observe",
+    }
+
+
 async def load_latest_account_state_guard(
     *,
     config: dict[str, Any] | None = None,

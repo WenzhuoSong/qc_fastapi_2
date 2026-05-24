@@ -67,6 +67,10 @@ Current implementation status:
   orders, holdings presence, and account-vs-snapshot holdings consistency, then
   writes the verdict into `pipeline_context` and `risk_output`. Pipeline
   enforcement remains `observe_only`; promotion to blocking is a later PR.
+- PR2b blocking plumbing implemented locally on 2026-05-24. The same guard can
+  now block the pipeline when `account_state_guard_config.mode = blocking` and
+  the verdict is not allowed. Defaults remain `observe`, so deploying this code
+  does not change execution behavior until config is explicitly changed.
 
 This is a guard stage, not just execution preflight. It should run after the
 latest QC heartbeat/account snapshot is loaded and before target construction
@@ -178,6 +182,14 @@ Acceptance criteria:
 
 Goal:
 Turn execution audit from a single-row outcome into a full command lifecycle.
+
+Current implementation status:
+
+- PR4 command lifecycle event ledger implemented locally on 2026-05-24. The
+  system now has an append-only `command_lifecycle_events` table and helper
+  service. Existing execution paths append events for created/submitted,
+  preflight-blocked, execution-result, QC accepted/rejected, and QC timeout
+  states. This extends `execution_log`; it does not replace it.
 
 Target lifecycle:
 

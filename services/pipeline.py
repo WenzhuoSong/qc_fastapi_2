@@ -75,6 +75,7 @@ from services.final_execution_policy_cap import apply_final_execution_policy_cap
 from services.final_risk_validation import validate_final_execution_target
 from services.final_risk_validation_config import default_final_risk_validation_config
 from services.account_state_guard import (
+    account_state_guard_pipeline_effect,
     default_account_state_guard_config,
     load_latest_account_state_guard,
 )
@@ -686,13 +687,21 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             "snapshot": None,
         }
         logger.warning("[account_state_guard] unavailable: %s", account_guard_error)
-    account_state_guard["pipeline_enforcement"] = "observe_only"
+    account_guard_effect = account_state_guard_pipeline_effect(account_state_guard)
+    account_state_guard.update(account_guard_effect)
     pipeline_context["account_state_guard"] = account_state_guard
     if account_state_guard.get("would_block"):
         logger.warning(
-            "[account_state_guard] observe would_block | blockers=%s",
+            "[account_state_guard] %s would_block | blockers=%s",
+            account_state_guard.get("pipeline_enforcement"),
             account_state_guard.get("blockers") or [],
         )
+    if account_guard_effect.get("should_block_pipeline"):
+        tracker.end_run("skipped_account_state_guard")
+        return {
+            "status": "skipped_account_state_guard",
+            "account_state_guard": account_state_guard,
+        }
 
     try:
         auto_pause = await load_auto_pause_verdict(

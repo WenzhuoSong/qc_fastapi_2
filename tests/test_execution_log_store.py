@@ -12,9 +12,13 @@ def _load_utcnow_db_naive():
 
     models = type(sys)("db.models")
     models.ExecutionLog = type("ExecutionLog", (), {})
+    models.CommandLifecycleEvent = type("CommandLifecycleEvent", (), {})
 
     session = type(sys)("db.session")
     session.AsyncSessionLocal = object
+
+    lifecycle = type(sys)("services.command_lifecycle")
+    lifecycle.append_command_lifecycle_event = None
 
     with patch.dict(
         "sys.modules",
@@ -23,6 +27,7 @@ def _load_utcnow_db_naive():
             "db": type(sys)("db"),
             "db.models": models,
             "db.session": session,
+            "services.command_lifecycle": lifecycle,
         },
     ):
         return importlib.import_module("services.execution_log_store")._utcnow_db_naive

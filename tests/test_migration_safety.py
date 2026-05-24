@@ -68,6 +68,9 @@ class MigrationSafetyTests(unittest.TestCase):
         self.assertIn('class AccountStateSnapshot', models)
         self.assertIn('__tablename__ = "account_state_snapshots"', models)
         self.assertRegex(models, r"\braw_snapshot\s*=\s*Column\(JSONB,\s*nullable=False\)")
+        self.assertIn('class CommandLifecycleEvent', models)
+        self.assertIn('__tablename__ = "command_lifecycle_events"', models)
+        self.assertRegex(models, r"\bevent_type\s*=\s*Column\(")
 
     def test_holdings_factors_legacy_fields_remain_modeled(self):
         models = (REPO_ROOT / "db" / "models.py").read_text(encoding="utf-8")

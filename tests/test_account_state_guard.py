@@ -3,6 +3,7 @@ import json
 import unittest
 
 from services.account_state_guard import (
+    account_state_guard_pipeline_effect,
     default_account_state_guard_config,
     evaluate_account_state_guard,
 )
@@ -122,6 +123,28 @@ class AccountStateGuardTests(unittest.TestCase):
         self.assertEqual(config["mode"], "observe")
         json.dumps(config)
         self.assertEqual(config["ok_account_statuses"], ["ok"])
+
+    def test_pipeline_effect_observe_never_blocks(self):
+        effect = account_state_guard_pipeline_effect(
+            {"mode": "observe", "allowed": False, "status": "would_block"}
+        )
+
+        self.assertEqual(effect["pipeline_enforcement"], "observe_only")
+        self.assertFalse(effect["should_block_pipeline"])
+        self.assertEqual(effect["pipeline_effect_status"], "observe")
+
+    def test_pipeline_effect_blocking_blocks_only_when_not_allowed(self):
+        blocked = account_state_guard_pipeline_effect(
+            {"mode": "blocking", "allowed": False, "status": "blocked"}
+        )
+        passed = account_state_guard_pipeline_effect(
+            {"mode": "blocking", "allowed": True, "status": "pass"}
+        )
+
+        self.assertTrue(blocked["should_block_pipeline"])
+        self.assertEqual(blocked["pipeline_effect_status"], "blocked")
+        self.assertFalse(passed["should_block_pipeline"])
+        self.assertEqual(passed["pipeline_effect_status"], "pass")
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from sqlalchemy import desc
 
 from db.models import ExecutionLog
 from db.session import AsyncSessionLocal
+from services.command_lifecycle import append_command_lifecycle_event
 
 
 def _utcnow_db_naive() -> datetime:
@@ -57,6 +58,31 @@ async def create_or_update_submitted_log(
                     qc_status="submitted",
                 )
             )
+        await append_command_lifecycle_event(
+            db,
+            command_id=command_id,
+            analysis_id=analysis_id,
+            event_type="created",
+            event_status="sent",
+            source="fastapi",
+            payload={
+                "target_weights": target_weights,
+                "policy_version": policy_version,
+                "preflight_result": preflight_result or {},
+            },
+        )
+        await append_command_lifecycle_event(
+            db,
+            command_id=command_id,
+            analysis_id=analysis_id,
+            event_type="submitted_to_qc",
+            event_status="submitted",
+            source="fastapi",
+            payload={
+                "policy_sync_result": policy_sync_result or {},
+                "qc_response": qc_response or {},
+            },
+        )
         await db.commit()
 
 
@@ -88,6 +114,22 @@ async def update_execution_result(
                     qc_status="submitted",
                 )
             )
+        event_type = "execution_result"
+        if status == "rejected":
+            event_type = "preflight_blocked"
+        await append_command_lifecycle_event(
+            db,
+            command_id=command_id,
+            analysis_id=analysis_id,
+            event_type=event_type,
+            event_status=status,
+            source="fastapi",
+            reason=audit_payload.get("reason") if isinstance(audit_payload, dict) else None,
+            payload={
+                "audit_payload": audit_payload,
+                "qc_response": qc_response or {},
+            },
+        )
         await db.commit()
 
 
@@ -126,9 +168,10 @@ async def update_qc_status(
     rejection_reason: str | None = None,
     qc_response: dict[str, Any] | None = None,
 ) -> None:
+    ack_time = _utcnow_db_naive()
     values: dict[str, Any] = {
         "qc_status": qc_status,
-        "qc_ack_at": _utcnow_db_naive(),
+        "qc_ack_at": ack_time,
     }
     if rejection_reason is not None:
         values["qc_rejection_reason"] = rejection_reason
@@ -139,6 +182,21 @@ async def update_qc_status(
             update(ExecutionLog)
             .where(ExecutionLog.command_id == command_id)
             .values(**values)
+        )
+        event_type = {
+            "accepted": "qc_accepted",
+            "rejected": "qc_rejected",
+            "timeout_no_ack": "qc_timeout",
+        }.get(qc_status, "execution_result")
+        await append_command_lifecycle_event(
+            db,
+            command_id=command_id,
+            event_type=event_type,
+            event_status=qc_status,
+            source="qc" if qc_status in {"accepted", "rejected"} else "fastapi",
+            reason=rejection_reason,
+            payload=qc_response or {},
+            event_time=ack_time,
         )
         await db.commit()
 

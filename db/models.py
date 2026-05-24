@@ -303,6 +303,21 @@ class ExecutionLog(Base):
     retry_count     = Column(Integer, default=0)
 
 
+class CommandLifecycleEvent(Base):
+    __tablename__ = "command_lifecycle_events"
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    command_id      = Column(String(64), nullable=False, index=True)
+    analysis_id     = Column(BigInteger, ForeignKey("agent_analysis.id"))
+    event_type      = Column(String(40), nullable=False, index=True)
+    event_status    = Column(String(40))
+    event_time      = Column(DateTime, nullable=False, default=func.now(), index=True)
+    source          = Column(String(40), nullable=False)
+    reason          = Column(Text)
+    payload         = Column(JSONB)
+    created_at      = Column(DateTime, nullable=False, default=func.now())
+
+
 class CronRunLog(Base):
     __tablename__ = "cron_run_log"
 
