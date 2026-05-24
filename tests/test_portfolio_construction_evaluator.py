@@ -179,6 +179,31 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
         self.assertEqual(limits["min_cycles"], 5)
         self.assertEqual(limits["min_pass_rate"], 0.95)
 
+    def test_readiness_limits_respect_explicit_zero_for_paper_live_canary(self):
+        cfg = {
+            "min_shadow_cycles": 0,
+            "min_cycles": 0,
+            "min_pass_rate": 0.0,
+        }
+
+        limits = readiness_limits_from_pc_promotion_config(cfg)
+        readiness = summarize_portfolio_construction_readiness(
+            [],
+            min_cycles=limits["min_cycles"],
+            min_pass_rate=limits["min_pass_rate"],
+        )
+        gate = build_portfolio_construction_rollout_gate(
+            readiness,
+            {"portfolio_construction_mode": "gated", "enabled": True, **cfg},
+            auth_mode="SEMI_AUTO",
+        )
+
+        self.assertEqual(limits["min_cycles"], 0)
+        self.assertEqual(limits["min_pass_rate"], 0.0)
+        self.assertTrue(readiness["promotion_ready"])
+        self.assertTrue(gate["eligible"])
+        self.assertEqual(gate["status"], "semi_auto_gated_ready")
+
     def test_rollout_gate_allows_gated_semi_auto_when_ready(self):
         readiness = {
             "promotion_ready": True,

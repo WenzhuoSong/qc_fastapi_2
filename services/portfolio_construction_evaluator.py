@@ -118,7 +118,10 @@ def criteria_from_pc_promotion_config(config: dict[str, Any] | None) -> Portfoli
 
 def readiness_limits_from_pc_promotion_config(config: dict[str, Any] | None) -> dict[str, Any]:
     cfg = config or {}
-    min_cycles = int(cfg.get("min_shadow_cycles", cfg.get("min_cycles", 20)) or 20)
+    min_cycles = _safe_int(
+        cfg.get("min_shadow_cycles", cfg.get("min_cycles", 20)),
+        20,
+    )
     return {
         "limit": max(min_cycles, 1),
         "min_cycles": min_cycles,
@@ -183,12 +186,12 @@ def build_portfolio_construction_promotion_gate(
     mode = _normalize_mode(cfg.get("portfolio_construction_mode"))
     enabled = bool(cfg.get("enabled", mode != "shadow"))
     require_manual_approval = bool(cfg.get("require_manual_approval", False))
-    min_cycles = int(
+    min_cycles = _safe_int(
         cfg.get(
             "min_shadow_cycles",
             cfg.get("min_cycles", readiness.get("min_cycles") or 20),
-        )
-        or 20
+        ),
+        20,
     )
     min_pass_rate = _safe_float(cfg.get("min_pass_rate", readiness.get("min_pass_rate") or 0.90), 0.90)
 

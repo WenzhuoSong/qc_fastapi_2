@@ -34,11 +34,29 @@ def format_pc_promotion_config(config: dict) -> str:
         f"  construction_mode: {pc_mode}\n"
         f"  enabled: {bool(config.get('enabled'))}\n"
         f"  approval_mode: {mode}\n"
-        f"  min_shadow_cycles: {int(config.get('min_shadow_cycles') or 20)}\n"
-        f"  min_pass_rate: {float(config.get('min_pass_rate') or 0.90):.0%}\n"
-        f"  max_material_diff: {float(config.get('max_material_diff') or 0.015):.1%}\n"
-        f"  max_turnover_diff: {float(config.get('max_turnover_diff') or 0.02):.1%}\n"
-        f"  min_gated_semi_auto_confirmed_cycles: {int(config.get('min_gated_semi_auto_confirmed_cycles') or 5)}\n"
+        f"  min_shadow_cycles: {_config_int(config, 'min_shadow_cycles', 20)}\n"
+        f"  min_pass_rate: {_config_float(config, 'min_pass_rate', 0.90):.0%}\n"
+        f"  max_material_diff: {_config_float(config, 'max_material_diff', 0.015):.1%}\n"
+        f"  max_turnover_diff: {_config_float(config, 'max_turnover_diff', 0.02):.1%}\n"
+        f"  min_gated_semi_auto_confirmed_cycles: {_config_int(config, 'min_gated_semi_auto_confirmed_cycles', 5)}\n"
         f"  allow_full_auto_gated: {bool(config.get('allow_full_auto_gated'))}\n"
         "  execution_authority: none"
     )
+
+
+def _config_int(config: dict, key: str, default: int) -> int:
+    if key not in config or config.get(key) is None:
+        return default
+    try:
+        return int(config.get(key))
+    except (TypeError, ValueError):
+        return default
+
+
+def _config_float(config: dict, key: str, default: float) -> float:
+    if key not in config or config.get(key) is None:
+        return default
+    try:
+        return float(config.get(key))
+    except (TypeError, ValueError):
+        return default

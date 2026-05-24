@@ -26,6 +26,22 @@ class PCPromotionConfigTests(unittest.TestCase):
         self.assertIn("allow_full_auto_gated: False", text)
         self.assertIn("execution_authority: none", text)
 
+    def test_format_respects_explicit_zero_for_paper_live_canary(self):
+        text = format_pc_promotion_config(
+            default_pc_promotion_config(
+                {
+                    "portfolio_construction_mode": "gated",
+                    "enabled": True,
+                    "min_shadow_cycles": 0,
+                    "min_cycles": 0,
+                    "min_pass_rate": 0.0,
+                }
+            )
+        )
+
+        self.assertIn("min_shadow_cycles: 0", text)
+        self.assertIn("min_pass_rate: 0%", text)
+
 
 if __name__ == "__main__":
     unittest.main()
