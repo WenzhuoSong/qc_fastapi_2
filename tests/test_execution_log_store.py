@@ -19,6 +19,7 @@ def _load_utcnow_db_naive():
 
     lifecycle = type(sys)("services.command_lifecycle")
     lifecycle.append_command_lifecycle_event = None
+    lifecycle.build_command_reconciliation_events = lambda **kwargs: []
 
     with patch.dict(
         "sys.modules",

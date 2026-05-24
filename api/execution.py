@@ -21,6 +21,8 @@ class QCExecutionAck(BaseModel):
     policy_mismatch: bool = False
     actual_target_weights: dict[str, float] | None = None
     actual_holdings_weights: dict[str, float] | None = None
+    order_summary: dict[str, Any] | None = None
+    fill_summary: dict[str, Any] | None = None
     account_state: dict[str, Any] | None = None
     qc_timestamp: str | None = None
     rejected_tickers: list[str] | None = None

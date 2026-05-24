@@ -7,9 +7,9 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy import desc
 
-from db.models import ExecutionLog
+from db.models import CommandLifecycleEvent, ExecutionLog
 from db.session import AsyncSessionLocal
-from services.command_lifecycle import append_command_lifecycle_event
+from services.command_lifecycle import append_command_lifecycle_event, build_command_reconciliation_events
 
 
 def _utcnow_db_naive() -> datetime:
@@ -178,11 +178,21 @@ async def update_qc_status(
     if qc_response is not None:
         values["qc_response"] = qc_response
     async with AsyncSessionLocal() as db:
-        await db.execute(
-            update(ExecutionLog)
-            .where(ExecutionLog.command_id == command_id)
-            .values(**values)
-        )
+        result = await db.execute(select(ExecutionLog).where(ExecutionLog.command_id == command_id))
+        row = result.scalar_one_or_none()
+        if row:
+            row.qc_status = qc_status
+            row.qc_ack_at = ack_time
+            if rejection_reason is not None:
+                row.qc_rejection_reason = rejection_reason
+            if qc_response is not None:
+                row.qc_response = qc_response
+        else:
+            await db.execute(
+                update(ExecutionLog)
+                .where(ExecutionLog.command_id == command_id)
+                .values(**values)
+            )
         event_type = {
             "accepted": "qc_accepted",
             "rejected": "qc_rejected",
@@ -196,6 +206,14 @@ async def update_qc_status(
             source="qc" if qc_status in {"accepted", "rejected"} else "fastapi",
             reason=rejection_reason,
             payload=qc_response or {},
+            event_time=ack_time,
+        )
+        await _append_reconciliation_events(
+            db,
+            command_id=command_id,
+            analysis_id=getattr(row, "analysis_id", None),
+            command_payload=(getattr(row, "command_payload", None) or {}),
+            qc_response=qc_response or {},
             event_time=ack_time,
         )
         await db.commit()
@@ -277,3 +295,84 @@ async def summarize_today_execution_activity(now: datetime | None = None) -> dic
 
 async def mark_timeout(command_id: str) -> None:
     await update_qc_status(command_id, "timeout_no_ack", rejection_reason="no QC ack before timeout")
+
+
+async def append_reconciliation_from_account_snapshot(db, account_state: dict[str, Any]) -> int:
+    """Append delayed reconciliation events from a QC heartbeat account state."""
+    raw = account_state.get("raw_snapshot") if isinstance(account_state.get("raw_snapshot"), dict) else {}
+    command_id = str(raw.get("last_command_id") or "").strip()
+    if not command_id:
+        return 0
+    result = await db.execute(select(ExecutionLog).where(ExecutionLog.command_id == command_id))
+    row = result.scalar_one_or_none()
+    if not row or str(row.qc_status or "").lower() != "accepted":
+        return 0
+    return await _append_reconciliation_events(
+        db,
+        command_id=command_id,
+        analysis_id=row.analysis_id,
+        command_payload=row.command_payload or {},
+        qc_response=row.qc_response or {"status": "accepted"},
+        account_state={
+            "timestamp_utc": raw.get("timestamp_utc"),
+            "policy_version": account_state.get("policy_version"),
+            "open_order_count": account_state.get("open_order_count"),
+            "has_open_orders": account_state.get("has_open_orders"),
+            "holdings_weights": account_state.get("holdings_weights") or {},
+            "target_weights": account_state.get("target_weights") or {},
+            "last_command_id": command_id,
+        },
+        event_time=account_state.get("recorded_at"),
+    )
+
+
+async def _append_reconciliation_events(
+    db,
+    *,
+    command_id: str,
+    analysis_id: int | None,
+    command_payload: dict[str, Any],
+    qc_response: dict[str, Any],
+    account_state: dict[str, Any] | None = None,
+    event_time: datetime | None = None,
+) -> int:
+    events = build_command_reconciliation_events(
+        command_id=command_id,
+        analysis_id=analysis_id,
+        command_payload=command_payload,
+        qc_response=qc_response,
+        account_state=account_state,
+        event_time=event_time,
+    )
+    if not events:
+        return 0
+
+    existing = (
+        await db.execute(
+            select(CommandLifecycleEvent.event_type)
+            .where(CommandLifecycleEvent.command_id == command_id)
+            .where(CommandLifecycleEvent.event_type.in_(("filled", "partial", "reconciled", "reconciliation_drift")))
+        )
+    ).scalars().all()
+    existing_types = set(existing)
+    if "reconciled" in existing_types:
+        return 0
+
+    appended = 0
+    for event in events:
+        event_type = event["event_type"]
+        if event_type in existing_types and event_type in {"filled", "partial", "reconciliation_drift"}:
+            continue
+        await append_command_lifecycle_event(
+            db,
+            command_id=event["command_id"],
+            analysis_id=event.get("analysis_id"),
+            event_type=event_type,
+            event_status=event.get("event_status"),
+            source=event.get("source") or "fastapi",
+            reason=event.get("reason"),
+            payload=event.get("payload") or {},
+            event_time=event.get("event_time"),
+        )
+        appended += 1
+    return appended

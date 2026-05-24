@@ -56,6 +56,9 @@ class QCFallbackPolicyContractTest(unittest.TestCase):
         self.assertIn("_current_portfolio_weight", text)
         self.assertIn('"policy_mismatch": bool(policy_mismatch)', text)
         self.assertIn('"actual_target_weights": actual_target_weights or {}', text)
+        self.assertIn('"order_summary": order_summary or {}', text)
+        self.assertIn("def _ticket_summaries", text)
+        self.assertIn('"open_order_count_after": open_after', text)
         self.assertIn("unknown tickers rejected", text)
 
     def test_qc_thematic_fallback_cap_is_not_legacy_five_percent(self):

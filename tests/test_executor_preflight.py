@@ -84,6 +84,8 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn("policy_mismatch: bool = False", text)
         self.assertIn("actual_target_weights: dict[str, float] | None", text)
         self.assertIn("actual_holdings_weights: dict[str, float] | None", text)
+        self.assertIn("order_summary: dict[str, Any] | None", text)
+        self.assertIn("fill_summary: dict[str, Any] | None", text)
         self.assertIn("account_state: dict[str, Any] | None", text)
 
 

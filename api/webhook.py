@@ -14,6 +14,7 @@ from db.session import get_db
 from db.models import QCSnapshot, PortfolioTimeseries, HoldingsFactor, AccountStateSnapshot, AlertLog, AgentAnalysis
 from db.queries import upsert_system_config, upsert_alert, get_recent_alerts
 from services.account_state_snapshot import build_account_state_snapshot
+from services.execution_log_store import append_reconciliation_from_account_snapshot
 from tools.notify_tools import tool_send_telegram
 from tools.qc_tools import tool_emergency_liquidate
 
@@ -221,6 +222,10 @@ async def _process_market_snapshot(db: AsyncSession, snapshot_id: int, payload: 
         target_weights=account_state["target_weights"],
         raw_snapshot=account_state["raw_snapshot"],
     ))
+    try:
+        await append_reconciliation_from_account_snapshot(db, account_state)
+    except Exception as exc:
+        logger.warning("[Webhook] command reconciliation from account snapshot failed: %s", exc)
 
     # 更新 last_vix（QC Phase 2 接入后会有实际值）
     vix = portfolio.get("vix")

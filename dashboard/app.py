@@ -29,7 +29,16 @@ for _key in (
 ):
     os.environ.setdefault(_key, "dashboard-unused")
 
-from db.models import AgentAnalysis, AgentStepLog, CronRunLog, ExecutionLog, QCSnapshot, SystemConfig
+from db.models import (
+    AccountStateSnapshot,
+    AgentAnalysis,
+    AgentStepLog,
+    CommandLifecycleEvent,
+    CronRunLog,
+    ExecutionLog,
+    QCSnapshot,
+    SystemConfig,
+)
 from db.session import AsyncSessionLocal
 from services.operational_health import build_operational_health_snapshot
 from services.playground import _recent_snapshot_row_limit
@@ -83,19 +92,33 @@ async def build_dashboard_summary() -> dict[str, Any]:
     ops = await build_operational_health_snapshot()
     latest_analysis = await _latest_analysis()
     pc_readiness = await _portfolio_construction_readiness()
+    config = await _dashboard_config()
+    pc_objective = _portfolio_construction_objective_status(
+        latest_analysis,
+        pc_readiness,
+        config.get("portfolio_construction_promotion_config") or {},
+    )
+    strategy_evidence = _strategy_evidence_dashboard_status(
+        latest_analysis.get("strategy_evidence") or {}
+    )
+    live_signal_conviction = await _live_signal_conviction_dashboard()
     cron_runs = await _latest_cron_runs()
     data_quality_audit = await _data_quality_audit_trend()
     execution = await _latest_execution()
+    execution_control = await _execution_control_status(latest_analysis)
     replay = await _replay_diagnostics()
-    config = await _dashboard_config()
     return {
         "generated_at": datetime.utcnow().isoformat(),
         "ops": ops,
         "latest_analysis": latest_analysis,
+        "portfolio_construction_objective": pc_objective,
         "portfolio_construction_readiness": pc_readiness,
+        "strategy_evidence": strategy_evidence,
+        "live_signal_conviction": live_signal_conviction,
         "cron_runs": cron_runs,
         "data_quality_audit": data_quality_audit,
         "execution": execution,
+        "execution_control": execution_control,
         "replay": replay,
         "config": config,
     }
@@ -111,6 +134,7 @@ async def _latest_analysis() -> dict[str, Any]:
     if not row:
         return {"available": False}
     stage_metrics = await _latest_stage_metrics(int(row.id))
+    strategy_evidence = await _latest_strategy_evidence(int(row.id))
 
     risk = row.risk_output or {}
     decision = row.decision or {}
@@ -130,6 +154,11 @@ async def _latest_analysis() -> dict[str, Any]:
         or strategy_detail.get("feature_source_summary")
         or {}
     )
+    pc_payload = (
+        (risk.get("portfolio_construction_candidate") if isinstance(risk, dict) else None)
+        or (risk.get("portfolio_construction_shadow") if isinstance(risk, dict) else None)
+        or {}
+    )
     ledger = (risk.get("decision_ledger") if isinstance(risk, dict) else None) or {}
     compact_ledger = _compact_ledger(ledger)
     return {
@@ -142,8 +171,10 @@ async def _latest_analysis() -> dict[str, Any]:
         "scorecard": _compact_scorecard(scorecard),
         "strategy_detail": strategy_detail,
         "feature_source_summary": feature_source_summary,
+        "strategy_evidence": strategy_evidence,
         "position_governance": _compact_governance(governance, ledger),
         "decision_ledger": compact_ledger,
+        "portfolio_construction_payload": _compact_portfolio_construction_payload(pc_payload),
         "portfolio_construction_evaluation": _compact_portfolio_construction_evaluation(
             (risk.get("portfolio_construction_evaluation") if isinstance(risk, dict) else None) or {}
         ),
@@ -152,6 +183,12 @@ async def _latest_analysis() -> dict[str, Any]:
         ),
         "final_validation": _compact_final_validation(
             (risk.get("final_validation") if isinstance(risk, dict) else None) or {}
+        ),
+        "account_state_guard": _compact_account_state_guard(
+            (risk.get("account_state_guard") if isinstance(risk, dict) else None) or {}
+        ),
+        "auto_pause": _compact_auto_pause(
+            (risk.get("auto_pause") if isinstance(risk, dict) else None) or {}
         ),
         "stage_metrics": stage_metrics,
         "rejection_reasons": (risk.get("rejection_reasons") if isinstance(risk, dict) else []) or [],
@@ -188,6 +225,29 @@ async def _latest_stage_metrics(analysis_id: int) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+async def _latest_strategy_evidence(analysis_id: int) -> dict[str, Any]:
+    try:
+        async with AsyncSessionLocal() as db:
+            row = (
+                await db.execute(
+                    select(AgentStepLog)
+                    .where(AgentStepLog.analysis_id == analysis_id)
+                    .where(AgentStepLog.stage == "2d_evidence_scorecard")
+                    .order_by(desc(AgentStepLog.created_at), desc(AgentStepLog.id))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+    except Exception as exc:
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+    if not row:
+        return {"available": False, "reason": "2d_evidence_scorecard step not found"}
+    output = row.output_data if isinstance(row.output_data, dict) else {}
+    evidence = output.get("evidence_bundle") if isinstance(output.get("evidence_bundle"), dict) else {}
+    strategies = evidence.get("strategies") if isinstance(evidence.get("strategies"), dict) else {}
+    return _compact_strategy_evidence(strategies)
 
 
 async def _latest_cron_runs() -> list[dict[str, Any]]:
@@ -344,10 +404,89 @@ async def _latest_execution() -> dict[str, Any]:
         "available": True,
         "analysis_id": row.analysis_id,
         "executed_at": _iso(row.executed_at),
+        "command_id": row.command_id,
         "command_type": row.command_type,
         "status": row.status,
+        "qc_status": row.qc_status,
+        "qc_ack_at": _iso(row.qc_ack_at),
+        "qc_rejection_reason": row.qc_rejection_reason,
         "retry_count": row.retry_count,
+        "qc_response": row.qc_response or {},
     }
+
+
+async def _execution_control_status(latest_analysis: dict[str, Any]) -> dict[str, Any]:
+    """Return read-only execution trust diagnostics for the operator dashboard."""
+    try:
+        async with AsyncSessionLocal() as db:
+            snapshot = (
+                await db.execute(
+                    select(AccountStateSnapshot)
+                    .order_by(desc(AccountStateSnapshot.recorded_at), desc(AccountStateSnapshot.id))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            lifecycle_events = (
+                await db.execute(
+                    select(CommandLifecycleEvent)
+                    .order_by(desc(CommandLifecycleEvent.event_time), desc(CommandLifecycleEvent.id))
+                    .limit(50)
+                )
+            ).scalars().all()
+            recent_commands = (
+                await db.execute(
+                    select(ExecutionLog)
+                    .where(ExecutionLog.command_id.isnot(None))
+                    .order_by(desc(func.coalesce(ExecutionLog.qc_ack_at, ExecutionLog.executed_at)))
+                    .limit(20)
+                )
+            ).scalars().all()
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"{type(exc).__name__}: {exc}",
+            "account_state_guard": latest_analysis.get("account_state_guard") or {},
+            "auto_pause": latest_analysis.get("auto_pause") or {},
+            "latest_account_snapshot": {},
+            "recent_command_events": [],
+            "recent_commands": [],
+        }
+
+    return {
+        "available": True,
+        "account_state_guard": latest_analysis.get("account_state_guard") or {},
+        "auto_pause": latest_analysis.get("auto_pause") or {},
+        "latest_account_snapshot": _compact_account_state_snapshot(snapshot),
+        "recent_command_events": [_compact_lifecycle_event(row) for row in lifecycle_events],
+        "recent_commands": [_compact_execution_row(row) for row in recent_commands],
+    }
+
+
+async def _live_signal_conviction_dashboard() -> dict[str, Any]:
+    """Load read-only FrozenSignal/Outcome/conviction dashboard summary."""
+    try:
+        from services.strategy_validation_dashboard import load_validation_dashboard_summary
+
+        async with AsyncSessionLocal() as db:
+            raw = await load_validation_dashboard_summary(
+                db,
+                profile_limit=20,
+                row_limit=5000,
+            )
+        return _compact_live_signal_conviction_summary(raw)
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"{type(exc).__name__}: {exc}",
+            "overview": {},
+            "pending_outcomes": {},
+            "pending_by_horizon_rows": [],
+            "historical_prior_profiles": [],
+            "live_paper_profiles": [],
+            "combined_profiles": [],
+            "profile_count_rows": [],
+            "status_count_rows": [],
+        }
 
 
 async def _dashboard_config() -> dict[str, Any]:
@@ -362,9 +501,15 @@ async def _dashboard_config() -> dict[str, Any]:
                 select(SystemConfig).where(SystemConfig.key == "circuit_state").limit(1)
             )
         ).scalar_one_or_none()
+        pc_promotion = (
+            await db.execute(
+                select(SystemConfig).where(SystemConfig.key == "portfolio_construction_promotion_config").limit(1)
+            )
+        ).scalar_one_or_none()
     return {
         "playground_config": (playground.value if playground else {}) or {},
         "circuit_state": (circuit.value if circuit else {}) or {},
+        "portfolio_construction_promotion_config": (pc_promotion.value if pc_promotion else {}) or {},
     }
 
 
@@ -506,6 +651,7 @@ def _compact_portfolio_construction_evaluation(evaluation: dict[str, Any]) -> di
     if not evaluation:
         return {}
     metrics = evaluation.get("metrics") or {}
+    criteria = evaluation.get("criteria") or {}
     return {
         "status": evaluation.get("status"),
         "promotion_ready": evaluation.get("promotion_ready"),
@@ -513,10 +659,63 @@ def _compact_portfolio_construction_evaluation(evaluation: dict[str, Any]) -> di
         "blockers": evaluation.get("blockers") or [],
         "warnings": evaluation.get("warnings") or [],
         "mean_abs_weight_deviation": metrics.get("mean_abs_weight_deviation"),
+        "max_abs_weight_deviation": metrics.get("max_abs_weight_deviation"),
+        "shadow_turnover": metrics.get("shadow_turnover"),
+        "actual_turnover": metrics.get("actual_turnover"),
         "turnover_delta": metrics.get("turnover_delta"),
+        "max_material_diff": criteria.get("max_material_diff"),
+        "max_turnover_delta": criteria.get("max_turnover_delta"),
         "shadow_policy_allowed": metrics.get("shadow_policy_allowed"),
         "actual_policy_allowed": metrics.get("actual_policy_allowed"),
         "shadow_high_risk_tickers_added": metrics.get("shadow_high_risk_tickers_added") or [],
+    }
+
+
+def _compact_portfolio_construction_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if not payload:
+        return {}
+    diagnostics = payload.get("diagnostics") if isinstance(payload.get("diagnostics"), dict) else {}
+    objective = payload.get("objective") if isinstance(payload.get("objective"), dict) else {}
+    if not objective:
+        objective = diagnostics.get("objective") if isinstance(diagnostics.get("objective"), dict) else {}
+    turnover = payload.get("turnover") if isinstance(payload.get("turnover"), dict) else {}
+    target_weights = payload.get("target_weights") if isinstance(payload.get("target_weights"), dict) else {}
+    return {
+        "available": True,
+        "portfolio_construction_mode": payload.get("portfolio_construction_mode") or diagnostics.get("runtime_mode"),
+        "construction_source": payload.get("construction_source") or diagnostics.get("construction_source"),
+        "execution_effect": diagnostics.get("execution_effect"),
+        "target_builder_consumed": diagnostics.get("target_builder_consumed"),
+        "deterministic": diagnostics.get("deterministic"),
+        "consumes_raw_llm_adjusted_weights": diagnostics.get("consumes_raw_llm_adjusted_weights"),
+        "objective": objective,
+        "primary_objective": objective.get("primary"),
+        "subject_to": objective.get("subject_to") or [],
+        "rationale": objective.get("rationale"),
+        "effective_n_target": objective.get("effective_n_target"),
+        "effective_n_before": payload.get("effective_n_before"),
+        "effective_n_after": payload.get("effective_n_after") or payload.get("effective_n"),
+        "effective_n_delta": _number_delta(payload.get("effective_n_after") or payload.get("effective_n"), payload.get("effective_n_before")),
+        "turnover": turnover,
+        "turnover_budget": turnover.get("budget") if turnover else objective.get("turnover_budget"),
+        "turnover_estimated": turnover.get("estimated"),
+        "turnover_before_budget": turnover.get("estimated_before_budget"),
+        "turnover_within_budget": turnover.get("within_budget"),
+        "basket_limit_multiplier": diagnostics.get("basket_limit_multiplier"),
+        "active_basket_reviews": diagnostics.get("active_basket_reviews") or [],
+        "ticker_count": diagnostics.get("ticker_count"),
+        "construction_steps": payload.get("construction_steps") or [],
+        "violations": payload.get("violations") or [],
+        "factor_exposure_rows": _exposure_rows(
+            payload.get("factor_exposure_before") or {},
+            payload.get("factor_exposure_after") or payload.get("factor_exposures") or {},
+            label="factor",
+        ),
+        "basket_exposure_rows": _basket_exposure_rows(
+            payload.get("basket_exposure_before") or {},
+            payload.get("basket_exposure_after") or {},
+        ),
+        "target_weight_rows": _weight_rows(target_weights),
     }
 
 
@@ -531,8 +730,463 @@ def _compact_portfolio_construction_promotion_gate(gate: dict[str, Any]) -> dict
         "approval_mode": gate.get("approval_mode"),
         "blockers": gate.get("blockers") or [],
         "would_promote_to": gate.get("would_promote_to"),
+        "rollout_phase": gate.get("rollout_phase"),
+        "semi_auto_confirmed_cycles": gate.get("semi_auto_confirmed_cycles"),
+        "min_gated_semi_auto_confirmed_cycles": gate.get("min_gated_semi_auto_confirmed_cycles"),
         "execution_authority": gate.get("execution_authority"),
     }
+
+
+def _portfolio_construction_objective_status(
+    latest_analysis: dict[str, Any],
+    readiness: dict[str, Any],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    payload = latest_analysis.get("portfolio_construction_payload") or {}
+    evaluation = latest_analysis.get("portfolio_construction_evaluation") or {}
+    gate = latest_analysis.get("portfolio_construction_promotion_gate") or {}
+    ledger_rows = (latest_analysis.get("decision_ledger") or {}).get("top_decisions") or []
+    if not payload:
+        return {
+            "available": False,
+            "reason": "no portfolio_construction payload in latest analysis",
+            "config": _compact_pc_config(config),
+            "readiness": _compact_pc_readiness(readiness),
+            "promotion_gate": gate,
+            "evaluation": evaluation,
+            "weight_change_reasons": [],
+        }
+    objective = payload.get("objective") or {}
+    return {
+        "available": True,
+        "mode": payload.get("portfolio_construction_mode") or gate.get("portfolio_construction_mode"),
+        "config": _compact_pc_config(config),
+        "objective": {
+            "primary": objective.get("primary"),
+            "subject_to": objective.get("subject_to") or [],
+            "turnover_budget": objective.get("turnover_budget"),
+            "effective_n_target": objective.get("effective_n_target"),
+            "allow_cash_raise": objective.get("allow_cash_raise"),
+            "rationale": objective.get("rationale"),
+        },
+        "objective_metrics": {
+            "effective_n_before": payload.get("effective_n_before"),
+            "effective_n_after": payload.get("effective_n_after"),
+            "effective_n_delta": payload.get("effective_n_delta"),
+            "turnover_budget": payload.get("turnover_budget"),
+            "turnover_before_budget": payload.get("turnover_before_budget"),
+            "turnover_estimated": payload.get("turnover_estimated"),
+            "turnover_within_budget": payload.get("turnover_within_budget"),
+            "ticker_count": payload.get("ticker_count"),
+            "active_basket_reviews": payload.get("active_basket_reviews") or [],
+        },
+        "safety_contract": {
+            "construction_source": payload.get("construction_source"),
+            "execution_effect": payload.get("execution_effect"),
+            "target_builder_consumed": payload.get("target_builder_consumed"),
+            "deterministic": payload.get("deterministic"),
+            "consumes_raw_llm_adjusted_weights": payload.get("consumes_raw_llm_adjusted_weights"),
+        },
+        "readiness": _compact_pc_readiness(readiness),
+        "promotion_gate": gate,
+        "evaluation": evaluation,
+        "construction_steps": payload.get("construction_steps") or [],
+        "violations": payload.get("violations") or [],
+        "factor_exposure_rows": payload.get("factor_exposure_rows") or [],
+        "basket_exposure_rows": payload.get("basket_exposure_rows") or [],
+        "target_weight_rows": payload.get("target_weight_rows") or [],
+        "weight_change_reasons": _pc_weight_change_rows(ledger_rows),
+    }
+
+
+def _compact_pc_config(config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "portfolio_construction_mode": config.get("portfolio_construction_mode"),
+        "enabled": config.get("enabled"),
+        "require_manual_approval": config.get("require_manual_approval"),
+        "min_shadow_cycles": config.get("min_shadow_cycles"),
+        "min_cycles": config.get("min_cycles"),
+        "min_pass_rate": config.get("min_pass_rate"),
+        "max_material_diff": config.get("max_material_diff"),
+        "max_turnover_diff": config.get("max_turnover_diff"),
+        "allow_full_auto_gated": config.get("allow_full_auto_gated"),
+        "require_semi_auto_gated_before_full_auto": config.get("require_semi_auto_gated_before_full_auto"),
+        "min_gated_semi_auto_confirmed_cycles": config.get("min_gated_semi_auto_confirmed_cycles"),
+    }
+
+
+def _compact_pc_readiness(readiness: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": readiness.get("status"),
+        "promotion_ready": readiness.get("promotion_ready"),
+        "cycles": readiness.get("cycles"),
+        "ready_count": readiness.get("ready_count"),
+        "pass_rate": readiness.get("pass_rate"),
+        "min_cycles": readiness.get("min_cycles"),
+        "min_pass_rate": readiness.get("min_pass_rate"),
+        "blocker_counts": readiness.get("blocker_counts") or {},
+        "warning_counts": readiness.get("warning_counts") or {},
+        "mean_abs_weight_deviation_avg": readiness.get("mean_abs_weight_deviation_avg"),
+        "turnover_delta_avg": readiness.get("turnover_delta_avg"),
+    }
+
+
+def _pc_weight_change_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        out.append({
+            "ticker": row.get("ticker"),
+            "portfolio_construction_target": row.get("portfolio_construction_target"),
+            "target_builder_target": row.get("target_builder_target"),
+            "final_target": row.get("final_target"),
+            "changed_by": row.get("changed_by") or [],
+            "construction_effect": row.get("construction_effect"),
+            "risk_governance_effect": row.get("risk_governance_effect"),
+            "final_explanation": row.get("final_explanation"),
+        })
+    return out
+
+
+def _exposure_rows(before: dict[str, Any], after: dict[str, Any], *, label: str) -> list[dict[str, Any]]:
+    rows = []
+    for key in sorted(set(before) | set(after)):
+        rows.append({
+            label: key,
+            "before": _json_safe_number(before.get(key)),
+            "after": _json_safe_number(after.get(key)),
+            "delta": _number_delta(after.get(key), before.get(key)),
+        })
+    return rows
+
+
+def _basket_exposure_rows(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for group in sorted(set(before) | set(after)):
+        before_row = before.get(group) if isinstance(before.get(group), dict) else {}
+        after_row = after.get(group) if isinstance(after.get(group), dict) else {}
+        rows.append({
+            "basket": group,
+            "before": _json_safe_number(before_row.get("exposure")),
+            "after": _json_safe_number(after_row.get("exposure")),
+            "delta": _number_delta(after_row.get("exposure"), before_row.get("exposure")),
+            "limit": _json_safe_number(after_row.get("limit") or before_row.get("limit")),
+            "reduced_limit": _json_safe_number(after_row.get("reduced_limit") or before_row.get("reduced_limit")),
+            "violated": after_row.get("violated"),
+        })
+    return rows
+
+
+def _weight_rows(weights: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for ticker, value in sorted(weights.items()):
+        rows.append({"ticker": ticker, "target_weight": _json_safe_number(value)})
+    return rows
+
+
+def _number_delta(after: Any, before: Any) -> float | None:
+    after_num = _json_safe_number(after)
+    before_num = _json_safe_number(before)
+    if after_num is None or before_num is None:
+        return None
+    return round(after_num - before_num, 6)
+
+
+def _compact_strategy_evidence(strategies: dict[str, Any]) -> dict[str, Any]:
+    if not strategies:
+        return {"available": False, "reason": "strategy evidence unavailable"}
+    strategy_results = [
+        row for row in (strategies.get("strategy_results") or [])
+        if isinstance(row, dict)
+    ]
+    card_rows: list[dict[str, Any]] = []
+    strategy_rows: list[dict[str, Any]] = []
+    for row in strategy_results:
+        strategy_name = str(row.get("strategy_name") or "").strip()
+        cards = [
+            _compact_evidence_card(card, fallback_strategy=strategy_name)
+            for card in (row.get("evidence_cards") or [])
+            if isinstance(card, dict)
+        ]
+        card_rows.extend(cards)
+        summary = row.get("evidence_summary") if isinstance(row.get("evidence_summary"), dict) else {}
+        strategy_rows.append({
+            "strategy": strategy_name,
+            "data_ready": row.get("data_ready"),
+            "can_influence_allocation": row.get("can_influence_allocation"),
+            "suggested_use": row.get("suggested_use"),
+            "confidence_score": row.get("confidence_score"),
+            "selected_tickers": row.get("selected_tickers") or [],
+            "evidence_contract_version": row.get("evidence_contract_version"),
+            "cards_generated": summary.get("cards_generated", len(cards)),
+            "missing_mapping_count": summary.get("missing_mapping_count"),
+            "fallback_count": summary.get("fallback_count"),
+            "actions": summary.get("actions") or {},
+            "conviction_statuses": summary.get("conviction_statuses") or {},
+            "reason_codes": row.get("reason_codes") or [],
+            "walk_forward_level": row.get("walk_forward_level"),
+            "walk_forward_pass_rate": row.get("walk_forward_pass_rate"),
+            "turnover": row.get("turnover"),
+        })
+
+    summary = _evidence_card_summary(card_rows, strategies.get("evidence_summary") or {})
+    return {
+        "available": bool(strategy_results),
+        "playground_available": strategies.get("playground_available"),
+        "generated_at": strategies.get("generated_at"),
+        "data_quality": strategies.get("data_quality"),
+        "regime_label": strategies.get("regime_label"),
+        "regime_confidence": strategies.get("regime_confidence"),
+        "strategy_count": len(strategy_rows),
+        "card_count": len(card_rows),
+        "evidence_summary": summary,
+        "strategy_rows": strategy_rows,
+        "evidence_card_rows": card_rows,
+        "mapping_warning_rows": _evidence_mapping_warning_rows(card_rows),
+        "role_action_rows": _role_action_rows(card_rows),
+        "conviction_status_rows": _count_rows(card_rows, "conviction_status", label="status"),
+        "warnings": strategies.get("warnings") or [],
+    }
+
+
+def _strategy_evidence_dashboard_status(evidence: dict[str, Any]) -> dict[str, Any]:
+    if not evidence:
+        return {"available": False, "reason": "strategy evidence unavailable"}
+    return evidence
+
+
+def _compact_evidence_card(card: dict[str, Any], *, fallback_strategy: str) -> dict[str, Any]:
+    diagnostics = card.get("diagnostics") if isinstance(card.get("diagnostics"), dict) else {}
+    threshold = diagnostics.get("threshold") if isinstance(diagnostics.get("threshold"), dict) else {}
+    conviction_diag = diagnostics.get("conviction") if isinstance(diagnostics.get("conviction"), dict) else {}
+    conviction = _json_safe_number(card.get("conviction"))
+    conviction_n = int(_json_safe_number(card.get("conviction_n")) or 0)
+    return {
+        "strategy": card.get("strategy") or fallback_strategy,
+        "strategy_version": card.get("strategy_version"),
+        "ticker": card.get("ticker"),
+        "role": card.get("role"),
+        "action": card.get("action"),
+        "signal_type": card.get("signal_type"),
+        "horizon": card.get("horizon"),
+        "confidence": _json_safe_number(card.get("confidence")),
+        "conviction_display": _format_conviction_display(conviction),
+        "conviction": conviction,
+        "conviction_status": card.get("conviction_status") or conviction_diag.get("status") or "missing_profile",
+        "conviction_source_bucket": card.get("conviction_source_bucket") or conviction_diag.get("source_bucket"),
+        "conviction_n": conviction_n,
+        "effective_confidence": _json_safe_number(card.get("effective_confidence")),
+        "raw_score": _json_safe_number(card.get("raw_score")),
+        "normalized_score": _json_safe_number(card.get("normalized_score")),
+        "max_reasonable_weight": _json_safe_number(card.get("max_reasonable_weight")),
+        "risk_budget_cost": _json_safe_number(card.get("risk_budget_cost")),
+        "branch": card.get("branch"),
+        "reason": card.get("reason"),
+        "mapping_role": diagnostics.get("mapping_role"),
+        "threshold_gte": threshold.get("gte"),
+        "threshold_lt": threshold.get("lt"),
+        "weight_formula": diagnostics.get("weight_formula"),
+        "base_cap": diagnostics.get("base_cap"),
+        "max_weight_multiplier": diagnostics.get("max_weight_multiplier"),
+        "missing_safety_fields": diagnostics.get("missing_safety_fields") or [],
+        "allowed_actions": diagnostics.get("allowed_actions") or [],
+        "effective_confidence_rule": conviction_diag.get("effective_confidence_rule"),
+        "conviction_shadow_only": conviction_diag.get("shadow_only"),
+    }
+
+
+def _evidence_card_summary(cards: list[dict[str, Any]], fallback_summary: dict[str, Any]) -> dict[str, Any]:
+    actions = _count_map(cards, "action")
+    conviction_statuses = _count_map(cards, "conviction_status")
+    warning_rows = _evidence_mapping_warning_rows(cards)
+    return {
+        "cards_generated": len(cards),
+        "missing_mapping_count": sum(1 for row in cards if "missing_compatibility_mapping" in str(row.get("reason") or "")),
+        "fallback_count": len(warning_rows),
+        "actions": actions or fallback_summary.get("actions") or {},
+        "conviction_statuses": conviction_statuses or fallback_summary.get("conviction_statuses") or {},
+        "max_weight_by_action": _max_weight_by_action(cards),
+    }
+
+
+def _evidence_mapping_warning_rows(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    warning_tokens = (
+        "missing_",
+        "not_allowed",
+        "fallback",
+        "unknown_weight_formula",
+        "insufficient_conviction_samples",
+        "historical_prior_requires_live_confirmation",
+    )
+    rows = []
+    for card in cards:
+        reason = str(card.get("reason") or "")
+        if not any(token in reason for token in warning_tokens) and not card.get("missing_safety_fields"):
+            continue
+        rows.append({
+            "strategy": card.get("strategy"),
+            "ticker": card.get("ticker"),
+            "role": card.get("role"),
+            "action": card.get("action"),
+            "reason": reason,
+            "missing_safety_fields": card.get("missing_safety_fields") or [],
+            "allowed_actions": card.get("allowed_actions") or [],
+            "conviction_status": card.get("conviction_status"),
+            "conviction_n": card.get("conviction_n"),
+        })
+    return rows
+
+
+def _role_action_rows(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for card in cards:
+        key = (str(card.get("role") or "unknown"), str(card.get("action") or "unknown"))
+        row = grouped.setdefault(
+            key,
+            {
+                "role": key[0],
+                "action": key[1],
+                "count": 0,
+                "max_reasonable_weight_max": 0.0,
+                "avg_confidence": 0.0,
+                "tickers": [],
+            },
+        )
+        row["count"] += 1
+        row["max_reasonable_weight_max"] = max(
+            float(row.get("max_reasonable_weight_max") or 0.0),
+            float(card.get("max_reasonable_weight") or 0.0),
+        )
+        row["avg_confidence"] += float(card.get("confidence") or 0.0)
+        ticker = card.get("ticker")
+        if ticker:
+            row["tickers"].append(ticker)
+    out = []
+    for row in grouped.values():
+        count = int(row.get("count") or 0)
+        out.append({
+            **row,
+            "avg_confidence": round(float(row.get("avg_confidence") or 0.0) / count, 6) if count else 0.0,
+            "max_reasonable_weight_max": round(float(row.get("max_reasonable_weight_max") or 0.0), 6),
+            "tickers": sorted(set(row.get("tickers") or [])),
+        })
+    return sorted(out, key=lambda row: (str(row.get("role") or ""), str(row.get("action") or "")))
+
+
+def _count_rows(rows: list[dict[str, Any]], key: str, *, label: str) -> list[dict[str, Any]]:
+    return [
+        {label: name, "count": count}
+        for name, count in sorted(_count_map(rows, key).items())
+    ]
+
+
+def _count_map(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        name = str(row.get(key) or "unknown")
+        counts[name] = counts.get(name, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _max_weight_by_action(cards: list[dict[str, Any]]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for card in cards:
+        action = str(card.get("action") or "unknown")
+        out[action] = round(
+            max(out.get(action, 0.0), float(card.get("max_reasonable_weight") or 0.0)),
+            6,
+        )
+    return dict(sorted(out.items()))
+
+
+def _format_conviction_display(conviction: float | None) -> str:
+    if conviction is None:
+        return "--"
+    return f"{conviction:.1%}"
+
+
+def _compact_live_signal_conviction_summary(raw: dict[str, Any]) -> dict[str, Any]:
+    if not raw:
+        return {"available": False, "reason": "live signal conviction summary unavailable"}
+    pending = raw.get("pending_outcomes") if isinstance(raw.get("pending_outcomes"), dict) else {}
+    return {
+        "available": raw.get("status") == "available",
+        "overview": {
+            "contract_version": raw.get("contract_version"),
+            "status": raw.get("status"),
+            "as_of_date": raw.get("as_of_date"),
+            "latest_profile_date": raw.get("latest_profile_date"),
+            "signals_recorded_today": raw.get("signals_recorded_today"),
+            "outcomes_labeled_today": raw.get("outcomes_labeled_today"),
+            "signals_total": raw.get("signals_total"),
+            "outcomes_total": raw.get("outcomes_total"),
+            "requires_live_confirmation_count": raw.get("requires_live_confirmation_count"),
+            "display_note": raw.get("display_note"),
+        },
+        "pending_outcomes": {
+            "total": pending.get("total"),
+            "mature": pending.get("mature"),
+            "maturity_model": pending.get("maturity_model"),
+        },
+        "pending_by_horizon_rows": _pending_by_horizon_rows(pending.get("by_horizon") or {}),
+        "historical_prior_profiles": _conviction_profile_display_rows(raw.get("historical_prior_profiles") or []),
+        "live_paper_profiles": _conviction_profile_display_rows(raw.get("live_paper_profiles") or []),
+        "combined_profiles": _conviction_profile_display_rows(raw.get("combined_profiles") or []),
+        "profile_count_rows": _dict_count_rows(raw.get("profile_counts") or {}, label="source_bucket"),
+        "status_count_rows": _dict_count_rows(raw.get("status_counts") or {}, label="status"),
+        "display_contract": {
+            "conviction_number_policy": "no_naked_conviction",
+            "required_context": "conviction_display + source_bucket + n + status",
+            "execution_authority": "none",
+        },
+    }
+
+
+def _pending_by_horizon_rows(by_horizon: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for horizon, item in sorted(by_horizon.items(), key=lambda pair: int(pair[0]) if str(pair[0]).isdigit() else 999):
+        row = item if isinstance(item, dict) else {}
+        rows.append({
+            "horizon_days": horizon,
+            "missing": row.get("missing"),
+            "mature": row.get("mature"),
+        })
+    return rows
+
+
+def _conviction_profile_display_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        out.append({
+            "strategy": row.get("strategy"),
+            "ticker": row.get("ticker"),
+            "branch": row.get("branch"),
+            "action": row.get("action"),
+            "regime_at_signal": row.get("regime_at_signal"),
+            "horizon": row.get("horizon"),
+            "source_bucket": row.get("source_bucket"),
+            "n": row.get("n"),
+            "status": row.get("status"),
+            "conviction_display": row.get("conviction_display"),
+            "hit_rate": row.get("hit_rate"),
+            "avg_excess_vs_spy": row.get("avg_excess_vs_spy"),
+            "ic": row.get("ic"),
+            "last_signal_date": row.get("last_signal_date"),
+            "data_lag_filtered": row.get("data_lag_filtered"),
+            "requires_live_confirmation": row.get("requires_live_confirmation"),
+            "source_counts": row.get("source_counts") or {},
+        })
+    return out
+
+
+def _dict_count_rows(counts: dict[str, Any], *, label: str) -> list[dict[str, Any]]:
+    return [
+        {label: key, "count": value}
+        for key, value in sorted(counts.items())
+    ]
 
 
 def _compact_final_validation(validation: dict[str, Any]) -> dict[str, Any]:
@@ -552,6 +1206,132 @@ def _compact_final_validation(validation: dict[str, Any]) -> dict[str, Any]:
         "blocking_violations": validation.get("blocking_violations") or [],
         "severe_violations": validation.get("severe_violations") or [],
         "conditional_mutation_violations": validation.get("conditional_mutation_violations") or [],
+    }
+
+
+def _compact_account_state_guard(guard: dict[str, Any]) -> dict[str, Any]:
+    if not guard:
+        return {}
+    checks = guard.get("checks") if isinstance(guard.get("checks"), dict) else {}
+    return {
+        "mode": guard.get("mode"),
+        "status": guard.get("status"),
+        "allowed": guard.get("allowed"),
+        "would_block": guard.get("would_block"),
+        "pipeline_enforcement": guard.get("pipeline_enforcement"),
+        "pipeline_effect_status": guard.get("pipeline_effect_status"),
+        "execution_effect": guard.get("execution_effect"),
+        "primary_blockers": guard.get("blockers") or [],
+        "warnings": guard.get("warnings") or [],
+        "snapshot": guard.get("snapshot") or {},
+        "config": guard.get("config") or {},
+        "checks": [
+            {
+                "check": name,
+                "pass": row.get("pass"),
+                "actual": row.get("actual"),
+                "threshold": row.get("threshold"),
+                "reason": row.get("reason"),
+            }
+            for name, row in checks.items()
+            if isinstance(row, dict)
+        ],
+    }
+
+
+def _compact_auto_pause(auto_pause: dict[str, Any]) -> dict[str, Any]:
+    if not auto_pause:
+        return {}
+    triggers = auto_pause.get("triggers") if isinstance(auto_pause.get("triggers"), list) else []
+    return {
+        "mode": auto_pause.get("mode"),
+        "status": auto_pause.get("status"),
+        "would_pause": auto_pause.get("would_pause"),
+        "should_pause": auto_pause.get("should_pause"),
+        "execution_effect": auto_pause.get("execution_effect"),
+        "primary_trigger": auto_pause.get("primary_trigger"),
+        "reason": auto_pause.get("reason"),
+        "config": auto_pause.get("config") or {},
+        "triggers": [
+            {
+                "trigger": row.get("name"),
+                "triggered": row.get("triggered"),
+                "value": row.get("value"),
+                "threshold": row.get("threshold"),
+                "severity": row.get("severity"),
+                "details": row.get("details"),
+            }
+            for row in triggers
+            if isinstance(row, dict)
+        ],
+    }
+
+
+def _compact_account_state_snapshot(row: Any) -> dict[str, Any]:
+    if not row:
+        return {"available": False}
+    raw = row.raw_snapshot if isinstance(row.raw_snapshot, dict) else {}
+    holdings = row.holdings_weights if isinstance(row.holdings_weights, dict) else {}
+    targets = row.target_weights if isinstance(row.target_weights, dict) else {}
+    return {
+        "available": True,
+        "id": row.id,
+        "qc_snapshot_id": row.qc_snapshot_id,
+        "recorded_at": _iso(row.recorded_at),
+        "account_timestamp": _iso(row.account_timestamp),
+        "source_packet_type": row.source_packet_type,
+        "contract_version": row.contract_version,
+        "account_status": row.account_status,
+        "data_status": row.data_status,
+        "policy_version": row.policy_version,
+        "total_value": _json_safe_number(row.total_value),
+        "cash": _json_safe_number(row.cash),
+        "cash_pct": _json_safe_number(row.cash_pct),
+        "buying_power": _json_safe_number(row.buying_power),
+        "open_order_count": row.open_order_count,
+        "has_open_orders": row.has_open_orders,
+        "is_market_open": row.is_market_open,
+        "holdings_count": len(holdings),
+        "target_count": len(targets),
+        "explicit_account_state": raw.get("explicit_account_state"),
+        "warnings": raw.get("warnings") or [],
+    }
+
+
+def _compact_lifecycle_event(row: Any) -> dict[str, Any]:
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    response = payload.get("qc_response") if isinstance(payload.get("qc_response"), dict) else {}
+    command_payload = payload.get("command_payload") if isinstance(payload.get("command_payload"), dict) else {}
+    target_weights = command_payload.get("weights") if isinstance(command_payload.get("weights"), dict) else {}
+    return {
+        "event_time": _iso(row.event_time),
+        "command_id": row.command_id,
+        "analysis_id": row.analysis_id,
+        "event_type": row.event_type,
+        "event_status": row.event_status,
+        "source": row.source,
+        "reason": row.reason or payload.get("reason") or response.get("reason"),
+        "qc_status": payload.get("qc_status") or response.get("status"),
+        "policy_mismatch": response.get("policy_mismatch"),
+        "policy_version": response.get("policy_version") or payload.get("policy_version"),
+        "target_count": len(target_weights),
+        "payload_keys": sorted(payload.keys()),
+    }
+
+
+def _compact_execution_row(row: Any) -> dict[str, Any]:
+    response = row.qc_response if isinstance(row.qc_response, dict) else {}
+    return {
+        "executed_at": _iso(row.executed_at),
+        "command_id": row.command_id,
+        "analysis_id": row.analysis_id,
+        "command_type": row.command_type,
+        "status": row.status,
+        "qc_status": row.qc_status,
+        "qc_ack_at": _iso(row.qc_ack_at),
+        "qc_rejection_reason": row.qc_rejection_reason or response.get("reason"),
+        "policy_mismatch": response.get("policy_mismatch"),
+        "retry_count": row.retry_count,
     }
 
 
@@ -643,6 +1423,7 @@ def _ledger_rows_from_tickers(tickers: dict[str, Any]) -> list[dict[str, Any]]:
             "entered_via_hedge_path": hedge_path.get("entered_via_hedge_path"),
             "hedge_trigger_reasons": hedge_path.get("hedge_trigger_reasons") or [],
             "final_target": lifecycle.get("final_target"),
+            "portfolio_construction_target": lifecycle.get("portfolio_construction_target"),
             "target_builder_target": lifecycle.get("target_builder_target"),
             "diagnostic_llm_target": lifecycle.get("diagnostic_llm_target"),
             "validated_advisory_delta": lifecycle.get("validated_advisory_delta"),
@@ -694,6 +1475,21 @@ def render_dashboard(summary: dict[str, Any]) -> str:
     </section>
 
     <section>
+      <h2>Portfolio Construction Objective</h2>
+      {_render_portfolio_construction_objective(summary.get("portfolio_construction_objective") or {})}
+    </section>
+
+    <section>
+      <h2>ETF / Strategy Evidence</h2>
+      {_render_strategy_evidence(summary.get("strategy_evidence") or {})}
+    </section>
+
+    <section>
+      <h2>Live Signal Conviction</h2>
+      {_render_live_signal_conviction(summary.get("live_signal_conviction") or {})}
+    </section>
+
+    <section>
       <h2>Portfolio Construction Readiness</h2>
       {_render_kv(pc_readiness)}
     </section>
@@ -706,6 +1502,11 @@ def render_dashboard(summary: dict[str, Any]) -> str:
     <section>
       <h2>Data Quality Audit Trend</h2>
       {_render_data_quality_audit(summary.get("data_quality_audit") or {})}
+    </section>
+
+    <section>
+      <h2>Execution Control</h2>
+      {_render_execution_control(summary.get("execution_control") or {})}
     </section>
 
     <section>
@@ -769,6 +1570,108 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
     """
 
 
+def _render_portfolio_construction_objective(pc: dict[str, Any]) -> str:
+    if not pc.get("available"):
+        reason = pc.get("reason") or "No Portfolio Construction payload available."
+        return f"""
+          <p class="muted">{escape(str(reason))}</p>
+          <div class="grid">
+            <article class="card"><h3>Config</h3>{_render_kv(pc.get("config") or {})}</article>
+            <article class="card"><h3>Readiness</h3>{_render_kv(pc.get("readiness") or {})}</article>
+            <article class="card"><h3>Promotion Gate</h3>{_render_kv(pc.get("promotion_gate") or {})}</article>
+          </div>
+        """
+    return f"""
+      <div class="grid">
+        <article class="card"><h3>Objective</h3>{_render_kv(pc.get("objective") or {})}</article>
+        <article class="card"><h3>Objective Metrics</h3>{_render_kv(pc.get("objective_metrics") or {})}</article>
+        <article class="card"><h3>Safety Contract</h3>{_render_kv(pc.get("safety_contract") or {})}</article>
+      </div>
+      <div class="grid">
+        <article class="card"><h3>Readiness</h3>{_render_kv(pc.get("readiness") or {})}</article>
+        <article class="card"><h3>Promotion Gate</h3>{_render_kv(pc.get("promotion_gate") or {})}</article>
+        <article class="card"><h3>Evaluation</h3>{_render_kv(pc.get("evaluation") or {})}</article>
+      </div>
+      <h3>Construction Steps</h3>{_render_list("", pc.get("construction_steps") or [])}
+      <h3>Violations</h3>{_render_list("", pc.get("violations") or [])}
+      <h3>Factor Exposure Before / After</h3>{_render_table(pc.get("factor_exposure_rows") or [], ["factor", "before", "after", "delta"])}
+      <h3>Basket Exposure Before / After</h3>{_render_table(pc.get("basket_exposure_rows") or [], ["basket", "before", "after", "delta", "limit", "reduced_limit", "violated"])}
+      <h3>Target Weights</h3>{_render_table(pc.get("target_weight_rows") or [], ["ticker", "target_weight"])}
+      <h3>Weight Change Reasons</h3>{_render_table(pc.get("weight_change_reasons") or [], ["ticker", "portfolio_construction_target", "target_builder_target", "final_target", "changed_by", "construction_effect", "risk_governance_effect", "final_explanation"])}
+    """
+
+
+def _render_strategy_evidence(evidence: dict[str, Any]) -> str:
+    if not evidence.get("available"):
+        reason = evidence.get("reason") or "No ETF / Strategy Evidence available."
+        return f"<p class=\"muted\">{escape(str(reason))}</p>"
+    summary = evidence.get("evidence_summary") or {}
+    overview = {
+        "playground_available": evidence.get("playground_available"),
+        "generated_at": evidence.get("generated_at"),
+        "data_quality": evidence.get("data_quality"),
+        "regime_label": evidence.get("regime_label"),
+        "strategy_count": evidence.get("strategy_count"),
+        "card_count": evidence.get("card_count"),
+    }
+    conviction_note = {
+        "display_rule": "conviction_display requires status/source/n",
+        "execution_authority": "none",
+        "conviction_is_shadow_only": True,
+    }
+    return f"""
+      <div class="grid">
+        <article class="card"><h3>Overview</h3>{_render_kv(overview)}</article>
+        <article class="card"><h3>Evidence Summary</h3>{_render_kv(summary)}</article>
+        <article class="card"><h3>Conviction Display Contract</h3>{_render_kv(conviction_note)}</article>
+      </div>
+      <h3>Strategies</h3>{_render_table(evidence.get("strategy_rows") or [], ["strategy", "data_ready", "can_influence_allocation", "suggested_use", "confidence_score", "selected_tickers", "evidence_contract_version", "cards_generated", "missing_mapping_count", "fallback_count", "actions", "conviction_statuses", "reason_codes", "walk_forward_level", "walk_forward_pass_rate", "turnover"])}
+      <h3>EvidenceCards</h3>{_render_table(evidence.get("evidence_card_rows") or [], ["strategy", "ticker", "role", "action", "signal_type", "horizon", "confidence", "conviction_display", "conviction_status", "conviction_source_bucket", "conviction_n", "effective_confidence", "raw_score", "normalized_score", "max_reasonable_weight", "risk_budget_cost", "branch", "reason", "mapping_role", "weight_formula", "base_cap", "max_weight_multiplier", "effective_confidence_rule", "conviction_shadow_only"])}
+      <h3>Mapping And Safety Warnings</h3>{_render_table(evidence.get("mapping_warning_rows") or [], ["strategy", "ticker", "role", "action", "reason", "missing_safety_fields", "allowed_actions", "conviction_status", "conviction_n"])}
+      <h3>Role / Action Summary</h3>{_render_table(evidence.get("role_action_rows") or [], ["role", "action", "count", "avg_confidence", "max_reasonable_weight_max", "tickers"])}
+      <h3>Conviction Status Summary</h3>{_render_table(evidence.get("conviction_status_rows") or [], ["status", "count"])}
+      <h3>Warnings</h3>{_render_list("", evidence.get("warnings") or [])}
+    """
+
+
+def _render_live_signal_conviction(conviction: dict[str, Any]) -> str:
+    if not conviction.get("available"):
+        reason = conviction.get("reason") or "No live signal conviction summary available."
+        return f"<p class=\"muted\">{escape(str(reason))}</p>"
+    profile_columns = [
+        "strategy",
+        "ticker",
+        "branch",
+        "action",
+        "regime_at_signal",
+        "horizon",
+        "source_bucket",
+        "n",
+        "status",
+        "conviction_display",
+        "hit_rate",
+        "avg_excess_vs_spy",
+        "ic",
+        "last_signal_date",
+        "data_lag_filtered",
+        "requires_live_confirmation",
+        "source_counts",
+    ]
+    return f"""
+      <div class="grid">
+        <article class="card"><h3>Frozen Signals / Outcomes</h3>{_render_kv(conviction.get("overview") or {})}</article>
+        <article class="card"><h3>Pending Outcomes</h3>{_render_kv(conviction.get("pending_outcomes") or {})}</article>
+        <article class="card"><h3>Conviction Display Contract</h3>{_render_kv(conviction.get("display_contract") or {})}</article>
+      </div>
+      <h3>Pending Outcomes By Horizon</h3>{_render_table(conviction.get("pending_by_horizon_rows") or [], ["horizon_days", "missing", "mature"])}
+      <h3>Profile Counts</h3>{_render_table(conviction.get("profile_count_rows") or [], ["source_bucket", "count"])}
+      <h3>Conviction Status Counts</h3>{_render_table(conviction.get("status_count_rows") or [], ["status", "count"])}
+      <h3>Historical Prior Profiles</h3>{_render_table(conviction.get("historical_prior_profiles") or [], profile_columns)}
+      <h3>Live Paper Profiles</h3>{_render_table(conviction.get("live_paper_profiles") or [], profile_columns)}
+      <h3>Combined Profiles</h3>{_render_table(conviction.get("combined_profiles") or [], profile_columns)}
+    """
+
+
 def _render_replay(replay: dict[str, Any]) -> str:
     return f"""
       <div class="grid">
@@ -792,6 +1695,32 @@ def _render_data_quality_audit(audit: dict[str, Any]) -> str:
         <article class="card"><h3>Trend</h3>{_render_kv(trend)}</article>
       </div>
       <h3>Recent Audit Runs</h3>{_render_table(recent, ["created_at", "status", "lookback_days", "joined_rows", "unit_risk_count", "high_drift_classes", "max_raw_momentum_error", "max_normalized_momentum_error", "unit_risk_fields", "high_drift_labels"])}
+    """
+
+
+def _render_execution_control(control: dict[str, Any]) -> str:
+    if not control.get("available"):
+        reason = control.get("reason") or "Execution control tables unavailable."
+        return f"""
+          <p class="muted">{escape(str(reason))}</p>
+          <div class="grid">
+            <article class="card"><h3>Account State Guard</h3>{_render_kv(control.get("account_state_guard") or {})}</article>
+            <article class="card"><h3>Auto Pause</h3>{_render_kv(control.get("auto_pause") or {})}</article>
+          </div>
+        """
+    guard = control.get("account_state_guard") or {}
+    auto_pause = control.get("auto_pause") or {}
+    latest_snapshot = control.get("latest_account_snapshot") or {}
+    return f"""
+      <div class="grid">
+        <article class="card"><h3>Account State Guard</h3>{_render_kv(guard, keys=["mode", "status", "allowed", "would_block", "pipeline_enforcement", "pipeline_effect_status", "execution_effect", "primary_blockers", "warnings"])}</article>
+        <article class="card"><h3>Auto Pause</h3>{_render_kv(auto_pause, keys=["mode", "status", "would_pause", "should_pause", "execution_effect", "primary_trigger", "reason"])}</article>
+        <article class="card"><h3>Latest Account Snapshot</h3>{_render_kv(latest_snapshot, keys=["available", "recorded_at", "account_timestamp", "source_packet_type", "contract_version", "account_status", "data_status", "policy_version", "total_value", "cash_pct", "buying_power", "open_order_count", "has_open_orders", "is_market_open", "holdings_count", "target_count", "explicit_account_state"])}</article>
+      </div>
+      <h3>Account Guard Checks</h3>{_render_table(guard.get("checks") or [], ["check", "pass", "actual", "threshold", "reason"])}
+      <h3>Auto Pause Triggers</h3>{_render_table(auto_pause.get("triggers") or [], ["trigger", "triggered", "value", "threshold", "severity", "details"])}
+      <h3>Recent QC Commands</h3>{_render_table(control.get("recent_commands") or [], ["executed_at", "command_id", "analysis_id", "command_type", "status", "qc_status", "qc_ack_at", "qc_rejection_reason", "policy_mismatch", "retry_count"])}
+      <h3>Command Lifecycle Events</h3>{_render_table(control.get("recent_command_events") or [], ["event_time", "command_id", "analysis_id", "event_type", "event_status", "source", "reason", "qc_status", "policy_mismatch", "policy_version", "target_count", "payload_keys"])}
     """
 
 
@@ -835,6 +1764,15 @@ def _format_value(value: Any) -> str:
     if isinstance(value, float):
         return f"{value:.4f}"
     return str(value)
+
+
+def _json_safe_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _compact_json(value: Any) -> str:

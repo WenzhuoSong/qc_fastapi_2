@@ -190,6 +190,10 @@ Current implementation status:
   service. Existing execution paths append events for created/submitted,
   preflight-blocked, execution-result, QC accepted/rejected, and QC timeout
   states. This extends `execution_log`; it does not replace it.
+- PR4b lifecycle reconciliation implemented locally on 2026-05-25. QC ACK now
+  accepts order/fill summaries, FastAPI derives `filled`, `partial`,
+  `reconciled`, and `reconciliation_drift` events, and subsequent heartbeat
+  account snapshots can perform delayed reconciliation via `last_command_id`.
 
 Target lifecycle:
 
@@ -198,15 +202,13 @@ created
 -> preflight_passed
 -> submitted_to_qc
 -> qc_accepted / qc_rejected
--> order_submitted
--> filled / partial / expired / canceled
+-> filled / partial
 -> reconciled / reconciliation_drift
 ```
 
 Implementation direction:
 
-- Either extend `execution_log` with event-style rows or add a
-  `command_lifecycle_events` table.
+- Use append-only `command_lifecycle_events` as the authoritative event trail.
 - Use `command_id` as the stable join key across FastAPI, QC ACK, order events,
   and reconciliation.
 - Store assumed starting weights, intended target weights, submitted order
@@ -234,6 +236,13 @@ Portfolio Construction dashboard:
 - factor and basket exposure before/after
 - reason each weight changed
 
+Implementation note:
+
+- Dashboard now exposes a dedicated `Portfolio Construction Objective`
+  section with objective contract, safety contract, readiness/gate/evaluation,
+  effective-N metrics, factor/basket before-after rows, target weights, and
+  weight-change reasons from the decision ledger.
+
 ETF / Strategy Evidence dashboard:
 
 - EvidenceCards by strategy, ticker, role, action, confidence, and mapping
@@ -241,12 +250,28 @@ ETF / Strategy Evidence dashboard:
 - missing mapping and safety-field warnings
 - conviction fields shown only as diagnostics with sample count/status/source
 
+Implementation note:
+
+- Dashboard now exposes a dedicated `ETF / Strategy Evidence` section backed by
+  the latest `2d_evidence_scorecard` step output. It shows strategy rows,
+  EvidenceCards, mapping/safety warnings, role/action summaries, and conviction
+  display with status/source/sample count instead of naked conviction numbers.
+
 Live Signal Conviction dashboard:
 
 - FrozenSignal and SignalOutcome counts by strategy/ticker/branch
 - insufficient, early, and calibrated conviction status
 - data-lag filtering status
 - recent degradation flags
+
+Implementation note:
+
+- Dashboard now exposes a dedicated `Live Signal Conviction` section backed by
+  the read-only strategy validation dashboard summary. It shows FrozenSignal and
+  SignalOutcome totals, pending outcomes by horizon, historical/live/combined
+  profiles, profile counts, and insufficient/early/calibrated status counts.
+  Profile tables intentionally omit raw conviction numbers and show
+  `conviction_display` only with source bucket, sample count, and status.
 
 Acceptance criteria:
 
