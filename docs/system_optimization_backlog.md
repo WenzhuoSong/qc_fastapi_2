@@ -61,6 +61,12 @@ Current implementation status:
   and the QC algorithm exports `account_state` plus `actual_holdings_weights`.
   This PR is observational only; it does not yet block target construction or
   execution.
+- PR2 `account_state_guard` observe mode implemented locally on 2026-05-24.
+  The pipeline now loads the latest account-state snapshot before market brief,
+  evaluates freshness, account/data status, policy version, buying power, open
+  orders, holdings presence, and account-vs-snapshot holdings consistency, then
+  writes the verdict into `pipeline_context` and `risk_output`. Pipeline
+  enforcement remains `observe_only`; promotion to blocking is a later PR.
 
 This is a guard stage, not just execution preflight. It should run after the
 latest QC heartbeat/account snapshot is loaded and before target construction
@@ -127,6 +133,14 @@ Acceptance criteria:
 
 Goal:
 Make the system pause itself when execution trust is degraded.
+
+Current implementation status:
+
+- PR3 `auto_pause` structured triggers implemented locally on 2026-05-24.
+  The service evaluates consecutive QC rejects, stale policy mismatch, and
+  account-state guard failures. The pipeline records the verdict in
+  `pipeline_context` and `risk_output`. Default mode is `observe`; `mode=active`
+  sets `circuit_state=ALERT` and skips FULL_AUTO runs when a trigger fires.
 
 Auto-pause rules should be config driven, with conservative defaults:
 

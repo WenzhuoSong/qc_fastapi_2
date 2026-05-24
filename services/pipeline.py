@@ -74,6 +74,15 @@ from services.execution_policy import policy_snapshot
 from services.final_execution_policy_cap import apply_final_execution_policy_cap
 from services.final_risk_validation import validate_final_execution_target
 from services.final_risk_validation_config import default_final_risk_validation_config
+from services.account_state_guard import (
+    default_account_state_guard_config,
+    load_latest_account_state_guard,
+)
+from services.auto_pause import (
+    apply_auto_pause_if_needed,
+    default_auto_pause_config,
+    load_auto_pause_verdict,
+)
 from services.empirical_profile_store import (
     build_empirical_profiles_from_feature_store,
     collect_empirical_profile_tickers,
@@ -439,6 +448,8 @@ async def _guard_and_config(trigger: str) -> dict | None:
         pc_promo_cfg    = await get_system_config(db, "portfolio_construction_promotion_config")
         final_validation_cfg = await get_system_config(db, "final_risk_validation_config")
         execution_command_cfg = await get_system_config(db, "execution_command_config")
+        account_guard_cfg = await get_system_config(db, "account_state_guard_config")
+        auto_pause_cfg    = await get_system_config(db, "auto_pause_config")
         override_cfg    = await get_system_config(db, "circuit_override")
         alert_cfg       = await get_system_config(db, "circuit_pause_alert")
 
@@ -482,6 +493,12 @@ async def _guard_and_config(trigger: str) -> dict | None:
         (final_validation_cfg.value if final_validation_cfg else {}) or {}
     )
     execution_command_config = (execution_command_cfg.value if execution_command_cfg else {}) or {}
+    account_state_guard_config = default_account_state_guard_config(
+        (account_guard_cfg.value if account_guard_cfg else {}) or {}
+    )
+    auto_pause_config = default_auto_pause_config(
+        (auto_pause_cfg.value if auto_pause_cfg else {}) or {}
+    )
 
     params_key = f"strategy_{active_name}_params"
     async with AsyncSessionLocal() as db:
@@ -506,6 +523,8 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "portfolio_construction_promotion_config": portfolio_construction_promotion_config,
         "final_risk_validation_config": final_risk_validation_config,
         "execution_command_config": execution_command_config,
+        "account_state_guard_config": account_state_guard_config,
+        "auto_pause_config": auto_pause_config,
     }
 
 
@@ -648,6 +667,65 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     if pipeline_context is None:
         tracker.end_run("skipped_gated")
         return {"status": "skipped_gated"}
+
+    try:
+        account_state_guard = await load_latest_account_state_guard(
+            config=pipeline_context.get("account_state_guard_config") or {}
+        )
+    except Exception as account_guard_error:
+        account_state_guard = {
+            "enabled": True,
+            "mode": "observe",
+            "status": "unavailable",
+            "allowed": True,
+            "would_block": True,
+            "execution_effect": "diagnostic_only",
+            "blockers": ["account_state_guard_unavailable"],
+            "warnings": [str(account_guard_error)],
+            "checks": {},
+            "snapshot": None,
+        }
+        logger.warning("[account_state_guard] unavailable: %s", account_guard_error)
+    account_state_guard["pipeline_enforcement"] = "observe_only"
+    pipeline_context["account_state_guard"] = account_state_guard
+    if account_state_guard.get("would_block"):
+        logger.warning(
+            "[account_state_guard] observe would_block | blockers=%s",
+            account_state_guard.get("blockers") or [],
+        )
+
+    try:
+        auto_pause = await load_auto_pause_verdict(
+            config=pipeline_context.get("auto_pause_config") or {},
+            account_state_guard=account_state_guard,
+        )
+    except Exception as auto_pause_error:
+        auto_pause = {
+            "enabled": True,
+            "mode": "observe",
+            "status": "unavailable",
+            "would_pause": False,
+            "should_pause": False,
+            "execution_effect": "diagnostic_only",
+            "primary_trigger": None,
+            "reason": None,
+            "triggers": [],
+            "warnings": [str(auto_pause_error)],
+        }
+        logger.warning("[auto_pause] unavailable: %s", auto_pause_error)
+    pipeline_context["auto_pause"] = auto_pause
+    if auto_pause.get("would_pause"):
+        logger.warning(
+            "[auto_pause] %s | primary=%s reason=%s",
+            auto_pause.get("status"),
+            auto_pause.get("primary_trigger"),
+            auto_pause.get("reason"),
+        )
+    if auto_pause.get("should_pause"):
+        await apply_auto_pause_if_needed(auto_pause)
+        if pipeline_context.get("auth_mode") == "FULL_AUTO":
+            tracker.end_run("skipped_auto_paused")
+            return {"status": "skipped_auto_paused", "auto_pause": auto_pause}
 
     if not tracker.is_disabled:
         regime_result_for_tracker = pipeline_context.get("regime_result")
@@ -1359,6 +1437,10 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     risk_out = await run_risk_manager_async(
         pipeline_context, brief, quant_baseline, synthesizer_out
     )
+    if pipeline_context.get("account_state_guard"):
+        risk_out["account_state_guard"] = pipeline_context.get("account_state_guard")
+    if pipeline_context.get("auto_pause"):
+        risk_out["auto_pause"] = pipeline_context.get("auto_pause")
     if pipeline_context.get("portfolio_construction_shadow"):
         risk_out["portfolio_construction_shadow"] = pipeline_context.get("portfolio_construction_shadow")
     if pipeline_context.get("portfolio_construction_candidate"):
