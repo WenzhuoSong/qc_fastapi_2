@@ -727,6 +727,40 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("status=auto_approved", text)
         self.assertIn("approval=auto", text)
 
+    def test_final_validation_line_shows_mode_and_blockers(self):
+        text = _fallback_template(
+            {
+                "approved": False,
+                "regime": "neutral",
+                "stance": "maintain",
+                "rebalance_actions": [],
+                "estimated_cost": 0,
+                "overlays_applied": [],
+                "rejection_reasons": ["final validation blocked"],
+                "auth_mode": "FULL_AUTO",
+                "timeout_minutes": 20,
+                "debate_summary": {},
+                "market_scorecard": {},
+                "scorecard_enforcement": {},
+                "news_evidence": {},
+                "decision_style": {},
+                "style_enforcement": {},
+                "decision_ledger": {},
+                "final_validation": {
+                    "mode": "blocking",
+                    "approved": False,
+                    "policy_allowed": False,
+                    "max_abs_drift": 0.02,
+                    "material_drift_threshold": 0.015,
+                    "blocking_violations": ["execution_policy_violation"],
+                },
+            }
+        )
+
+        self.assertIn("Final risk validation", text)
+        self.assertIn("mode=blocking", text)
+        self.assertIn("blockers=execution_policy_violation", text)
+
     def test_manual_trim_review_shows_advisory_as_weak_positive(self):
         text = _fallback_template(
             {

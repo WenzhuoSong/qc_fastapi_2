@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from services.execution_policy import evaluate_policy
 from services.group_contract import GROUP_DEFINITIONS, calc_factor_exposure, get_factor_tags
 
 
@@ -18,10 +19,18 @@ NO_ADD_PERMISSIONS = {"hold_or_trim", "reduce_risk_only", "defensive_only", "cas
 class PortfolioConstructionResult:
     target_weights: dict[str, float]
     factor_exposures: dict[str, float]
+    factor_exposure_before: dict[str, float]
+    factor_exposure_after: dict[str, float]
+    basket_exposure_before: dict[str, Any]
+    basket_exposure_after: dict[str, Any]
     effective_n: float
+    effective_n_before: float
+    effective_n_after: float
     turnover: dict[str, Any]
     construction_steps: list[str]
     violations: list[str]
+    policy_evaluation: dict[str, Any]
+    construction_source: str
     diagnostics: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
@@ -51,6 +60,9 @@ class PortfolioConstructionModel:
         budget = _optional_float(turnover_budget)
         steps: list[str] = ["base_weights"]
         violations: list[str] = []
+        factor_before = _factor_exposures(base)
+        basket_before = _basket_exposures(base, active_baskets, self.basket_limit_multiplier)
+        effective_n_before = round(_effective_n(base), 6)
 
         weights = dict(base)
         weights, factor_violations = self._apply_factor_limits(weights)
@@ -83,11 +95,27 @@ class PortfolioConstructionModel:
             key: round(value, 6)
             for key, value in sorted(calc_factor_exposure(weights).items())
         }
+        basket_after = _basket_exposures(weights, active_baskets, self.basket_limit_multiplier)
+        effective_n_after = round(_effective_n(weights), 6)
+        policy_evaluation = evaluate_policy(
+            weights=weights,
+            current_weights=current,
+            context={
+                "max_turnover_per_cycle": budget,
+                "hedge_allowed": str(scorecard_permission or "") not in NO_ADD_PERMISSIONS,
+            },
+        )
 
         return PortfolioConstructionResult(
             target_weights=weights,
             factor_exposures=factor_exposures,
-            effective_n=round(_effective_n(weights), 6),
+            factor_exposure_before=factor_before,
+            factor_exposure_after=factor_exposures,
+            basket_exposure_before=basket_before,
+            basket_exposure_after=basket_after,
+            effective_n=effective_n_after,
+            effective_n_before=effective_n_before,
+            effective_n_after=effective_n_after,
             turnover={
                 "estimated_before_budget": round(turnover_before, 6),
                 "estimated": round(turnover_after, 6),
@@ -96,8 +124,12 @@ class PortfolioConstructionModel:
             },
             construction_steps=steps + ["normalization"],
             violations=violations + self._check_violations(weights, active_baskets),
+            policy_evaluation=policy_evaluation,
+            construction_source="portfolio_construction",
             diagnostics={
                 "mode": "portfolio_construction",
+                "construction_source": "portfolio_construction",
+                "execution_effect": "diagnostic_only",
                 "deterministic": True,
                 "consumes_raw_llm_adjusted_weights": False,
                 "basket_limit_multiplier": self.basket_limit_multiplier,
@@ -308,6 +340,40 @@ def _factor_exposure_for_group(weights: dict[str, float], group_name: str) -> fl
         for ticker in weights
         if group_name in get_factor_tags(ticker)
     )
+
+
+def _factor_exposures(weights: dict[str, float]) -> dict[str, float]:
+    return {
+        key: round(value, 6)
+        for key, value in sorted(calc_factor_exposure(weights).items())
+    }
+
+
+def _basket_exposures(
+    weights: dict[str, float],
+    active_baskets: set[str],
+    basket_limit_multiplier: float,
+) -> dict[str, Any]:
+    rows: dict[str, Any] = {}
+    for group_name in sorted(active_baskets):
+        definition = GROUP_DEFINITIONS.get(group_name)
+        if not definition:
+            rows[group_name] = {
+                "exposure": 0.0,
+                "limit": None,
+                "reduced_limit": None,
+                "unknown_group": True,
+            }
+            continue
+        exposure = sum(float(weights.get(ticker, 0.0) or 0.0) for ticker in definition.tickers)
+        reduced_limit = definition.limit_pct * basket_limit_multiplier
+        rows[group_name] = {
+            "exposure": round(exposure, 6),
+            "limit": round(definition.limit_pct, 6),
+            "reduced_limit": round(reduced_limit, 6),
+            "violated": exposure > reduced_limit + 1e-9,
+        }
+    return rows
 
 
 def _tickers_with_factor_tag(weights: dict[str, float], group_name: str) -> list[str]:

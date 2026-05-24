@@ -6,6 +6,14 @@ from typing import Any
 from services.execution_policy import evaluate_policy
 
 
+DEFAULT_COMMAND_PREFLIGHT_CONFIG = {
+    "max_daily_commands": 3,
+    "max_gross_turnover_per_day": 0.50,
+    "max_buy_delta": 0.15,
+    "max_sell_delta": 0.20,
+}
+
+
 def preflight_execution_weights(weights: dict[str, Any]) -> dict[str, Any]:
     """Return blocking policy violations for a proposed execution payload."""
     policy = evaluate_policy(weights=weights)
@@ -18,3 +26,139 @@ def preflight_execution_weights(weights: dict[str, Any]) -> dict[str, Any]:
         "policy_version": policy["policy_version"],
         "policy_evaluation": policy,
     }
+
+
+async def preflight_execution_command(
+    *,
+    command_id: str,
+    analysis_id: int | None,
+    target_weights: dict[str, Any],
+    current_weights: dict[str, Any] | None,
+    policy_version: str | None,
+    policy_sync_result: dict[str, Any] | None,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return command-level hard blocks before SetWeights is sent to QC."""
+    from services.execution_log_store import (
+        command_submission_state,
+        summarize_today_execution_activity,
+    )
+
+    cfg = _command_config(config)
+    target = _clean_weights(target_weights)
+    current = _clean_weights(current_weights or {})
+    metrics = command_weight_delta_metrics(target, current)
+    submission_state = await command_submission_state(command_id=command_id, analysis_id=analysis_id)
+    today = await summarize_today_execution_activity()
+
+    checks: dict[str, dict[str, Any]] = {
+        "command_id_present": {
+            "pass": bool(str(command_id or "").strip()),
+            "actual": command_id,
+            "threshold": "non-empty command_id",
+        },
+        "analysis_id_present": {
+            "pass": analysis_id is not None,
+            "actual": analysis_id,
+            "threshold": "analysis_id required",
+        },
+        "command_id_idempotent": {
+            "pass": not bool(submission_state.get("command_id_exists")),
+            "actual": submission_state.get("command_id_status"),
+            "threshold": "command_id not previously used",
+        },
+        "analysis_id_not_submitted": {
+            "pass": not bool(submission_state.get("analysis_id_submitted")),
+            "actual": submission_state.get("analysis_command_id"),
+            "threshold": "analysis_id has no prior submitted command",
+        },
+        "policy_version_present": {
+            "pass": bool(str(policy_version or "").strip()),
+            "actual": policy_version,
+            "threshold": "FastAPI policy_version required in command payload",
+        },
+        "policy_sync_success": {
+            "pass": bool((policy_sync_result or {}).get("success")),
+            "actual": policy_sync_result,
+            "threshold": "successful QC PolicySync required before SetWeights",
+        },
+        "daily_command_count_ok": {
+            "pass": int(today.get("command_count") or 0) < int(cfg["max_daily_commands"]),
+            "actual": int(today.get("command_count") or 0),
+            "threshold": int(cfg["max_daily_commands"]),
+        },
+        "daily_gross_turnover_ok": {
+            "pass": float(today.get("gross_turnover") or 0.0) + metrics["gross_turnover"] <= float(cfg["max_gross_turnover_per_day"]) + 1e-12,
+            "actual": round(float(today.get("gross_turnover") or 0.0) + metrics["gross_turnover"], 6),
+            "threshold": float(cfg["max_gross_turnover_per_day"]),
+        },
+        "buy_delta_ok": {
+            "pass": metrics["buy_delta"] <= float(cfg["max_buy_delta"]) + 1e-12,
+            "actual": metrics["buy_delta"],
+            "threshold": float(cfg["max_buy_delta"]),
+        },
+        "sell_delta_ok": {
+            "pass": metrics["sell_delta"] <= float(cfg["max_sell_delta"]) + 1e-12,
+            "actual": metrics["sell_delta"],
+            "threshold": float(cfg["max_sell_delta"]),
+        },
+    }
+    blockers = [name for name, row in checks.items() if not row["pass"]]
+    return {
+        "allowed": not blockers,
+        "command_id": command_id,
+        "analysis_id": analysis_id,
+        "policy_version": policy_version,
+        "checks": checks,
+        "blockers": blockers,
+        "metrics": metrics,
+        "today": today,
+        "config": cfg,
+        "execution_authority": "hard_block" if blockers else "allowed",
+    }
+
+
+def command_weight_delta_metrics(
+    target_weights: dict[str, Any],
+    current_weights: dict[str, Any] | None,
+) -> dict[str, float]:
+    target = _clean_weights(target_weights)
+    current = _clean_weights(current_weights or {})
+    buy_delta = 0.0
+    sell_delta = 0.0
+    for ticker in sorted((set(target) | set(current)) - {"CASH"}):
+        delta = float(target.get(ticker, 0.0) or 0.0) - float(current.get(ticker, 0.0) or 0.0)
+        if delta > 0:
+            buy_delta += delta
+        elif delta < 0:
+            sell_delta += abs(delta)
+    gross = buy_delta + sell_delta
+    return {
+        "buy_delta": round(buy_delta, 6),
+        "sell_delta": round(sell_delta, 6),
+        "gross_turnover": round(gross / 2.0, 6),
+    }
+
+
+def _command_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    out = dict(DEFAULT_COMMAND_PREFLIGHT_CONFIG)
+    for key, default in DEFAULT_COMMAND_PREFLIGHT_CONFIG.items():
+        try:
+            parsed = type(default)((config or {}).get(key, default))
+        except (TypeError, ValueError):
+            parsed = default
+        out[key] = parsed
+    return out
+
+
+def _clean_weights(weights: dict[str, Any] | None) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for raw_ticker, raw_weight in (weights or {}).items():
+        ticker = str(raw_ticker or "").upper().strip()
+        if not ticker:
+            continue
+        try:
+            out[ticker] = max(float(raw_weight or 0.0), 0.0)
+        except (TypeError, ValueError):
+            out[ticker] = 0.0
+    return out

@@ -5,9 +5,10 @@ from tools.qc_tools import tool_send_policy_sync, tool_send_weight_command
 from tools.notify_tools import tool_send_telegram
 from tools.db_tools import tool_verify_approval_token
 from services.execution_audit import build_execution_audit_payload
-from services.execution_ack_tracker import wait_for_qc_ack
-from services.execution_log_store import create_or_update_submitted_log
-from services.execution_preflight import preflight_execution_weights
+from services.execution_ack_tracker import wait_for_qc_ack_detail
+from services.execution_log_store import create_or_update_submitted_log, record_preflight_block
+from services.execution_policy import policy_snapshot
+from services.execution_preflight import preflight_execution_command, preflight_execution_weights
 
 logger = logging.getLogger("qc_fastapi_2.executor")
 
@@ -53,6 +54,21 @@ async def run_executor_async(
                 proposed_weights=risk_out.get("target_weights") or {},
                 reason="rejected_by_risk",
             ),
+        }
+
+    final_validation = risk_out.get("final_validation") or {}
+    if not final_validation or not final_validation.get("approved"):
+        await tool_send_telegram({
+            "text": "⛔ Final risk validation missing or failed — no command sent to QC."
+        })
+        return {
+            "execution_status": "rejected",
+            "execution_audit": build_execution_audit_payload(
+                action_status="rejected",
+                proposed_weights=risk_out.get("target_weights") or {},
+                reason="blocked_by_final_risk_validation",
+            ),
+            "final_validation": final_validation,
         }
 
     # Gate 2: token
@@ -139,8 +155,10 @@ async def run_executor_async(
 
     # Send weights
     command_id = f"analysis_{analysis_id}"
+    policy = policy_snapshot()
+    policy_version = policy.get("version")
     policy_sync_id = f"{command_id}_policy"
-    policy_sync = await tool_send_policy_sync({"command_id": policy_sync_id})
+    policy_sync = await tool_send_policy_sync({"command_id": policy_sync_id, "payload": policy})
     if not policy_sync.get("success"):
         err = policy_sync.get("error", "policy sync failed")
         await tool_send_telegram({
@@ -162,13 +180,61 @@ async def run_executor_async(
             ),
         }
 
-    result = await tool_send_weight_command({"weights": weights, "command_id": command_id})
+    command_preflight = await preflight_execution_command(
+        command_id=command_id,
+        analysis_id=analysis_id,
+        target_weights=weights,
+        current_weights=(final_validation.get("current_weights") or {}),
+        policy_version=policy_version,
+        policy_sync_result=policy_sync,
+        config=pipeline_context.get("execution_command_config") or {},
+    )
+    if not command_preflight.get("allowed"):
+        if "command_id_idempotent" not in (command_preflight.get("blockers") or []):
+            await record_preflight_block(
+                command_id=command_id,
+                analysis_id=analysis_id,
+                target_weights=weights,
+                preflight_result=command_preflight,
+                policy_version=policy_version,
+                policy_sync_result=policy_sync,
+            )
+        await tool_send_telegram({
+            "text": (
+                f"⛔ Command preflight blocked `{_command_label(command_id)}`\n"
+                f"blockers={command_preflight.get('blockers')}\n"
+                "No command sent to QC."
+            )
+        })
+        return {
+            "execution_status": "rejected",
+            "command_id": command_id,
+            "preflight": command_preflight,
+            "execution_audit": build_execution_audit_payload(
+                action_status="rejected",
+                proposed_weights=weights,
+                command_id=command_id,
+                rebalance_actions=risk_out.get("rebalance_actions") or [],
+                estimated_cost_pct=risk_out.get("estimated_cost_pct"),
+                reason="blocked_by_command_preflight",
+            ),
+        }
+
+    result = await tool_send_weight_command({
+        "weights": weights,
+        "command_id": command_id,
+        "analysis_id": analysis_id,
+        "policy": policy,
+    })
 
     if result.get("success"):
         await create_or_update_submitted_log(
             command_id=command_id,
             target_weights=weights,
             analysis_id=analysis_id,
+            policy_version=policy_version,
+            preflight_result=command_preflight,
+            policy_sync_result=policy_sync,
             qc_response=result.get("response"),
         )
         msg = (
@@ -178,11 +244,15 @@ async def run_executor_async(
             + "\nAwaiting QC algorithm confirmation."
         )
         await tool_send_telegram({"text": msg})
-        qc_status = await wait_for_qc_ack(command_id)
+        qc_ack = await wait_for_qc_ack_detail(command_id)
+        qc_status = qc_ack.get("qc_status")
         if qc_status == "accepted":
             await tool_send_telegram({"text": f"✅ QC accepted `{_command_label(command_id)}`"})
         elif qc_status == "rejected":
-            await tool_send_telegram({"text": f"❌ QC rejected `{_command_label(command_id)}`. Positions unchanged."})
+            reason = qc_ack.get("qc_rejection_reason") or "unknown"
+            await tool_send_telegram({
+                "text": f"❌ QC rejected `{_command_label(command_id)}`: {reason}. Positions unchanged."
+            })
         else:
             await tool_send_telegram({
                 "text": (
@@ -196,6 +266,11 @@ async def run_executor_async(
             "command_id": result.get("command_id", command_id),
             "qc_response": result.get("response"),
             "qc_status": qc_status,
+            "qc_rejection_reason": qc_ack.get("qc_rejection_reason"),
+            "qc_ack": qc_ack,
+            "policy_version": policy_version,
+            "preflight": command_preflight,
+            "policy_sync": policy_sync,
             "execution_audit": build_execution_audit_payload(
                 action_status="accepted" if qc_status == "accepted" else "sent",
                 proposed_weights=weights,
@@ -203,7 +278,7 @@ async def run_executor_async(
                 command_id=result.get("command_id", command_id),
                 rebalance_actions=risk_out.get("rebalance_actions") or [],
                 estimated_cost_pct=risk_out.get("estimated_cost_pct"),
-                reason=None if qc_status == "accepted" else qc_status,
+                reason=None if qc_status == "accepted" else (qc_ack.get("qc_rejection_reason") or qc_status),
             ),
         }
 
@@ -212,6 +287,10 @@ async def run_executor_async(
     return {
         "execution_status": "failed",
         "error": err,
+        "command_id": command_id,
+        "policy_version": policy_version,
+        "preflight": command_preflight,
+        "policy_sync": policy_sync,
         "execution_audit": build_execution_audit_payload(
             action_status="failed",
             proposed_weights=weights,

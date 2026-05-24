@@ -8,6 +8,7 @@ def _load_utcnow_db_naive():
     sqlalchemy = type(sys)("sqlalchemy")
     sqlalchemy.select = lambda *args, **kwargs: None
     sqlalchemy.update = lambda *args, **kwargs: None
+    sqlalchemy.desc = lambda value: value
 
     models = type(sys)("db.models")
     models.ExecutionLog = type("ExecutionLog", (), {})

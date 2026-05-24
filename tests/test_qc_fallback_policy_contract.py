@@ -45,6 +45,19 @@ class QCFallbackPolicyContractTest(unittest.TestCase):
         self.assertIn("[POLICY] Inline SetWeights policy applied version=", text)
         self.assertIn("[POLICY] source=", text)
 
+    def test_qc_command_hardening_contract_is_deployed(self):
+        text = QC_FILE.read_text()
+
+        self.assertIn("duplicate_command_id", text)
+        self.assertIn("missing_policy_version", text)
+        self.assertIn("policy_version_mismatch_with_buy", text)
+        self.assertIn("Version mismatch but reduce-only", text)
+        self.assertIn("_is_reduce_only_command", text)
+        self.assertIn("_current_portfolio_weight", text)
+        self.assertIn('"policy_mismatch": bool(policy_mismatch)', text)
+        self.assertIn('"actual_target_weights": actual_target_weights or {}', text)
+        self.assertIn("unknown tickers rejected", text)
+
     def test_qc_thematic_fallback_cap_is_not_legacy_five_percent(self):
         qc_policy = _load_qc_policy_constants()
 

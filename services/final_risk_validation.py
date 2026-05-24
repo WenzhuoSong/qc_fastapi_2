@@ -76,15 +76,35 @@ def validate_final_execution_target(
         material_drift_threshold is not None
         and max_abs_drift > material_drift_threshold + 1e-12
     )
-    conditional_review_required = bool(conditional_mutation_types and material_drift)
+    human_confirmed = bool(policy_ctx.get("human_confirmed"))
+    conditional_review_required = bool(conditional_mutation_types and material_drift and not human_confirmed)
+    conditional_mutation_violations = _conditional_mutation_violations(
+        drift_rows=drift_rows,
+        final=final,
+        current=current,
+        restricted_tickers=_restricted_tickers(policy_ctx),
+    ) if conditional_mutation_types else []
     unsafe_untyped_drift = bool(drift_rows and not mutation_types)
     severe_block = bool(severe_violations)
     blocking_mode = str(mode or "observe") == "blocking"
+    blocking_violations: list[str] = []
+    if not policy_evaluation.get("allowed"):
+        blocking_violations.append("execution_policy_violation")
+    if unknown_mutation_types:
+        blocking_violations.append("unknown_post_risk_mutation_type")
+    if conditional_review_required:
+        blocking_violations.append("conditional_mutation_material_drift_requires_human_confirmation")
+    if conditional_mutation_violations:
+        blocking_violations.append("conditional_mutation_contract_violation")
+    if unsafe_untyped_drift:
+        blocking_violations.append("untyped_post_risk_drift")
+
     approved = not severe_block
     if blocking_mode:
         approved = approved and bool(policy_evaluation.get("allowed"))
         approved = approved and not unknown_mutation_types
         approved = approved and not conditional_review_required
+        approved = approved and not conditional_mutation_violations
         approved = approved and not unsafe_untyped_drift
 
     return {
@@ -108,8 +128,11 @@ def validate_final_execution_target(
         "unknown_mutation_types": unknown_mutation_types,
         "unsafe_untyped_drift": unsafe_untyped_drift,
         "conditional_review_required": conditional_review_required,
+        "conditional_mutation_violations": conditional_mutation_violations,
+        "human_confirmed": human_confirmed,
+        "blocking_violations": blocking_violations if blocking_mode else [],
         "risk_context": risk_ctx,
-        "execution_effect": "hard_block" if severe_block else "observe",
+        "execution_effect": "hard_block" if not approved else ("blocking_pass" if blocking_mode else "observe"),
     }
 
 
@@ -192,6 +215,59 @@ def _drift_rows(
             }
         )
     return rows
+
+
+def _conditional_mutation_violations(
+    *,
+    drift_rows: list[dict[str, Any]],
+    final: dict[str, float],
+    current: dict[str, float],
+    restricted_tickers: set[str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for drift in drift_rows:
+        ticker = str(drift.get("ticker") or "").upper().strip()
+        if not ticker or ticker == "CASH":
+            continue
+        final_weight = float(final.get(ticker, 0.0) or 0.0)
+        current_weight = float(current.get(ticker, 0.0) or 0.0)
+        if current_weight <= 1e-9 and final_weight > 1e-9:
+            rows.append(
+                {
+                    "type": "conditional_creates_new_exposure",
+                    "ticker": ticker,
+                    "final": round(final_weight, 6),
+                }
+            )
+        if final_weight > current_weight + 1e-9:
+            rows.append(
+                {
+                    "type": "conditional_increases_above_current",
+                    "ticker": ticker,
+                    "current": round(current_weight, 6),
+                    "final": round(final_weight, 6),
+                }
+            )
+        if ticker in restricted_tickers:
+            rows.append(
+                {
+                    "type": "conditional_touches_restricted_ticker",
+                    "ticker": ticker,
+                }
+            )
+    return rows
+
+
+def _restricted_tickers(policy_ctx: dict[str, Any]) -> set[str]:
+    tickers: set[str] = set()
+    for key in (
+        "hard_risk_tickers",
+        "critical_alert_tickers",
+        "forced_trim_tickers",
+        "scorecard_restricted_tickers",
+    ):
+        tickers.update(str(item or "").upper().strip() for item in policy_ctx.get(key) or [])
+    return {ticker for ticker in tickers if ticker}
 
 
 def _clean_weights(weights: dict[str, Any] | None) -> dict[str, float]:

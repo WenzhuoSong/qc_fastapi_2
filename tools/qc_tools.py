@@ -42,13 +42,17 @@ async def tool_send_weight_command(inp: dict) -> dict:
     weights = inp.get("weights", {})
     command_id = inp.get("command_id") or inp.get("analysis_id") or f"weights_{int(time.time())}"
     policy = inp.get("policy") or policy_snapshot()
+    policy_version = policy.get("version")
+    if not policy_version:
+        return {"success": False, "error": "policy_version missing from SetWeights command"}
     url = f"{settings.qc_api_url}/live/commands/create"
 
     command_payload = {
         "target":     "SetWeights",
         "command_id": command_id,
+        "analysis_id": inp.get("analysis_id"),
         "weights":    {k: v for k, v in weights.items() if k != "CASH"},
-        "policy_version": policy.get("version"),
+        "policy_version": policy_version,
         "policy": policy,
     }
     body = {
@@ -66,7 +70,13 @@ async def tool_send_weight_command(inp: dict) -> dict:
                         f"SetWeights sent: command_id={command_id} "
                         f"weights={weights} | qc_response={resp_json}"
                     )
-                    return {"success": True, "response": resp_json, "command_id": command_id}
+                    return {
+                        "success": True,
+                        "response": resp_json,
+                        "command_id": command_id,
+                        "policy_version": policy_version,
+                        "command_payload": command_payload,
+                    }
                 logger.warning(
                     f"QC API {resp.status_code}: {resp.text} "
                     f"(attempt {attempt})"

@@ -55,6 +55,52 @@ class FinalRiskValidationTest(unittest.TestCase):
         self.assertFalse(out["approved"])
         self.assertEqual(out["severe_violations"][0]["type"], "new_hard_risk_exposure")
 
+    def test_blocking_mode_rejects_policy_violation_even_with_allowed_mutation(self):
+        out = validate_final_execution_target(
+            risk_approved_target={"PSI": 0.075, "CASH": 0.925},
+            final_target={"PSI": 0.08, "CASH": 0.92},
+            current_weights={"PSI": 0.05, "CASH": 0.95},
+            policy_context={"post_risk_mutation_types": ["cash_raise_from_policy_cap"]},
+            mode="blocking",
+        )
+
+        self.assertFalse(out["approved"])
+        self.assertIn("execution_policy_violation", out["blocking_violations"])
+
+    def test_blocking_mode_rejects_conditional_mutation_that_increases_above_current(self):
+        out = validate_final_execution_target(
+            risk_approved_target={"SPY": 0.20, "CASH": 0.80},
+            final_target={"SPY": 0.15, "CASH": 0.85},
+            current_weights={"SPY": 0.10, "CASH": 0.90},
+            policy_context={
+                "post_risk_mutation_types": ["turnover_scale_toward_current"],
+                "material_drift_threshold": 0.01,
+            },
+            mode="blocking",
+        )
+
+        self.assertFalse(out["approved"])
+        self.assertIn("conditional_mutation_contract_violation", out["blocking_violations"])
+        self.assertEqual(
+            out["conditional_mutation_violations"][0]["type"],
+            "conditional_increases_above_current",
+        )
+
+    def test_blocking_mode_allows_typed_tighten_only_policy_cap_drift(self):
+        out = validate_final_execution_target(
+            risk_approved_target={"PSI": 0.08, "CASH": 0.92},
+            final_target={"PSI": 0.075, "CASH": 0.925},
+            current_weights={"PSI": 0.05, "CASH": 0.95},
+            policy_context={
+                "post_risk_mutation_types": ["cash_raise_from_policy_cap"],
+                "material_drift_threshold": 0.001,
+            },
+            mode="blocking",
+        )
+
+        self.assertTrue(out["approved"], out)
+        self.assertEqual(out["blocking_violations"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

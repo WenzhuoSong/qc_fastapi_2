@@ -74,6 +74,38 @@ _DEFAULTS = {
         "signal_row_limit": 5000,
         "feature_source": "yfinance",
     },
+
+    # Portfolio Construction PR4 candidate diagnostics. Shadow is diagnostic-only.
+    "portfolio_construction_promotion_config": {
+        "portfolio_construction_mode": "shadow",
+        "enabled": False,
+        "require_manual_approval": True,
+        "min_shadow_cycles": 20,
+        "min_pass_rate": 0.90,
+        "max_material_diff": 0.015,
+        "max_turnover_diff": 0.02,
+        "require_semi_auto_gated_before_full_auto": True,
+        "min_gated_semi_auto_confirmed_cycles": 5,
+        "allow_full_auto_gated": False,
+    },
+
+    # Final post-risk validation. Blocking mode should be enabled only after
+    # the operator reviews observe-mode drift distribution.
+    "final_risk_validation_config": {
+        "mode": "observe",
+        "material_drift_threshold": 0.015,
+        "threshold_basis": "operator_default_pending_observe_mode_distribution",
+        "require_human_confirmation_for_conditional_material_drift": True,
+    },
+
+    # Command-level execution preflight. These caps sit after final risk
+    # validation and before any SetWeights command can be submitted to QC.
+    "execution_command_config": {
+        "max_daily_commands": 3,
+        "max_gross_turnover_per_day": 0.50,
+        "max_buy_delta": 0.15,
+        "max_sell_delta": 0.20,
+    },
 }
 
 

@@ -15,6 +15,9 @@ class QCExecutionAck(BaseModel):
     cmd_id: str
     status: str
     reason: str | None = None
+    policy_version: str | None = None
+    policy_mismatch: bool = False
+    actual_target_weights: dict[str, float] | None = None
     qc_timestamp: str | None = None
     rejected_tickers: list[str] | None = None
 

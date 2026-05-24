@@ -265,6 +265,7 @@ def _build_payload(
         "portfolio_construction_promotion_gate": _compact_portfolio_construction_promotion_gate(
             risk_out.get("portfolio_construction_promotion_gate") or {}
         ),
+        "final_validation": _compact_final_validation(risk_out.get("final_validation") or {}),
         "auth_mode":        pipeline_context.get("auth_mode", "SEMI_AUTO"),
         "timeout_minutes":  settings.semi_auto_timeout_minutes,
         "debate_summary":   debate,
@@ -298,6 +299,7 @@ def _fallback_template(p: dict) -> str:
     pc_eval = p.get("portfolio_construction_evaluation") or {}
     pc_readiness = p.get("portfolio_construction_readiness") or {}
     pc_gate = p.get("portfolio_construction_promotion_gate") or {}
+    final_validation = p.get("final_validation") or {}
 
     up, down = "\u25b2", "\u25bc"
 
@@ -332,6 +334,7 @@ def _fallback_template(p: dict) -> str:
     pc_eval_line = _format_portfolio_construction_evaluation_line(pc_eval)
     pc_readiness_line = _format_portfolio_construction_readiness_line(pc_readiness)
     pc_gate_line = _format_portfolio_construction_promotion_gate_line(pc_gate)
+    final_validation_line = _format_final_validation_line(final_validation)
     decision_ledger_line = _format_decision_ledger_line(decision_ledger)
     position_governance_line = _format_position_governance_line(position_governance)
 
@@ -358,6 +361,7 @@ def _fallback_template(p: dict) -> str:
             f"{pc_eval_line}"
             f"{pc_readiness_line}"
             f"{pc_gate_line}"
+            f"{final_validation_line}"
             f"{decision_ledger_line}"
             f"{position_governance_line}"
             f"<b>Failed checks:</b>\n{reasons_text}\n\n"
@@ -404,6 +408,7 @@ def _fallback_template(p: dict) -> str:
         f"{pc_eval_line}"
         f"{pc_readiness_line}"
         f"{pc_gate_line}"
+        f"{final_validation_line}"
         f"{decision_ledger_line}"
         f"{position_governance_line}"
         f"<b>Suggested actions</b>\n"
@@ -1008,11 +1013,33 @@ def _compact_portfolio_construction_promotion_gate(gate: dict) -> dict:
     return {
         "status": gate.get("status"),
         "eligible": bool(gate.get("eligible")),
+        "portfolio_construction_mode": gate.get("portfolio_construction_mode"),
         "enabled": bool(gate.get("enabled")),
         "approval_mode": gate.get("approval_mode"),
         "blockers": list(gate.get("blockers") or []),
         "would_promote_to": gate.get("would_promote_to"),
         "execution_authority": gate.get("execution_authority"),
+    }
+
+
+def _compact_final_validation(validation: dict) -> dict:
+    if not validation:
+        return {}
+    drift = validation.get("drift") or {}
+    policy = validation.get("policy_evaluation") or {}
+    return {
+        "mode": validation.get("mode"),
+        "approved": bool(validation.get("approved")),
+        "execution_effect": validation.get("execution_effect"),
+        "policy_allowed": bool(policy.get("allowed")),
+        "severe_block": bool(validation.get("severe_block")),
+        "max_abs_drift": drift.get("max_abs_drift"),
+        "material_drift_threshold": drift.get("material_drift_threshold"),
+        "material_drift": bool(drift.get("material_drift")),
+        "mutation_types": list(validation.get("mutation_types") or []),
+        "blocking_violations": list(validation.get("blocking_violations") or []),
+        "conditional_mutation_violations": list(validation.get("conditional_mutation_violations") or []),
+        "severe_violations": list(validation.get("severe_violations") or []),
     }
 
 
@@ -1059,6 +1086,7 @@ def _format_portfolio_construction_promotion_gate_line(gate: dict) -> str:
     blockers = gate.get("blockers") or []
     parts = [
         f"status={gate.get('status') or 'unknown'}",
+        f"mode={gate.get('portfolio_construction_mode') or 'shadow'}",
         f"enabled={bool(gate.get('enabled'))}",
         f"eligible={bool(gate.get('eligible'))}",
         f"approval={gate.get('approval_mode') or 'auto'}",
@@ -1069,6 +1097,30 @@ def _format_portfolio_construction_promotion_gate_line(gate: dict) -> str:
     if blockers:
         parts.append("blockers=" + ",".join(str(item) for item in blockers[:4]))
     return "<b>Portfolio construction promotion gate</b>\n  " + " | ".join(parts) + "\n\n"
+
+
+def _format_final_validation_line(validation: dict) -> str:
+    if not validation:
+        return ""
+    blockers = (
+        validation.get("blocking_violations")
+        or validation.get("severe_violations")
+        or validation.get("conditional_mutation_violations")
+        or []
+    )
+    parts = [
+        f"mode={validation.get('mode') or 'observe'}",
+        f"approved={bool(validation.get('approved'))}",
+        f"policy_ok={bool(validation.get('policy_allowed'))}",
+        f"max_drift={float(validation.get('max_abs_drift') or 0.0):.2%}",
+        f"threshold={float(validation.get('material_drift_threshold') or 0.0):.2%}",
+    ]
+    mutation_types = validation.get("mutation_types") or []
+    if mutation_types:
+        parts.append("mutations=" + ",".join(str(item) for item in mutation_types[:4]))
+    if blockers:
+        parts.append("blockers=" + ",".join(str(item) for item in blockers[:4]))
+    return "<b>Final risk validation</b>\n  " + " | ".join(parts) + "\n\n"
 
 
 def _format_lifecycle_targets(row: dict) -> str:

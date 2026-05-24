@@ -31,6 +31,8 @@ class TargetBuildResult:
 def build_target_weights(
     *,
     base_weights: dict[str, Any],
+    construction_weights: dict[str, Any] | None = None,
+    construction_source: str | None = None,
     current_weights: dict[str, Any],
     market_scorecard: dict[str, Any] | None,
     decision_style: dict[str, Any] | None,
@@ -41,6 +43,8 @@ def build_target_weights(
 ) -> TargetBuildResult:
     """Construct deterministic target weights from non-LLM execution contracts."""
     base = _clean_weights(base_weights)
+    construction = _clean_weights(construction_weights)
+    construction_participated = construction_weights is not None and bool(str(construction_source or "").strip())
     current = _clean_weights(current_weights)
     scorecard = market_scorecard or {}
     style = decision_style or {}
@@ -49,7 +53,9 @@ def build_target_weights(
 
     decisions = _decisions_by_ticker(governance)
     advisory = _advisory_by_ticker(validated_advisory or governance.get("advisory_overrides") or [])
-    tickers = sorted((set(base) | set(current) | set(decisions)) - {"CASH"})
+    starting_weights = construction if construction_participated else base
+    start_source = str(construction_source or "base_weights").strip() if construction_participated else "base_weights"
+    tickers = sorted((set(base) | set(construction) | set(current) | set(decisions)) - {"CASH"})
     permission = str(scorecard.get("investment_permission") or "")
     no_add = permission in NO_ADD_PERMISSIONS or bool(scorecard.get("require_human_confirmation"))
     max_single_delta = _effective_single_delta(scorecard, style, cfg)
@@ -59,6 +65,7 @@ def build_target_weights(
     violations: list[str] = []
     steps = [
         "base_weight",
+        "construction_weight" if construction_participated else "construction_weight_skipped",
         "scorecard_clip",
         "governance_adjustment",
         "validated_llm_delta",
@@ -70,22 +77,31 @@ def build_target_weights(
 
     for ticker in tickers:
         base_w = float(base.get(ticker, 0.0) or 0.0)
+        construction_w = float(construction.get(ticker, 0.0) or 0.0) if construction_participated else None
+        start_w = float(starting_weights.get(ticker, 0.0) or 0.0)
         current_w = float(current.get(ticker, 0.0) or 0.0)
         row = decisions.get(ticker) or {}
         advisory_row = advisory.get(ticker)
-        target = base_w
+        target = start_w
+        changed_by: list[str] = []
+        if construction_participated and abs(start_w - base_w) > 1e-9:
+            changed_by.append("portfolio_construction")
 
         if no_add and target > current_w:
             violations.append(f"scorecard_no_add:{ticker} {target:.2%}->{current_w:.2%}")
             target = current_w
+            changed_by.append("scorecard_clip")
 
         governance_target = _optional_float(row.get("target_after"))
         if governance_target is not None:
+            if abs(governance_target - target) > 1e-9:
+                changed_by.append("position_governance")
             target = governance_target
 
         if no_add and target > current_w:
             violations.append(f"governance_no_add_clip:{ticker} {target:.2%}->{current_w:.2%}")
             target = current_w
+            changed_by.append("scorecard_clip")
 
         pre_delta_clip = target
         if max_single_delta is not None:
@@ -94,6 +110,7 @@ def build_target_weights(
             target = min(max(target, lower), upper)
             if abs(target - pre_delta_clip) > 1e-9:
                 violations.append(f"single_delta_clip:{ticker} {pre_delta_clip:.2%}->{target:.2%}")
+                changed_by.append("single_delta_clip")
 
         target = max(target, 0.0)
         if target > 1e-9:
@@ -102,10 +119,12 @@ def build_target_weights(
         validated_delta = _validated_advisory_delta(advisory_row)
         per_ticker[ticker] = {
             "base_weight": round(base_w, 6),
+            "construction_weight": round(construction_w, 6) if construction_w is not None else None,
+            "target_start_source": start_source,
             "current_weight": round(current_w, 6),
             "scorecard_permission": permission,
             "governance_adjustment": (
-                round(governance_target - base_w, 6)
+                round(governance_target - start_w, 6)
                 if governance_target is not None
                 else 0.0
             ),
@@ -116,6 +135,7 @@ def build_target_weights(
             "reason_codes": list(row.get("reason_codes") or []),
             "allowed_actions": list(row.get("allowed_actions") or []),
             "advisory_validator_result": (advisory_row or {}).get("validator_result"),
+            "changed_by": _unique(changed_by),
         }
 
     hedge_overlay = _apply_hedge_intent_overlay(work, current, cfg.get("hedge_intent"))
@@ -127,6 +147,12 @@ def build_target_weights(
                 ticker,
                 {
                     "base_weight": round(float(base.get(ticker, 0.0) or 0.0), 6),
+                    "construction_weight": (
+                        round(float(construction.get(ticker, 0.0) or 0.0), 6)
+                        if construction_participated
+                        else None
+                    ),
+                    "target_start_source": start_source,
                     "current_weight": round(float(current.get(ticker, 0.0) or 0.0), 6),
                     "scorecard_permission": permission,
                     "governance_adjustment": 0.0,
@@ -137,8 +163,12 @@ def build_target_weights(
                     "reason_codes": [],
                     "allowed_actions": [],
                     "advisory_validator_result": None,
+                    "changed_by": [],
                 },
             )
+            per_ticker[ticker].setdefault("changed_by", [])
+            if "hedge_intent_overlay" not in per_ticker[ticker]["changed_by"]:
+                per_ticker[ticker]["changed_by"].append("hedge_intent_overlay")
             per_ticker[ticker]["hedge_intent_adjustment"] = round(
                 float(work.get(ticker, 0.0) or 0.0) - float(base.get(ticker, 0.0) or 0.0),
                 6,
@@ -169,8 +199,21 @@ def build_target_weights(
     if cap_events:
         violations.append(f"policy_cap:{len(cap_events)}")
 
+    cap_event_tickers = {
+        str(event.get("ticker") or "").upper().strip()
+        for event in cap_events
+        if isinstance(event, dict) and event.get("ticker")
+    }
+    turnover_clipped = any(str(item).startswith("turnover_clip:") for item in violations)
     for ticker, row in per_ticker.items():
-        row["final_target"] = round(float(normalized.get(ticker, 0.0) or 0.0), 6)
+        final_target = round(float(normalized.get(ticker, 0.0) or 0.0), 6)
+        pre_target = _optional_float(row.get("pre_normalized_target"))
+        if turnover_clipped and pre_target is not None and abs(final_target - pre_target) > 1e-9:
+            row.setdefault("changed_by", []).append("turnover_clip")
+        if ticker in cap_event_tickers and pre_target is not None and abs(final_target - pre_target) > 1e-9:
+            row.setdefault("changed_by", []).append("policy_cap")
+        row["changed_by"] = _unique(row.get("changed_by") or [])
+        row["final_target"] = final_target
 
     turnover_after = _turnover(normalized, current)
     clean_mode = _target_builder_mode(mode)
@@ -190,7 +233,12 @@ def build_target_weights(
             "execution_effect": "risk_manager_input" if clean_mode == "target_builder_gated" else "none",
             "consumes_raw_llm_adjusted_weights": False,
             "raw_llm_adjusted_weights_consumed": False,
-            "target_construction_source": "deterministic_target_builder",
+            "target_construction_source": "portfolio_construction"
+            if construction_participated
+            else "deterministic_target_builder",
+            "target_start_source": start_source,
+            "construction_participated": construction_participated,
+            "construction_source": str(construction_source or "").strip() or None,
             "policy_version": policy_snapshot()["version"],
             "policy_evaluation": policy_evaluation,
             "policy_cap_events": cap_events,
@@ -421,3 +469,15 @@ def _target_builder_mode(mode: str) -> str:
     if clean in {"target_builder_gated", "target_builder_shadow"}:
         return clean
     return "target_builder_shadow"
+
+
+def _unique(values: list[Any]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        clean = str(value or "").strip()
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        out.append(clean)
+    return out

@@ -150,6 +150,9 @@ async def _latest_analysis() -> dict[str, Any]:
         "portfolio_construction_promotion_gate": _compact_portfolio_construction_promotion_gate(
             (risk.get("portfolio_construction_promotion_gate") if isinstance(risk, dict) else None) or {}
         ),
+        "final_validation": _compact_final_validation(
+            (risk.get("final_validation") if isinstance(risk, dict) else None) or {}
+        ),
         "stage_metrics": stage_metrics,
         "rejection_reasons": (risk.get("rejection_reasons") if isinstance(risk, dict) else []) or [],
     }
@@ -159,7 +162,7 @@ async def _portfolio_construction_readiness() -> dict[str, Any]:
     try:
         from services.portfolio_construction_evaluator import load_portfolio_construction_readiness
 
-        return await load_portfolio_construction_readiness(limit=20, min_cycles=20, min_pass_rate=0.80)
+        return await load_portfolio_construction_readiness(limit=20, min_cycles=20, min_pass_rate=0.90)
     except Exception as exc:
         return {"status": "unavailable", "error": str(exc), "execution_authority": "none"}
 
@@ -523,11 +526,32 @@ def _compact_portfolio_construction_promotion_gate(gate: dict[str, Any]) -> dict
     return {
         "status": gate.get("status"),
         "eligible": gate.get("eligible"),
+        "portfolio_construction_mode": gate.get("portfolio_construction_mode"),
         "enabled": gate.get("enabled"),
         "approval_mode": gate.get("approval_mode"),
         "blockers": gate.get("blockers") or [],
         "would_promote_to": gate.get("would_promote_to"),
         "execution_authority": gate.get("execution_authority"),
+    }
+
+
+def _compact_final_validation(validation: dict[str, Any]) -> dict[str, Any]:
+    if not validation:
+        return {}
+    drift = validation.get("drift") or {}
+    policy = validation.get("policy_evaluation") or {}
+    return {
+        "mode": validation.get("mode"),
+        "approved": validation.get("approved"),
+        "execution_effect": validation.get("execution_effect"),
+        "policy_allowed": policy.get("allowed"),
+        "max_abs_drift": drift.get("max_abs_drift"),
+        "material_drift_threshold": drift.get("material_drift_threshold"),
+        "material_drift": drift.get("material_drift"),
+        "mutation_types": validation.get("mutation_types") or [],
+        "blocking_violations": validation.get("blocking_violations") or [],
+        "severe_violations": validation.get("severe_violations") or [],
+        "conditional_mutation_violations": validation.get("conditional_mutation_violations") or [],
     }
 
 
@@ -724,6 +748,7 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
     feature_sources = latest.get("feature_source_summary") or {}
     pc_eval = latest.get("portfolio_construction_evaluation") or {}
     pc_gate = latest.get("portfolio_construction_promotion_gate") or {}
+    final_validation = latest.get("final_validation") or {}
     thesis = (governance.get("thesis_status_summary") or {}).get("problem_tickers") or []
     hints = governance.get("manual_action_hints") or []
     return f"""
@@ -735,6 +760,7 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
       <h3>Rejection Reasons</h3>{_render_list("", latest.get("rejection_reasons") or [])}
       <h3>Portfolio Construction Evaluation</h3>{_render_kv(pc_eval)}
       <h3>Portfolio Construction Promotion Gate</h3>{_render_kv(pc_gate)}
+      <h3>Final Risk Validation</h3>{_render_kv(final_validation)}
       <h3>Manual Review Hints</h3>{_render_table(hints, ["ticker", "suggested_action", "current_weight", "suggested_target", "delta"])}
       <h3>Thesis Problems</h3>{_render_table(thesis, ["ticker", "status", "validator"])}
       <h3>Position Explanations</h3>{_render_table(governance.get("position_explanations") or [], ["ticker", "position_state", "decision", "current_weight", "target_after", "unrealized_pnl_pct", "risk_budget_status", "strategy_support", "action_permission", "strategy_intent", "llm_effect", "construction_effect", "risk_governance_effect", "final_explanation", "why_hold", "why_not_add", "why_not_exit", "next_trigger"])}

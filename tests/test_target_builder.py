@@ -60,6 +60,47 @@ class TargetBuilderTest(unittest.TestCase):
 
         self.assertEqual(out["diagnostics"]["mode"], "target_builder_gated")
         self.assertFalse(out["diagnostics"]["raw_llm_adjusted_weights_consumed"])
+        self.assertFalse(out["diagnostics"]["construction_participated"])
+        self.assertIsNone(out["per_ticker"]["QQQ"]["construction_weight"])
+
+    def test_gated_mode_can_start_from_portfolio_construction_weights(self):
+        out = build_target_weights(
+            base_weights={"SPY": 0.10, "CASH": 0.90},
+            construction_weights={"SPY": 0.18, "CASH": 0.82},
+            construction_source="portfolio_construction",
+            current_weights={"SPY": 0.10, "CASH": 0.90},
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[],
+            constraints={},
+            mode="target_builder_gated",
+        ).to_dict()
+
+        self.assertEqual(out["target_weights"]["SPY"], 0.18)
+        self.assertEqual(out["diagnostics"]["target_construction_source"], "portfolio_construction")
+        self.assertTrue(out["diagnostics"]["construction_participated"])
+        self.assertEqual(out["per_ticker"]["SPY"]["base_weight"], 0.10)
+        self.assertEqual(out["per_ticker"]["SPY"]["construction_weight"], 0.18)
+        self.assertIn("portfolio_construction", out["per_ticker"]["SPY"]["changed_by"])
+
+    def test_construction_weight_zero_means_explicit_clear(self):
+        out = build_target_weights(
+            base_weights={"QQQ": 0.12, "CASH": 0.88},
+            construction_weights={"QQQ": 0.0, "CASH": 1.0},
+            construction_source="portfolio_construction",
+            current_weights={"QQQ": 0.12, "CASH": 0.88},
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[],
+            constraints={},
+            mode="target_builder_gated",
+        ).to_dict()
+
+        self.assertEqual(out["per_ticker"]["QQQ"]["construction_weight"], 0.0)
+        self.assertEqual(out["per_ticker"]["QQQ"]["final_target"], 0.0)
+        self.assertIn("portfolio_construction", out["per_ticker"]["QQQ"]["changed_by"])
 
     def test_scorecard_no_add_clips_base_target_to_current(self):
         out = build_target_weights(

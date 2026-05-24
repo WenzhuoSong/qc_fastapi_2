@@ -2,7 +2,11 @@ import unittest
 
 from services.portfolio_construction_evaluator import (
     build_portfolio_construction_promotion_gate,
+    build_portfolio_construction_rollout_gate,
+    criteria_from_pc_promotion_config,
     evaluate_portfolio_construction_shadow,
+    is_gated_semi_auto_confirmed_risk_output,
+    readiness_limits_from_pc_promotion_config,
     summarize_portfolio_construction_readiness,
 )
 
@@ -100,7 +104,7 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
         self.assertEqual(out["status"], "shadow_only")
         self.assertEqual(out["blocker_counts"]["shadow_policy_violation"], 1)
 
-    def test_promotion_gate_defaults_auto_enabled(self):
+    def test_promotion_gate_defaults_to_shadow_only(self):
         readiness = {
             "promotion_ready": True,
             "status": "rolling_promotion_candidate",
@@ -111,8 +115,10 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
 
         gate = build_portfolio_construction_promotion_gate(readiness)
 
-        self.assertTrue(gate["eligible"])
-        self.assertEqual(gate["status"], "auto_approved")
+        self.assertFalse(gate["eligible"])
+        self.assertEqual(gate["status"], "shadow_only")
+        self.assertEqual(gate["portfolio_construction_mode"], "shadow")
+        self.assertIn("portfolio_construction_mode_shadow", gate["blockers"])
         self.assertEqual(gate["approval_mode"], "auto")
         self.assertEqual(gate["execution_authority"], "none")
 
@@ -127,7 +133,11 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
 
         gate = build_portfolio_construction_promotion_gate(
             readiness,
-            {"enabled": True, "require_manual_approval": True},
+            {
+                "portfolio_construction_mode": "candidate",
+                "enabled": True,
+                "require_manual_approval": True,
+            },
         )
 
         self.assertTrue(gate["eligible"])
@@ -143,11 +153,129 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
             "blocker_counts": {},
         }
 
-        gate = build_portfolio_construction_promotion_gate(readiness, {"enabled": False})
+        gate = build_portfolio_construction_promotion_gate(
+            readiness,
+            {"portfolio_construction_mode": "candidate", "enabled": False},
+        )
 
         self.assertFalse(gate["eligible"])
         self.assertEqual(gate["status"], "disabled")
         self.assertIn("promotion_gate_disabled", gate["blockers"])
+
+    def test_criteria_and_readiness_limits_use_pr4_config_names(self):
+        cfg = {
+            "max_material_diff": 0.012,
+            "max_turnover_diff": 0.018,
+            "min_shadow_cycles": 5,
+            "min_pass_rate": 0.95,
+        }
+
+        criteria = criteria_from_pc_promotion_config(cfg)
+        limits = readiness_limits_from_pc_promotion_config(cfg)
+
+        self.assertEqual(criteria.max_mean_weight_deviation, 0.012)
+        self.assertEqual(criteria.max_turnover_delta, 0.018)
+        self.assertEqual(limits["limit"], 5)
+        self.assertEqual(limits["min_cycles"], 5)
+        self.assertEqual(limits["min_pass_rate"], 0.95)
+
+    def test_rollout_gate_allows_gated_semi_auto_when_ready(self):
+        readiness = {
+            "promotion_ready": True,
+            "status": "rolling_promotion_candidate",
+            "cycles": 20,
+            "pass_rate": 1.0,
+            "blocker_counts": {},
+        }
+
+        gate = build_portfolio_construction_rollout_gate(
+            readiness,
+            {"portfolio_construction_mode": "gated", "enabled": True},
+            auth_mode="SEMI_AUTO",
+        )
+
+        self.assertTrue(gate["eligible"])
+        self.assertEqual(gate["status"], "semi_auto_gated_ready")
+        self.assertEqual(gate["rollout_phase"], "semi_auto_gated")
+
+    def test_rollout_gate_blocks_full_auto_until_confirmed_and_enabled(self):
+        readiness = {
+            "promotion_ready": True,
+            "status": "rolling_promotion_candidate",
+            "cycles": 20,
+            "pass_rate": 1.0,
+            "blocker_counts": {},
+        }
+
+        gate = build_portfolio_construction_rollout_gate(
+            readiness,
+            {"portfolio_construction_mode": "gated", "enabled": True},
+            auth_mode="FULL_AUTO",
+            semi_auto_confirmed_cycles=2,
+        )
+
+        self.assertFalse(gate["eligible"])
+        self.assertEqual(gate["status"], "rollout_blocked")
+        self.assertIn("semi_auto_gated_confirmations_insufficient", gate["blockers"])
+        self.assertIn("full_auto_gated_not_enabled", gate["blockers"])
+
+    def test_rollout_gate_allows_full_auto_after_confirmed_and_enabled(self):
+        readiness = {
+            "promotion_ready": True,
+            "status": "rolling_promotion_candidate",
+            "cycles": 20,
+            "pass_rate": 1.0,
+            "blocker_counts": {},
+        }
+
+        gate = build_portfolio_construction_rollout_gate(
+            readiness,
+            {
+                "portfolio_construction_mode": "gated",
+                "enabled": True,
+                "allow_full_auto_gated": True,
+                "min_gated_semi_auto_confirmed_cycles": 5,
+            },
+            auth_mode="FULL_AUTO",
+            semi_auto_confirmed_cycles=5,
+        )
+
+        self.assertTrue(gate["eligible"])
+        self.assertEqual(gate["status"], "full_auto_gated_ready")
+
+    def test_identifies_gated_semi_auto_confirmed_risk_output(self):
+        self.assertTrue(
+            is_gated_semi_auto_confirmed_risk_output(
+                {
+                    "target_builder_input": {
+                        "diagnostics": {
+                            "construction_participated": True,
+                            "target_construction_source": "portfolio_construction",
+                        }
+                    },
+                    "portfolio_construction_promotion_gate": {
+                        "portfolio_construction_mode": "gated",
+                        "eligible": True,
+                    },
+                }
+            )
+        )
+        self.assertFalse(
+            is_gated_semi_auto_confirmed_risk_output(
+                {
+                    "target_builder_input": {
+                        "diagnostics": {
+                            "construction_participated": False,
+                            "target_construction_source": "deterministic_target_builder",
+                        }
+                    },
+                    "portfolio_construction_promotion_gate": {
+                        "portfolio_construction_mode": "candidate",
+                        "eligible": True,
+                    },
+                }
+            )
+        )
 
 
 if __name__ == "__main__":

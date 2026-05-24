@@ -37,6 +37,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta
+from typing import Any
 
 from agents.researcher       import run_researcher_async
 from agents.bull_researcher  import run_bull_researcher_async
@@ -55,6 +56,8 @@ from services.market_scorecard import build_market_scorecard
 from services.news_evidence   import build_news_evidence
 from services.decision_style  import resolve_decision_style
 from services.portfolio_construction import PortfolioConstructionModel, build_construction_signal_strengths
+from services.portfolio_construction_gate import construction_input_for_target_builder
+from services.pc_promotion_config import default_pc_promotion_config
 from services.decision_ledger import (
     apply_execution_audit_to_decision_ledger,
     build_decision_ledger,
@@ -70,6 +73,7 @@ from services.position_governance import apply_position_governance
 from services.execution_policy import policy_snapshot
 from services.final_execution_policy_cap import apply_final_execution_policy_cap
 from services.final_risk_validation import validate_final_execution_target
+from services.final_risk_validation_config import default_final_risk_validation_config
 from services.empirical_profile_store import (
     build_empirical_profiles_from_feature_store,
     collect_empirical_profile_tickers,
@@ -433,6 +437,8 @@ async def _guard_and_config(trigger: str) -> dict | None:
         pm_cfg          = await get_system_config(db, "position_manager_config")
         pg_cfg          = await get_system_config(db, "position_governance_config")
         pc_promo_cfg    = await get_system_config(db, "portfolio_construction_promotion_config")
+        final_validation_cfg = await get_system_config(db, "final_risk_validation_config")
+        execution_command_cfg = await get_system_config(db, "execution_command_config")
         override_cfg    = await get_system_config(db, "circuit_override")
         alert_cfg       = await get_system_config(db, "circuit_pause_alert")
 
@@ -469,7 +475,13 @@ async def _guard_and_config(trigger: str) -> dict | None:
     pending_alerts = (alerts_cfg.value if alerts_cfg else {}).get("alerts", []) or []
     position_manager_config = (pm_cfg.value if pm_cfg else {}) or {}
     position_governance_config = (pg_cfg.value if pg_cfg else {}) or {}
-    portfolio_construction_promotion_config = (pc_promo_cfg.value if pc_promo_cfg else {}) or {}
+    portfolio_construction_promotion_config = default_pc_promotion_config(
+        (pc_promo_cfg.value if pc_promo_cfg else {}) or {}
+    )
+    final_risk_validation_config = default_final_risk_validation_config(
+        (final_validation_cfg.value if final_validation_cfg else {}) or {}
+    )
+    execution_command_config = (execution_command_cfg.value if execution_command_cfg else {}) or {}
 
     params_key = f"strategy_{active_name}_params"
     async with AsyncSessionLocal() as db:
@@ -492,6 +504,8 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "position_manager_config": position_manager_config,
         "position_governance_config": position_governance_config,
         "portfolio_construction_promotion_config": portfolio_construction_promotion_config,
+        "final_risk_validation_config": final_risk_validation_config,
+        "execution_command_config": execution_command_config,
     }
 
 
@@ -1188,35 +1202,70 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 config=pipeline_context.get("position_governance_config") or {},
             )
             try:
-                portfolio_construction_shadow = PortfolioConstructionModel().construct(
+                pc_config = default_pc_promotion_config(
+                    pipeline_context.get("portfolio_construction_promotion_config") or {}
+                )
+                pc_mode = str(pc_config.get("portfolio_construction_mode") or "shadow")
+                pc_stage = (
+                    "5e_portfolio_construction_candidate"
+                    if pc_mode in {"candidate", "gated"}
+                    else "5e_portfolio_construction_shadow"
+                )
+                signal_strengths = build_construction_signal_strengths(evidence_bundle)
+                portfolio_construction_payload = PortfolioConstructionModel().construct(
                     base_weights=base_weights,
                     current_weights=brief.get("current_weights") or {},
-                    signal_strengths=build_construction_signal_strengths(evidence_bundle),
+                    signal_strengths=signal_strengths,
                     basket_reviews=(pre_risk_governance.portfolio_summary or {}).get("basket_reviews") or [],
                     scorecard_permission=(market_scorecard or {}).get("investment_permission"),
                     turnover_budget=_effective_portfolio_turnover_budget(market_scorecard, decision_style),
                 ).to_dict()
-                pipeline_context["portfolio_construction_shadow"] = portfolio_construction_shadow
+                portfolio_construction_payload["portfolio_construction_mode"] = pc_mode
+                portfolio_construction_payload.setdefault("diagnostics", {})
+                portfolio_construction_payload["diagnostics"].update({
+                    "runtime_mode": pc_mode,
+                    "execution_effect": "diagnostic_only",
+                    "target_builder_consumed": False,
+                })
+                pipeline_context["portfolio_construction_shadow"] = portfolio_construction_payload
+                if pc_mode in {"candidate", "gated"}:
+                    pipeline_context["portfolio_construction_candidate"] = portfolio_construction_payload
+                pipeline_context["portfolio_construction_mode"] = pc_mode
                 await _save_step_log(
-                    analysis_id, "5e_portfolio_construction_shadow", "portfolio_construction",
+                    analysis_id, pc_stage, "portfolio_construction",
                     input_data={
-                        "mode": "shadow",
+                        "mode": pc_mode,
                         "base_weights": base_weights,
                         "current_weights": brief.get("current_weights") or {},
+                        "signal_strengths": signal_strengths,
                         "basket_reviews": (pre_risk_governance.portfolio_summary or {}).get("basket_reviews") or [],
+                        "scorecard_permission": (market_scorecard or {}).get("investment_permission"),
+                        "turnover_budget": _effective_portfolio_turnover_budget(market_scorecard, decision_style),
                         "market_scorecard": market_scorecard,
                         "decision_style": decision_style,
+                        "execution_effect": "none",
                     },
-                    output_data=portfolio_construction_shadow,
+                    output_data=portfolio_construction_payload,
                     duration_ms=0,
                 )
             except Exception as pc_error:
                 pipeline_context["portfolio_construction_shadow_error"] = str(pc_error)
                 logger.warning("[Stage5→6] Portfolio Construction shadow failed; continuing target_builder: %s", pc_error)
+                pc_mode = str(
+                    (pipeline_context.get("portfolio_construction_promotion_config") or {}).get(
+                        "portfolio_construction_mode",
+                        "shadow",
+                    )
+                )
+                pc_stage = (
+                    "5e_portfolio_construction_candidate"
+                    if pc_mode in {"candidate", "gated"}
+                    else "5e_portfolio_construction_shadow"
+                )
                 await _save_step_log(
-                    analysis_id, "5e_portfolio_construction_shadow", "portfolio_construction",
+                    analysis_id, pc_stage, "portfolio_construction",
                     input_data={
-                        "mode": "shadow",
+                        "mode": pc_mode,
                         "base_weights": base_weights,
                         "current_weights": brief.get("current_weights") or {},
                     },
@@ -1240,8 +1289,19 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 output_data=hedge_intent,
                 duration_ms=0,
             )
+            construction_input = await _target_builder_construction_input(
+                pipeline_context=pipeline_context,
+                portfolio_construction_payload=(
+                    pipeline_context.get("portfolio_construction_candidate")
+                    or pipeline_context.get("portfolio_construction_shadow")
+                    or {}
+                ),
+            )
+            pipeline_context["target_builder_construction_input"] = construction_input
             target_builder_gated = build_target_weights(
                 base_weights=base_weights,
+                construction_weights=construction_input.get("construction_weights"),
+                construction_source=construction_input.get("construction_source"),
                 current_weights=brief.get("current_weights") or {},
                 market_scorecard=market_scorecard,
                 decision_style=decision_style,
@@ -1267,6 +1327,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                     "mode": "gated_pre_risk",
                     "base_weights": base_weights,
                     "current_weights": brief.get("current_weights") or {},
+                    "portfolio_construction_input": construction_input,
                     "market_scorecard": market_scorecard,
                     "decision_style": decision_style,
                 },
@@ -1300,33 +1361,57 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     )
     if pipeline_context.get("portfolio_construction_shadow"):
         risk_out["portfolio_construction_shadow"] = pipeline_context.get("portfolio_construction_shadow")
+    if pipeline_context.get("portfolio_construction_candidate"):
+        risk_out["portfolio_construction_candidate"] = pipeline_context.get("portfolio_construction_candidate")
     if pipeline_context.get("portfolio_construction_shadow_error"):
         risk_out["portfolio_construction_shadow_error"] = pipeline_context.get("portfolio_construction_shadow_error")
     if risk_out.get("target_weights") and pipeline_context.get("portfolio_construction_shadow"):
         try:
-            from services.portfolio_construction_evaluator import evaluate_portfolio_construction_shadow
+            from services.portfolio_construction_evaluator import (
+                criteria_from_pc_promotion_config,
+                evaluate_portfolio_construction_shadow,
+            )
 
+            pc_config = pipeline_context.get("portfolio_construction_promotion_config") or {}
+            pc_payload = (
+                pipeline_context.get("portfolio_construction_candidate")
+                or pipeline_context.get("portfolio_construction_shadow")
+                or {}
+            )
             pc_eval = evaluate_portfolio_construction_shadow(
-                shadow_weights=(pipeline_context.get("portfolio_construction_shadow") or {}).get("target_weights") or {},
+                shadow_weights=(pc_payload or {}).get("target_weights") or {},
                 actual_weights=risk_out.get("target_weights") or {},
                 current_weights=brief.get("current_weights") or {},
                 hard_risk_tickers=_hard_risk_tickers_from_governance(risk_out.get("position_governance") or {}),
+                criteria=criteria_from_pc_promotion_config(pc_config),
             ).to_dict()
             risk_out["portfolio_construction_evaluation"] = pc_eval
             try:
                 from services.portfolio_construction_evaluator import (
-                    build_portfolio_construction_promotion_gate,
+                    build_portfolio_construction_rollout_gate,
+                    load_gated_semi_auto_confirmed_cycles,
                     load_portfolio_construction_readiness,
+                    readiness_limits_from_pc_promotion_config,
                 )
 
+                readiness_limits = readiness_limits_from_pc_promotion_config(pc_config)
                 risk_out["portfolio_construction_readiness"] = await load_portfolio_construction_readiness(
-                    limit=20,
-                    min_cycles=20,
-                    min_pass_rate=0.80,
+                    limit=readiness_limits["limit"],
+                    min_cycles=readiness_limits["min_cycles"],
+                    min_pass_rate=readiness_limits["min_pass_rate"],
                 )
-                risk_out["portfolio_construction_promotion_gate"] = build_portfolio_construction_promotion_gate(
+                confirmed_cycles = await load_gated_semi_auto_confirmed_cycles(
+                    limit=max(
+                        int(pc_config.get("min_gated_semi_auto_confirmed_cycles") or 5),
+                        5,
+                    )
+                )
+                risk_out["portfolio_construction_rollout"] = confirmed_cycles
+                risk_out["portfolio_construction_promotion_gate"] = build_portfolio_construction_rollout_gate(
                     risk_out["portfolio_construction_readiness"],
-                    pipeline_context.get("portfolio_construction_promotion_config") or {},
+                    pc_config,
+                    auth_mode=pipeline_context.get("auth_mode", "SEMI_AUTO"),
+                    semi_auto_confirmed_cycles=int(confirmed_cycles.get("count") or 0),
                 )
             except Exception as readiness_error:
                 risk_out["portfolio_construction_readiness"] = {
@@ -1343,9 +1428,10 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             await _save_step_log(
                 analysis_id, "6c_pc_eval", "pc_evaluator",
                 input_data={
-                    "shadow_weights": (pipeline_context.get("portfolio_construction_shadow") or {}).get("target_weights") or {},
+                    "shadow_weights": (pc_payload or {}).get("target_weights") or {},
                     "actual_weights": risk_out.get("target_weights") or {},
                     "current_weights": brief.get("current_weights") or {},
+                    "portfolio_construction_mode": pc_config.get("portfolio_construction_mode"),
                 },
                 output_data=pc_eval,
                 duration_ms=0,
@@ -1597,6 +1683,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         risk_out=risk_out,
         current_weights=brief.get("current_weights") or {},
         hard_risks_map=brief.get("hard_risks_map") or {},
+        critical_alerts=brief.get("critical_alerts") or [],
         pipeline_context=pipeline_context,
     )
     approved = bool(risk_out.get("approved", False))
@@ -1989,21 +2076,41 @@ async def _apply_final_risk_validation(
     risk_out: dict,
     current_weights: dict,
     hard_risks_map: dict,
+    critical_alerts: list[dict],
     pipeline_context: dict,
 ) -> None:
-    """Observe final target validation after all post-risk mutations."""
+    """Validate final target after all post-risk mutations."""
     if not risk_out.get("approved") or not risk_out.get("target_weights"):
         return
 
     risk_params = pipeline_context.get("risk_params") or {}
     market_scorecard = pipeline_context.get("market_scorecard") or {}
+    final_validation_config = default_final_risk_validation_config(
+        pipeline_context.get("final_risk_validation_config") or {}
+    )
+    forced_trim_tickers = _tickers_from_forced_trim_strings(
+        (risk_out.get("position_governance") or {}).get("forced_trims") or []
+    )
+    critical_alert_tickers = [
+        str((row or {}).get("ticker") or "").upper().strip()
+        for row in critical_alerts or []
+        if str((row or {}).get("ticker") or "").strip()
+    ]
+    scorecard_restricted_tickers = _scorecard_restricted_tickers(
+        risk_out.get("position_governance") or {}
+    )
     policy_context = {
         "post_risk_mutation_types": risk_out.get("post_risk_mutation_types") or [],
+        "material_drift_threshold": final_validation_config.get("material_drift_threshold"),
+        "human_confirmed": bool(risk_out.get("human_confirmed_final_validation")),
         "hard_risk_tickers": [
             str(ticker or "").upper().strip()
             for ticker, risk in (hard_risks_map or {}).items()
             if ticker and risk
         ],
+        "critical_alert_tickers": critical_alert_tickers,
+        "forced_trim_tickers": forced_trim_tickers,
+        "scorecard_restricted_tickers": scorecard_restricted_tickers,
         "execution_policy_context": {
             "min_cash_pct": risk_params.get("min_cash_pct"),
             "max_single_position": risk_params.get("max_single_position"),
@@ -2026,16 +2133,23 @@ async def _apply_final_risk_validation(
             "approval_source": risk_out.get("approval_source"),
         },
         policy_context=policy_context,
-        mode="observe",
+        mode=final_validation_config.get("mode", "observe"),
     )
     risk_out["final_validation"] = validation
     if not validation.get("approved"):
         risk_out["approved"] = False
         risk_out.pop("approval_token", None)
         risk_out.pop("token_expires_at", None)
+        details = (
+            validation.get("severe_violations")
+            or validation.get("blocking_violations")
+            or validation.get("conditional_mutation_violations")
+            or validation.get("unknown_mutation_types")
+            or []
+        )
         risk_out.setdefault("rejection_reasons", []).append(
-            "Final validation hard-blocked execution target: "
-            + ", ".join(str(row) for row in validation.get("severe_violations") or [])
+            "Final validation blocked execution target: "
+            + ", ".join(str(row) for row in details)
         )
         risk_out.setdefault("overlays_applied", []).append("final_validation_hard_block")
 
@@ -2048,6 +2162,7 @@ async def _apply_final_risk_validation(
             "final_target": risk_out.get("target_weights") or {},
             "current_weights": current_weights or {},
             "policy_context": policy_context,
+            "final_validation_config": final_validation_config,
         },
         output_data=validation,
         duration_ms=0,
@@ -2101,6 +2216,34 @@ def _hard_risk_tickers_from_governance(position_governance: dict | None) -> list
     return tickers
 
 
+def _tickers_from_forced_trim_strings(rows: list[str]) -> list[str]:
+    tickers: list[str] = []
+    for row in rows or []:
+        ticker = str(row or "").strip().split(" ", 1)[0].upper()
+        if ticker and ticker not in tickers:
+            tickers.append(ticker)
+    return tickers
+
+
+def _scorecard_restricted_tickers(position_governance: dict | None) -> list[str]:
+    tickers: list[str] = []
+    for row in (position_governance or {}).get("position_decisions") or []:
+        if not isinstance(row, dict):
+            continue
+        reasons = {str(item or "") for item in row.get("reason_codes") or []}
+        permission = str(row.get("action_permission") or "")
+        if permission in {"hold_or_trim", "reduce_risk_only", "defensive_only", "cash_only", "trim_or_exit"}:
+            ticker = str(row.get("ticker") or "").upper().strip()
+            if ticker and ticker not in tickers:
+                tickers.append(ticker)
+            continue
+        if any(reason.startswith("scorecard_") for reason in reasons):
+            ticker = str(row.get("ticker") or "").upper().strip()
+            if ticker and ticker not in tickers:
+                tickers.append(ticker)
+    return tickers
+
+
 async def _send_semi_auto_proposal(
     pipeline_context: dict,
     risk_out:         dict,
@@ -2129,6 +2272,7 @@ async def _send_semi_auto_proposal(
         "status":             "pending",
         "estimated_cost_pct": cost,
         "proposal_value":     proposal_value,
+        "final_validation":   risk_out.get("final_validation") or {},
     })
 
     await _save_execution(
@@ -2213,6 +2357,71 @@ def _effective_portfolio_turnover_budget(
     return min(values) if values else None
 
 
+async def _target_builder_construction_input(
+    *,
+    pipeline_context: dict,
+    portfolio_construction_payload: dict | None,
+) -> dict:
+    pc_config = default_pc_promotion_config(
+        pipeline_context.get("portfolio_construction_promotion_config") or {}
+    )
+    mode = str(pc_config.get("portfolio_construction_mode") or "shadow")
+    payload = portfolio_construction_payload or {}
+    gate: dict[str, Any] = {
+        "status": "not_requested",
+        "eligible": False,
+        "portfolio_construction_mode": mode,
+        "execution_authority": "none",
+    }
+
+    if mode == "gated":
+        try:
+            from services.portfolio_construction_evaluator import (
+                build_portfolio_construction_rollout_gate,
+                load_gated_semi_auto_confirmed_cycles,
+                load_portfolio_construction_readiness,
+                readiness_limits_from_pc_promotion_config,
+            )
+
+            readiness_limits = readiness_limits_from_pc_promotion_config(pc_config)
+            readiness = await load_portfolio_construction_readiness(
+                limit=readiness_limits["limit"],
+                min_cycles=readiness_limits["min_cycles"],
+                min_pass_rate=readiness_limits["min_pass_rate"],
+            )
+            confirmed_cycles = await load_gated_semi_auto_confirmed_cycles(
+                limit=max(
+                    int(pc_config.get("min_gated_semi_auto_confirmed_cycles") or 5),
+                    5,
+                )
+            )
+            gate = build_portfolio_construction_rollout_gate(
+                readiness,
+                pc_config,
+                auth_mode=pipeline_context.get("auth_mode", "SEMI_AUTO"),
+                semi_auto_confirmed_cycles=int(confirmed_cycles.get("count") or 0),
+            )
+            pipeline_context["portfolio_construction_pre_target_readiness"] = readiness
+            pipeline_context["portfolio_construction_pre_target_gate"] = gate
+            pipeline_context["portfolio_construction_rollout"] = confirmed_cycles
+        except Exception as exc:
+            gate = {
+                "status": "unavailable",
+                "eligible": False,
+                "portfolio_construction_mode": mode,
+                "blockers": ["readiness_unavailable"],
+                "error": str(exc),
+                "execution_authority": "none",
+            }
+            pipeline_context["portfolio_construction_pre_target_gate"] = gate
+
+    return construction_input_for_target_builder(
+        portfolio_construction_payload=payload,
+        promotion_gate=gate,
+        config=pc_config,
+    )
+
+
 async def _finalize_analysis(
     analysis_id:    int,
     quant_baseline: dict,
@@ -2268,6 +2477,12 @@ async def _save_execution(analysis_id: int, result: dict) -> None:
         reason=result.get("error"),
     )
     command_id = audit_payload.get("command_id") or result.get("command_id") or f"analysis_{analysis_id}"
+    if result.get("policy_version") is not None:
+        audit_payload["policy_version"] = result.get("policy_version")
+    if result.get("preflight") is not None:
+        audit_payload["command_preflight"] = result.get("preflight")
+    if result.get("policy_sync") is not None:
+        audit_payload["policy_sync"] = result.get("policy_sync")
     await update_execution_result(
         command_id=command_id,
         analysis_id=analysis_id,

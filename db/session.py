@@ -65,6 +65,9 @@ async def init_db():
         "ALTER TABLE execution_log ADD COLUMN IF NOT EXISTS qc_ack_at TIMESTAMP",
         "ALTER TABLE execution_log ADD COLUMN IF NOT EXISTS qc_rejection_reason TEXT",
         "CREATE INDEX IF NOT EXISTS idx_execution_log_command_id ON execution_log (command_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_log_command_id ON execution_log (command_id) WHERE command_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_execution_log_analysis_id ON execution_log (analysis_id)",
+        "CREATE INDEX IF NOT EXISTS idx_execution_log_executed_at ON execution_log (executed_at)",
         """
         CREATE TABLE IF NOT EXISTS strategy_frozen_signals (
             id BIGSERIAL PRIMARY KEY,

@@ -27,6 +27,11 @@ class PortfolioConstructionTests(unittest.TestCase):
         ).to_dict()
 
         self.assertLessEqual(out["factor_exposures"]["tech_growth"], 0.350001)
+        self.assertIn("factor_exposure_before", out)
+        self.assertIn("factor_exposure_after", out)
+        self.assertIn("policy_evaluation", out)
+        self.assertEqual(out["construction_source"], "portfolio_construction")
+        self.assertEqual(out["diagnostics"]["execution_effect"], "diagnostic_only")
         self.assertGreater(out["target_weights"]["CASH"], 0.52)
         self.assertTrue(any(item.startswith("factor_limit:tech_growth") for item in out["violations"]))
         self.assertFalse(out["diagnostics"]["consumes_raw_llm_adjusted_weights"])
@@ -52,6 +57,7 @@ class PortfolioConstructionTests(unittest.TestCase):
         ).to_dict()
 
         self.assertLessEqual(out["factor_exposures"]["semiconductors"], 0.175001)
+        self.assertGreater(out["basket_exposure_before"]["semiconductors"]["exposure"], out["basket_exposure_after"]["semiconductors"]["exposure"])
         self.assertIn("semiconductors", out["diagnostics"]["active_basket_reviews"])
         self.assertTrue(any(item.startswith("basket_limit:semiconductors") for item in out["violations"]))
 

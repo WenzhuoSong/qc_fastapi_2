@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from services.execution_preflight import preflight_execution_weights
+from services.execution_preflight import command_weight_delta_metrics, preflight_execution_weights
 
 
 class ExecutorPreflightTests(unittest.TestCase):
@@ -32,7 +32,7 @@ class ExecutorPreflightTests(unittest.TestCase):
     def test_executor_syncs_policy_before_setweights(self):
         text = Path("agents/executor.py").read_text()
         sync_pos = text.index("tool_send_policy_sync")
-        send_pos = text.index("tool_send_weight_command")
+        send_pos = text.index("result = await tool_send_weight_command")
 
         self.assertLess(sync_pos, send_pos)
         self.assertIn("PolicySync failed before", text)
@@ -42,8 +42,47 @@ class ExecutorPreflightTests(unittest.TestCase):
         text = Path("tools/qc_tools.py").read_text()
 
         self.assertIn("policy = inp.get(\"policy\") or policy_snapshot()", text)
-        self.assertIn('"policy_version": policy.get("version")', text)
+        self.assertIn("policy_version = policy.get(\"version\")", text)
+        self.assertIn('"policy_version": policy_version', text)
         self.assertIn('"policy": policy', text)
+
+    def test_executor_requires_final_risk_validation_before_qc_command(self):
+        text = Path("agents/executor.py").read_text()
+        final_pos = text.index("Final risk validation missing or failed")
+        send_pos = text.index("result = await tool_send_weight_command")
+
+        self.assertLess(final_pos, send_pos)
+        self.assertIn("blocked_by_final_risk_validation", text)
+
+    def test_telegram_confirm_requires_final_risk_validation(self):
+        text = Path("services/telegram_commands.py").read_text()
+        final_pos = text.index("Final risk validation missing or failed")
+        send_pos = text.index("result = await tool_send_weight_command")
+
+        self.assertLess(final_pos, send_pos)
+
+    def test_command_delta_metrics_split_buy_sell_and_gross_turnover(self):
+        result = command_weight_delta_metrics(
+            {"SPY": 0.25, "QQQ": 0.10, "CASH": 0.65},
+            {"SPY": 0.10, "XLK": 0.08, "CASH": 0.82},
+        )
+
+        self.assertEqual(result["buy_delta"], 0.25)
+        self.assertEqual(result["sell_delta"], 0.08)
+        self.assertEqual(result["gross_turnover"], 0.165)
+
+    def test_executor_does_not_overwrite_duplicate_command_log(self):
+        text = Path("agents/executor.py").read_text()
+
+        self.assertIn('"command_id_idempotent" not in', text)
+        self.assertIn("record_preflight_block", text)
+
+    def test_qc_ack_model_preserves_policy_mismatch_metadata(self):
+        text = Path("api/execution.py").read_text()
+
+        self.assertIn("policy_version: str | None", text)
+        self.assertIn("policy_mismatch: bool = False", text)
+        self.assertIn("actual_target_weights: dict[str, float] | None", text)
 
 
 if __name__ == "__main__":

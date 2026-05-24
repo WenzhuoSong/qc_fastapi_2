@@ -61,6 +61,8 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Portfolio Construction Readiness", source)
         self.assertIn("portfolio_construction_promotion_gate", source)
         self.assertIn("Portfolio Construction Promotion Gate", source)
+        self.assertIn("final_validation", source)
+        self.assertIn("Final Risk Validation", source)
 
     def test_dashboard_surfaces_data_quality_audit_trend(self):
         source = Path("dashboard/app.py").read_text()

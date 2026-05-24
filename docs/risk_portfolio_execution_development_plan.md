@@ -1,7 +1,7 @@
 # Risk, Portfolio Construction, And Execution Control Development Plan
 
 Review date: 2026-05-24
-Status: draft for operator/developer review
+Status: PR1-8 implemented locally; gated rollout remains disabled by default
 
 ## 1. Purpose
 
@@ -563,12 +563,42 @@ accepted under a version mismatch.
 - Keep execution unchanged.
 - Add readiness/promotion metrics.
 
+Implemented on 2026-05-24:
+
+- `portfolio_construction_promotion_config` now carries
+  `portfolio_construction_mode`, `min_shadow_cycles`, `min_pass_rate`,
+  `max_material_diff`, and `max_turnover_diff`.
+- `PortfolioConstructionModel.construct()` emits policy evaluation,
+  factor/basket exposure before/after, effective N before/after, and
+  `construction_source = portfolio_construction`.
+- Pipeline records `5e_portfolio_construction_candidate` when mode is
+  `candidate` or `gated`, but sets `target_builder_consumed = false`; execution
+  remains unchanged in PR4.
+- Readiness/promotion gate uses the PR4 config names and treats default
+  `shadow` mode as non-promotable.
+
 ### PR 5: Target Builder Construction Input
 
 - Allow construction weights as deterministic start point.
 - Expand diagnostics.
 - Use `construction_weight = null` when construction did not participate.
 - Keep LLM boundary tests.
+
+Implemented on 2026-05-24:
+
+- `build_target_weights()` accepts `construction_weights` and
+  `construction_source`.
+- Per-ticker diagnostics now distinguish `base_weight`,
+  `construction_weight`, `current_weight`, `governance_target`,
+  `pre_normalized_target`, `final_target`, and structured `changed_by`.
+- `construction_weight` is `null` when construction did not participate; an
+  explicit `0.0` means portfolio construction recommended clearing that ticker.
+- Pipeline only passes construction weights into target builder when
+  `portfolio_construction_mode = gated` and the promotion gate is explicitly
+  eligible. `shadow` and `candidate` remain diagnostic-only.
+- The gate decision lives in pure helper
+  `services/portfolio_construction_gate.py` so it can be tested without loading
+  agent/LLM dependencies.
 
 ### PR 6: Final Validation Blocking Mode
 
@@ -578,6 +608,23 @@ accepted under a version mismatch.
   validation data before blocking mode is enabled.
 - Update communicator/dashboard to show final validation result.
 
+Implemented on 2026-05-24:
+
+- Added `final_risk_validation_config` with `mode = observe|blocking` and
+  `material_drift_threshold = 0.015`. Default remains `observe`; blocking mode
+  should be enabled only after operator review of observe-mode drift
+  distribution.
+- Blocking mode rejects final execution targets when execution policy fails,
+  post-risk drift is untyped, mutation type is unknown, or conditional
+  mutations violate the post-risk mutation contract.
+- Conditional mutations now enforce the documented constraints: no new
+  exposure, no increase above current weight, and no touch of hard-risk,
+  critical-alert, forced-trim, or scorecard-restricted tickers.
+- Executor and Telegram `/confirm` both require
+  `final_validation.approved = true` before sending any QC command.
+- Dashboard and Telegram fallback copy now surface final validation mode,
+  approval, drift threshold, mutation types, and blockers.
+
 ### PR 7: Executor And QC Command Hardening
 
 - Command idempotency.
@@ -585,12 +632,55 @@ accepted under a version mismatch.
 - QC duplicate command rejection.
 - ACK enrichment.
 
+Implemented on 2026-05-24:
+
+- `services/execution_preflight.py` now performs command-level preflight in
+  addition to weight-level policy checks: command idempotency, one submission
+  per `analysis_id`, daily command count, daily gross turnover, max buy delta,
+  max sell delta, successful `PolicySync`, and required `policy_version`.
+- Execution logs now persist command id, analysis id, policy version, final
+  target weights, command preflight, policy sync result, QC submission result,
+  QC ACK status, and QC rejection reason. A migration adds command id and ACK
+  columns plus idempotency indexes.
+- Executor and Telegram `/confirm` sync the FastAPI policy before `SetWeights`,
+  run command preflight, and avoid overwriting an existing execution log when a
+  duplicate command id is blocked.
+- QC command handling rejects duplicate `command_id`, missing
+  `policy_version`, unknown tickers, cap violations, and policy-version
+  mismatch with buy/increase exposure.
+- QC policy-version mismatch allows reduce-only commands only. Accepted ACKs
+  include `policy_mismatch`, `policy_version`, and `actual_target_weights`;
+  rejected ACKs include the exact reason such as
+  `policy_version_mismatch_with_buy`.
+- FastAPI `/api/execution/qc_ack` preserves the enriched ACK fields so they are
+  stored in `execution_log.qc_response` instead of being dropped by request
+  validation.
+
 ### PR 8: Portfolio Construction Gated Rollout
 
 - Only after candidate/readiness criteria pass.
 - Start in SEMI_AUTO.
 - Require at least 5 SEMI_AUTO confirmed cycles before FULL_AUTO.
 - Observe before enabling FULL_AUTO.
+
+Implemented on 2026-05-24:
+
+- `portfolio_construction_promotion_config` now includes rollout controls:
+  `require_semi_auto_gated_before_full_auto`,
+  `min_gated_semi_auto_confirmed_cycles = 5`, and
+  `allow_full_auto_gated = false`.
+- Readiness eligibility and rollout eligibility are separate. A clean rolling
+  readiness window can make the construction candidate eligible, but FULL_AUTO
+  gated execution remains blocked until the SEMI_AUTO gated confirmation
+  requirement is satisfied and `allow_full_auto_gated` is explicitly enabled.
+- Pipeline target-builder integration uses the rollout-aware gate before
+  allowing portfolio construction weights to become target-builder input.
+- Confirmed SEMI_AUTO gated samples are counted from `agent_analysis` rows with
+  `execution_status = executed_user_confirmed` where portfolio construction
+  actually participated in the target-builder input.
+- Telegram `/pc_promotion gated` can request gated mode, but it keeps
+  `allow_full_auto_gated = false`; the runtime gate still blocks promotion
+  unless readiness and rollout criteria pass.
 
 ## 12. Test Plan
 
@@ -655,8 +745,9 @@ Do not enable portfolio construction gated mode in FULL_AUTO until:
    mutations such as turnover scaling or min-hold sell deferral?
    - Close before PR 6 blocking mode; prefer observe-mode drift distribution
      over a fixed upfront guess.
-3. Should command idempotency be stored only in `execution_log`, or also synced
-   to QC-local memory/state?
+3. Closed on 2026-05-24: command idempotency is stored in FastAPI
+   `execution_log` and independently enforced in QC-local processed command
+   memory.
 
 ## 15. Summary
 

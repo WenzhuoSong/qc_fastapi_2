@@ -2,22 +2,43 @@
 from __future__ import annotations
 
 
+VALID_PORTFOLIO_CONSTRUCTION_MODES = {"shadow", "candidate", "gated"}
+
+
 def default_pc_promotion_config(raw: dict | None) -> dict:
     out = dict(raw or {})
-    out.setdefault("enabled", True)
+    mode = str(out.get("portfolio_construction_mode") or "shadow").strip().lower()
+    if mode not in VALID_PORTFOLIO_CONSTRUCTION_MODES:
+        mode = "shadow"
+    out["portfolio_construction_mode"] = mode
+    out.setdefault("enabled", mode != "shadow")
     out.setdefault("require_manual_approval", False)
-    out.setdefault("min_cycles", 20)
-    out.setdefault("min_pass_rate", 0.80)
+    if "min_shadow_cycles" not in out and "min_cycles" in out:
+        out["min_shadow_cycles"] = out.get("min_cycles")
+    out.setdefault("min_shadow_cycles", 20)
+    out.setdefault("min_cycles", out["min_shadow_cycles"])
+    out.setdefault("min_pass_rate", 0.90)
+    out.setdefault("max_material_diff", 0.015)
+    out.setdefault("max_turnover_diff", 0.02)
+    out.setdefault("require_semi_auto_gated_before_full_auto", True)
+    out.setdefault("min_gated_semi_auto_confirmed_cycles", 5)
+    out.setdefault("allow_full_auto_gated", False)
     return out
 
 
 def format_pc_promotion_config(config: dict) -> str:
     mode = "manual" if config.get("require_manual_approval") else "auto"
+    pc_mode = str(config.get("portfolio_construction_mode") or "shadow")
     return (
         "⚙️ Portfolio Construction promotion gate\n"
+        f"  construction_mode: {pc_mode}\n"
         f"  enabled: {bool(config.get('enabled'))}\n"
         f"  approval_mode: {mode}\n"
-        f"  min_cycles: {int(config.get('min_cycles') or 20)}\n"
-        f"  min_pass_rate: {float(config.get('min_pass_rate') or 0.80):.0%}\n"
+        f"  min_shadow_cycles: {int(config.get('min_shadow_cycles') or 20)}\n"
+        f"  min_pass_rate: {float(config.get('min_pass_rate') or 0.90):.0%}\n"
+        f"  max_material_diff: {float(config.get('max_material_diff') or 0.015):.1%}\n"
+        f"  max_turnover_diff: {float(config.get('max_turnover_diff') or 0.02):.1%}\n"
+        f"  min_gated_semi_auto_confirmed_cycles: {int(config.get('min_gated_semi_auto_confirmed_cycles') or 5)}\n"
+        f"  allow_full_auto_gated: {bool(config.get('allow_full_auto_gated'))}\n"
         "  execution_authority: none"
     )

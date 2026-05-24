@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from db.session         import AsyncSessionLocal
 from db.queries         import get_system_config, upsert_system_config, get_latest_portfolio
 from tools.db_tools     import tool_verify_approval_token
-from tools.qc_tools     import tool_send_weight_command
+from tools.qc_tools     import tool_send_policy_sync, tool_send_weight_command
 from tools.notify_tools import tool_send_telegram
 from services.proposal  import load_pending_proposal, mark_proposal_done
 from services.feature_authority_mode import (
@@ -17,6 +17,9 @@ from services.feature_authority_mode import (
     normalize_feature_authority_mode,
 )
 from services.pc_promotion_config import default_pc_promotion_config, format_pc_promotion_config
+from services.execution_log_store import create_or_update_submitted_log, record_preflight_block
+from services.execution_policy import policy_snapshot
+from services.execution_preflight import preflight_execution_command, preflight_execution_weights
 from config             import get_settings
 
 logger   = logging.getLogger("qc_fastapi_2.tg_cmd")
@@ -58,6 +61,9 @@ async def _cmd_confirm() -> str:
 
     weights = pending.get("weights", {})
     token   = pending.get("token", "")
+    final_validation = pending.get("final_validation") or {}
+    if not final_validation or not final_validation.get("approved"):
+        return "❌ Final risk validation missing or failed. Please wait for the next analysis."
 
     verify = await tool_verify_approval_token({"token": token})
     if not verify.get("valid"):
@@ -65,8 +71,49 @@ async def _cmd_confirm() -> str:
 
     analysis_id = pending.get("analysis_id")
     command_id = f"analysis_{analysis_id}" if analysis_id else None
-    result = await tool_send_weight_command({"weights": weights, "command_id": command_id})
+    weight_preflight = preflight_execution_weights(weights)
+    if not weight_preflight.get("allowed"):
+        return f"❌ Execution preflight blocked: {weight_preflight.get('policy_evaluation', {}).get('violations')}"
+
+    policy = policy_snapshot()
+    policy_sync = await tool_send_policy_sync({"command_id": f"{command_id}_policy", "payload": policy})
+    command_preflight = await preflight_execution_command(
+        command_id=command_id or "",
+        analysis_id=analysis_id,
+        target_weights=weights,
+        current_weights=final_validation.get("current_weights") or {},
+        policy_version=policy.get("version"),
+        policy_sync_result=policy_sync,
+        config={},
+    )
+    if not command_preflight.get("allowed"):
+        if "command_id_idempotent" not in (command_preflight.get("blockers") or []):
+            await record_preflight_block(
+                command_id=command_id or "unknown",
+                analysis_id=analysis_id,
+                target_weights=weights,
+                preflight_result=command_preflight,
+                policy_version=policy.get("version"),
+                policy_sync_result=policy_sync,
+            )
+        return f"❌ Command preflight blocked: {command_preflight.get('blockers')}"
+
+    result = await tool_send_weight_command({
+        "weights": weights,
+        "command_id": command_id,
+        "analysis_id": analysis_id,
+        "policy": policy,
+    })
     if result.get("success"):
+        await create_or_update_submitted_log(
+            command_id=command_id or result.get("command_id"),
+            target_weights=weights,
+            analysis_id=analysis_id,
+            policy_version=policy.get("version"),
+            preflight_result=command_preflight,
+            policy_sync_result=policy_sync,
+            qc_response=result.get("response"),
+        )
         await mark_proposal_done(pending.get("analysis_id"), "executed_user_confirmed")
         return "✅ Execution confirmed."
     return f"❌ Execution failed: {result.get('error')}"
@@ -274,6 +321,7 @@ async def _cmd_pc_promotion(text: str) -> str:
       /pc_promotion off
       /pc_promotion auto
       /pc_promotion manual
+      /pc_promotion gated
     """
     parts = text.strip().lower().split()
     async with AsyncSessionLocal() as db:
@@ -283,20 +331,29 @@ async def _cmd_pc_promotion(text: str) -> str:
     if len(parts) == 1 or parts[1] == "status":
         return format_pc_promotion_config(current)
 
-    if len(parts) != 2 or parts[1] not in {"on", "off", "auto", "manual"}:
-        return "Usage: /pc_promotion status|on|off|auto|manual"
+    if len(parts) != 2 or parts[1] not in {"on", "off", "auto", "manual", "gated"}:
+        return "Usage: /pc_promotion status|on|off|auto|manual|gated"
 
     updated = dict(current)
     if parts[1] == "on":
         updated["enabled"] = True
+        updated["portfolio_construction_mode"] = "candidate"
     elif parts[1] == "off":
         updated["enabled"] = False
+        updated["portfolio_construction_mode"] = "shadow"
     elif parts[1] == "auto":
         updated["enabled"] = True
+        updated["portfolio_construction_mode"] = "candidate"
         updated["require_manual_approval"] = False
     elif parts[1] == "manual":
         updated["enabled"] = True
+        updated["portfolio_construction_mode"] = "candidate"
         updated["require_manual_approval"] = True
+    elif parts[1] == "gated":
+        updated["enabled"] = True
+        updated["portfolio_construction_mode"] = "gated"
+        updated["require_manual_approval"] = True
+        updated["allow_full_auto_gated"] = False
 
     updated["updated_at"] = datetime.utcnow().isoformat()
     updated["updated_by"] = "telegram"
