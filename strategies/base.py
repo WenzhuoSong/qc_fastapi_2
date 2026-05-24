@@ -44,9 +44,29 @@ class Strategy(ABC):
     signals_used: tuple[str, ...] = ()
     failure_modes: tuple[str, ...] = ()
     agent_guidance: str = ""
+    universe_tickers: tuple[str, ...] = ()
+    allow_hedge_research_tickers: bool = False
 
     def __init__(self, params: dict[str, Any] | None = None):
         self.params = params or {}
+
+    def eligible_rows(self, holdings: list[dict]) -> list[dict]:
+        if self.universe_tickers:
+            allowed = {ticker.upper() for ticker in self.universe_tickers}
+            return [
+                h for h in holdings
+                if (h.get("ticker") or "").upper().strip() in allowed
+            ]
+        if self.allow_hedge_research_tickers:
+            return [
+                h for h in holdings
+                if (h.get("ticker") or "").upper().strip()
+                and (h.get("ticker") or "").upper().strip() != "CASH"
+            ]
+        return [
+            h for h in holdings
+            if is_tradable_research_row(h)
+        ]
 
     def data_requirements(self) -> dict[str, Any]:
         return {
@@ -72,10 +92,7 @@ class Strategy(ABC):
         }
 
     def data_readiness(self, holdings: list[dict]) -> dict[str, Any]:
-        valid_holdings = [
-            h for h in holdings
-            if is_tradable_research_row(h)
-        ]
+        valid_holdings = self.eligible_rows(holdings)
         if not self.required_fields:
             return {
                 "ready": True,

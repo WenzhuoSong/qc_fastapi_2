@@ -107,6 +107,7 @@ class MarketDailyFeature(Base):
     sma_50          = Column(Numeric(15, 4))
     sma_200         = Column(Numeric(15, 4))
     hist_vol_20d    = Column(Numeric(8, 6))
+    rsi_10          = Column(Numeric(6, 2))
     rsi_14          = Column(Numeric(6, 2))
     atr_pct         = Column(Numeric(8, 6))
     bb_position     = Column(Numeric(6, 4))
@@ -114,6 +115,117 @@ class MarketDailyFeature(Base):
     raw_payload     = Column(JSONB)
     created_at      = Column(DateTime, nullable=False, default=func.now())
     updated_at      = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+
+class StrategyFrozenSignal(Base):
+    __tablename__ = "strategy_frozen_signals"
+    __table_args__ = (
+        UniqueConstraint("signal_id", name="uq_strategy_frozen_signal_id"),
+    )
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    signal_id       = Column(String(64), nullable=False, index=True)
+    signal_source   = Column(String(40), nullable=False)
+    signal_date     = Column(Date, nullable=False, index=True)
+    generated_at    = Column(DateTime, nullable=False)
+    tradable_from_date = Column(Date, nullable=False)
+    strategy_id     = Column(String(100), nullable=False, index=True)
+    strategy_version = Column(String(20))
+    ticker          = Column(String(20), nullable=False, index=True)
+    role            = Column(String(50))
+    branch          = Column(String(120))
+    action          = Column(String(30), nullable=False)
+    signal_type     = Column(String(80))
+    confidence      = Column(Float)
+    raw_score       = Column(Float)
+    normalized_score = Column(Float)
+    max_reasonable_weight = Column(Float)
+    risk_budget_cost = Column(Float)
+    feature_data_date = Column(Date)
+    data_lag_days   = Column(Integer)
+    feature_source  = Column(String(40))
+    feature_authority = Column(String(40))
+    regime_at_signal = Column(String(50))
+    vix_at_signal   = Column(Float)
+    evidence_contract_version = Column(String(20))
+    diagnostics     = Column(JSONB)
+    content_hash    = Column(String(64), nullable=False)
+    created_at      = Column(DateTime, nullable=False, default=func.now())
+
+
+class StrategySignalOutcome(Base):
+    __tablename__ = "strategy_signal_outcomes"
+    __table_args__ = (
+        UniqueConstraint("outcome_id", name="uq_strategy_signal_outcome_id"),
+        UniqueConstraint(
+            "signal_id",
+            "horizon_days",
+            "outcome_source",
+            name="uq_strategy_signal_outcome_signal_horizon_source",
+        ),
+    )
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    outcome_id      = Column(String(64), nullable=False, index=True)
+    signal_id       = Column(String(64), nullable=False, index=True)
+    signal_source   = Column(String(40), nullable=False)
+    signal_date     = Column(Date, nullable=False, index=True)
+    label_date      = Column(Date, nullable=False, index=True)
+    strategy_id     = Column(String(100), nullable=False, index=True)
+    ticker          = Column(String(20), nullable=False, index=True)
+    branch          = Column(String(120))
+    action          = Column(String(30), nullable=False)
+    horizon_days    = Column(Integer, nullable=False)
+    forward_return  = Column(Float)
+    spy_forward_return = Column(Float)
+    excess_vs_spy   = Column(Float)
+    drawdown_during_horizon = Column(Float)
+    spy_drawdown_during_horizon = Column(Float)
+    target_pool_drawdown = Column(Float)
+    hit             = Column(Boolean)
+    hit_definition  = Column(String(160), nullable=False)
+    excess_calculation_method = Column(String(30), nullable=False)
+    outcome_source  = Column(String(40), nullable=False)
+    data_quality    = Column(String(40), nullable=False)
+    content_hash    = Column(String(64), nullable=False)
+    created_at      = Column(DateTime, nullable=False, default=func.now())
+
+
+class StrategyConvictionProfile(Base):
+    __tablename__ = "strategy_conviction_profiles"
+    __table_args__ = (
+        UniqueConstraint("profile_id", name="uq_strategy_conviction_profile_id"),
+    )
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    profile_id      = Column(String(64), nullable=False, index=True)
+    as_of_date      = Column(Date, nullable=False, index=True)
+    strategy_id     = Column(String(100), nullable=False, index=True)
+    ticker          = Column(String(20), nullable=False, index=True)
+    branch          = Column(String(120))
+    action          = Column(String(30), nullable=False)
+    regime_at_signal = Column(String(50))
+    horizon_days    = Column(Integer, nullable=False)
+    source_bucket   = Column(String(40), nullable=False, index=True)
+    conviction      = Column(Float)
+    status          = Column(String(60), nullable=False)
+    n               = Column(Integer, nullable=False, default=0)
+    required_samples = Column(Integer, nullable=False, default=30)
+    hit_rate        = Column(Float)
+    avg_forward_return = Column(Float)
+    avg_excess_vs_spy = Column(Float)
+    ic              = Column(Float)
+    max_adverse_drawdown = Column(Float)
+    data_lag_filtered = Column(Integer, nullable=False, default=0)
+    requires_live_confirmation = Column(Boolean, nullable=False, default=False)
+    hist_n          = Column(Integer, nullable=False, default=0)
+    live_n          = Column(Integer, nullable=False, default=0)
+    hist_weight     = Column(Float)
+    live_weight     = Column(Float)
+    source_counts   = Column(JSONB)
+    diagnostics     = Column(JSONB)
+    content_hash    = Column(String(64), nullable=False)
+    created_at      = Column(DateTime, nullable=False, default=func.now())
 
 
 class AlertLog(Base):

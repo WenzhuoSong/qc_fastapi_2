@@ -54,6 +54,30 @@ SAMPLE_HOLDINGS = [
     },
 ]
 
+LEVERAGED_ALLOCATOR_HOLDINGS = [
+    {
+        "ticker": ticker,
+        "close_price": close,
+        "price": close,
+        "sma_20": sma20,
+        "sma_200": sma200,
+        "rsi_10": rsi,
+        "return_1d": ret,
+        "hist_vol_20d": 0.25,
+    }
+    for ticker, close, sma20, sma200, rsi, ret in [
+        ("SPY", 500.0, 495.0, 450.0, 55.0, 0.002),
+        ("QQQ", 430.0, 420.0, 380.0, 65.0, 0.003),
+        ("TQQQ", 70.0, 68.0, 55.0, 64.0, 0.009),
+        ("UVXY", 20.0, 22.0, 30.0, 40.0, -0.010),
+        ("TECL", 85.0, 80.0, 70.0, 58.0, 0.006),
+        ("SPXL", 150.0, 145.0, 130.0, 57.0, 0.005),
+        ("SQQQ", 18.0, 19.0, 24.0, 45.0, -0.008),
+        ("TECS", 12.0, 13.0, 18.0, 48.0, -0.006),
+        ("BSV", 76.0, 75.8, 75.0, 52.0, 0.0005),
+    ]
+]
+
 
 class StrategyRegistryTest(unittest.TestCase):
     def test_all_registered_strategies_have_data_requirements(self):
@@ -82,11 +106,22 @@ class StrategyRegistryTest(unittest.TestCase):
         for name in STRATEGY_REGISTRY:
             with self.subTest(strategy=name):
                 strategy = get_strategy(name)
-                self.assertTrue(strategy.data_readiness(SAMPLE_HOLDINGS)["ready"])
-                scored = strategy.score(SAMPLE_HOLDINGS, context)
+                holdings = _sample_holdings_for_strategy(name)
+                self.assertTrue(strategy.data_readiness(holdings)["ready"])
+                scored = strategy.score(holdings, context)
                 weights = strategy.optimize(scored, context)
                 self.assertIn("CASH", weights)
                 self.assertAlmostEqual(sum(weights.values()), 1.0, places=4)
+
+    def test_leveraged_allocator_ports_qc_branch_logic_as_playground_only(self):
+        strategy = get_strategy("leveraged_etf_momentum_allocator")
+
+        scored = strategy.score(LEVERAGED_ALLOCATOR_HOLDINGS, {})
+        weights = strategy.optimize(scored, {})
+
+        self.assertEqual(scored[0].ticker, "TQQQ")
+        self.assertEqual(weights, {"TQQQ": 1.0, "CASH": 0.0})
+        self.assertIn("playground-only", strategy.agent_guidance.lower())
 
     def test_missing_required_fields_marks_strategy_not_ready(self):
         strategy = get_strategy("dual_momentum_rotation")
@@ -128,6 +163,12 @@ class StrategyRegistryTest(unittest.TestCase):
         ])
 
         self.assertEqual(readiness["eligible_tickers"], ["SPY"])
+
+
+def _sample_holdings_for_strategy(name: str) -> list[dict]:
+    if name == "leveraged_etf_momentum_allocator":
+        return LEVERAGED_ALLOCATOR_HOLDINGS
+    return SAMPLE_HOLDINGS
 
 
 if __name__ == "__main__":

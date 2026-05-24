@@ -224,6 +224,10 @@ with its own fresh `asyncio.run()`. Configure schedules as Railway cron services
 | `python -m cron.post_market_report`| 16:35 | Daily summary |
 | `python -m cron.morning_health`    | 09:00 | Health check notification |
 | `python -m cron.pending_check`     | every 1 min | SEMI_AUTO timeout handler |
+| `python -m cron.playground_analysis` | after close | Research-only strategy comparison |
+| `python -m cron.yfinance_backfill` | after close | Research/backfill OHLCV feature store |
+| `python -m cron.daily_signal_freeze` | after playground/yfinance | Observe-only EvidenceCard signal ledger |
+| `python -m cron.daily_signal_validation_refresh` | after signal freeze | Mature outcome labels + conviction profiles |
 
 The web service (`main.py`) only serves webhooks (`/api/webhook/qc`,
 `/api/telegram`, `/api/status`, `/api/command/*`) — it no longer runs any

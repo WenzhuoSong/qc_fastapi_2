@@ -11,6 +11,7 @@ from strategies.low_vol_factor import LowVolFactor
 from strategies.equal_weight import EqualWeightBenchmark
 from strategies.risk_parity_lite import RiskParityLite
 from strategies.dual_momentum import DualMomentumRotation
+from strategies.leveraged_etf_momentum_allocator import LeveragedETFMomentumAllocator
 from strategies.defensive_adjust import (
     defensive_adjust,
     compute_rebalance_actions,
@@ -26,6 +27,7 @@ STRATEGY_REGISTRY: dict[str, type[Strategy]] = {
     "dual_momentum_rotation": DualMomentumRotation,
     "risk_parity_lite": RiskParityLite,
     "equal_weight_benchmark": EqualWeightBenchmark,
+    "leveraged_etf_momentum_allocator": LeveragedETFMomentumAllocator,
 }
 
 

@@ -1,8 +1,19 @@
 id: QQQ
 type: asset
 asset_class: equity_etf
+role: core_market
 sector_group: tech_growth
 summary: Nasdaq-100 ETF with growth and mega-cap technology concentration.
+underlying: Nasdaq-100 Index
+leverage: 1
+inverse: false
+decay_risk: low
+allowed_actions: [increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.20
+  full_auto: 0.15
+risk_budget_cost: 0.60
 risk_drivers: [growth_beta, technology_concentration, rate_sensitivity]
 positive_regimes: [trending_bull, risk_on]
 weak_regimes: [rising_rate_expectation, high_vol]

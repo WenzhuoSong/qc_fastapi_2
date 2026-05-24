@@ -1,9 +1,19 @@
 id: SOXL
 type: asset
 asset_class: leveraged_etf
+role: leveraged_long
 sector_group: semiconductors
 summary: 3x leveraged bullish semiconductor ETF with daily reset compounding risk.
+underlying: ICE Semiconductor Index
 leverage: 3
+inverse: false
+decay_risk: high
+allowed_actions: [increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.05
+  full_auto: 0.03
+risk_budget_cost: 0.98
 risk_drivers: [leverage, daily_reset_compounding, semiconductor_beta, high_atr]
 positive_regimes: [short_term_semiconductor_breakout]
 weak_regimes: [high_vol, mean_reverting, risk_off]

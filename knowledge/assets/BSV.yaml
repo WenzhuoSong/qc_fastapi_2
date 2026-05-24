@@ -1,0 +1,26 @@
+id: BSV
+type: asset
+asset_class: bond_etf
+role: defensive_cash_proxy
+sector_group: defensive_bonds
+summary: Short-term investment-grade bond ETF used as a defensive cash-proxy sleeve.
+underlying: Bloomberg U.S. 1-5 Year Government/Credit Float Adjusted Index
+leverage: 1
+inverse: false
+decay_risk: low
+allowed_actions: [de_risk, increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.30
+  full_auto: 0.25
+risk_budget_cost: 0.20
+intended_uses: [defensive_fallback, cash_proxy, volatility_buffer]
+risk_drivers: [duration, credit_spread, rates]
+positive_regimes: [risk_off, stable_rates, defensive]
+weak_regimes: [rapid_rate_rise, credit_stress]
+holding_policy: {allow_long_hold: true, max_holding_style: defensive_sleeve}
+governance_notes:
+  - useful as defensive fallback but still has duration and credit spread risk
+  - compare against cash and Treasury-only alternatives before production use
+sources: [issuer_fact_sheet, fama_french_1993]
+last_reviewed: 2026-05-24

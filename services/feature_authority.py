@@ -76,6 +76,7 @@ DAILY_RESEARCH_FIELDS = frozenset({
     "sma_50",
     "sma_200",
     "hist_vol_20d",
+    "rsi_10",
     "rsi_14",
     "atr_pct",
     "bb_position",
@@ -107,6 +108,7 @@ LEGACY_QC_INDICATOR_FIELDS = frozenset({
     "sma_20",
     "sma_50",
     "sma_200",
+    "rsi_10",
     "rsi_14",
     "atr_pct",
     "bb_position",
@@ -146,7 +148,7 @@ def authority_for_field(field: str, source: str | None) -> FeatureAuthority:
             return FeatureAuthority.LEGACY_DEBUG
         return FeatureAuthority.UNKNOWN
 
-    if source == YFINANCE_SOURCE:
+    if source in {YFINANCE_SOURCE, "yfinance_historical"}:
         if canonical in DAILY_RESEARCH_FIELDS:
             return FeatureAuthority.DAILY_RESEARCH
         return FeatureAuthority.UNKNOWN

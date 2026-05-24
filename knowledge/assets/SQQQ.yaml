@@ -1,0 +1,27 @@
+id: SQQQ
+type: asset
+asset_class: leveraged_inverse_etf
+role: inverse_equity
+sector_group: tech_growth
+summary: 3x inverse daily Nasdaq-100 ETF with daily reset and path-dependent decay risk.
+underlying: QQQ
+leverage: -3
+inverse: true
+decay_risk: extreme
+allowed_actions: [hedge, reduce, hold, watch, avoid, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.05
+  full_auto: 0.0
+risk_budget_cost: 1.00
+intended_uses: [short_tactical_hedge, drawdown_hedge_signal]
+risk_drivers: [inverse_leverage, daily_reset_compounding, nasdaq_100_beta, whipsaw_risk]
+positive_regimes: [short_term_tech_breakdown, risk_off]
+weak_regimes: [trending_bull, high_vol_chop, mean_reverting]
+holding_policy: {allow_long_hold: false, max_holding_style: very_short_term_only}
+governance_notes:
+  - never treat as a long-term hedge without explicit review
+  - require hedge intent before any production add
+  - full-auto max weight is zero until separately certified
+sources: [issuer_fact_sheet, leveraged_etf_policy]
+last_reviewed: 2026-05-24

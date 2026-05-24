@@ -1,0 +1,96 @@
+id: leveraged_etf_momentum_allocator
+type: strategy
+category: conditional_rotation
+horizon: short_tactical
+summary: Playground-only conditional leveraged ETF allocator using SPY/QQQ trend gates and RSI/SMA branches.
+best_regimes: [trending_bull, risk_on, volatility_spike_reversal]
+weak_regimes: [mean_reverting, high_vol_chop, risk_off_gap]
+required_features: [close_price, sma_20, sma_200, rsi_10]
+positive_signals:
+  - SPY above 200-day SMA with QQQ/SPY not overbought
+  - tactical oversold bounce branches in leveraged equity ETFs
+  - defensive or hedge branch when volatility conditions are elevated
+failure_modes:
+  - single-asset concentration
+  - leveraged ETF daily reset decay
+  - inverse ETF whipsaw
+  - volatility ETF decay
+  - branch overfitting in historical backtests
+governance_implications:
+  - playground-only until separately certified
+  - translate selected ETFs through EvidenceCard semantics before downstream use
+  - cap leveraged, inverse, and volatility evidence before any production shadow construction
+compatibility_mappings:
+  - role: leveraged_long
+    horizon: short_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: increase
+        signal_type: risk_on_amplifier
+      - gte: 0.40
+        action: watch
+        signal_type: risk_on_monitor
+      - lt: 0.40
+        action: neutral
+        signal_type: no_signal
+    max_weight_multiplier: 1.0
+    weight_formula: confidence_cap_multiplier
+
+  - role: inverse_equity
+    horizon: very_short_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: hedge
+        signal_type: inverse_equity_hedge
+      - gte: 0.40
+        action: watch
+        signal_type: inverse_risk_monitor
+      - lt: 0.40
+        action: avoid
+        signal_type: no_inverse_signal
+    max_weight_multiplier: 0.50
+    weight_formula: confidence_cap_multiplier
+
+  - role: vol_hedge
+    horizon: very_short_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: hedge
+        signal_type: tail_risk_hedge
+      - gte: 0.40
+        action: watch
+        signal_type: tail_risk_monitor
+      - lt: 0.40
+        action: avoid
+        signal_type: no_hedge_signal
+    max_weight_multiplier: 0.25
+    weight_formula: confidence_cap_multiplier
+
+  - role: defensive_cash_proxy
+    horizon: short_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: de_risk
+        signal_type: defensive_fallback
+      - gte: 0.40
+        action: watch
+        signal_type: defensive_monitor
+      - lt: 0.40
+        action: neutral
+        signal_type: no_signal
+    max_weight_multiplier: 1.0
+    weight_formula: confidence_cap_multiplier
+
+  - role: core_market
+    horizon: short_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: watch
+        signal_type: market_regime_confirmation
+      - lt: 0.70
+        action: neutral
+        signal_type: regime_input_only
+    max_weight_multiplier: 0.0
+    weight_formula: zero
+sources: [issuer_fact_sheet, leveraged_etf_policy]
+last_reviewed: 2026-05-24

@@ -31,6 +31,7 @@ FEATURE_COLUMNS = [
     "sma_50",
     "sma_200",
     "hist_vol_20d",
+    "rsi_10",
     "rsi_14",
     "atr_pct",
     "bb_position",
@@ -44,6 +45,7 @@ async def ensure_market_daily_feature_schema(db: Any) -> None:
     from sqlalchemy import text
 
     migrations = (
+        "ALTER TABLE market_daily_features ADD COLUMN IF NOT EXISTS rsi_10 NUMERIC(6,2)",
         "ALTER TABLE market_daily_features ADD COLUMN IF NOT EXISTS rsi_14 NUMERIC(6,2)",
         "ALTER TABLE market_daily_features ADD COLUMN IF NOT EXISTS atr_pct NUMERIC(8,6)",
         "ALTER TABLE market_daily_features ADD COLUMN IF NOT EXISTS bb_position NUMERIC(6,4)",
@@ -155,7 +157,7 @@ async def get_latest_feature_state(
     if not row:
         return {"trading_date": None, "missing_fields": []}
 
-    required_history_fields = ("rsi_14", "atr_pct", "bb_position")
+    required_history_fields = ("rsi_10", "rsi_14", "atr_pct", "bb_position")
     return {
         "trading_date": row.trading_date,
         "missing_fields": [
@@ -241,6 +243,7 @@ def model_to_feature_dict(row: Any) -> dict[str, Any]:
         "sma_50": _float_or_none(row.sma_50),
         "sma_200": _float_or_none(row.sma_200),
         "hist_vol_20d": _float_or_none(row.hist_vol_20d),
+        "rsi_10": _float_or_none(row.rsi_10),
         "rsi_14": _float_or_none(row.rsi_14),
         "atr_pct": _float_or_none(row.atr_pct),
         "bb_position": _float_or_none(row.bb_position),

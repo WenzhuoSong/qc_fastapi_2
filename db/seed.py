@@ -61,6 +61,19 @@ _DEFAULTS = {
             "equal_weight_benchmark",
         ],
     },
+
+    # Observe-only daily EvidenceCard freeze. Writes signal ledger rows only.
+    "daily_signal_freeze_config": {
+        "enabled": True,
+    },
+
+    # Observe-only outcome labeling + conviction profile refresh.
+    "daily_signal_validation_config": {
+        "enabled": True,
+        "horizons": [1, 5, 20],
+        "signal_row_limit": 5000,
+        "feature_source": "yfinance",
+    },
 }
 
 

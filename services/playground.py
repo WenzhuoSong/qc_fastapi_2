@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from html import escape
 from typing import Any
@@ -24,9 +24,16 @@ from db.models import MarketDailyFeature, QCSnapshot
 from db.session import AsyncSessionLocal
 from services.feature_authority import authority_for_field, canonical_field_name
 from services.feature_provenance import summarize_feature_provenance
+from services.knowledge_base import build_knowledge_context
 from services.quant_baseline import classify_market_regime
 from services.sector_rotation import detect_sector_rotation
+from services.strategy_evidence import (
+    EVIDENCE_CONTRACT_VERSION,
+    build_evidence_cards,
+    summarize_evidence_cards,
+)
 from services.strategy_feature_contract import build_strategy_feature_contract
+from services.strategy_validation_dashboard import load_validation_dashboard_summary
 from services.universe_policy import filter_tradable_research_rows
 from services.walk_forward_validation import validate_walk_forward
 from strategies import ScoredTicker, compute_rebalance_actions, estimate_cost_pct, get_strategy
@@ -66,6 +73,10 @@ class StrategyResult:
     risk_profile: dict[str, Any]
     memory_feedback: dict[str, Any]
     agent_interpretation: dict[str, Any]
+    scored_tickers: list[dict[str, Any]] = field(default_factory=list)
+    evidence_contract_version: str = EVIDENCE_CONTRACT_VERSION
+    evidence_cards: list[dict[str, Any]] = field(default_factory=list)
+    evidence_summary: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -84,6 +95,7 @@ class PlaygroundBundle:
     evidence_summary: dict[str, Any]
     data_gaps: list[str]
     walk_forward_validation: dict[str, Any] | None = None
+    validation_summary: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -116,6 +128,7 @@ async def run_playground(
 
     names = strategy_names or DEFAULT_PLAYGROUND_STRATEGIES
     memory_feedback = await _load_strategy_memory_feedback(regime.regime.value, names)
+    conviction_profiles = await _load_latest_conviction_profiles_for_evidence()
     results = [
         _run_one_strategy(
             name,
@@ -123,6 +136,7 @@ async def run_playground(
             context,
             current_weights,
             memory_feedback=memory_feedback.get(name),
+            conviction_profiles=conviction_profiles,
         )
         for name in names
     ]
@@ -215,7 +229,9 @@ async def run_playground_analysis(
                 walk_forward_validation=bundle.walk_forward_validation,
                 data_gaps=bundle.data_gaps,
             )
+            bundle.validation_summary = await _load_strategy_validation_summary()
             return bundle
+        validation_summary = await _load_strategy_validation_summary()
         return PlaygroundBundle(
             generated_at=datetime.utcnow().isoformat(),
             regime_label="unknown",
@@ -237,6 +253,7 @@ async def run_playground_analysis(
             },
             data_gaps=["no QC snapshots available"],
             walk_forward_validation={},
+            validation_summary=validation_summary,
         )
 
     latest_brief = _brief_from_snapshot(snapshots[-1])
@@ -278,6 +295,7 @@ async def run_playground_analysis(
         walk_forward_validation=bundle.walk_forward_validation,
         data_gaps=bundle.data_gaps,
     )
+    bundle.validation_summary = await _load_strategy_validation_summary()
     return bundle
 
 
@@ -292,7 +310,7 @@ async def _ensure_playground_features(
     2. If still missing, fetch yfinance immediately and persist it.
     3. Return enriched holdings plus transparent data-gap/source notes.
     """
-    clean_holdings = filter_tradable_research_rows(holdings)
+    clean_holdings = _rows_with_strategy_universe(holdings, strategy_names or DEFAULT_PLAYGROUND_STRATEGIES)
     tickers = sorted({(row.get("ticker") or "").upper().strip() for row in clean_holdings if row.get("ticker")})
     if not tickers:
         return clean_holdings, {"data_gaps": ["no tradable research tickers after universe filtering"]}
@@ -340,6 +358,67 @@ async def _ensure_playground_features(
     return enriched, {"data_gaps": data_gaps}
 
 
+async def _load_strategy_validation_summary() -> dict[str, Any]:
+    try:
+        async with AsyncSessionLocal() as db:
+            return await load_validation_dashboard_summary(db)
+    except Exception as exc:
+        logger.warning("[playground] strategy validation summary unavailable: %s", exc)
+        return {
+            "contract_version": "strategy_validation_dashboard_v1",
+            "status": "unavailable",
+            "reason": type(exc).__name__,
+            "display_note": "observe_only_no_execution_authority",
+        }
+
+
+async def _load_latest_conviction_profiles_for_evidence(limit: int = 5000) -> list[dict[str, Any]]:
+    try:
+        from sqlalchemy import func, select
+
+        from db.models import StrategyConvictionProfile
+
+        async with AsyncSessionLocal() as db:
+            latest_result = await db.execute(select(func.max(StrategyConvictionProfile.as_of_date)))
+            latest_date = latest_result.scalar_one_or_none()
+            if latest_date is None:
+                return []
+            result = await db.execute(
+                select(StrategyConvictionProfile)
+                .where(StrategyConvictionProfile.as_of_date == latest_date)
+                .order_by(
+                    StrategyConvictionProfile.source_bucket,
+                    StrategyConvictionProfile.strategy_id,
+                    StrategyConvictionProfile.ticker,
+                )
+                .limit(limit)
+            )
+            rows = result.scalars().all()
+        return [
+            {
+                "strategy_id": row.strategy_id,
+                "ticker": row.ticker,
+                "branch": row.branch,
+                "action": row.action,
+                "horizon_days": row.horizon_days,
+                "source_bucket": row.source_bucket,
+                "conviction": row.conviction,
+                "status": row.status,
+                "n": row.n,
+                "data_lag_filtered": row.data_lag_filtered,
+                "requires_live_confirmation": row.requires_live_confirmation,
+                "source_counts": row.source_counts or {},
+                "hit_rate": row.hit_rate,
+                "avg_excess_vs_spy": row.avg_excess_vs_spy,
+                "ic": row.ic,
+            }
+            for row in rows
+        ]
+    except Exception as exc:
+        logger.warning("[playground] conviction profiles unavailable for evidence cards: %s", exc)
+        return []
+
+
 async def generate_playground_report(bundle: PlaygroundBundle) -> str:
     data = bundle.to_dict()
     if not bundle.strategies:
@@ -357,6 +436,7 @@ async def generate_playground_report(bundle: PlaygroundBundle) -> str:
         "required_sections": [
             "best_strategy_or_blend",
             "strategy_confidence_summary",
+            "signal_validation_state",
             "historical_replay_evidence",
             "live_qc_fit",
             "key_divergences",
@@ -371,6 +451,7 @@ async def generate_playground_report(bundle: PlaygroundBundle) -> str:
             "Treat any metric with metric_reliability.level != high as weak evidence.",
             "If n_forward_return_samples is below the stated minimum for a specific metric block, explicitly name whether that block is QC live replay or yfinance historical replay.",
             "Use bundle.strategy_confidence as the primary summary for confidence_score and suggested_use.",
+            "Use bundle.validation_summary only as validation visibility; it has no execution authority.",
             "Distinguish current expected_turnover_pct from historical replay avg_turnover; do not call historical avg_turnover high when it is below 0.20.",
             "When discussing costs, format estimated_cost_pct and avg_turnover as percentages, not raw decimals.",
             "Check regime compatibility, data quality, yfinance-filled fields, turnover, and macro/news consistency.",
@@ -410,6 +491,7 @@ def _run_one_strategy(
     context: dict[str, Any],
     current_weights: dict[str, float],
     memory_feedback: dict[str, Any] | None = None,
+    conviction_profiles: list[dict[str, Any]] | None = None,
 ) -> StrategyResult:
     strategy = get_strategy(name)
     readiness = strategy.data_readiness(holdings)
@@ -422,13 +504,20 @@ def _run_one_strategy(
         weights = {"CASH": 1.0}
     actions = compute_rebalance_actions(weights, current_weights, threshold=1e-9)
     turnover = sum(abs(float(a["weight_delta"])) for a in actions) / 2.0
+    score_breakdown = [_score_to_dict(item) for item in scored]
+    evidence_cards = _build_strategy_evidence_cards(
+        strategy=strategy,
+        scored=scored,
+        context=context,
+        conviction_profiles=conviction_profiles or [],
+    )
     return StrategyResult(
         strategy_name=name,
         strategy_version=strategy.version,
         description=strategy.description,
         strategy_card=strategy.strategy_card(),
         weights=weights,
-        score_breakdown=[_score_to_dict(item) for item in scored],
+        score_breakdown=score_breakdown,
         selected_tickers=[ticker for ticker, weight in weights.items() if ticker != "CASH" and weight > 0.01],
         expected_turnover_pct=round(turnover, 6),
         estimated_cost_pct=estimate_cost_pct(actions),
@@ -445,7 +534,41 @@ def _run_one_strategy(
         agent_interpretation=_build_agent_interpretation(
             strategy, scored, weights, context, readiness, feature_contract, memory_feedback
         ),
+        scored_tickers=score_breakdown,
+        evidence_contract_version=EVIDENCE_CONTRACT_VERSION,
+        evidence_cards=evidence_cards,
+        evidence_summary=summarize_evidence_cards(evidence_cards),
     )
+
+
+def _build_strategy_evidence_cards(
+    *,
+    strategy,
+    scored: list[ScoredTicker],
+    context: dict[str, Any],
+    conviction_profiles: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if not scored:
+        return []
+    tickers = [item.ticker for item in scored if item.ticker]
+    try:
+        knowledge_context = build_knowledge_context(
+            tickers=tickers,
+            strategy_names=[strategy.name],
+            regime=context.get("regime"),
+            max_assets=max(12, len(tickers)),
+        )
+        cards = build_evidence_cards(
+            strategy=strategy,
+            scored=scored,
+            knowledge_context=knowledge_context,
+            mode="playground",
+            conviction_profiles=conviction_profiles or [],
+        )
+        return [card.to_dict() for card in cards]
+    except Exception as exc:
+        logger.warning("[playground] evidence card generation failed for %s: %s", strategy.name, exc)
+        return []
 
 
 async def _load_strategy_memory_feedback(
@@ -489,6 +612,42 @@ def _required_fields_for_strategies(strategy_names: list[str]) -> set[str]:
         except Exception as exc:
             logger.warning("[playground] could not read requirements for %s: %s", name, exc)
     return required
+
+
+def _required_universe_for_strategies(strategy_names: list[str]) -> set[str]:
+    tickers: set[str] = set()
+    for name in strategy_names:
+        try:
+            tickers.update(get_strategy(name).universe_tickers)
+        except Exception as exc:
+            logger.warning("[playground] could not read universe for %s: %s", name, exc)
+    return {ticker.upper().strip() for ticker in tickers if ticker}
+
+
+def _rows_with_strategy_universe(
+    holdings: list[dict[str, Any]],
+    strategy_names: list[str],
+) -> list[dict[str, Any]]:
+    rows = list(filter_tradable_research_rows(holdings))
+    by_ticker = {
+        (row.get("ticker") or "").upper().strip(): dict(row)
+        for row in holdings
+        if (row.get("ticker") or "").upper().strip()
+    }
+    existing = {
+        (row.get("ticker") or "").upper().strip()
+        for row in rows
+        if (row.get("ticker") or "").upper().strip()
+    }
+    for ticker in sorted(_required_universe_for_strategies(strategy_names)):
+        if ticker in existing:
+            continue
+        row = dict(by_ticker.get(ticker) or {"ticker": ticker})
+        row.setdefault("ticker", ticker)
+        row.setdefault("universe_role", "strategy_playground")
+        rows.append(row)
+        existing.add(ticker)
+    return rows
 
 
 def _missing_required_by_ticker(
@@ -566,6 +725,10 @@ def _feature_row_to_holding_fields(feature: dict[str, Any]) -> dict[str, Any]:
         "sma_50": feature.get("sma_50"),
         "sma_200": feature.get("sma_200"),
         "hist_vol_20d": feature.get("hist_vol_20d"),
+        "rsi_10": feature.get("rsi_10"),
+        "rsi_14": feature.get("rsi_14"),
+        "atr_pct": feature.get("atr_pct"),
+        "bb_position": feature.get("bb_position"),
     }
 
 
@@ -682,6 +845,8 @@ def _strategy_invalidation_hint(family: str, regime: str | None) -> str:
         return "Invalidated if breadth and cyclical leadership improve enough to make defensive assets opportunity-costly."
     if family == "risk_budgeting":
         return "Invalidated as an alpha view if expected-return evidence strongly favors a specific leadership theme."
+    if family == "leveraged_rotation":
+        return "Invalidated if leveraged ETF decay, single-asset concentration, or regime whipsaw dominates the RSI/SMA branch logic."
     return f"Validate against current regime={regime or 'unknown'}, rotation, macro/news risk, and execution constraints."
 
 
@@ -1210,7 +1375,7 @@ def _feature_rows_to_snapshots(rows: list[Any]) -> list[dict[str, Any]]:
 
 
 def _feature_model_to_holding(row: Any) -> dict[str, Any]:
-    return {
+    holding = {
         "ticker": row.ticker,
         "universe_role": "research",
         "price": _float_or_none(row.close_price) or _float_or_none(row.adj_close_price),
@@ -1230,14 +1395,31 @@ def _feature_model_to_holding(row: Any) -> dict[str, Any]:
         "sma_50": _float_or_none(row.sma_50),
         "sma_200": _float_or_none(row.sma_200),
         "hist_vol_20d": _float_or_none(row.hist_vol_20d),
-        "rsi_14": _float_or_none(row.rsi_14),
-        "atr_pct": _float_or_none(row.atr_pct),
-        "bb_position": _float_or_none(row.bb_position),
-        "feature_sources": [{
-            "source": "yfinance_historical",
-            "trading_date": row.trading_date.isoformat() if row.trading_date else None,
-        }],
+        "rsi_10": _float_or_none(getattr(row, "rsi_10", None)),
+        "rsi_14": _float_or_none(getattr(row, "rsi_14", None)),
+        "atr_pct": _float_or_none(getattr(row, "atr_pct", None)),
+        "bb_position": _float_or_none(getattr(row, "bb_position", None)),
     }
+    filled_fields = sorted(
+        field for field, value in holding.items()
+        if field not in {"ticker", "universe_role", "feature_sources"}
+        and value is not None
+    )
+    holding["feature_sources"] = [{
+        "source": "yfinance_historical",
+        "filled_fields": filled_fields,
+        "authority_by_field": {
+            field: authority_for_field(field, "yfinance_historical").value
+            for field in filled_fields
+        },
+        "canonical_aliases": {
+            field: canonical_field_name(field)
+            for field in filled_fields
+            if canonical_field_name(field) != field
+        },
+        "trading_date": row.trading_date.isoformat() if row.trading_date else None,
+    }]
+    return holding
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -1263,7 +1445,7 @@ def _compute_replay_metrics(
 
         for idx, snapshot in enumerate(snapshots):
             brief = _brief_from_snapshot(snapshot)
-            holdings = brief.get("holdings") or []
+            holdings = _rows_for_strategy_snapshot(snapshot, name)
             if not holdings:
                 continue
             portfolio = brief.get("portfolio") or {}
@@ -1291,7 +1473,7 @@ def _compute_replay_metrics(
                 score_leaders.append(result.score_breakdown[0]["ticker"])
 
             if idx + 1 < len(snapshots):
-                next_returns = _extract_daily_returns(_snapshot_rows(snapshots[idx + 1]))
+                next_returns = _extract_daily_returns(_raw_snapshot_rows(snapshots[idx + 1]))
                 if next_returns:
                     strategy_returns.append(
                         sum(float(weights.get(ticker, 0.0)) * ret for ticker, ret in next_returns.items())
@@ -1454,11 +1636,16 @@ def _strategy_forward_returns_for_snapshots(
             "current_weights": brief.get("current_weights") or {},
             "sector_rotation": brief.get("sector_rotation") or {},
         }
-        next_returns = _extract_daily_returns(_snapshot_rows(snapshots[idx + 1]))
+        next_returns = _extract_daily_returns(_raw_snapshot_rows(snapshots[idx + 1]))
         if not next_returns:
             continue
         for name in strategy_names:
-            result = _run_one_strategy(name, holdings, context, previous_weights.get(name, {}))
+            result = _run_one_strategy(
+                name,
+                _rows_for_strategy_snapshot(snapshot, name),
+                context,
+                previous_weights.get(name, {}),
+            )
             weights = result.weights
             previous_weights[name] = weights
             returns_by_strategy.setdefault(name, []).append(
@@ -1480,6 +1667,18 @@ def _brief_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 def _snapshot_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     return filter_tradable_research_rows(snapshot.get("holdings") or snapshot.get("features") or [])
+
+
+def _raw_snapshot_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    return list(snapshot.get("holdings") or snapshot.get("features") or [])
+
+
+def _rows_for_strategy_snapshot(snapshot: dict[str, Any], strategy_name: str) -> list[dict[str, Any]]:
+    try:
+        strategy = get_strategy(strategy_name)
+        return strategy.eligible_rows(_raw_snapshot_rows(snapshot))
+    except Exception:
+        return _snapshot_rows(snapshot)
 
 
 def _dedupe_market_snapshots(rows: list[QCSnapshot]) -> list[dict[str, Any]]:
@@ -1602,7 +1801,10 @@ def _format_report_for_telegram(text: str, bundle: PlaygroundBundle) -> str:
     top = _top_weights(bundle.consensus_weights, n=5)
     evidence_summary = _format_evidence_summary(bundle.evidence_summary)
     confidence_summary = _format_strategy_confidence_summary(bundle)
-    structured_sections = "\n\n".join(section for section in (evidence_summary, confidence_summary) if section)
+    validation_summary = _format_validation_summary(bundle.validation_summary)
+    structured_sections = "\n\n".join(
+        section for section in (evidence_summary, confidence_summary, validation_summary) if section
+    )
     body = f"{structured_sections}\n\n{text}" if structured_sections else text
     return (
         "🧪 <b>Playground Sandbox</b>\n"
@@ -1626,6 +1828,9 @@ def _fallback_report(bundle: PlaygroundBundle, error: str | None = None) -> str:
     confidence_summary = _format_strategy_confidence_summary(bundle)
     if confidence_summary:
         lines.extend(["", confidence_summary])
+    validation_summary = _format_validation_summary(bundle.validation_summary)
+    if validation_summary:
+        lines.extend(["", validation_summary])
     lines.extend(["", "<b>QC Live Replay</b>"])
     for name, metrics in bundle.replay_metrics.items():
         reliability = metrics.get("metric_reliability") or {}
@@ -1687,6 +1892,34 @@ def _format_evidence_summary(summary: dict[str, Any] | None) -> str:
         f"Execution permission: {escape(str(summary.get('execution_permission') or 'unknown'))}"
         f"{best_text}{reason_text}"
     )
+
+
+def _format_validation_summary(summary: dict[str, Any] | None) -> str:
+    if not summary or summary.get("status") == "unavailable":
+        return ""
+    pending = summary.get("pending_outcomes") or {}
+    combined = summary.get("combined_profiles") or []
+    lines = [
+        "<b>Signal Validation</b>",
+        f"Signals today: {int(summary.get('signals_recorded_today') or 0)} | "
+        f"Outcomes today: {int(summary.get('outcomes_labeled_today') or 0)} | "
+        f"Pending mature: {int(pending.get('mature') or 0)}",
+        f"Profiles: hist={len(summary.get('historical_prior_profiles') or [])}, "
+        f"live={len(summary.get('live_paper_profiles') or [])}, "
+        f"combined={len(combined)} | "
+        f"live confirmation={int(summary.get('requires_live_confirmation_count') or 0)}",
+    ]
+    if combined:
+        lines.append("Top combined:")
+        for row in combined[:3]:
+            conviction = row.get("conviction_display") or "-"
+            status = escape(str(row.get("status") or "unknown"))
+            lines.append(
+                f"- {escape(str(row.get('strategy') or 'unknown'))}/"
+                f"{escape(str(row.get('ticker') or 'unknown'))}: "
+                f"{conviction}, n={int(row.get('n') or 0)}, {status}"
+            )
+    return "\n".join(lines)
 
 
 def _format_strategy_confidence_summary(bundle: PlaygroundBundle, limit: int = 4) -> str:
@@ -1780,6 +2013,8 @@ def _strategy_regime_fit(name: str, regime: str) -> str:
         return "strong" if regime in ("high_vol", "defensive") else "medium"
     if name == "equal_weight_benchmark":
         return "benchmark"
+    if name == "leveraged_etf_momentum_allocator":
+        return "medium" if regime in ("trending_bull", "trending_bear", "high_vol") else "unknown"
     return "unknown"
 
 

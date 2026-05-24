@@ -3,7 +3,7 @@ type: risk_principle
 summary: Leveraged and inverse ETFs are short-term instruments with daily reset compounding risk.
 trigger_conditions: [leveraged_etf, inverse_leveraged_etf]
 governance_action: require_explicit_support_and_high_vol_review
-applies_to: [SOXL, SOXS]
+applies_to: [SOXL, SOXS, TQQQ, SQQQ, SPXL, TECL, TECS, UVXY]
 cannot_override: [llm_advisory]
 sources: [leveraged_etf_policy]
 last_reviewed: 2026-05-18

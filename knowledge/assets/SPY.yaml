@@ -1,8 +1,19 @@
 id: SPY
 type: asset
 asset_class: equity_etf
+role: core_market
 sector_group: broad_market
 summary: Broad US large-cap equity benchmark.
+underlying: S&P 500 Index
+leverage: 1
+inverse: false
+decay_risk: low
+allowed_actions: [increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.25
+  full_auto: 0.20
+risk_budget_cost: 0.45
 risk_drivers: [market_beta, equity_risk_premium]
 positive_regimes: [trending_bull, risk_on]
 weak_regimes: [high_vol, risk_off]

@@ -17,7 +17,6 @@ from services.feature_authority import (
     canonical_field_name,
     is_authoritative,
 )
-from services.universe_policy import filter_tradable_research_rows
 from strategies.base import Strategy
 
 
@@ -35,7 +34,7 @@ def build_strategy_feature_contract(
     as_of_date = as_of or date.today()
     valid_holdings = [
         _with_strategy_aliases(row)
-        for row in filter_tradable_research_rows(holdings)
+        for row in strategy.eligible_rows(holdings)
     ]
     required_fields = tuple(strategy.required_fields or ())
     optional_fields = tuple(strategy.optional_fields or ())
@@ -87,6 +86,9 @@ def build_strategy_feature_contract(
         can_influence_allocation = False
     elif non_authoritative_required:
         verdict = "blocked_non_authoritative_required_fields"
+        can_influence_allocation = False
+    elif not bool(readiness.get("ready")):
+        verdict = "blocked_strategy_readiness"
         can_influence_allocation = False
     else:
         verdict = "blocked_no_eligible_tickers"

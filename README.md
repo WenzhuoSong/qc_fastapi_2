@@ -221,6 +221,8 @@ affect the others or the main pipeline.
 | `python -m cron.pending_check` | every 1 min | SEMI_AUTO timeout handler |
 | `python -m cron.playground_analysis` | after close | Research-only multi-strategy comparison |
 | `python -m cron.yfinance_backfill` | after close | Research/backfill OHLCV feature store, no execution authority |
+| `python -m cron.daily_signal_freeze` | after playground/yfinance | Observe-only EvidenceCard signal ledger; no execution authority |
+| `python -m cron.daily_signal_validation_refresh` | after signal freeze | Label mature signal outcomes and refresh conviction profiles; no execution authority |
 | `python -m cron.morning_health` | 09:00 | Pre-open health notification |
 | `python -m cron.post_market_report` | 16:35 | Daily report |
 

@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS market_daily_features (
     sma_50 NUMERIC(15,4),
     sma_200 NUMERIC(15,4),
     hist_vol_20d NUMERIC(8,6),
+    rsi_10 NUMERIC(6,2),
     rsi_14 NUMERIC(6,2),
     atr_pct NUMERIC(8,6),
     bb_position NUMERIC(6,4),
@@ -40,6 +41,7 @@ CREATE INDEX IF NOT EXISTS ix_market_daily_features_date_source
 ON market_daily_features (trading_date DESC, source);
 
 ALTER TABLE market_daily_features
+ADD COLUMN IF NOT EXISTS rsi_10 NUMERIC(6,2),
 ADD COLUMN IF NOT EXISTS rsi_14 NUMERIC(6,2),
 ADD COLUMN IF NOT EXISTS atr_pct NUMERIC(8,6),
 ADD COLUMN IF NOT EXISTS bb_position NUMERIC(6,4);

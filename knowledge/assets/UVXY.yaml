@@ -1,0 +1,27 @@
+id: UVXY
+type: asset
+asset_class: leveraged_volatility_etp
+role: vol_hedge
+sector_group: volatility
+summary: 1.5x daily VIX short-term futures ETF with extreme decay and timing risk.
+underlying: S&P 500 VIX Short-Term Futures Index
+leverage: 1.5
+inverse: false
+decay_risk: extreme
+allowed_actions: [hedge, reduce, hold, watch, avoid, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.12
+  full_auto: 0.0
+risk_budget_cost: 1.00
+intended_uses: [tail_risk_hedge, volatility_spike_signal, de_risk_warning]
+risk_drivers: [vix_futures_curve, leverage, daily_reset_compounding, decay, gap_risk]
+positive_regimes: [volatility_spike, acute_risk_off]
+weak_regimes: [trending_bull, calm_market, high_vol_chop_after_spike]
+holding_policy: {allow_long_hold: false, max_holding_style: very_short_term_only}
+governance_notes:
+  - use primarily as hedge or de-risk evidence
+  - do not translate high raw score into ordinary long exposure
+  - full-auto max weight is zero until separately certified
+sources: [issuer_fact_sheet, leveraged_etf_policy]
+last_reviewed: 2026-05-24

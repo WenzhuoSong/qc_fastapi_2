@@ -54,7 +54,17 @@ class MigrationSafetyTests(unittest.TestCase):
         self.assertRegex(models, r"raw_payload\s*=\s*Column\(JSONB,\s*nullable=False\)")
         self.assertIn('class MarketDailyFeature', models)
         self.assertIn('__tablename__ = "market_daily_features"', models)
+        self.assertRegex(models, r"\brsi_10\s*=\s*Column\(")
         self.assertRegex(models, r"raw_payload\s*=\s*Column\(JSONB\)")
+        self.assertIn('class StrategyFrozenSignal', models)
+        self.assertIn('__tablename__ = "strategy_frozen_signals"', models)
+        self.assertRegex(models, r"\bcontent_hash\s*=\s*Column\(")
+        self.assertIn('class StrategySignalOutcome', models)
+        self.assertIn('__tablename__ = "strategy_signal_outcomes"', models)
+        self.assertRegex(models, r"\bexcess_calculation_method\s*=\s*Column\(")
+        self.assertIn('class StrategyConvictionProfile', models)
+        self.assertIn('__tablename__ = "strategy_conviction_profiles"', models)
+        self.assertRegex(models, r"\brequires_live_confirmation\s*=\s*Column\(")
 
     def test_holdings_factors_legacy_fields_remain_modeled(self):
         models = (REPO_ROOT / "db" / "models.py").read_text(encoding="utf-8")

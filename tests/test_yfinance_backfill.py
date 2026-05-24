@@ -38,6 +38,7 @@ class YfinanceBackfillTest(unittest.TestCase):
         self.assertIsNotNone(last["return_252d"])
         self.assertIsNotNone(last["sma_200"])
         self.assertIsNotNone(last["hist_vol_20d"])
+        self.assertIsNotNone(last["rsi_10"])
         self.assertIsNotNone(last["rsi_14"])
         self.assertIsNotNone(last["atr_pct"])
         self.assertIsNotNone(last["bb_position"])

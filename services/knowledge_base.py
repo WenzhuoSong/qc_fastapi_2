@@ -41,7 +41,24 @@ REASON_TO_PRINCIPLE = {
     "staged_trim": "staged_trim",
 }
 
-LEVERAGED_TICKERS = {"SOXL", "SOXS", "TQQQ", "SQQQ", "UPRO", "SPXU"}
+LEVERAGED_TICKERS = {
+    "SOXL", "SOXS", "TQQQ", "SQQQ", "UPRO", "SPXU",
+    "SPXL", "TECL", "TECS", "UVXY",
+}
+SAFETY_RELEVANT_ASSET_CLASSES = {
+    "leveraged_etf",
+    "inverse_etf",
+    "inverse_leveraged_etf",
+    "leveraged_inverse_etf",
+    "volatility_etp",
+    "leveraged_volatility_etp",
+}
+REQUIRED_SAFETY_FIELDS = {
+    "allowed_actions",
+    "max_reasonable_weight",
+    "risk_budget_cost",
+    "decay_risk",
+}
 
 
 def load_knowledge_base(root: Path | str | None = None) -> dict[str, Any]:
@@ -77,6 +94,8 @@ def _load_knowledge_base_cached(root_str: str) -> dict[str, Any]:
                 else:
                     warnings.append(f"{file_path.name}: type {item_type} mismatches {collection}")
             item["_source_file"] = str(file_path.relative_to(root))
+            if collection == "assets":
+                warnings.extend(_asset_safety_warnings(item))
             collections[collection][item_id] = item
 
     source_registry = _read_yaml(root / "sources" / "registry.yaml", warnings)
@@ -215,11 +234,28 @@ def _parse_block(lines: list[tuple[int, str]], index: int, indent: int) -> tuple
             if current_indent > indent:
                 break
             item_text = content[2:].strip()
-            if item_text:
+            index += 1
+            if item_text and _looks_like_key_value(item_text):
+                key, value_text = item_text.split(":", 1)
+                key = key.strip()
+                value_text = value_text.strip()
+                item: dict[str, Any] = {}
+                if value_text:
+                    item[key] = _parse_scalar(value_text)
+                elif index < len(lines) and lines[index][0] > current_indent:
+                    value, index = _parse_block(lines, index, current_indent + 2)
+                    item[key] = value
+                if index < len(lines) and lines[index][0] > current_indent:
+                    nested, index = _parse_block(lines, index, current_indent + 2)
+                    if isinstance(nested, dict):
+                        item.update(nested)
+                    else:
+                        item.setdefault("items", nested)
+                out.append(item)
+            elif item_text:
                 out.append(_parse_scalar(item_text))
-                index += 1
             else:
-                item, index = _parse_block(lines, index + 1, indent + 2)
+                item, index = _parse_block(lines, index, current_indent + 2)
                 out.append(item)
         return out, index
 
@@ -277,6 +313,14 @@ def _parse_scalar(value: str) -> Any:
         return value.strip("\"'")
 
 
+def _looks_like_key_value(value: str) -> bool:
+    if ":" not in value:
+        return False
+    key, _ = value.split(":", 1)
+    key = key.strip()
+    return bool(key) and " " not in key and not key.startswith(("http", "https"))
+
+
 def _principle_ids(*, tickers: list[str], reason_codes: list[str]) -> list[str]:
     ids: list[str] = []
     for code in reason_codes:
@@ -301,11 +345,13 @@ def _compact_strategy(item: dict[str, Any]) -> dict[str, Any]:
         "id": item.get("id"),
         "category": item.get("category"),
         "summary": item.get("summary"),
+        "horizon": item.get("horizon"),
         "best_regimes": item.get("best_regimes") or [],
         "weak_regimes": item.get("weak_regimes") or [],
         "required_features": item.get("required_features") or [],
         "failure_modes": item.get("failure_modes") or [],
         "governance_implications": item.get("governance_implications") or [],
+        "compatibility_mappings": item.get("compatibility_mappings") or [],
         "sources": item.get("sources") or [],
     }
 
@@ -314,8 +360,17 @@ def _compact_asset(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": item.get("id"),
         "asset_class": item.get("asset_class"),
+        "role": item.get("role"),
         "sector_group": item.get("sector_group"),
         "summary": item.get("summary"),
+        "underlying": item.get("underlying"),
+        "leverage": item.get("leverage"),
+        "inverse": item.get("inverse"),
+        "decay_risk": item.get("decay_risk"),
+        "allowed_actions": item.get("allowed_actions") or [],
+        "max_reasonable_weight": item.get("max_reasonable_weight") or {},
+        "risk_budget_cost": item.get("risk_budget_cost"),
+        "intended_uses": item.get("intended_uses") or [],
         "risk_drivers": item.get("risk_drivers") or [],
         "positive_regimes": item.get("positive_regimes") or [],
         "weak_regimes": item.get("weak_regimes") or [],
@@ -323,6 +378,31 @@ def _compact_asset(item: dict[str, Any]) -> dict[str, Any]:
         "governance_notes": item.get("governance_notes") or [],
         "sources": item.get("sources") or [],
     }
+
+
+def _asset_safety_warnings(item: dict[str, Any]) -> list[str]:
+    asset_class = str(item.get("asset_class") or "").strip()
+    if asset_class not in SAFETY_RELEVANT_ASSET_CLASSES:
+        return []
+    missing = [
+        field
+        for field in sorted(REQUIRED_SAFETY_FIELDS)
+        if _missing_safety_value(item.get(field))
+    ]
+    if not missing:
+        return []
+    item_id = str(item.get("id") or "unknown")
+    return [f"{item_id}: missing safety fields: {', '.join(missing)}"]
+
+
+def _missing_safety_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, set, dict)):
+        return not value
+    return False
 
 
 def _compact_regime(item: dict[str, Any]) -> dict[str, Any]:

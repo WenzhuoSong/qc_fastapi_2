@@ -207,6 +207,7 @@ def compute_feature_rows_from_frame(ticker: str, frame) -> list[dict[str, Any]]:
     df["sma_50"] = close.rolling(50).mean()
     df["sma_200"] = close.rolling(200).mean()
     df["hist_vol_20d"] = df["return_1d"].rolling(20).std()
+    df["rsi_10"] = _rsi(close, 10)
     df["rsi_14"] = _rsi(close, 14)
     true_range = _true_range(df)
     df["atr_pct"] = true_range.rolling(14).mean() / df["close"]
@@ -243,6 +244,7 @@ def compute_feature_rows_from_frame(ticker: str, frame) -> list[dict[str, Any]]:
             "sma_50": _num(row.get("sma_50")),
             "sma_200": _num(row.get("sma_200")),
             "hist_vol_20d": _num(row.get("hist_vol_20d")),
+            "rsi_10": _num(row.get("rsi_10"), digits=2),
             "rsi_14": _num(row.get("rsi_14"), digits=2),
             "atr_pct": _num(row.get("atr_pct")),
             "bb_position": _num(row.get("bb_position"), digits=4),
