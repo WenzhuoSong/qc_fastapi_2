@@ -18,7 +18,13 @@ intended_uses: [short_tactical_hedge, technology_drawdown_signal]
 risk_drivers: [inverse_leverage, daily_reset_compounding, technology_beta, whipsaw_risk]
 positive_regimes: [short_term_technology_breakdown, risk_off]
 weak_regimes: [trending_bull, high_vol_chop, mean_reverting]
-holding_policy: {allow_long_hold: false, max_holding_style: very_short_term_only}
+max_hold_days: 7
+auto_reduce_after_days: 4
+holding_policy:
+  allow_long_hold: false
+  max_holding_style: very_short_term_only
+  max_hold_days: 7
+  auto_reduce_after_days: 4
 governance_notes:
   - never treat as a long-term hedge without explicit review
   - require hedge intent before any production add

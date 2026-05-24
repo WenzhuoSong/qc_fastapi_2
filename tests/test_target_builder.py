@@ -1,7 +1,12 @@
 import inspect
 import unittest
 
-from services.target_builder import build_target_weights, compare_target_weights
+from services.target_builder import (
+    ALLOWED_EVIDENCE_FIELDS,
+    FORBIDDEN_EVIDENCE_FIELDS,
+    build_target_weights,
+    compare_target_weights,
+)
 
 
 class TargetBuilderTest(unittest.TestCase):
@@ -62,6 +67,36 @@ class TargetBuilderTest(unittest.TestCase):
         self.assertFalse(out["diagnostics"]["raw_llm_adjusted_weights_consumed"])
         self.assertFalse(out["diagnostics"]["construction_participated"])
         self.assertIsNone(out["per_ticker"]["QQQ"]["construction_weight"])
+
+    def test_conviction_fields_are_visible_but_not_consumed(self):
+        out = build_target_weights(
+            base_weights={"QQQ": 0.14, "CASH": 0.86},
+            current_weights={"QQQ": 0.12, "CASH": 0.88},
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            decision_style={},
+            position_governance={
+                "position_decisions": [
+                    {
+                        "ticker": "QQQ",
+                        "target_after": 0.11,
+                        "effective_confidence": 1.0,
+                        "conviction": 1.0,
+                        "evidence": {"conviction_status": "calibrated"},
+                    }
+                ]
+            },
+            validated_advisory=[],
+            constraints={},
+            mode="target_builder_gated",
+        ).to_dict()
+
+        self.assertEqual(out["target_weights"]["QQQ"], 0.11)
+        self.assertFalse(out["diagnostics"]["forbidden_evidence_fields_consumed"])
+        self.assertIn("conviction", out["diagnostics"]["forbidden_evidence_fields_seen"])
+        self.assertIn("effective_confidence", out["diagnostics"]["forbidden_evidence_fields_seen"])
+        self.assertIn("evidence.conviction_status", out["diagnostics"]["forbidden_evidence_fields_seen"])
+        self.assertNotIn("effective_confidence", ALLOWED_EVIDENCE_FIELDS)
+        self.assertIn("effective_confidence", FORBIDDEN_EVIDENCE_FIELDS)
 
     def test_gated_mode_can_start_from_portfolio_construction_weights(self):
         out = build_target_weights(

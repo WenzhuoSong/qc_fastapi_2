@@ -17,7 +17,13 @@ risk_budget_cost: 1.00
 risk_drivers: [inverse_leverage, daily_reset_compounding, semiconductor_beta, high_atr]
 positive_regimes: [short_term_semiconductor_breakdown]
 weak_regimes: [trending_bull, high_vol_chop]
-holding_policy: {allow_long_hold: false, max_holding_style: short_term_only}
+max_hold_days: 7
+auto_reduce_after_days: 4
+holding_policy:
+  allow_long_hold: false
+  max_holding_style: very_short_term_only
+  max_hold_days: 7
+  auto_reduce_after_days: 4
 governance_notes:
   - not suitable for passive long holding
   - use only with explicit short-term risk thesis

@@ -21,6 +21,7 @@ ALLOWED_POST_RISK_MUTATIONS = {
     "cap_single_buy_delta",
     "cap_trade_count_buys",
     "cash_raise_from_policy_cap",
+    "decay_risk_auto_reduce",
     "emergency_reduce_only",
 }
 

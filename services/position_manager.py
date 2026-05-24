@@ -38,6 +38,7 @@ class PositionConstraints:
     max_turnover_per_cycle: float = 0.30
     max_daily_trades: int = 5
     min_hold_days: int = 2
+    decay_auto_reduce_pct: float = 0.25
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any] | None) -> "PositionConstraints":
@@ -81,6 +82,7 @@ class PositionManager:
         constraints: PositionConstraints | None = None,
         holdings_meta: list[dict] | None = None,
         actual_daily_trades: int = 0,
+        asset_profiles: dict[str, Any] | None = None,
     ) -> PositionManagerOutput:
         constraints = constraints or PositionConstraints()
         current = _clean_weights(current_holdings)
@@ -90,6 +92,7 @@ class PositionManager:
         violations: list[str] = []
         mutation_types: list[str] = []
         hold_days = _extract_hold_days(holdings_meta or [])
+        profiles = asset_profiles or _load_asset_profiles_for_weights(target, current)
 
         # Protect young positions from sells before applying buy/turnover caps.
         for ticker, cur_w in current.items():
@@ -107,6 +110,15 @@ class PositionManager:
                     )
                     mutation_types.append("defer_sell_due_to_min_hold_days")
 
+        target = self._apply_decay_holding_limits(
+            target,
+            current,
+            hold_days,
+            profiles,
+            constraints,
+            violations,
+            mutation_types,
+        )
         target = self._cap_new_buys(target, current, constraints, violations, mutation_types)
         target = self._cap_position_count(target, current, constraints, violations, mutation_types)
         target = self._cap_single_buys(target, current, constraints, violations, mutation_types)
@@ -129,6 +141,10 @@ class PositionManager:
             "total_turnover": round(_turnover(adjusted, current), 6),
             "position_count": _position_count(adjusted),
             "actual_daily_trades_before_cycle": actual_daily_trades,
+            "decay_holding_reviews": len([
+                item for item in violations
+                if item.startswith("decay_auto_reduce:") or item.startswith("decay_max_hold_review:")
+            ]),
         }
 
         return PositionManagerOutput(
@@ -138,6 +154,65 @@ class PositionManager:
             constraints=asdict(constraints),
             mutation_types=_unique(mutation_types),
         )
+
+    def _apply_decay_holding_limits(
+        self,
+        target: dict[str, float],
+        current: dict[str, float],
+        hold_days: dict[str, int],
+        asset_profiles: dict[str, Any],
+        constraints: PositionConstraints,
+        violations: list[str],
+        mutation_types: list[str],
+    ) -> dict[str, float]:
+        out = dict(target)
+        for ticker, cur_w in sorted(current.items()):
+            if ticker == "CASH" or cur_w <= self.trade_threshold:
+                continue
+            days = hold_days.get(ticker)
+            if days is None:
+                continue
+            policy = _holding_policy_for_ticker(ticker, asset_profiles)
+            auto_days = _optional_int(policy.get("auto_reduce_after_days"))
+            max_days = _optional_int(policy.get("max_hold_days"))
+            if auto_days is None and max_days is None:
+                continue
+            decay_risk = str(policy.get("decay_risk") or "").strip().lower()
+            if decay_risk not in {"high", "extreme"} and not policy.get("force_decay_review"):
+                continue
+
+            review_due = max_days is not None and days >= max_days
+            reduce_due = auto_days is not None and days >= auto_days
+            if not review_due and not reduce_due:
+                continue
+
+            old_target = float(out.get(ticker, 0.0) or 0.0)
+            reduce_pct = max(min(float(constraints.decay_auto_reduce_pct or 0.0), 1.0), 0.0)
+            if review_due:
+                reduce_pct = max(reduce_pct, 0.50)
+                violations.append(
+                    f"decay_max_hold_review:{ticker} held {days}d >= {max_days}d decay_risk={decay_risk or 'unknown'}"
+                )
+            if reduce_pct <= 0:
+                continue
+
+            suggested_target = max(cur_w * (1.0 - reduce_pct), 0.0)
+            if old_target <= suggested_target + 1e-9:
+                continue
+
+            out[ticker] = suggested_target
+            out["CASH"] = float(out.get("CASH", 0.0) or 0.0) + max(old_target - suggested_target, 0.0)
+            threshold_text = (
+                f"auto_reduce_after_days={auto_days}"
+                if reduce_due
+                else f"max_hold_days={max_days}"
+            )
+            violations.append(
+                f"decay_auto_reduce:{ticker} held {days}d {threshold_text} "
+                f"{old_target:.2%}->{suggested_target:.2%} decay_risk={decay_risk or 'unknown'}"
+            )
+            mutation_types.append("decay_risk_auto_reduce")
+        return out
 
     def _cap_new_buys(
         self,
@@ -301,6 +376,7 @@ def apply_position_constraints(
     config: dict[str, Any] | None = None,
     holdings_meta: list[dict] | None = None,
     actual_daily_trades: int = 0,
+    asset_profiles: dict[str, Any] | None = None,
 ) -> PositionManagerOutput:
     constraints = PositionConstraints.from_config(config)
     return PositionManager().apply(
@@ -309,6 +385,7 @@ def apply_position_constraints(
         constraints,
         holdings_meta,
         actual_daily_trades=actual_daily_trades,
+        asset_profiles=asset_profiles,
     )
 
 
@@ -368,6 +445,46 @@ def _extract_hold_days(holdings_meta: list[dict]) -> dict[str, int]:
         except (TypeError, ValueError):
             continue
     return out
+
+
+def _load_asset_profiles_for_weights(
+    target: dict[str, float],
+    current: dict[str, float],
+) -> dict[str, Any]:
+    tickers = sorted((set(target) | set(current)) - {"CASH"})
+    if not tickers:
+        return {}
+    try:
+        from services.knowledge_base import load_knowledge_base
+
+        assets = load_knowledge_base().get("assets") or {}
+        return {
+            ticker: assets[ticker]
+            for ticker in tickers
+            if ticker in assets
+        }
+    except Exception as exc:
+        logger.warning("[position_manager] asset profile lookup failed: %s", exc)
+        return {}
+
+
+def _holding_policy_for_ticker(ticker: str, asset_profiles: dict[str, Any]) -> dict[str, Any]:
+    profile = asset_profiles.get(str(ticker).upper().strip()) or {}
+    policy = dict(profile.get("holding_policy") or {}) if isinstance(profile.get("holding_policy"), dict) else {}
+    for key in ("max_hold_days", "auto_reduce_after_days"):
+        if profile.get(key) is not None and policy.get(key) is None:
+            policy[key] = profile.get(key)
+    if profile.get("decay_risk") is not None:
+        policy["decay_risk"] = profile.get("decay_risk")
+    return policy
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
 
 
 async def run_position_health_check(

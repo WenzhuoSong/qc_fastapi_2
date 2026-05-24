@@ -18,7 +18,13 @@ intended_uses: [risk_on_amplifier, tactical_exposure]
 risk_drivers: [leverage, daily_reset_compounding, nasdaq_100_beta, gap_risk]
 positive_regimes: [trending_bull, risk_on]
 weak_regimes: [high_vol, mean_reverting, risk_off]
-holding_policy: {allow_long_hold: false, max_holding_style: short_term_only}
+max_hold_days: 10
+auto_reduce_after_days: 7
+holding_policy:
+  allow_long_hold: false
+  max_holding_style: short_term_only
+  max_hold_days: 10
+  auto_reduce_after_days: 7
 governance_notes:
   - require explicit strategy support
   - cap exposure before any production use

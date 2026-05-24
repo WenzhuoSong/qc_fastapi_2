@@ -1,7 +1,7 @@
 # Risk, Portfolio Construction, And Execution Control Development Plan
 
 Review date: 2026-05-24
-Status: PR1-8 implemented locally; gated rollout remains disabled by default
+Status: PR1-8 implemented locally; post-review R2/R5/R6 hardening implemented locally
 
 ## 1. Purpose
 
@@ -681,6 +681,26 @@ Implemented on 2026-05-24:
 - Telegram `/pc_promotion gated` can request gated mode, but it keeps
   `allow_full_auto_gated = false`; the runtime gate still blocks promotion
   unless readiness and rollout criteria pass.
+
+### Post-Review Hardening: R2, R5, R6
+
+Implemented on 2026-05-24 after expert review:
+
+- R2: Portfolio Construction now emits an explicit `ConstructionObjective`
+  with `primary`, `turnover_budget`, `effective_n_target`,
+  `allow_cash_raise`, and `rationale`. This is diagnostic only and does not
+  change the construction algorithm.
+- R6: Target Builder exposes `ALLOWED_EVIDENCE_FIELDS` and
+  `FORBIDDEN_EVIDENCE_FIELDS`. Conviction fields such as `conviction`,
+  `conviction_status`, `conviction_n`, and `effective_confidence` are recorded
+  as seen when present but are explicitly not consumed as target-construction
+  inputs.
+- R5: Leveraged, inverse, and volatility ETF profiles now include
+  `max_hold_days` and `auto_reduce_after_days`. Position Manager reads those
+  asset profiles and can emit a `decay_risk_auto_reduce` mutation when a
+  high-decay holding exceeds its profile-specific holding window. Final Risk
+  Validation treats that mutation as an allowed tighten-only post-risk
+  adjustment.
 
 ## 12. Test Plan
 

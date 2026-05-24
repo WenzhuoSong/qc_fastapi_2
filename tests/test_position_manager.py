@@ -173,6 +173,54 @@ class PositionManagerTest(unittest.TestCase):
         self.assertEqual(out.trade_summary["actual_daily_trades_before_cycle"], 2)
         self.assertTrue(any(v.startswith("daily_trade_count_capped:") for v in out.violations))
 
+    def test_decay_risk_auto_reduce_uses_asset_profile_holding_policy(self):
+        out = apply_position_constraints(
+            target_weights={"UVXY": 0.03, "CASH": 0.97},
+            current_holdings={"UVXY": 0.03, "CASH": 0.97},
+            config={
+                "max_single_trade_pct": 1.0,
+                "max_turnover_per_cycle": 1.0,
+                "decay_auto_reduce_pct": 0.25,
+            },
+            holdings_meta=[{"ticker": "UVXY", "holding_days": 8}],
+            asset_profiles={
+                "UVXY": {
+                    "decay_risk": "extreme",
+                    "holding_policy": {
+                        "auto_reduce_after_days": 7,
+                        "max_hold_days": 10,
+                    },
+                }
+            },
+        )
+
+        self.assertLess(out.adjusted_weights["UVXY"], 0.03)
+        self.assertTrue(any(v.startswith("decay_auto_reduce:UVXY") for v in out.violations))
+        self.assertIn("decay_risk_auto_reduce", out.mutation_types)
+        self.assertEqual(out.trade_summary["decay_holding_reviews"], 1)
+
+    def test_decay_max_hold_review_forces_larger_trim(self):
+        out = apply_position_constraints(
+            target_weights={"TQQQ": 0.04, "CASH": 0.96},
+            current_holdings={"TQQQ": 0.04, "CASH": 0.96},
+            config={
+                "max_single_trade_pct": 1.0,
+                "max_turnover_per_cycle": 1.0,
+                "decay_auto_reduce_pct": 0.25,
+            },
+            holdings_meta=[{"ticker": "TQQQ", "holding_days": 12}],
+            asset_profiles={
+                "TQQQ": {
+                    "decay_risk": "high",
+                    "holding_policy": {"max_hold_days": 10},
+                }
+            },
+        )
+
+        self.assertAlmostEqual(out.adjusted_weights["TQQQ"], 0.02, places=4)
+        self.assertTrue(any(v.startswith("decay_max_hold_review:TQQQ") for v in out.violations))
+        self.assertIn("decay_risk_auto_reduce", out.mutation_types)
+
 
 if __name__ == "__main__":
     unittest.main()

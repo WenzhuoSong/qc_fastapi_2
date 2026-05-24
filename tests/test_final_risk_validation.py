@@ -101,6 +101,21 @@ class FinalRiskValidationTest(unittest.TestCase):
         self.assertTrue(out["approved"], out)
         self.assertEqual(out["blocking_violations"], [])
 
+    def test_blocking_mode_allows_decay_risk_auto_reduce_mutation(self):
+        out = validate_final_execution_target(
+            risk_approved_target={"UVXY": 0.03, "CASH": 0.97},
+            final_target={"UVXY": 0.02, "CASH": 0.98},
+            current_weights={"UVXY": 0.03, "CASH": 0.97},
+            policy_context={
+                "post_risk_mutation_types": ["decay_risk_auto_reduce"],
+                "material_drift_threshold": 0.001,
+            },
+            mode="blocking",
+        )
+
+        self.assertTrue(out["approved"], out)
+        self.assertIn("decay_risk_auto_reduce", out["allowed_mutation_types"])
+
 
 if __name__ == "__main__":
     unittest.main()

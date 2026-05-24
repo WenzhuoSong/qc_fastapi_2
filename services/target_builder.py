@@ -14,6 +14,24 @@ from services.execution_policy import apply_policy_caps, evaluate_policy, policy
 
 NO_ADD_PERMISSIONS = {"hold_or_trim", "reduce_risk_only", "defensive_only", "cash_only"}
 
+ALLOWED_EVIDENCE_FIELDS = {
+    "action",
+    "role",
+    "signal_type",
+    "max_reasonable_weight",
+    "risk_budget_cost",
+    "allowed_actions",
+    "reason_codes",
+}
+
+FORBIDDEN_EVIDENCE_FIELDS = {
+    "conviction",
+    "conviction_status",
+    "conviction_source_bucket",
+    "conviction_n",
+    "effective_confidence",
+}
+
 
 @dataclass
 class TargetBuildResult:
@@ -50,6 +68,7 @@ def build_target_weights(
     style = decision_style or {}
     governance = position_governance or {}
     cfg = constraints or {}
+    forbidden_evidence_fields_seen = _forbidden_evidence_fields_seen(governance)
 
     decisions = _decisions_by_ticker(governance)
     advisory = _advisory_by_ticker(validated_advisory or governance.get("advisory_overrides") or [])
@@ -245,6 +264,9 @@ def build_target_weights(
             "cash_raised_by_policy_cap": cash_raised,
             "hedge_intent": hedge_overlay["diagnostics"],
             "ticker_count": len(per_ticker),
+            "allowed_evidence_fields": sorted(ALLOWED_EVIDENCE_FIELDS),
+            "forbidden_evidence_fields_seen": forbidden_evidence_fields_seen,
+            "forbidden_evidence_fields_consumed": False,
         },
     )
 
@@ -284,6 +306,28 @@ def _decisions_by_ticker(governance: dict[str, Any]) -> dict[str, dict[str, Any]
         if ticker:
             out[ticker] = row
     return out
+
+
+def _forbidden_evidence_fields_seen(governance: dict[str, Any]) -> list[str]:
+    seen: set[str] = set()
+    for row in governance.get("position_decisions") or []:
+        if not isinstance(row, dict):
+            continue
+        for field in FORBIDDEN_EVIDENCE_FIELDS:
+            if field in row:
+                seen.add(field)
+        evidence = row.get("evidence")
+        if isinstance(evidence, dict):
+            for field in FORBIDDEN_EVIDENCE_FIELDS:
+                if field in evidence:
+                    seen.add(f"evidence.{field}")
+    for row in governance.get("advisory_overrides") or []:
+        if not isinstance(row, dict):
+            continue
+        for field in FORBIDDEN_EVIDENCE_FIELDS:
+            if field in row:
+                seen.add(f"advisory.{field}")
+    return sorted(seen)
 
 
 def _advisory_by_ticker(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:

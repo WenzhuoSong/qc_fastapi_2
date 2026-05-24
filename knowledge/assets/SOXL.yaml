@@ -17,7 +17,13 @@ risk_budget_cost: 0.98
 risk_drivers: [leverage, daily_reset_compounding, semiconductor_beta, high_atr]
 positive_regimes: [short_term_semiconductor_breakout]
 weak_regimes: [high_vol, mean_reverting, risk_off]
-holding_policy: {allow_long_hold: false, max_holding_style: short_term_only}
+max_hold_days: 10
+auto_reduce_after_days: 7
+holding_policy:
+  allow_long_hold: false
+  max_holding_style: short_term_only
+  max_hold_days: 10
+  auto_reduce_after_days: 7
 governance_notes:
   - never add when ATR is high
   - require explicit strategy support

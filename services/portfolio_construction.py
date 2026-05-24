@@ -16,6 +16,21 @@ NO_ADD_PERMISSIONS = {"hold_or_trim", "reduce_risk_only", "defensive_only", "cas
 
 
 @dataclass
+class ConstructionObjective:
+    primary: str = "minimize_factor_concentration"
+    turnover_budget: float | None = None
+    effective_n_target: int = 8
+    allow_cash_raise: bool = True
+    rationale: str = (
+        "Paper-live canary objective: reduce factor and active-basket concentration "
+        "while respecting scorecard permissions and turnover budget."
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class PortfolioConstructionResult:
     target_weights: dict[str, float]
     factor_exposures: dict[str, float]
@@ -30,6 +45,7 @@ class PortfolioConstructionResult:
     construction_steps: list[str]
     violations: list[str]
     policy_evaluation: dict[str, Any]
+    objective: dict[str, Any]
     construction_source: str
     diagnostics: dict[str, Any]
 
@@ -52,12 +68,14 @@ class PortfolioConstructionModel:
         basket_reviews: dict[str, Any] | list[dict[str, Any]] | None = None,
         scorecard_permission: str | None = None,
         turnover_budget: float | None = None,
+        objective: ConstructionObjective | None = None,
     ) -> PortfolioConstructionResult:
         base = _normalize_cash_first(_clean_weights(base_weights))
         current = _normalize_cash_first(_clean_weights(current_weights))
         signals = _clean_signals(signal_strengths or {})
         active_baskets = _active_basket_groups(basket_reviews)
         budget = _optional_float(turnover_budget)
+        objective = objective or ConstructionObjective(turnover_budget=budget)
         steps: list[str] = ["base_weights"]
         violations: list[str] = []
         factor_before = _factor_exposures(base)
@@ -125,10 +143,12 @@ class PortfolioConstructionModel:
             construction_steps=steps + ["normalization"],
             violations=violations + self._check_violations(weights, active_baskets),
             policy_evaluation=policy_evaluation,
+            objective=objective.to_dict(),
             construction_source="portfolio_construction",
             diagnostics={
                 "mode": "portfolio_construction",
                 "construction_source": "portfolio_construction",
+                "objective": objective.to_dict(),
                 "execution_effect": "diagnostic_only",
                 "deterministic": True,
                 "consumes_raw_llm_adjusted_weights": False,

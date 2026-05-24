@@ -375,9 +375,20 @@ def _compact_asset(item: dict[str, Any]) -> dict[str, Any]:
         "positive_regimes": item.get("positive_regimes") or [],
         "weak_regimes": item.get("weak_regimes") or [],
         "holding_policy": item.get("holding_policy"),
+        "max_hold_days": _asset_holding_policy_value(item, "max_hold_days"),
+        "auto_reduce_after_days": _asset_holding_policy_value(item, "auto_reduce_after_days"),
         "governance_notes": item.get("governance_notes") or [],
         "sources": item.get("sources") or [],
     }
+
+
+def _asset_holding_policy_value(item: dict[str, Any], key: str) -> Any:
+    if item.get(key) is not None:
+        return item.get(key)
+    policy = item.get("holding_policy") or {}
+    if isinstance(policy, dict):
+        return policy.get(key)
+    return None
 
 
 def _asset_safety_warnings(item: dict[str, Any]) -> list[str]:
