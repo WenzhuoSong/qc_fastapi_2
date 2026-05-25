@@ -1,8 +1,16 @@
 id: BND
 type: asset
 asset_class: bond_etf
+role: defensive_cash_proxy
 sector_group: defensive_bonds
 summary: Broad investment-grade bond ETF.
+decay_risk: low
+allowed_actions: [de_risk, increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.05
+  full_auto: 0.05
+risk_budget_cost: 0.35
 risk_drivers: [duration, credit_spread, rates]
 positive_regimes: [risk_off, stable_rates]
 weak_regimes: [rising_rate_expectation, credit_stress]

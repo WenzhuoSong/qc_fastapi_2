@@ -1,0 +1,38 @@
+id: macro_rate_duration_lite
+type: strategy
+category: macro_rate
+horizon: defensive_tactical
+summary: Defensive duration selector across cash-like, short-duration, aggregate, intermediate-duration, and long-duration bond ETFs.
+best_regimes: [defensive, high_vol, risk_off, falling_rate_expectation, stable_rates]
+weak_regimes: [strong_risk_on, inflation_shock, rapid_rate_rise, credit_stress]
+required_features: [hist_vol_20d, atr_pct, mom_20d, mom_60d]
+positive_signals:
+  - cash-like or short-duration ETFs lead during rising-rate or unstable regimes
+  - intermediate or long-duration Treasury ETFs show positive trend during falling-rate or growth-scare regimes
+  - volatility and ATR are controlled
+failure_modes:
+  - duration ETFs lose during inflation or rate shocks
+  - macro labels lag market-implied rate moves
+  - credit-sensitive bond ETFs fail during spread stress
+governance_implications:
+  - canonicalize as carry_or_cash_proxy, not a new independent alpha family
+  - prefer SGOV/BSV when rate regime is unclear or rising
+  - require conviction before promotion beyond watch-only
+compatibility_mappings:
+  - role: defensive_cash_proxy
+    horizon: defensive_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: de_risk
+        signal_type: rate_duration_defensive_selection
+      - gte: 0.40
+        action: watch
+        signal_type: duration_watch
+      - lt: 0.40
+        action: neutral
+        signal_type: no_duration_signal
+    max_weight_multiplier: 0.80
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{regime}_macro_rate_duration"
+sources: [duration_risk_literature, fama_french_1993, issuer_fact_sheet, risk_governance_policy]
+last_reviewed: 2026-05-25

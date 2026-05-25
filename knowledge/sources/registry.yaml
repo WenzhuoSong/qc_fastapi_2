@@ -19,6 +19,51 @@ sources:
     reliability: medium
     title: Quality Minus Junk
     use_for: [quality_factor, defensive_factor]
+  betting_against_beta:
+    type: academic
+    reliability: high
+    title: Betting Against Beta
+    use_for: [low_beta, defensive_factor, low_vol_defensive]
+  carry_across_assets_2015:
+    type: academic
+    reliability: high
+    title: Carry
+    use_for: [carry, defensive_cash_proxy]
+  volatility_risk_premium:
+    type: academic
+    reliability: medium
+    title: Volatility risk premium literature
+    use_for: [volatility_hedge, tail_risk]
+  pairs_trading_2006:
+    type: academic
+    reliability: high
+    title: Pairs Trading Performance of a Relative-Value Arbitrage Rule
+    use_for: [relative_value, mean_reversion]
+  short_term_reversal_literature:
+    type: academic
+    reliability: medium
+    title: Short-term reversal evidence in equity returns
+    use_for: [mean_reversion, relative_value]
+  turn_of_month_effect_literature:
+    type: academic
+    reliability: medium
+    title: Turn-of-the-month and calendar effect literature
+    use_for: [seasonality_flow, structural_flow]
+  sector_rotation_literature:
+    type: academic
+    reliability: medium
+    title: Sector rotation and industry momentum literature
+    use_for: [sector_rotation, sector_theme_rotation, relative_strength]
+  duration_risk_literature:
+    type: academic
+    reliability: high
+    title: Bond duration, term premium, and interest-rate risk literature
+    use_for: [macro_rate, duration_risk, defensive_cash_proxy]
+  inverse_etf_decay_literature:
+    type: issuer_document
+    reliability: high
+    title: Leveraged and inverse ETF daily reset decay disclosures
+    use_for: [inverse_equity, leveraged_inverse_etf, hedge_policy]
   issuer_fact_sheet:
     type: issuer_document
     reliability: high

@@ -1,8 +1,16 @@
 id: XLI
 type: asset
 asset_class: sector_etf
+role: sector_theme
 sector_group: cyclicals
 summary: Industrials sector ETF linked to economic growth and capex cycles.
+decay_risk: low
+allowed_actions: [increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.06
+  full_auto: 0.04
+risk_budget_cost: 0.60
 risk_drivers: [industrial_cycle, rates, global_growth]
 positive_regimes: [broadening_bull, risk_on]
 weak_regimes: [growth_scare, recession_risk]
@@ -10,4 +18,4 @@ holding_policy: {allow_long_hold: true}
 governance_notes:
   - useful cyclical exposure but not defensive in growth shocks
 sources: [issuer_fact_sheet]
-last_reviewed: 2026-05-18
+last_reviewed: 2026-05-25

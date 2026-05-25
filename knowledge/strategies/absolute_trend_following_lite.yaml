@@ -1,0 +1,54 @@
+id: absolute_trend_following_lite
+type: strategy
+category: trend_following
+horizon: medium_tactical
+summary: Non-leveraged absolute trend-following strategy with defensive cash-like fallback.
+best_regimes: [trending_bull, risk_on, persistent_trend]
+weak_regimes: [mean_reverting, sideways_chop, violent_whipsaw]
+required_features: [mom_60d, mom_252d, hist_vol_20d, atr_pct]
+positive_signals:
+  - positive medium and long absolute momentum
+  - price above long trend when available
+  - volatility and ATR are controlled
+failure_modes:
+  - whipsaws around trend thresholds
+  - enters late after large moves
+  - defensive fallback lags when risk appetite recovers quickly
+governance_implications:
+  - use as non-leveraged trend baseline
+  - keep separate from leveraged ETF momentum allocator
+  - require conviction before promotion beyond watch-only
+compatibility_mappings:
+  - role: core_market
+    horizon: medium_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: increase
+        signal_type: absolute_trend_confirmation
+      - gte: 0.40
+        action: watch
+        signal_type: trend_monitor
+      - lt: 0.40
+        action: neutral
+        signal_type: no_trend_signal
+    max_weight_multiplier: 0.80
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{regime}_absolute_trend_following"
+
+  - role: defensive_cash_proxy
+    horizon: defensive_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: de_risk
+        signal_type: defensive_trend_fallback
+      - gte: 0.40
+        action: watch
+        signal_type: defensive_trend_monitor
+      - lt: 0.40
+        action: neutral
+        signal_type: no_defensive_trend_signal
+    max_weight_multiplier: 0.75
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{regime}_absolute_trend_fallback"
+sources: [time_series_momentum_2012, issuer_fact_sheet, risk_governance_policy]
+last_reviewed: 2026-05-25

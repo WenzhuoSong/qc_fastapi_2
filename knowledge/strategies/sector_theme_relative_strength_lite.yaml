@@ -1,0 +1,38 @@
+id: sector_theme_relative_strength_lite
+type: strategy
+category: sector_theme_rotation
+horizon: medium_tactical
+summary: Capped sector/theme ETF relative-strength rotation across liquid sector and thematic ETFs.
+best_regimes: [trending_bull, risk_on, sector_rotation]
+weak_regimes: [high_vol, defensive, violent_whipsaw]
+required_features: [mom_20d, mom_60d, mom_252d, hist_vol_20d, atr_pct, rsi_14]
+positive_signals:
+  - sector/theme ETF has positive medium and long momentum
+  - relative strength is high versus other sector/theme ETFs
+  - volatility, ATR, and overbought pressure are controlled
+failure_modes:
+  - crowded technology or semiconductor themes dominate ranks
+  - theme leadership reverses quickly
+  - broad risk-off regimes overwhelm sector selection
+governance_implications:
+  - treat as momentum-family evidence, not independent alpha-family evidence
+  - enforce tight single-name, total-sleeve, and sector-group caps
+  - require conviction before promotion beyond watch-only
+compatibility_mappings:
+  - role: sector_theme
+    horizon: medium_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: increase
+        signal_type: sector_theme_relative_strength
+      - gte: 0.40
+        action: watch
+        signal_type: sector_theme_monitor
+      - lt: 0.40
+        action: neutral
+        signal_type: no_sector_theme_signal
+    max_weight_multiplier: 0.70
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{regime}_sector_theme_relative_strength"
+sources: [jegadeesh_titman_1993, sector_rotation_literature, issuer_fact_sheet, risk_governance_policy]
+last_reviewed: 2026-05-25

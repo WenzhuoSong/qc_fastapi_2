@@ -23,9 +23,9 @@ from services.strategy_diversity import (
 
 EXPECTED_REGIMES = ("trending_bull", "risk_on", "mean_reverting", "defensive", "high_vol")
 EXPECTED_FAMILIES_BY_REGIME = {
-    "trending_bull": ("momentum",),
-    "risk_on": ("momentum",),
-    "mean_reverting": ("mean_reversion", "low_vol_defensive"),
+    "trending_bull": ("momentum", "seasonality_flow"),
+    "risk_on": ("momentum", "seasonality_flow"),
+    "mean_reverting": ("mean_reversion", "low_vol_defensive", "seasonality_flow"),
     "defensive": ("low_vol_defensive", "carry_or_cash_proxy", "volatility_hedge"),
     "high_vol": ("low_vol_defensive", "volatility_hedge", "carry_or_cash_proxy"),
 }

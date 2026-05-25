@@ -1,0 +1,38 @@
+id: relative_value_reversion_lite
+type: strategy
+category: mean_reversion
+horizon: short_tactical
+summary: Long-only relative-value mean-reversion strategy across SPY, QQQ, and IWM.
+best_regimes: [mean_reverting, range_bound, risk_on_chop]
+weak_regimes: [trending_bull, persistent_trend, crash_breakdown]
+required_features: [return_5d, mom_20d, mom_60d, hist_vol_20d, rsi_14]
+positive_signals:
+  - short-term relative underperformance versus broad-market peers
+  - medium-term trend not badly broken
+  - volatility remains acceptable
+failure_modes:
+  - buys early during persistent trend breakdowns
+  - underperforms momentum in strong leadership regimes
+  - small universe can create noisy relative ranks
+governance_implications:
+  - use only as a small tactical mean-reversion sleeve
+  - require hard-risk and regime confirmation before adding losers
+  - keep caps below ordinary momentum sleeves until conviction is calibrated
+compatibility_mappings:
+  - role: core_market
+    horizon: short_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: increase
+        signal_type: relative_value_reversion
+      - gte: 0.40
+        action: watch
+        signal_type: relative_value_monitor
+      - lt: 0.40
+        action: neutral
+        signal_type: no_reversion_signal
+    max_weight_multiplier: 0.50
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{regime}_relative_value_reversion"
+sources: [pairs_trading_2006, short_term_reversal_literature, issuer_fact_sheet]
+last_reviewed: 2026-05-25

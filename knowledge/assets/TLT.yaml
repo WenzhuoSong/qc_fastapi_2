@@ -1,8 +1,16 @@
 id: TLT
 type: asset
 asset_class: bond_etf
+role: defensive_cash_proxy
 sector_group: defensive_bonds
 summary: Long-duration Treasury ETF with high sensitivity to interest-rate expectations.
+decay_risk: low
+allowed_actions: [de_risk, increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.05
+  full_auto: 0.05
+risk_budget_cost: 0.55
 risk_drivers: [long_duration, rates, inflation_expectation]
 positive_regimes: [growth_scare, falling_rate_expectation, risk_off]
 weak_regimes: [rising_rate_expectation, inflation_shock]

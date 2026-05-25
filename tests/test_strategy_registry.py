@@ -7,6 +7,7 @@ from strategies import STRATEGY_REGISTRY, get_strategy
 SAMPLE_HOLDINGS = [
     {
         "ticker": "SPY",
+        "return_5d": 0.01,
         "mom_20d": 0.02,
         "mom_60d": 0.05,
         "mom_252d": 0.12,
@@ -19,6 +20,7 @@ SAMPLE_HOLDINGS = [
     },
     {
         "ticker": "QQQ",
+        "return_5d": -0.01,
         "mom_20d": 0.04,
         "mom_60d": 0.08,
         "mom_252d": 0.20,
@@ -31,6 +33,7 @@ SAMPLE_HOLDINGS = [
     },
     {
         "ticker": "TLT",
+        "return_5d": 0.002,
         "mom_20d": -0.01,
         "mom_60d": 0.01,
         "mom_252d": 0.04,
@@ -43,6 +46,7 @@ SAMPLE_HOLDINGS = [
     },
     {
         "ticker": "GLD",
+        "return_5d": 0.004,
         "mom_20d": 0.01,
         "mom_60d": 0.03,
         "mom_252d": 0.08,
@@ -76,6 +80,91 @@ LEVERAGED_ALLOCATOR_HOLDINGS = [
         ("SQQQ", 18.0, 19.0, 24.0, 45.0, -0.008),
         ("TECS", 12.0, 13.0, 18.0, 48.0, -0.006),
         ("BSV", 76.0, 75.8, 75.0, 52.0, 0.0005),
+    ]
+]
+
+SECTOR_THEME_HOLDINGS = [
+    {
+        "ticker": ticker,
+        "sector_group": group,
+        "return_5d": ret5,
+        "mom_20d": mom20,
+        "mom_60d": mom60,
+        "mom_252d": mom252,
+        "hist_vol_20d": vol,
+        "atr_pct": atr,
+        "rsi_14": rsi,
+    }
+    for ticker, group, ret5, mom20, mom60, mom252, vol, atr, rsi in [
+        ("SOXX", "semiconductors", 0.020, 0.080, 0.160, 0.300, 0.30, 0.024, 64.0),
+        ("XSD", "semiconductors", 0.010, 0.050, 0.120, 0.220, 0.34, 0.028, 60.0),
+        ("XLK", "tech_growth", 0.008, 0.040, 0.100, 0.180, 0.22, 0.018, 59.0),
+        ("XLE", "cyclicals", 0.004, 0.020, 0.060, 0.110, 0.25, 0.021, 54.0),
+    ]
+]
+
+MACRO_RATE_HOLDINGS = [
+    {
+        "ticker": ticker,
+        "return_5d": ret5,
+        "mom_20d": mom20,
+        "mom_60d": mom60,
+        "hist_vol_20d": vol,
+        "atr_pct": atr,
+        "rsi_14": rsi,
+    }
+    for ticker, ret5, mom20, mom60, vol, atr, rsi in [
+        ("SGOV", 0.001, 0.004, 0.012, 0.01, 0.002, 50.0),
+        ("BSV", 0.001, 0.003, 0.009, 0.03, 0.005, 51.0),
+        ("BND", -0.001, -0.004, -0.015, 0.06, 0.010, 45.0),
+        ("IEF", -0.003, -0.012, -0.030, 0.08, 0.014, 42.0),
+        ("TLT", -0.008, -0.025, -0.070, 0.14, 0.030, 38.0),
+    ]
+]
+
+INVERSE_HEDGE_HOLDINGS = [
+    {
+        "ticker": ticker,
+        "return_5d": ret5,
+        "mom_20d": mom20,
+        "mom_60d": mom60,
+        "hist_vol_20d": vol,
+        "atr_pct": atr,
+        "rsi_14": rsi,
+        "close_price": close,
+        "sma_200": sma200,
+    }
+    for ticker, ret5, mom20, mom60, vol, atr, rsi, close, sma200 in [
+        ("SPY", -0.040, -0.060, -0.100, 0.20, 0.026, 32.0, 390.0, 420.0),
+        ("QQQ", -0.060, -0.080, -0.140, 0.25, 0.033, 30.0, 350.0, 390.0),
+        ("SQQQ", 0.120, 0.160, 0.220, 0.70, 0.080, 65.0, 24.0, 18.0),
+        ("SPXS", 0.090, 0.110, 0.170, 0.62, 0.070, 62.0, 18.0, 14.0),
+        ("SOXS", 0.160, 0.220, 0.300, 0.85, 0.100, 70.0, 36.0, 25.0),
+        ("TECS", 0.110, 0.140, 0.210, 0.72, 0.085, 66.0, 20.0, 15.0),
+    ]
+]
+
+LEVERAGED_AMPLIFIER_HOLDINGS = [
+    {
+        "ticker": ticker,
+        "mom_20d": mom20,
+        "mom_60d": mom60,
+        "mom_252d": mom252,
+        "hist_vol_20d": vol,
+        "atr_pct": atr,
+        "rsi_14": rsi,
+        "close_price": close,
+        "sma_200": sma200,
+    }
+    for ticker, mom20, mom60, mom252, vol, atr, rsi, close, sma200 in [
+        ("QQQ", 0.050, 0.100, 0.220, 0.18, 0.016, 62.0, 440.0, 390.0),
+        ("SOXX", 0.080, 0.160, 0.300, 0.26, 0.022, 64.0, 220.0, 185.0),
+        ("XLK", 0.040, 0.090, 0.180, 0.20, 0.018, 60.0, 190.0, 165.0),
+        ("SPY", 0.030, 0.070, 0.140, 0.14, 0.012, 58.0, 510.0, 470.0),
+        ("TQQQ", 0.140, 0.240, 0.480, 0.55, 0.055, 68.0, 70.0, 55.0),
+        ("SOXL", 0.200, 0.340, 0.650, 0.70, 0.070, 70.0, 32.0, 24.0),
+        ("TECL", 0.120, 0.220, 0.420, 0.50, 0.050, 66.0, 85.0, 70.0),
+        ("SPXL", 0.090, 0.180, 0.340, 0.42, 0.042, 63.0, 150.0, 130.0),
     ]
 ]
 
@@ -176,6 +265,14 @@ class StrategyRegistryTest(unittest.TestCase):
 def _sample_holdings_for_strategy(name: str) -> list[dict]:
     if name == "leveraged_etf_momentum_allocator":
         return LEVERAGED_ALLOCATOR_HOLDINGS
+    if name == "sector_theme_relative_strength_lite":
+        return SECTOR_THEME_HOLDINGS
+    if name == "macro_rate_duration_lite":
+        return MACRO_RATE_HOLDINGS
+    if name == "inverse_equity_hedge_lite":
+        return INVERSE_HEDGE_HOLDINGS
+    if name == "leveraged_long_amplifier_lite":
+        return LEVERAGED_AMPLIFIER_HOLDINGS
     return SAMPLE_HOLDINGS
 
 

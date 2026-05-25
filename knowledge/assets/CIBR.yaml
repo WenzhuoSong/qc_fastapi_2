@@ -1,8 +1,16 @@
 id: CIBR
 type: asset
 asset_class: thematic_etf
+role: sector_theme
 sector_group: tech_growth
 summary: Cybersecurity thematic ETF with technology and growth exposure.
+decay_risk: low
+allowed_actions: [increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.05
+  full_auto: 0.03
+risk_budget_cost: 0.80
 risk_drivers: [cybersecurity_theme, growth_beta, valuation_risk]
 positive_regimes: [trending_bull, defensive_tech_demand]
 weak_regimes: [risk_off, rising_rate_expectation]
@@ -10,4 +18,4 @@ holding_policy: {allow_long_hold: true}
 governance_notes:
   - count with tech_growth concentration
 sources: [issuer_fact_sheet]
-last_reviewed: 2026-05-18
+last_reviewed: 2026-05-25

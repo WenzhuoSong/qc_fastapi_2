@@ -1,8 +1,16 @@
 id: IEF
 type: asset
 asset_class: bond_etf
+role: defensive_cash_proxy
 sector_group: defensive_bonds
 summary: Intermediate-duration Treasury ETF.
+decay_risk: low
+allowed_actions: [de_risk, increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.05
+  full_auto: 0.05
+risk_budget_cost: 0.40
 risk_drivers: [duration, rates, inflation_expectation]
 positive_regimes: [risk_off, falling_rate_expectation]
 weak_regimes: [rising_rate_expectation, inflation_shock]

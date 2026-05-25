@@ -1,8 +1,16 @@
 id: SGOV
 type: asset
 asset_class: cash_like_etf
+role: defensive_cash_proxy
 sector_group: defensive_bonds
 summary: Short-term Treasury ETF used as cash-like defensive allocation.
+decay_risk: low
+allowed_actions: [de_risk, increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.05
+  full_auto: 0.05
+risk_budget_cost: 0.20
 risk_drivers: [cash_yield, short_rate]
 positive_regimes: [cash_only, defensive, high_vol]
 weak_regimes: [strong_risk_on]

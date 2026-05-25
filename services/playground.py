@@ -43,9 +43,19 @@ settings = get_settings()
 
 DEFAULT_PLAYGROUND_STRATEGIES = [
     "momentum_lite_v1",
+    "absolute_trend_following_lite",
+    "seasonality_month_end_lite",
+    "sector_theme_relative_strength_lite",
+    "leveraged_long_amplifier_lite",
     "dual_momentum_rotation",
     "mean_reversion_lite",
+    "relative_value_reversion_lite",
     "low_vol_factor",
+    "defensive_quality_rotation_lite",
+    "macro_rate_duration_lite",
+    "carry_cash_proxy_lite",
+    "volatility_hedge_lite",
+    "inverse_equity_hedge_lite",
     "risk_parity_lite",
     "equal_weight_benchmark",
 ]
@@ -843,10 +853,22 @@ def _strategy_invalidation_hint(family: str, regime: str | None) -> str:
         return "Invalidated if leadership reverses, breadth weakens, or the market shifts into choppy mean reversion."
     if family == "defensive_factor":
         return "Invalidated if breadth and cyclical leadership improve enough to make defensive assets opportunity-costly."
+    if family == "carry_or_cash_proxy":
+        return "Invalidated if risk-on breadth improves or rate/duration shocks dominate defensive carry."
+    if family == "macro_rate":
+        return "Invalidated if rate regime evidence changes, duration momentum breaks, or inflation shocks make bonds non-defensive."
+    if family == "volatility_hedge":
+        return "Invalidated if volatility spike has already mean-reverted or VIX futures decay overwhelms hedge value."
+    if family == "event_risk_avoidance":
+        return "Invalidated if breakdown evidence fades, the market returns to risk-on, or inverse ETF decay/whipsaw risk dominates."
+    if family == "seasonality_flow":
+        return "Invalidated if the signal is outside the turn-of-month window, volatility is stressed, or the flow effect fails live validation."
+    if family == "sector_theme_rotation":
+        return "Invalidated if sector leadership reverses, theme concentration becomes crowded, or high-volatility risk gates block expansion."
     if family == "risk_budgeting":
         return "Invalidated as an alpha view if expected-return evidence strongly favors a specific leadership theme."
     if family == "leveraged_rotation":
-        return "Invalidated if leveraged ETF decay, single-asset concentration, or regime whipsaw dominates the RSI/SMA branch logic."
+        return "Invalidated if leveraged ETF decay, ATR expansion, or regime whipsaw overwhelms the risk-on trend evidence."
     return f"Validate against current regime={regime or 'unknown'}, rotation, macro/news risk, and execution constraints."
 
 

@@ -1,0 +1,38 @@
+id: carry_cash_proxy_lite
+type: strategy
+category: carry_or_cash_proxy
+horizon: defensive_tactical
+summary: Defensive carry/cash-proxy allocator for SGOV, BND, IEF, and TLT.
+best_regimes: [defensive, high_vol, risk_off, cash_only]
+weak_regimes: [trending_bull, strong_risk_on, inflation_shock]
+required_features: [hist_vol_20d, atr_pct, mom_20d, mom_60d]
+positive_signals:
+  - low realized volatility and low ATR
+  - positive short/intermediate trend in defensive ETFs
+  - market regime favors de-risking or cash-like exposure
+failure_modes:
+  - underperforms equities in persistent risk-on rallies
+  - duration-sensitive ETFs can lose during rate shocks
+  - cash-like carry is defensive risk compensation, not proof of alpha
+governance_implications:
+  - use as a defensive sleeve candidate
+  - keep satellite weights capped by execution policy
+  - require conviction before advisory promotion
+compatibility_mappings:
+  - role: defensive_cash_proxy
+    horizon: defensive_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: de_risk
+        signal_type: defensive_carry
+      - gte: 0.40
+        action: watch
+        signal_type: defensive_carry_monitor
+      - lt: 0.40
+        action: neutral
+        signal_type: no_defensive_carry_signal
+    max_weight_multiplier: 1.0
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{regime}_carry_cash_proxy"
+sources: [carry_across_assets_2015, issuer_fact_sheet, risk_governance_policy]
+last_reviewed: 2026-05-25

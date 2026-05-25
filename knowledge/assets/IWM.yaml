@@ -1,8 +1,19 @@
 id: IWM
 type: asset
 asset_class: equity_etf
+role: core_market
 sector_group: cyclicals
 summary: US small-cap equity ETF with higher economic sensitivity than large-cap benchmarks.
+underlying: Russell 2000 Index
+leverage: 1
+inverse: false
+decay_risk: low
+allowed_actions: [increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.15
+  full_auto: 0.10
+risk_budget_cost: 0.60
 risk_drivers: [small_cap_beta, credit_conditions, economic_growth]
 positive_regimes: [risk_on, broadening_bull]
 weak_regimes: [credit_stress, risk_off]

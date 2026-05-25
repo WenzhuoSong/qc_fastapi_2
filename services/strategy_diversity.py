@@ -13,6 +13,7 @@ ALPHA_FAMILIES = (
     "low_vol_defensive",
     "mean_reversion",
     "carry_or_cash_proxy",
+    "seasonality_flow",
     "event_risk_avoidance",
     "volatility_hedge",
 )
@@ -23,6 +24,8 @@ FAMILY_ALIASES = {
     "trend_following": "momentum",
     "dual_momentum": "momentum",
     "leveraged_rotation": "momentum",
+    "sector_theme_rotation": "momentum",
+    "macro_rate": "carry_or_cash_proxy",
     "defensive_factor": "low_vol_defensive",
     "risk_budgeting": "low_vol_defensive",
     "benchmark": "benchmark",

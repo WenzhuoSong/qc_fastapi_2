@@ -1,11 +1,11 @@
 id: trending_bull
 type: regime
 summary: Uptrend regime where momentum and risk-on exposure can work if volatility is controlled.
-supports_strategies: [momentum_lite_v1]
-weak_strategies: [low_vol_factor]
+supports_strategies: [momentum_lite_v1, absolute_trend_following_lite, seasonality_month_end_lite, sector_theme_relative_strength_lite, leveraged_long_amplifier_lite]
+weak_strategies: [low_vol_factor, macro_rate_duration_lite, carry_cash_proxy_lite, volatility_hedge_lite, inverse_equity_hedge_lite]
 risk_notes:
   - avoid chasing high ATR assets
   - confirm live consensus is not defensive
   - monitor crowded growth and semiconductor exposure
-sources: [time_series_momentum_2012]
-last_reviewed: 2026-05-18
+sources: [time_series_momentum_2012, turn_of_month_effect_literature, sector_rotation_literature, leveraged_etf_policy]
+last_reviewed: 2026-05-25

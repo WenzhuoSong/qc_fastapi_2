@@ -12,7 +12,10 @@ class StrategyDiversityTest(unittest.TestCase):
         self.assertEqual(canonical_strategy_family("trend_following"), "momentum")
         self.assertEqual(canonical_strategy_family("dual_momentum"), "momentum")
         self.assertEqual(canonical_strategy_family("leveraged_rotation"), "momentum")
+        self.assertEqual(canonical_strategy_family("sector_theme_rotation"), "momentum")
+        self.assertEqual(canonical_strategy_family("macro_rate"), "carry_or_cash_proxy")
         self.assertEqual(canonical_strategy_family("defensive_factor"), "low_vol_defensive")
+        self.assertEqual(canonical_strategy_family("seasonality_flow"), "seasonality_flow")
 
     def test_non_alpha_benchmarks_are_not_counted(self):
         self.assertFalse(is_strategy_alpha_source("equal_weight_benchmark", "benchmark"))

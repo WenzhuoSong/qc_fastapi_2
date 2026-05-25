@@ -1,8 +1,16 @@
 id: XLK
 type: asset
 asset_class: sector_etf
+role: sector_theme
 sector_group: tech_growth
 summary: Technology sector ETF; overlaps with QQQ technology exposure.
+decay_risk: low
+allowed_actions: [increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.08
+  full_auto: 0.05
+risk_budget_cost: 0.70
 risk_drivers: [technology_concentration, growth_beta, rate_sensitivity]
 positive_regimes: [trending_bull, risk_on]
 weak_regimes: [rising_rate_expectation, high_vol]
@@ -10,4 +18,4 @@ holding_policy: {allow_long_hold: true}
 governance_notes:
   - count with QQQ toward tech_growth concentration
 sources: [issuer_fact_sheet]
-last_reviewed: 2026-05-18
+last_reviewed: 2026-05-25

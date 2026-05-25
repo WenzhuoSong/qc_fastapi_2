@@ -1,0 +1,38 @@
+id: seasonality_month_end_lite
+type: strategy
+category: seasonality_flow
+horizon: short_tactical
+summary: Small capped turn-of-month structural-flow strategy for broad-market ETFs.
+best_regimes: [risk_on, trending_bull, mean_reverting]
+weak_regimes: [high_vol, defensive, acute_risk_off]
+required_features: [mom_20d, mom_60d, hist_vol_20d, atr_pct]
+positive_signals:
+  - signal date is in the month-end or new-month flow window
+  - medium trend is not broken
+  - volatility and ATR are controlled
+failure_modes:
+  - calendar effect disappears or inverts during macro shocks
+  - exact calendar windows are overfit to recent history
+  - strong risk-off regimes dominate seasonal flow
+governance_implications:
+  - keep as a small independent alpha candidate
+  - do not treat it as momentum evidence
+  - require live conviction before promotion beyond watch-only
+compatibility_mappings:
+  - role: core_market
+    horizon: short_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: increase
+        signal_type: turn_of_month_flow
+      - gte: 0.40
+        action: watch
+        signal_type: seasonality_watch
+      - lt: 0.40
+        action: neutral
+        signal_type: no_seasonality_signal
+    max_weight_multiplier: 0.35
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{branch}"
+sources: [turn_of_month_effect_literature, risk_governance_policy, issuer_fact_sheet]
+last_reviewed: 2026-05-25

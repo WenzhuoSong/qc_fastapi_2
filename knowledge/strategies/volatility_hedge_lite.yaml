@@ -1,0 +1,54 @@
+id: volatility_hedge_lite
+type: strategy
+category: volatility_hedge
+horizon: very_short_tactical
+summary: Tail-risk hedge signal using UVXY/VIXY plus Treasury fallback assets.
+best_regimes: [high_vol, defensive, acute_risk_off, volatility_spike]
+weak_regimes: [trending_bull, calm_market, high_vol_chop_after_spike]
+required_features: [hist_vol_20d, atr_pct, mom_20d, mom_60d, rsi_14]
+positive_signals:
+  - SPY downside momentum or price below long trend
+  - volatility ETP momentum confirms market stress
+  - defensive regime classification
+failure_modes:
+  - volatility ETP decay during calm or choppy markets
+  - late entry after volatility spike
+  - false positives when stress is already priced
+governance_implications:
+  - hedge evidence only, never ordinary long exposure
+  - full-auto volatility ETP weight remains zero unless separately certified
+  - enforce max hold-day review from asset profiles
+compatibility_mappings:
+  - role: vol_hedge
+    horizon: very_short_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: hedge
+        signal_type: tail_risk_hedge
+      - gte: 0.40
+        action: watch
+        signal_type: tail_risk_monitor
+      - lt: 0.40
+        action: avoid
+        signal_type: no_hedge_signal
+    max_weight_multiplier: 0.25
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{regime}_volatility_hedge"
+
+  - role: defensive_cash_proxy
+    horizon: defensive_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: de_risk
+        signal_type: defensive_fallback
+      - gte: 0.40
+        action: watch
+        signal_type: defensive_monitor
+      - lt: 0.40
+        action: neutral
+        signal_type: no_defensive_signal
+    max_weight_multiplier: 0.50
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{regime}_volatility_fallback"
+sources: [volatility_risk_premium, issuer_fact_sheet, leveraged_etf_policy]
+last_reviewed: 2026-05-25

@@ -1,0 +1,39 @@
+id: defensive_quality_rotation_lite
+type: strategy
+category: low_vol_defensive
+horizon: defensive_tactical
+summary: Low-volatility defensive quality rotation across SGOV, BND, IEF, and TLT.
+best_regimes: [defensive, high_vol, risk_off, late_cycle]
+weak_regimes: [trending_bull, strong_risk_on, inflation_shock]
+required_features: [hist_vol_20d, atr_pct, mom_60d, return_5d, rsi_14]
+positive_signals:
+  - lower realized volatility and ATR versus defensive peers
+  - positive intermediate trend
+  - stable recent returns and neutral RSI
+  - regime favors capital preservation
+failure_modes:
+  - lags equities during strong risk-on rallies
+  - duration-sensitive bonds can lose during inflation or rate shocks
+  - volatility can be backward-looking around sudden correlation breaks
+governance_implications:
+  - use as a low-vol defensive sleeve candidate
+  - keep satellite-sized caps until conviction is calibrated
+  - do not treat defensive quality as proof of high expected return
+compatibility_mappings:
+  - role: defensive_cash_proxy
+    horizon: defensive_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: de_risk
+        signal_type: low_vol_defensive_quality
+      - gte: 0.40
+        action: watch
+        signal_type: defensive_quality_monitor
+      - lt: 0.40
+        action: neutral
+        signal_type: no_defensive_quality_signal
+    max_weight_multiplier: 1.0
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{regime}_defensive_quality_rotation"
+sources: [quality_minus_junk_2013, betting_against_beta, issuer_fact_sheet, risk_governance_policy]
+last_reviewed: 2026-05-25
