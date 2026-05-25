@@ -106,6 +106,90 @@ Rules:
 The next plugin should close an independence gap, not add another momentum
 variant. Two candidates are useful:
 
+### `macro_cyclical_inflation_rotation_lite`
+
+Purpose:
+
+- add a macro-regime interpretation layer for `XLE`, `XLI`, `IWM`, and `XLRE`
+- distinguish inflation/commodity leadership, broadening cyclical risk-on, and
+  falling-rate real-estate/duration setups
+- use `SGOV` and `TLT` as defensive fallbacks when cyclical evidence is weak
+
+Why it is important with the current ETF list:
+
+- `XLE`, `XLI`, `IWM`, and `XLRE` have different macro drivers even when their
+  recent momentum looks similar
+- this adds a new canonical family, `macro_regime`, instead of another pure
+  momentum variant
+- it complements `macro_rate_duration_lite`: one chooses defensive duration,
+  the other interprets equity-cycle and inflation sleeves
+
+Recommended first implementation:
+
+```text
+family: macro_cycle_rotation -> canonical_family: macro_regime
+universe: XLE, XLI, IWM, XLRE, SGOV, TLT
+required_features: mom_20d, mom_60d, mom_252d, hist_vol_20d, atr_pct, rsi_14
+optional_context: rate_regime_label, inflation_regime_label, macro_context
+max_single_weight: 0.04
+max_total_weight: 0.14
+min_cash_pct: 0.86
+default_playground: yes
+promotion: conviction required before advisory/primary use
+```
+
+Implementation rule:
+
+- do not use macro labels alone; price trend and ATR must confirm
+- high-vol, defensive, credit-stress, or recession-risk regimes should block
+  cyclical adds
+- rising-rate regimes should block `XLRE` and `TLT` unless separately reviewed
+
+### `sector_theme_relative_value_reversion_lite`
+
+Purpose:
+
+- add a non-leveraged, cluster-relative mean-reversion lens for sector/theme
+  ETFs
+- complement `sector_theme_relative_strength_lite` by looking for short-term
+  laggards inside related groups when the medium-term trend is still intact
+- avoid buying broad weakness by requiring group-relative weakness plus
+  acceptable `mom_20d`, `mom_60d`, RSI, ATR, and regime context
+
+Why it is important with the current ETF list:
+
+- `XLK`, `QQQ`, `AIQ`, `CIBR`, and `BOTZ` often share technology/growth beta,
+  but their short-term dispersion can create tactical reversion candidates
+- `SOXX`, `XSD`, `PSI`, and `FTXL` represent overlapping semiconductor
+  exposure; group-relative logic is more useful than comparing them to all
+  broad-market ETFs
+- it adds a second mean-reversion implementation beyond `SPY`/`QQQ`/`IWM`,
+  without increasing leveraged ETF exposure
+
+Recommended first implementation:
+
+```text
+family: mean_reversion
+universe: XLK, QQQ, SOXX, XSD, PSI, FTXL, AIQ, CIBR, BOTZ, XLE, XLI, XLRE
+required_features: return_5d, mom_20d, mom_60d, hist_vol_20d, atr_pct, rsi_14
+optional_features: sector_group, bb_position, mom_252d
+max_single_weight: 0.035
+max_total_weight: 0.12
+max_group_weight: 0.07
+min_cash_pct: 0.88
+default_playground: yes
+promotion: conviction required before advisory/primary use
+```
+
+Implementation rule:
+
+- only buy short-term laggards when the local group context still supports
+  reversion, not breakdown
+- keep group caps explicit; semiconductors and tech-growth themes overlap more
+  than ticker names suggest
+- high-vol, defensive, risk-off, crash, or violent-whipsaw regimes should return
+  all cash
+
 ### `seasonality_month_end_lite`
 
 Purpose:
@@ -498,8 +582,10 @@ Use these as templates:
 - `strategies/seasonality_month_end_lite.py`
 - `strategies/sector_theme_relative_strength_lite.py`
 - `strategies/relative_value_reversion_lite.py`
+- `strategies/sector_theme_relative_value_reversion_lite.py`
 - `strategies/defensive_quality_rotation_lite.py`
 - `strategies/macro_rate_duration_lite.py`
+- `strategies/macro_cyclical_inflation_rotation_lite.py`
 - `strategies/carry_cash_proxy_lite.py`
 - `strategies/volatility_hedge_lite.py`
 - `strategies/inverse_equity_hedge_lite.py`
@@ -508,8 +594,10 @@ Use these as templates:
 - `knowledge/strategies/seasonality_month_end_lite.yaml`
 - `knowledge/strategies/sector_theme_relative_strength_lite.yaml`
 - `knowledge/strategies/relative_value_reversion_lite.yaml`
+- `knowledge/strategies/sector_theme_relative_value_reversion_lite.yaml`
 - `knowledge/strategies/defensive_quality_rotation_lite.yaml`
 - `knowledge/strategies/macro_rate_duration_lite.yaml`
+- `knowledge/strategies/macro_cyclical_inflation_rotation_lite.yaml`
 - `knowledge/strategies/carry_cash_proxy_lite.yaml`
 - `knowledge/strategies/volatility_hedge_lite.yaml`
 - `knowledge/strategies/inverse_equity_hedge_lite.yaml`

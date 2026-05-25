@@ -14,6 +14,7 @@ class StrategyDiversityTest(unittest.TestCase):
         self.assertEqual(canonical_strategy_family("leveraged_rotation"), "momentum")
         self.assertEqual(canonical_strategy_family("sector_theme_rotation"), "momentum")
         self.assertEqual(canonical_strategy_family("macro_rate"), "carry_or_cash_proxy")
+        self.assertEqual(canonical_strategy_family("macro_cycle_rotation"), "macro_regime")
         self.assertEqual(canonical_strategy_family("defensive_factor"), "low_vol_defensive")
         self.assertEqual(canonical_strategy_family("seasonality_flow"), "seasonality_flow")
 

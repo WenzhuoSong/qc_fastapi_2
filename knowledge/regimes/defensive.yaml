@@ -2,10 +2,10 @@ id: defensive
 type: regime
 summary: Risk-reduction regime where new equity risk should be limited or blocked.
 supports_strategies: [low_vol_factor, defensive_quality_rotation_lite, macro_rate_duration_lite, carry_cash_proxy_lite, volatility_hedge_lite, inverse_equity_hedge_lite]
-weak_strategies: [momentum_lite_v1, seasonality_month_end_lite, sector_theme_relative_strength_lite, leveraged_long_amplifier_lite]
+weak_strategies: [momentum_lite_v1, seasonality_month_end_lite, sector_theme_relative_strength_lite, sector_theme_relative_value_reversion_lite, leveraged_long_amplifier_lite, macro_cyclical_inflation_rotation_lite]
 risk_notes:
   - prioritize cash-like and short-duration defensive assets
   - human confirmation may be required
   - do not add unsupported losing positions
-sources: [risk_governance_policy, quality_minus_junk_2013, betting_against_beta, carry_across_assets_2015, volatility_risk_premium, turn_of_month_effect_literature, sector_rotation_literature, duration_risk_literature, inverse_etf_decay_literature]
+sources: [risk_governance_policy, quality_minus_junk_2013, betting_against_beta, carry_across_assets_2015, volatility_risk_premium, turn_of_month_effect_literature, sector_rotation_literature, duration_risk_literature, inverse_etf_decay_literature, business_cycle_rotation_literature]
 last_reviewed: 2026-05-25

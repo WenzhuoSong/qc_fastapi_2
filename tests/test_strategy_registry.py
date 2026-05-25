@@ -103,6 +103,32 @@ SECTOR_THEME_HOLDINGS = [
     ]
 ]
 
+SECTOR_THEME_REVERSION_HOLDINGS = [
+    {
+        "ticker": ticker,
+        "sector_group": group,
+        "return_5d": ret5,
+        "mom_20d": mom20,
+        "mom_60d": mom60,
+        "hist_vol_20d": vol,
+        "atr_pct": atr,
+        "rsi_14": rsi,
+    }
+    for ticker, group, ret5, mom20, mom60, vol, atr, rsi in [
+        ("QQQ", "tech_growth", 0.030, 0.050, 0.120, 0.22, 0.018, 62.0),
+        ("XLK", "tech_growth", 0.025, 0.045, 0.110, 0.20, 0.016, 60.0),
+        ("AIQ", "tech_growth", -0.035, 0.015, 0.080, 0.28, 0.026, 43.0),
+        ("CIBR", "tech_growth", 0.010, 0.030, 0.075, 0.24, 0.020, 54.0),
+        ("SOXX", "semiconductors", 0.040, 0.080, 0.160, 0.30, 0.024, 66.0),
+        ("XSD", "semiconductors", -0.040, 0.010, 0.090, 0.34, 0.030, 41.0),
+        ("PSI", "semiconductors", 0.020, 0.050, 0.130, 0.32, 0.026, 58.0),
+        ("FTXL", "semiconductors", -0.015, 0.020, 0.100, 0.31, 0.025, 47.0),
+        ("XLE", "cyclicals", 0.015, 0.025, 0.080, 0.24, 0.020, 56.0),
+        ("XLI", "cyclicals", -0.020, 0.010, 0.060, 0.20, 0.018, 45.0),
+        ("XLRE", "real_estate", -0.010, 0.005, 0.030, 0.18, 0.016, 46.0),
+    ]
+]
+
 MACRO_RATE_HOLDINGS = [
     {
         "ticker": ticker,
@@ -119,6 +145,26 @@ MACRO_RATE_HOLDINGS = [
         ("BND", -0.001, -0.004, -0.015, 0.06, 0.010, 45.0),
         ("IEF", -0.003, -0.012, -0.030, 0.08, 0.014, 42.0),
         ("TLT", -0.008, -0.025, -0.070, 0.14, 0.030, 38.0),
+    ]
+]
+
+MACRO_CYCLE_HOLDINGS = [
+    {
+        "ticker": ticker,
+        "mom_20d": mom20,
+        "mom_60d": mom60,
+        "mom_252d": mom252,
+        "hist_vol_20d": vol,
+        "atr_pct": atr,
+        "rsi_14": rsi,
+    }
+    for ticker, mom20, mom60, mom252, vol, atr, rsi in [
+        ("XLE", 0.070, 0.150, 0.250, 0.24, 0.022, 64.0),
+        ("XLI", 0.055, 0.120, 0.210, 0.19, 0.018, 61.0),
+        ("IWM", 0.060, 0.110, 0.180, 0.25, 0.024, 60.0),
+        ("XLRE", 0.015, 0.035, 0.060, 0.18, 0.016, 54.0),
+        ("SGOV", 0.004, 0.012, 0.045, 0.01, 0.002, 50.0),
+        ("TLT", -0.010, -0.030, -0.070, 0.14, 0.030, 42.0),
     ]
 ]
 
@@ -267,8 +313,12 @@ def _sample_holdings_for_strategy(name: str) -> list[dict]:
         return LEVERAGED_ALLOCATOR_HOLDINGS
     if name == "sector_theme_relative_strength_lite":
         return SECTOR_THEME_HOLDINGS
+    if name == "sector_theme_relative_value_reversion_lite":
+        return SECTOR_THEME_REVERSION_HOLDINGS
     if name == "macro_rate_duration_lite":
         return MACRO_RATE_HOLDINGS
+    if name == "macro_cyclical_inflation_rotation_lite":
+        return MACRO_CYCLE_HOLDINGS
     if name == "inverse_equity_hedge_lite":
         return INVERSE_HEDGE_HOLDINGS
     if name == "leveraged_long_amplifier_lite":

@@ -11,9 +11,11 @@ from strategies.seasonality_month_end_lite import SeasonalityMonthEndLite
 from strategies.sector_theme_relative_strength_lite import SectorThemeRelativeStrengthLite
 from strategies.mean_reversion_lite import MeanReversionLite
 from strategies.relative_value_reversion_lite import RelativeValueReversionLite
+from strategies.sector_theme_relative_value_reversion_lite import SectorThemeRelativeValueReversionLite
 from strategies.low_vol_factor import LowVolFactor
 from strategies.defensive_quality_rotation_lite import DefensiveQualityRotationLite
 from strategies.macro_rate_duration_lite import MacroRateDurationLite
+from strategies.macro_cyclical_inflation_rotation_lite import MacroCyclicalInflationRotationLite
 from strategies.equal_weight import EqualWeightBenchmark
 from strategies.risk_parity_lite import RiskParityLite
 from strategies.dual_momentum import DualMomentumRotation
@@ -37,9 +39,11 @@ STRATEGY_REGISTRY: dict[str, type[Strategy]] = {
     "sector_theme_relative_strength_lite": SectorThemeRelativeStrengthLite,
     "mean_reversion_lite": MeanReversionLite,
     "relative_value_reversion_lite": RelativeValueReversionLite,
+    "sector_theme_relative_value_reversion_lite": SectorThemeRelativeValueReversionLite,
     "low_vol_factor": LowVolFactor,
     "defensive_quality_rotation_lite": DefensiveQualityRotationLite,
     "macro_rate_duration_lite": MacroRateDurationLite,
+    "macro_cyclical_inflation_rotation_lite": MacroCyclicalInflationRotationLite,
     "dual_momentum_rotation": DualMomentumRotation,
     "risk_parity_lite": RiskParityLite,
     "equal_weight_benchmark": EqualWeightBenchmark,

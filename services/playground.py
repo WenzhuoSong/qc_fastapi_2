@@ -50,9 +50,11 @@ DEFAULT_PLAYGROUND_STRATEGIES = [
     "dual_momentum_rotation",
     "mean_reversion_lite",
     "relative_value_reversion_lite",
+    "sector_theme_relative_value_reversion_lite",
     "low_vol_factor",
     "defensive_quality_rotation_lite",
     "macro_rate_duration_lite",
+    "macro_cyclical_inflation_rotation_lite",
     "carry_cash_proxy_lite",
     "volatility_hedge_lite",
     "inverse_equity_hedge_lite",
@@ -857,6 +859,8 @@ def _strategy_invalidation_hint(family: str, regime: str | None) -> str:
         return "Invalidated if risk-on breadth improves or rate/duration shocks dominate defensive carry."
     if family == "macro_rate":
         return "Invalidated if rate regime evidence changes, duration momentum breaks, or inflation shocks make bonds non-defensive."
+    if family == "macro_cycle_rotation":
+        return "Invalidated if macro-cycle evidence conflicts with price trend, rates shock cyclical assets, or growth risk overwhelms inflation/cyclical exposure."
     if family == "volatility_hedge":
         return "Invalidated if volatility spike has already mean-reverted or VIX futures decay overwhelms hedge value."
     if family == "event_risk_avoidance":

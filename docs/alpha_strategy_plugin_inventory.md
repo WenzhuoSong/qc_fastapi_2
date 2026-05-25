@@ -84,6 +84,15 @@ The system supports hot-pluggable strategies through the `Strategy` interface:
 - output: capped long-only broad-market ETF weights plus `CASH`
 - authority: strategy output only; certification and conviction decide whether it may influence allocation
 
+### `sector_theme_relative_value_reversion_lite`
+
+- family: `mean_reversion`
+- universe: `XLK`, `QQQ`, `SOXX`, `XSD`, `PSI`, `FTXL`, `AIQ`, `CIBR`, `BOTZ`, `XLE`, `XLI`, `XLRE`
+- role: cluster-relative short-term reversion lens for sector/theme ETFs
+- best regimes: `mean_reverting`, `risk_on_chop`, `sector_rotation`, `range_bound`
+- output: capped sector/theme reversion sleeve plus `CASH`, with group caps to reduce hidden concentration
+- authority: strategy output only; certification and conviction decide whether it may influence allocation
+
 ### `defensive_quality_rotation_lite`
 
 - family: `low_vol_defensive`
@@ -101,6 +110,15 @@ The system supports hot-pluggable strategies through the `Strategy` interface:
 - best regimes: `defensive`, `high_vol`, `risk_off`, `falling_rate_expectation`, `stable_rates`
 - output: capped defensive duration sleeve plus `CASH`, preferring SGOV/BSV when rate risk is unclear or rising
 - authority: strategy output only; execution remains controlled by certification and risk gates
+
+### `macro_cyclical_inflation_rotation_lite`
+
+- family: `macro_cycle_rotation` canonicalized to `macro_regime`
+- universe: `XLE`, `XLI`, `IWM`, `XLRE`, `SGOV`, `TLT`
+- role: macro-cycle lens for inflation-sensitive, cyclical, rate-sensitive, and defensive ETF sleeves
+- best regimes: `risk_on`, `trending_bull`, `inflationary_growth`, `broadening_bull`, `falling_rate_expectation`, `stable_growth`
+- output: capped macro-cycle sleeve plus `CASH`, falling back to `SGOV`/`TLT` when macro evidence is defensive
+- authority: strategy output only; conviction, certification, cost, and risk gates decide whether it may influence allocation
 
 ## Safety Contract
 

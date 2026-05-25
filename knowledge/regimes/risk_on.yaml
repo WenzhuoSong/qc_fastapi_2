@@ -1,10 +1,10 @@
 id: risk_on
 type: regime
 summary: Broad participation regime with favorable equity and cyclical risk appetite.
-supports_strategies: [momentum_lite_v1, absolute_trend_following_lite, seasonality_month_end_lite, sector_theme_relative_strength_lite, leveraged_long_amplifier_lite]
+supports_strategies: [momentum_lite_v1, absolute_trend_following_lite, seasonality_month_end_lite, sector_theme_relative_strength_lite, leveraged_long_amplifier_lite, macro_cyclical_inflation_rotation_lite, sector_theme_relative_value_reversion_lite]
 weak_strategies: [low_vol_factor, macro_rate_duration_lite, carry_cash_proxy_lite, volatility_hedge_lite, inverse_equity_hedge_lite]
 risk_notes:
   - broad market ETFs may be cleaner than crowded themes
   - still cap concentration and high ATR adds
-sources: [risk_governance_policy, turn_of_month_effect_literature, sector_rotation_literature, leveraged_etf_policy]
+sources: [risk_governance_policy, turn_of_month_effect_literature, sector_rotation_literature, leveraged_etf_policy, business_cycle_rotation_literature]
 last_reviewed: 2026-05-25

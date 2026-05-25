@@ -33,6 +33,34 @@ def leveraged_amplifier_holdings() -> list[dict]:
     ]
 
 
+def macro_cycle_holdings() -> list[dict]:
+    return [
+        {"ticker": "XLE", "mom_20d": 0.070, "mom_60d": 0.150, "mom_252d": 0.250, "hist_vol_20d": 0.24, "atr_pct": 0.022, "rsi_14": 64.0},
+        {"ticker": "XLI", "mom_20d": 0.055, "mom_60d": 0.120, "mom_252d": 0.210, "hist_vol_20d": 0.19, "atr_pct": 0.018, "rsi_14": 61.0},
+        {"ticker": "IWM", "mom_20d": 0.060, "mom_60d": 0.110, "mom_252d": 0.180, "hist_vol_20d": 0.25, "atr_pct": 0.024, "rsi_14": 60.0},
+        {"ticker": "XLRE", "mom_20d": 0.015, "mom_60d": 0.035, "mom_252d": 0.060, "hist_vol_20d": 0.18, "atr_pct": 0.016, "rsi_14": 54.0},
+        {"ticker": "SGOV", "mom_20d": 0.004, "mom_60d": 0.012, "mom_252d": 0.045, "hist_vol_20d": 0.01, "atr_pct": 0.002, "rsi_14": 50.0},
+        {"ticker": "TLT", "mom_20d": -0.010, "mom_60d": -0.030, "mom_252d": -0.070, "hist_vol_20d": 0.14, "atr_pct": 0.030, "rsi_14": 42.0},
+    ]
+
+
+def sector_theme_reversion_holdings() -> list[dict]:
+    return [
+        {"ticker": "QQQ", "sector_group": "tech_growth", "return_5d": 0.030, "mom_20d": 0.050, "mom_60d": 0.120, "hist_vol_20d": 0.22, "atr_pct": 0.018, "rsi_14": 62.0},
+        {"ticker": "XLK", "sector_group": "tech_growth", "return_5d": 0.025, "mom_20d": 0.045, "mom_60d": 0.110, "hist_vol_20d": 0.20, "atr_pct": 0.016, "rsi_14": 60.0},
+        {"ticker": "AIQ", "sector_group": "tech_growth", "return_5d": -0.035, "mom_20d": 0.015, "mom_60d": 0.080, "hist_vol_20d": 0.28, "atr_pct": 0.026, "rsi_14": 43.0},
+        {"ticker": "CIBR", "sector_group": "tech_growth", "return_5d": 0.010, "mom_20d": 0.030, "mom_60d": 0.075, "hist_vol_20d": 0.24, "atr_pct": 0.020, "rsi_14": 54.0},
+        {"ticker": "BOTZ", "sector_group": "tech_growth", "return_5d": 0.015, "mom_20d": 0.025, "mom_60d": 0.070, "hist_vol_20d": 0.30, "atr_pct": 0.028, "rsi_14": 55.0},
+        {"ticker": "SOXX", "sector_group": "semiconductors", "return_5d": 0.040, "mom_20d": 0.080, "mom_60d": 0.160, "hist_vol_20d": 0.30, "atr_pct": 0.024, "rsi_14": 66.0},
+        {"ticker": "XSD", "sector_group": "semiconductors", "return_5d": -0.040, "mom_20d": 0.010, "mom_60d": 0.090, "hist_vol_20d": 0.34, "atr_pct": 0.030, "rsi_14": 41.0},
+        {"ticker": "PSI", "sector_group": "semiconductors", "return_5d": 0.020, "mom_20d": 0.050, "mom_60d": 0.130, "hist_vol_20d": 0.32, "atr_pct": 0.026, "rsi_14": 58.0},
+        {"ticker": "FTXL", "sector_group": "semiconductors", "return_5d": -0.015, "mom_20d": 0.020, "mom_60d": 0.100, "hist_vol_20d": 0.31, "atr_pct": 0.025, "rsi_14": 47.0},
+        {"ticker": "XLE", "sector_group": "cyclicals", "return_5d": 0.015, "mom_20d": 0.025, "mom_60d": 0.080, "hist_vol_20d": 0.24, "atr_pct": 0.020, "rsi_14": 56.0},
+        {"ticker": "XLI", "sector_group": "cyclicals", "return_5d": -0.020, "mom_20d": 0.010, "mom_60d": 0.060, "hist_vol_20d": 0.20, "atr_pct": 0.018, "rsi_14": 45.0},
+        {"ticker": "XLRE", "sector_group": "real_estate", "return_5d": -0.010, "mom_20d": 0.005, "mom_60d": 0.030, "hist_vol_20d": 0.18, "atr_pct": 0.016, "rsi_14": 46.0},
+    ]
+
+
 class AlphaStrategyPluginTests(unittest.TestCase):
     def test_new_alpha_families_are_registered_and_default_playground_enabled(self):
         self.assertIn("absolute_trend_following_lite", STRATEGY_REGISTRY)
@@ -43,7 +71,9 @@ class AlphaStrategyPluginTests(unittest.TestCase):
         self.assertIn("volatility_hedge_lite", STRATEGY_REGISTRY)
         self.assertIn("inverse_equity_hedge_lite", STRATEGY_REGISTRY)
         self.assertIn("leveraged_long_amplifier_lite", STRATEGY_REGISTRY)
+        self.assertIn("macro_cyclical_inflation_rotation_lite", STRATEGY_REGISTRY)
         self.assertIn("relative_value_reversion_lite", STRATEGY_REGISTRY)
+        self.assertIn("sector_theme_relative_value_reversion_lite", STRATEGY_REGISTRY)
         self.assertIn("defensive_quality_rotation_lite", STRATEGY_REGISTRY)
         playground_source = Path("services/playground.py").read_text()
         self.assertIn('"absolute_trend_following_lite"', playground_source)
@@ -54,7 +84,9 @@ class AlphaStrategyPluginTests(unittest.TestCase):
         self.assertIn('"volatility_hedge_lite"', playground_source)
         self.assertIn('"inverse_equity_hedge_lite"', playground_source)
         self.assertIn('"leveraged_long_amplifier_lite"', playground_source)
+        self.assertIn('"macro_cyclical_inflation_rotation_lite"', playground_source)
         self.assertIn('"relative_value_reversion_lite"', playground_source)
+        self.assertIn('"sector_theme_relative_value_reversion_lite"', playground_source)
         self.assertIn('"defensive_quality_rotation_lite"', playground_source)
 
         trend = get_strategy("absolute_trend_following_lite")
@@ -65,7 +97,9 @@ class AlphaStrategyPluginTests(unittest.TestCase):
         hedge = get_strategy("volatility_hedge_lite")
         inverse_hedge = get_strategy("inverse_equity_hedge_lite")
         leveraged_amplifier = get_strategy("leveraged_long_amplifier_lite")
+        macro_cycle = get_strategy("macro_cyclical_inflation_rotation_lite")
         relative_value = get_strategy("relative_value_reversion_lite")
+        sector_theme_reversion = get_strategy("sector_theme_relative_value_reversion_lite")
         defensive_quality = get_strategy("defensive_quality_rotation_lite")
         self.assertEqual(trend.strategy_card()["canonical_family"], "momentum")
         self.assertEqual(seasonality.strategy_card()["canonical_family"], "seasonality_flow")
@@ -75,7 +109,9 @@ class AlphaStrategyPluginTests(unittest.TestCase):
         self.assertEqual(hedge.strategy_card()["canonical_family"], "volatility_hedge")
         self.assertEqual(inverse_hedge.strategy_card()["canonical_family"], "event_risk_avoidance")
         self.assertEqual(leveraged_amplifier.strategy_card()["canonical_family"], "momentum")
+        self.assertEqual(macro_cycle.strategy_card()["canonical_family"], "macro_regime")
         self.assertEqual(relative_value.strategy_card()["canonical_family"], "mean_reversion")
+        self.assertEqual(sector_theme_reversion.strategy_card()["canonical_family"], "mean_reversion")
         self.assertEqual(defensive_quality.strategy_card()["canonical_family"], "low_vol_defensive")
         self.assertTrue(trend.strategy_card()["alpha_source"])
         self.assertTrue(seasonality.strategy_card()["alpha_source"])
@@ -85,7 +121,9 @@ class AlphaStrategyPluginTests(unittest.TestCase):
         self.assertTrue(hedge.strategy_card()["alpha_source"])
         self.assertTrue(inverse_hedge.strategy_card()["alpha_source"])
         self.assertTrue(leveraged_amplifier.strategy_card()["alpha_source"])
+        self.assertTrue(macro_cycle.strategy_card()["alpha_source"])
         self.assertTrue(relative_value.strategy_card()["alpha_source"])
+        self.assertTrue(sector_theme_reversion.strategy_card()["alpha_source"])
         self.assertTrue(defensive_quality.strategy_card()["alpha_source"])
 
     def test_absolute_trend_following_scores_non_leveraged_trend_with_cash_buffer(self):
@@ -369,6 +407,70 @@ class AlphaStrategyPluginTests(unittest.TestCase):
         self.assertFalse(any("missing_compatibility_mapping" in card.reason for card in cards))
         self.assertFalse(any("missing_required_safety_field" in card.reason for card in cards))
 
+    def test_macro_cyclical_inflation_rotation_scores_inflation_cyclicals_with_caps(self):
+        strategy = get_strategy("macro_cyclical_inflation_rotation_lite")
+        context = {
+            "regime": "risk_on",
+            "inflation_regime_label": "commodity_strength",
+            "rate_regime_label": "rising_rate_expectation",
+            "growth_regime_label": "stable_growth",
+            "risk_params": {"max_single_position": 0.20},
+        }
+
+        scored = strategy.score(macro_cycle_holdings(), context)
+        weights = strategy.optimize(scored, context)
+
+        self.assertGreater(len(scored), 0)
+        self.assertIn(scored[0].ticker, {"XLE", "XLI", "IWM"})
+        self.assertEqual(weights.get("XLRE", 0.0), 0.0)
+        self.assertLessEqual(sum(weight for ticker, weight in weights.items() if ticker != "CASH"), 0.14)
+        self.assertLessEqual(max(weight for ticker, weight in weights.items() if ticker != "CASH"), 0.04)
+        self.assertGreaterEqual(weights["CASH"], 0.86)
+
+    def test_macro_cyclical_inflation_rotation_uses_defensive_fallback_in_stress(self):
+        strategy = get_strategy("macro_cyclical_inflation_rotation_lite")
+        context = {
+            "regime": "high_vol",
+            "rate_regime_label": "falling_rate_expectation",
+            "growth_regime_label": "growth_scare",
+        }
+
+        scored = strategy.score(macro_cycle_holdings(), context)
+        weights = strategy.optimize(scored, context)
+
+        self.assertTrue(scored)
+        self.assertTrue(set(ticker for ticker, weight in weights.items() if weight > 0) <= {"SGOV", "TLT", "CASH"})
+
+    def test_macro_cyclical_inflation_rotation_builds_non_fallback_evidence_cards(self):
+        strategy = get_strategy("macro_cyclical_inflation_rotation_lite")
+        scored = strategy.score(
+            macro_cycle_holdings(),
+            {
+                "regime": "risk_on",
+                "inflation_regime_label": "commodity_strength",
+                "rate_regime_label": "rising_rate_expectation",
+                "growth_regime_label": "stable_growth",
+            },
+        )
+        knowledge = build_knowledge_context(
+            tickers=[item.ticker for item in scored],
+            strategy_names=["macro_cyclical_inflation_rotation_lite"],
+            regime="risk_on",
+            max_assets=8,
+        )
+
+        cards = build_evidence_cards(
+            strategy=strategy,
+            scored=scored,
+            knowledge_context=knowledge,
+            mode="playground",
+        )
+
+        self.assertTrue(cards)
+        self.assertTrue(any(card.action in {"increase", "de_risk", "watch", "neutral"} for card in cards))
+        self.assertFalse(any("missing_compatibility_mapping" in card.reason for card in cards))
+        self.assertFalse(any("missing_required_safety_field" in card.reason for card in cards))
+
     def test_volatility_hedge_scores_only_small_hedge_sleeve_under_stress(self):
         strategy = get_strategy("volatility_hedge_lite")
         holdings = [
@@ -575,6 +677,60 @@ class AlphaStrategyPluginTests(unittest.TestCase):
             strategy_names=["relative_value_reversion_lite"],
             regime="mean_reverting",
             max_assets=8,
+        )
+
+        cards = build_evidence_cards(
+            strategy=strategy,
+            scored=scored,
+            knowledge_context=knowledge,
+            mode="playground",
+        )
+
+        self.assertTrue(cards)
+        self.assertTrue(any(card.action in {"increase", "watch", "neutral"} for card in cards))
+        self.assertFalse(any("missing_compatibility_mapping" in card.reason for card in cards))
+        self.assertFalse(any("missing_required_safety_field" in card.reason for card in cards))
+
+    def test_sector_theme_relative_value_reversion_scores_cluster_laggers_with_caps(self):
+        strategy = get_strategy("sector_theme_relative_value_reversion_lite")
+        context = {"regime": "mean_reverting", "risk_params": {"max_single_position": 0.20}}
+
+        scored = strategy.score(sector_theme_reversion_holdings(), context)
+        weights = strategy.optimize(scored, context)
+
+        self.assertGreater(len(scored), 0)
+        self.assertIn(scored[0].ticker, {"AIQ", "XSD", "XLI", "XLRE"})
+        self.assertGreater(scored[0].raw_factors["group_return_5d_reversal"], 0.0)
+        self.assertLessEqual(sum(weight for ticker, weight in weights.items() if ticker != "CASH"), 0.12)
+        self.assertLessEqual(max(weight for ticker, weight in weights.items() if ticker != "CASH"), 0.035)
+        group_by_ticker = {
+            item.ticker: item.raw_factors["sector_group"]
+            for item in scored
+        }
+        for group in set(group_by_ticker.values()):
+            group_weight = sum(
+                weight
+                for ticker, weight in weights.items()
+                if ticker != "CASH" and group_by_ticker.get(ticker) == group
+            )
+            self.assertLessEqual(group_weight, 0.07)
+        self.assertGreaterEqual(weights["CASH"], 0.88)
+
+    def test_sector_theme_relative_value_reversion_stays_cash_in_high_vol(self):
+        strategy = get_strategy("sector_theme_relative_value_reversion_lite")
+        scored = strategy.score(sector_theme_reversion_holdings(), {"regime": "high_vol"})
+
+        self.assertTrue(scored)
+        self.assertEqual(strategy.optimize(scored, {"regime": "high_vol"}), {"CASH": 1.0})
+
+    def test_sector_theme_relative_value_reversion_builds_non_fallback_evidence_cards(self):
+        strategy = get_strategy("sector_theme_relative_value_reversion_lite")
+        scored = strategy.score(sector_theme_reversion_holdings(), {"regime": "mean_reverting"})
+        knowledge = build_knowledge_context(
+            tickers=[item.ticker for item in scored],
+            strategy_names=["sector_theme_relative_value_reversion_lite"],
+            regime="mean_reverting",
+            max_assets=12,
         )
 
         cards = build_evidence_cards(

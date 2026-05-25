@@ -1,0 +1,54 @@
+id: sector_theme_relative_value_reversion_lite
+type: strategy
+category: mean_reversion
+horizon: short_tactical
+summary: Cluster-relative mean-reversion strategy across sector and thematic ETFs.
+best_regimes: [mean_reverting, risk_on_chop, sector_rotation, range_bound]
+weak_regimes: [high_vol, risk_off, defensive, violent_whipsaw, persistent_trend]
+required_features: [return_5d, mom_20d, mom_60d, hist_vol_20d, atr_pct, rsi_14]
+positive_signals:
+  - ETF sold off versus related sector/theme peers over the last week
+  - medium-term trend remains intact
+  - RSI is in a recoverable range rather than overbought or crash-like
+  - ATR and realized volatility remain controlled
+failure_modes:
+  - buys early when theme weakness becomes a true breakdown
+  - underperforms relative strength during persistent leadership regimes
+  - related thematic ETFs can share hidden factor and macro risks
+governance_implications:
+  - use only as a small tactical mean-reversion sleeve
+  - do not treat weak assets as adds during high-volatility or risk-off regimes
+  - enforce group caps because related ETFs can carry the same exposure
+compatibility_mappings:
+  - role: sector_theme
+    horizon: short_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: increase
+        signal_type: sector_theme_relative_value_reversion
+      - gte: 0.40
+        action: watch
+        signal_type: sector_theme_reversion_watch
+      - lt: 0.40
+        action: neutral
+        signal_type: no_sector_theme_reversion_signal
+    max_weight_multiplier: 0.45
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{branch}"
+  - role: core_market
+    horizon: short_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: increase
+        signal_type: core_theme_relative_value_reversion
+      - gte: 0.40
+        action: watch
+        signal_type: core_theme_reversion_watch
+      - lt: 0.40
+        action: neutral
+        signal_type: no_core_theme_reversion_signal
+    max_weight_multiplier: 0.35
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{branch}"
+sources: [pairs_trading_2006, short_term_reversal_literature, sector_rotation_literature, issuer_fact_sheet, risk_governance_policy]
+last_reviewed: 2026-05-25

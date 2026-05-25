@@ -54,6 +54,11 @@ sources:
     reliability: medium
     title: Sector rotation and industry momentum literature
     use_for: [sector_rotation, sector_theme_rotation, relative_strength]
+  business_cycle_rotation_literature:
+    type: academic
+    reliability: medium
+    title: Business-cycle, inflation, and sector rotation literature
+    use_for: [macro_regime, macro_cycle_rotation, inflation_sensitive_equity, cyclical_rotation]
   duration_risk_literature:
     type: academic
     reliability: high

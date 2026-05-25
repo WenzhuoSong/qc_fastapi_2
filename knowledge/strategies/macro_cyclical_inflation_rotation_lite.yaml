@@ -1,0 +1,69 @@
+id: macro_cyclical_inflation_rotation_lite
+type: strategy
+category: macro_cycle_rotation
+horizon: medium_tactical
+summary: Macro-cycle rotation across energy, industrials, small caps, real estate, cash-like, and duration ETFs.
+best_regimes: [risk_on, trending_bull, inflationary_growth, broadening_bull, falling_rate_expectation, stable_growth]
+weak_regimes: [high_vol, defensive, risk_off, credit_stress, recession_risk]
+required_features: [mom_20d, mom_60d, mom_252d, hist_vol_20d, atr_pct, rsi_14]
+positive_signals:
+  - inflation-sensitive energy leads when inflation or commodity evidence is constructive
+  - industrials and small caps lead when breadth and growth are broadening
+  - real estate improves when rate pressure is falling or stable
+  - SGOV or TLT rank higher when cyclical evidence is weak or defensive macro fit dominates
+failure_modes:
+  - macro labels lag market-implied cycle shifts
+  - cyclical ETFs reverse sharply when growth expectations deteriorate
+  - real estate and duration exposure lose during rate shocks
+governance_implications:
+  - treat as macro-regime evidence, separate from pure sector momentum
+  - keep cyclicals small until conviction is calibrated by regime
+  - do not add cyclical exposure during high-volatility or credit-stress regimes
+compatibility_mappings:
+  - role: sector_theme
+    horizon: medium_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: increase
+        signal_type: macro_cycle_sector_rotation
+      - gte: 0.40
+        action: watch
+        signal_type: macro_cycle_sector_watch
+      - lt: 0.40
+        action: neutral
+        signal_type: no_macro_cycle_sector_signal
+    max_weight_multiplier: 0.55
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{branch}"
+  - role: core_market
+    horizon: medium_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: increase
+        signal_type: macro_cycle_broadening_signal
+      - gte: 0.40
+        action: watch
+        signal_type: macro_cycle_core_watch
+      - lt: 0.40
+        action: neutral
+        signal_type: no_macro_cycle_core_signal
+    max_weight_multiplier: 0.45
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{branch}"
+  - role: defensive_cash_proxy
+    horizon: defensive_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: de_risk
+        signal_type: macro_cycle_defensive_fallback
+      - gte: 0.40
+        action: watch
+        signal_type: macro_cycle_defensive_watch
+      - lt: 0.40
+        action: neutral
+        signal_type: no_macro_cycle_defensive_signal
+    max_weight_multiplier: 0.45
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{branch}"
+sources: [business_cycle_rotation_literature, sector_rotation_literature, duration_risk_literature, issuer_fact_sheet, risk_governance_policy]
+last_reviewed: 2026-05-25
