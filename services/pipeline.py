@@ -89,6 +89,7 @@ from services.transaction_cost_gate import (
     evaluate_transaction_cost_gate,
 )
 from services.portfolio_risk_diagnostic import load_portfolio_var_cvar_diagnostic
+from services.alpha_validation_persistence import persist_alpha_validation_run
 from services.empirical_profile_store import (
     build_empirical_profiles_from_feature_store,
     collect_empirical_profile_tickers,
@@ -1904,6 +1905,13 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             failed=True,
         )
 
+    await _persist_alpha_validation_snapshot(
+        analysis_id=analysis_id,
+        trigger_type=trigger,
+        risk_out=risk_out,
+        evidence_bundle=evidence_bundle,
+    )
+
     risk_out_for_tracker = risk_out
 
     # Stage 7: Update analysis row (fill complete data)
@@ -2377,6 +2385,60 @@ async def _apply_portfolio_risk_diagnostic(
                 "execution_effect": "diagnostic_only",
             },
             output_data=risk_out["portfolio_risk_diagnostic"],
+            duration_ms=0,
+            failed=True,
+        )
+
+
+async def _persist_alpha_validation_snapshot(
+    *,
+    analysis_id: int,
+    trigger_type: str,
+    risk_out: dict,
+    evidence_bundle: dict,
+) -> None:
+    """Persist alpha/cost/risk diagnostics for trend analysis."""
+    try:
+        async with AsyncSessionLocal() as db:
+            record = await persist_alpha_validation_run(
+                db,
+                analysis_id=analysis_id,
+                analyzed_at=datetime.utcnow(),
+                trigger_type=trigger_type,
+                risk_out=risk_out,
+                evidence_bundle=evidence_bundle,
+                execution_status="pre_execution_diagnostic",
+            )
+        risk_out["alpha_validation_run"] = record
+        await _save_step_log(
+            analysis_id,
+            "6e_alpha_validation_persistence",
+            "alpha_validation_persistence",
+            input_data={
+                "analysis_id": analysis_id,
+                "trigger_type": trigger_type,
+                "execution_effect": "diagnostic_only",
+            },
+            output_data=record,
+            duration_ms=0,
+        )
+    except Exception as exc:
+        logger.warning("[Stage6] Alpha validation persistence failed: %s", exc)
+        risk_out["alpha_validation_run"] = {
+            "status": "unavailable",
+            "execution_authority": "none",
+            "error": str(exc),
+        }
+        await _save_step_log(
+            analysis_id,
+            "6e_alpha_validation_persistence",
+            "alpha_validation_persistence",
+            input_data={
+                "analysis_id": analysis_id,
+                "trigger_type": trigger_type,
+                "execution_effect": "diagnostic_only",
+            },
+            output_data=risk_out["alpha_validation_run"],
             duration_ms=0,
             failed=True,
         )

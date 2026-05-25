@@ -33,6 +33,7 @@ from db.models import (
     AccountStateSnapshot,
     AgentAnalysis,
     AgentStepLog,
+    AlphaValidationRun,
     CommandLifecycleEvent,
     CronRunLog,
     ExecutionLog,
@@ -105,6 +106,9 @@ async def build_dashboard_summary() -> dict[str, Any]:
     live_signal_conviction = await _live_signal_conviction_dashboard()
     performance_attribution = await _performance_attribution_dashboard()
     portfolio_risk_diagnostic = latest_analysis.get("portfolio_risk_diagnostic") or {}
+    alpha_validation_trend = await _alpha_validation_trend_dashboard()
+    strategy_regime_gap_analysis = await _strategy_regime_gap_analysis_dashboard()
+    strategy_promotion_recommendations = await _strategy_promotion_recommendations_dashboard()
     cron_runs = await _latest_cron_runs()
     data_quality_audit = await _data_quality_audit_trend()
     execution = await _latest_execution()
@@ -120,6 +124,9 @@ async def build_dashboard_summary() -> dict[str, Any]:
         "live_signal_conviction": live_signal_conviction,
         "performance_attribution": performance_attribution,
         "portfolio_risk_diagnostic": portfolio_risk_diagnostic,
+        "alpha_validation_trend": alpha_validation_trend,
+        "strategy_regime_gap_analysis": strategy_regime_gap_analysis,
+        "strategy_promotion_recommendations": strategy_promotion_recommendations,
         "cron_runs": cron_runs,
         "data_quality_audit": data_quality_audit,
         "execution": execution,
@@ -547,6 +554,104 @@ async def _performance_attribution_dashboard(limit: int = 12) -> dict[str, Any]:
             "execution_authority": "none",
         },
     }
+
+
+async def _alpha_validation_trend_dashboard(limit: int = 30) -> dict[str, Any]:
+    """Load persistent alpha validation snapshots."""
+    limit = max(min(int(limit or 30), 100), 1)
+    try:
+        async with AsyncSessionLocal() as db:
+            rows = (
+                await db.execute(
+                    select(AlphaValidationRun)
+                    .order_by(desc(AlphaValidationRun.generated_at), desc(AlphaValidationRun.id))
+                    .limit(limit)
+                )
+            ).scalars().all()
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"{type(exc).__name__}: {exc}",
+            "latest": {},
+            "recent_rows": [],
+            "status_rows": [],
+            "data_quality_rows": [],
+            "trend_metrics": {},
+        }
+
+    if not rows:
+        return {
+            "available": False,
+            "reason": "no alpha validation runs",
+            "latest": {},
+            "recent_rows": [],
+            "status_rows": [],
+            "data_quality_rows": [],
+            "trend_metrics": {},
+        }
+
+    compact_rows = [_compact_alpha_validation_row(row) for row in rows]
+    return {
+        "available": True,
+        "latest": compact_rows[0],
+        "recent_rows": compact_rows,
+        "status_rows": _count_rows(compact_rows, "status", label="status"),
+        "data_quality_rows": _count_rows(compact_rows, "data_quality", label="data_quality"),
+        "trend_metrics": _alpha_validation_trend_metrics(compact_rows),
+        "contract": {
+            "source_table": "alpha_validation_runs",
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+            "sample_count": len(compact_rows),
+        },
+    }
+
+
+async def _strategy_regime_gap_analysis_dashboard() -> dict[str, Any]:
+    """Load read-only strategy family / regime gap diagnostics."""
+    try:
+        from services.strategy_regime_gap_analysis import load_strategy_regime_gap_analysis
+
+        async with AsyncSessionLocal() as db:
+            raw = await load_strategy_regime_gap_analysis(db, row_limit=5000)
+        raw["available"] = True
+        return raw
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"{type(exc).__name__}: {exc}",
+            "contract_version": "strategy_regime_gap_analysis_v1",
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+            "regime_rows": [],
+            "family_rows": [],
+            "weak_family_regime_rows": [],
+            "research_queue": [],
+            "warnings": [],
+        }
+
+
+async def _strategy_promotion_recommendations_dashboard() -> dict[str, Any]:
+    """Load read-only promotion/degradation recommendations."""
+    try:
+        from services.strategy_promotion_recommendations import load_strategy_promotion_recommendations
+
+        async with AsyncSessionLocal() as db:
+            raw = await load_strategy_promotion_recommendations(db, row_limit=5000)
+        raw["available"] = True
+        return raw
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"{type(exc).__name__}: {exc}",
+            "contract_version": "strategy_promotion_recommendations_v1",
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+            "recommendation_only": True,
+            "recommendations": [],
+            "recommendation_counts": {},
+            "warnings": [],
+        }
 
 
 async def _dashboard_config() -> dict[str, Any]:
@@ -1336,6 +1441,56 @@ def _compact_performance_attribution_row(row: Any) -> dict[str, Any]:
     }
 
 
+def _compact_alpha_validation_row(row: Any) -> dict[str, Any]:
+    warnings = row.warnings if isinstance(row.warnings, list) else []
+    return {
+        "id": row.id,
+        "analysis_id": row.analysis_id,
+        "generated_at": _iso(row.generated_at),
+        "analyzed_at": _iso(row.analyzed_at),
+        "trigger_type": row.trigger_type,
+        "risk_approved": row.risk_approved,
+        "execution_status": row.execution_status,
+        "status": row.status,
+        "data_quality": row.data_quality,
+        "cost_gate_status": row.cost_gate_status,
+        "low_edge_trade_count": row.low_edge_trade_count,
+        "min_edge_to_cost_ratio": _json_safe_number(row.min_edge_to_cost_ratio),
+        "avg_edge_to_cost_ratio": _json_safe_number(row.avg_edge_to_cost_ratio),
+        "var_95_loss": _json_safe_number(row.var_95_loss),
+        "cvar_95_loss": _json_safe_number(row.cvar_95_loss),
+        "max_scenario_loss": _json_safe_number(row.max_scenario_loss),
+        "signal_weighted_effective_n": _json_safe_number(row.signal_weighted_effective_n),
+        "signal_alignment_score": _json_safe_number(row.signal_alignment_score),
+        "signal_objective_warning_count": row.signal_objective_warning_count,
+        "independent_alpha_family_count": row.independent_alpha_family_count,
+        "actionable_alpha_strategy_count": row.actionable_alpha_strategy_count,
+        "calibrated_conviction_count": row.calibrated_conviction_count,
+        "early_conviction_count": row.early_conviction_count,
+        "insufficient_conviction_count": row.insufficient_conviction_count,
+        "warning_count": len(warnings),
+        "warnings": warnings,
+        "content_hash": row.content_hash,
+    }
+
+
+def _alpha_validation_trend_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "sample_count": len(rows),
+        "avg_min_edge_to_cost_ratio": _mean_present(rows, "min_edge_to_cost_ratio"),
+        "avg_var_95_loss": _mean_present(rows, "var_95_loss"),
+        "avg_cvar_95_loss": _mean_present(rows, "cvar_95_loss"),
+        "max_scenario_loss": max(
+            (_json_safe_number(row.get("max_scenario_loss")) or 0.0 for row in rows),
+            default=0.0,
+        ),
+        "avg_signal_alignment_score": _mean_present(rows, "signal_alignment_score"),
+        "latest_independent_alpha_family_count": rows[0].get("independent_alpha_family_count") if rows else None,
+        "latest_calibrated_conviction_count": rows[0].get("calibrated_conviction_count") if rows else None,
+        "warning_runs": sum(1 for row in rows if int(row.get("warning_count") or 0) > 0),
+    }
+
+
 def _performance_attribution_breakdown_rows(latest: dict[str, Any]) -> list[dict[str, Any]]:
     source_tickers = latest.get("source_tickers") if isinstance(latest.get("source_tickers"), dict) else {}
     return [
@@ -1727,6 +1882,21 @@ def render_dashboard(summary: dict[str, Any]) -> str:
     </section>
 
     <section>
+      <h2>Alpha Validation Trend</h2>
+      {_render_alpha_validation_trend(summary.get("alpha_validation_trend") or {})}
+    </section>
+
+    <section>
+      <h2>Strategy Family / Regime Gap Analysis</h2>
+      {_render_strategy_regime_gap_analysis(summary.get("strategy_regime_gap_analysis") or {})}
+    </section>
+
+    <section>
+      <h2>Promotion / Degradation Recommendations</h2>
+      {_render_strategy_promotion_recommendations(summary.get("strategy_promotion_recommendations") or {})}
+    </section>
+
+    <section>
       <h2>Portfolio Construction Readiness</h2>
       {_render_kv(pc_readiness)}
     </section>
@@ -1973,6 +2143,107 @@ def _render_portfolio_risk_diagnostic(diagnostic: dict[str, Any]) -> str:
     """
 
 
+def _render_alpha_validation_trend(trend: dict[str, Any]) -> str:
+    if not trend.get("available"):
+        reason = trend.get("reason") or "No alpha validation trend available."
+        return f"<p class=\"muted\">{escape(str(reason))}</p>"
+    columns = [
+        "generated_at",
+        "analysis_id",
+        "status",
+        "data_quality",
+        "risk_approved",
+        "cost_gate_status",
+        "low_edge_trade_count",
+        "min_edge_to_cost_ratio",
+        "var_95_loss",
+        "cvar_95_loss",
+        "max_scenario_loss",
+        "signal_alignment_score",
+        "signal_weighted_effective_n",
+        "independent_alpha_family_count",
+        "calibrated_conviction_count",
+        "warning_count",
+    ]
+    return f"""
+      <div class="grid">
+        <article class="card"><h3>Latest Run</h3>{_render_kv(trend.get("latest") or {})}</article>
+        <article class="card"><h3>Trend Metrics</h3>{_render_kv(trend.get("trend_metrics") or {})}</article>
+        <article class="card"><h3>Contract</h3>{_render_kv(trend.get("contract") or {})}</article>
+      </div>
+      <h3>Recent Alpha Validation Runs</h3>{_render_table(trend.get("recent_rows") or [], columns)}
+      <h3>Status Counts</h3>{_render_table(trend.get("status_rows") or [], ["status", "count"])}
+      <h3>Data Quality Counts</h3>{_render_table(trend.get("data_quality_rows") or [], ["data_quality", "count"])}
+    """
+
+
+def _render_strategy_regime_gap_analysis(analysis: dict[str, Any]) -> str:
+    if not analysis.get("available"):
+        reason = analysis.get("reason") or "No strategy regime gap analysis available."
+        return f"<p class=\"muted\">{escape(str(reason))}</p>"
+    overview = {
+        "status": analysis.get("status"),
+        "as_of_date": analysis.get("as_of_date"),
+        "latest_profile_date": analysis.get("latest_profile_date"),
+        "profile_count": analysis.get("profile_count"),
+        "calibrated_alpha_profile_count": analysis.get("calibrated_alpha_profile_count"),
+        "actionable_alpha_family_count": analysis.get("actionable_alpha_family_count"),
+        "actionable_alpha_families": analysis.get("actionable_alpha_families"),
+        "momentum_overconcentration": analysis.get("momentum_overconcentration"),
+    }
+    contract = {
+        "contract_version": analysis.get("contract_version"),
+        "execution_authority": analysis.get("execution_authority"),
+        "target_weight_mutation": analysis.get("target_weight_mutation"),
+        "alpha_validation_sample_count": analysis.get("alpha_validation_sample_count"),
+    }
+    return f"""
+      <div class="grid">
+        <article class="card"><h3>Coverage Overview</h3>{_render_kv(overview)}</article>
+        <article class="card"><h3>Diagnostics Contract</h3>{_render_kv(contract)}</article>
+        <article class="card"><h3>Latest Alpha Validation</h3>{_render_kv(analysis.get("latest_alpha_validation") or {})}</article>
+      </div>
+      <h3>Regime Coverage Rows</h3>{_render_table(analysis.get("regime_rows") or [], ["regime", "coverage_status", "calibrated_profile_count", "calibrated_families", "expected_families", "missing_expected_families", "hit_rate", "avg_excess_vs_spy", "ic", "total_n"])}
+      <h3>Family Coverage Rows</h3>{_render_table(analysis.get("family_rows") or [], ["family", "calibrated_profile_count", "covered_regimes", "weak_regimes", "hit_rate", "avg_excess_vs_spy", "ic", "total_n"])}
+      <h3>Weak Family / Regime Rows</h3>{_render_table(analysis.get("weak_family_regime_rows") or [], ["family", "regime", "profile_count", "hit_rate", "avg_excess_vs_spy", "ic", "total_n", "reasons"])}
+      <h3>Research Queue</h3>{_render_table(analysis.get("research_queue") or [], ["priority", "regime", "suggested_family", "reason"])}
+      <h3>Warnings</h3>{_render_list("", analysis.get("warnings") or [])}
+    """
+
+
+def _render_strategy_promotion_recommendations(recommendations: dict[str, Any]) -> str:
+    if not recommendations.get("available"):
+        reason = recommendations.get("reason") or "No promotion/degradation recommendations available."
+        return f"<p class=\"muted\">{escape(str(reason))}</p>"
+    overview = {
+        "status": recommendations.get("status"),
+        "as_of_date": recommendations.get("as_of_date"),
+        "latest_profile_date": recommendations.get("latest_profile_date"),
+        "latest_analysis_id": recommendations.get("latest_analysis_id"),
+        "profile_count": recommendations.get("profile_count"),
+        "strategy_count": recommendations.get("strategy_count"),
+        "recommendation_count": recommendations.get("recommendation_count"),
+        "high_priority_count": recommendations.get("high_priority_count"),
+    }
+    contract = {
+        "contract_version": recommendations.get("contract_version"),
+        "execution_authority": recommendations.get("execution_authority"),
+        "target_weight_mutation": recommendations.get("target_weight_mutation"),
+        "recommendation_only": recommendations.get("recommendation_only"),
+        "gap_status": recommendations.get("gap_status"),
+    }
+    return f"""
+      <div class="grid">
+        <article class="card"><h3>Recommendation Overview</h3>{_render_kv(overview)}</article>
+        <article class="card"><h3>Recommendation Contract</h3>{_render_kv(contract)}</article>
+        <article class="card"><h3>Recommendation Counts</h3>{_render_kv(recommendations.get("recommendation_counts") or {})}</article>
+      </div>
+      <h3>Recommendation Rows</h3>{_render_table(recommendations.get("recommendations") or [], ["priority", "recommendation", "strategy_id", "canonical_family", "regime", "current_use", "recommended_use", "sample_count", "profile_count", "hit_rate", "avg_excess_vs_spy", "ic", "conviction", "reasons", "blockers", "operator_action"])}
+      <h3>Recommendation Policy</h3>{_render_kv(recommendations.get("policy") or {})}
+      <h3>Warnings</h3>{_render_list("", recommendations.get("warnings") or [])}
+    """
+
+
 def _render_replay(replay: dict[str, Any]) -> str:
     return f"""
       <div class="grid">
@@ -2074,6 +2345,17 @@ def _json_safe_number(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _mean_present(rows: list[dict[str, Any]], key: str) -> float | None:
+    values = [
+        _json_safe_number(row.get(key))
+        for row in rows
+        if _json_safe_number(row.get(key)) is not None
+    ]
+    if not values:
+        return None
+    return round(sum(float(value) for value in values) / len(values), 6)
 
 
 def _compact_json(value: Any) -> str:

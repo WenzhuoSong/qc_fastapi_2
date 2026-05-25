@@ -287,6 +287,42 @@ class PerformanceAttribution(Base):
     created_at      = Column(DateTime, nullable=False, default=func.now())
 
 
+class AlphaValidationRun(Base):
+    __tablename__ = "alpha_validation_runs"
+    __table_args__ = (
+        UniqueConstraint("analysis_id", name="uq_alpha_validation_runs_analysis_id"),
+    )
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    analysis_id     = Column(BigInteger, ForeignKey("agent_analysis.id"), index=True)
+    generated_at    = Column(DateTime, nullable=False, default=func.now(), index=True)
+    analyzed_at     = Column(DateTime)
+    trigger_type    = Column(String(30))
+    risk_approved   = Column(Boolean)
+    execution_status = Column(String(40))
+    status          = Column(String(40), nullable=False, index=True)
+    data_quality    = Column(String(40), nullable=False)
+    cost_gate_status = Column(String(40))
+    low_edge_trade_count = Column(Integer, nullable=False, default=0)
+    min_edge_to_cost_ratio = Column(Float)
+    avg_edge_to_cost_ratio = Column(Float)
+    var_95_loss     = Column(Float)
+    cvar_95_loss    = Column(Float)
+    max_scenario_loss = Column(Float)
+    signal_weighted_effective_n = Column(Float)
+    signal_alignment_score = Column(Float)
+    signal_objective_warning_count = Column(Integer, nullable=False, default=0)
+    independent_alpha_family_count = Column(Integer, nullable=False, default=0)
+    actionable_alpha_strategy_count = Column(Integer, nullable=False, default=0)
+    calibrated_conviction_count = Column(Integer, nullable=False, default=0)
+    early_conviction_count = Column(Integer, nullable=False, default=0)
+    insufficient_conviction_count = Column(Integer, nullable=False, default=0)
+    warnings        = Column(JSONB)
+    diagnostic_payload = Column(JSONB)
+    content_hash    = Column(String(64), nullable=False)
+    created_at      = Column(DateTime, nullable=False, default=func.now())
+
+
 class AlertLog(Base):
     __tablename__ = "alerts_log"
     id           = Column(BigInteger, primary_key=True, autoincrement=True)

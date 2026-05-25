@@ -192,6 +192,58 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('"momentum_factor_contribution": _json_safe_number(row.momentum_factor_contribution)', source)
         self.assertIn('"residual_alpha_candidate": _json_safe_number(row.residual_alpha_candidate)', source)
 
+    def test_dashboard_surfaces_alpha_validation_trend(self):
+        source = Path("dashboard/app.py").read_text()
+        pipeline_source = Path("services/pipeline.py").read_text()
+
+        self.assertIn("AlphaValidationRun", source)
+        self.assertIn("def _alpha_validation_trend_dashboard", source)
+        self.assertIn("def _compact_alpha_validation_row", source)
+        self.assertIn("def _render_alpha_validation_trend", source)
+        self.assertIn('"alpha_validation_trend": alpha_validation_trend', source)
+        self.assertIn("Alpha Validation Trend", source)
+        self.assertIn("Recent Alpha Validation Runs", source)
+        self.assertIn('"source_table": "alpha_validation_runs"', source)
+        self.assertIn("persist_alpha_validation_run", pipeline_source)
+        self.assertIn('"6e_alpha_validation_persistence"', pipeline_source)
+        self.assertIn('"alpha_validation_run"', pipeline_source)
+
+    def test_dashboard_surfaces_strategy_regime_gap_analysis(self):
+        source = Path("dashboard/app.py").read_text()
+
+        self.assertIn("def _strategy_regime_gap_analysis_dashboard", source)
+        self.assertIn("load_strategy_regime_gap_analysis", source)
+        self.assertIn("def _render_strategy_regime_gap_analysis", source)
+        self.assertIn('"strategy_regime_gap_analysis": strategy_regime_gap_analysis', source)
+        self.assertIn("Strategy Family / Regime Gap Analysis", source)
+        self.assertIn("Coverage Overview", source)
+        self.assertIn("Diagnostics Contract", source)
+        self.assertIn("Regime Coverage Rows", source)
+        self.assertIn("Family Coverage Rows", source)
+        self.assertIn("Weak Family / Regime Rows", source)
+        self.assertIn("Research Queue", source)
+        self.assertIn('"contract_version": "strategy_regime_gap_analysis_v1"', source)
+        self.assertIn('"execution_authority": "none"', source)
+        self.assertIn('"target_weight_mutation": "none"', source)
+
+    def test_dashboard_surfaces_strategy_promotion_recommendations(self):
+        source = Path("dashboard/app.py").read_text()
+
+        self.assertIn("def _strategy_promotion_recommendations_dashboard", source)
+        self.assertIn("load_strategy_promotion_recommendations", source)
+        self.assertIn("def _render_strategy_promotion_recommendations", source)
+        self.assertIn('"strategy_promotion_recommendations": strategy_promotion_recommendations', source)
+        self.assertIn("Promotion / Degradation Recommendations", source)
+        self.assertIn("Recommendation Overview", source)
+        self.assertIn("Recommendation Contract", source)
+        self.assertIn("Recommendation Counts", source)
+        self.assertIn("Recommendation Rows", source)
+        self.assertIn("Recommendation Policy", source)
+        self.assertIn('"contract_version": "strategy_promotion_recommendations_v1"', source)
+        self.assertIn('"recommendation_only": True', source)
+        self.assertIn('"execution_authority": "none"', source)
+        self.assertIn('"target_weight_mutation": "none"', source)
+
     def test_dashboard_surfaces_transaction_cost_gate(self):
         source = Path("dashboard/app.py").read_text()
         pipeline_source = Path("services/pipeline.py").read_text()
