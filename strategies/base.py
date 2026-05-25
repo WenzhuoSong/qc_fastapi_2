@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+from services.strategy_diversity import canonical_strategy_family, is_strategy_alpha_source
 from services.universe_policy import is_tradable_research_row
 
 
@@ -38,6 +39,7 @@ class Strategy(ABC):
     optional_fields: tuple[str, ...] = ()
     min_required_coverage: float = 0.70
     family: str = "benchmark"
+    alpha_source: bool = True
     core_idea: str = ""
     best_regimes: tuple[str, ...] = ()
     bad_regimes: tuple[str, ...] = ()
@@ -81,6 +83,8 @@ class Strategy(ABC):
             "name": self.name,
             "version": self.version,
             "family": self.family,
+            "canonical_family": canonical_strategy_family(self.family),
+            "alpha_source": is_strategy_alpha_source(self.name, self.family, self.alpha_source),
             "description": self.description,
             "core_idea": self.core_idea,
             "best_regimes": list(self.best_regimes),

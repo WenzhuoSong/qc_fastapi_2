@@ -93,6 +93,8 @@ def build_validation_dashboard_summary(
             "live_paper": sum(1 for p in profile_rows if p.source_bucket == SOURCE_BUCKET_LIVE_PAPER),
             "combined": sum(1 for p in profile_rows if p.source_bucket == SOURCE_BUCKET_COMBINED),
         },
+        "regime_level_profiles": sorted(profile_display, key=_regime_profile_sort_key)[: max(profile_limit * 3, profile_limit)],
+        "regime_summary_rows": _regime_summary_rows(profile_display),
         "status_counts": dict(sorted(status_counts.items())),
         "display_note": "observe_only_no_execution_authority",
     }
@@ -244,6 +246,107 @@ def _profile_display_sort_key(row: dict[str, Any]) -> tuple[int, int, float, str
         str(row.get("strategy") or ""),
         str(row.get("ticker") or ""),
     )
+
+
+def _regime_profile_sort_key(row: dict[str, Any]) -> tuple[str, str, int, int, float, str, str]:
+    status_rank = {
+        "calibrated": 0,
+        "early_live_confirmation": 1,
+        "early_estimate": 2,
+        "historical_prior_requires_live_confirmation": 3,
+        "insufficient_samples": 4,
+    }
+    conviction = row.get("conviction")
+    conviction_sort = float(conviction) if isinstance(conviction, (int, float)) else -1.0
+    return (
+        str(row.get("regime_at_signal") or "unknown"),
+        str(row.get("source_bucket") or ""),
+        status_rank.get(str(row.get("status") or ""), 9),
+        -int(row.get("n") or 0),
+        -conviction_sort,
+        str(row.get("strategy") or ""),
+        str(row.get("ticker") or ""),
+    )
+
+
+def _regime_summary_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (
+            str(row.get("regime_at_signal") or "unknown"),
+            str(row.get("source_bucket") or "unknown"),
+        )
+        group = grouped.setdefault(
+            key,
+            {
+                "regime_at_signal": key[0],
+                "source_bucket": key[1],
+                "profile_count": 0,
+                "total_n": 0,
+                "calibrated_profiles": 0,
+                "early_profiles": 0,
+                "insufficient_profiles": 0,
+                "hit_rate_weighted_sum": 0.0,
+                "avg_excess_weighted_sum": 0.0,
+                "ic_weighted_sum": 0.0,
+                "hit_rate_n": 0,
+                "avg_excess_n": 0,
+                "ic_n": 0,
+                "data_lag_filtered": 0,
+            },
+        )
+        n = max(int(row.get("n") or 0), 0)
+        weight = max(n, 1)
+        status = str(row.get("status") or "")
+        group["profile_count"] += 1
+        group["total_n"] += n
+        group["data_lag_filtered"] += int(row.get("data_lag_filtered") or 0)
+        if status == "calibrated":
+            group["calibrated_profiles"] += 1
+        elif status == "insufficient_samples":
+            group["insufficient_profiles"] += 1
+        else:
+            group["early_profiles"] += 1
+        if row.get("hit_rate") is not None:
+            group["hit_rate_weighted_sum"] += float(row.get("hit_rate")) * weight
+            group["hit_rate_n"] += weight
+        if row.get("avg_excess_vs_spy") is not None:
+            group["avg_excess_weighted_sum"] += float(row.get("avg_excess_vs_spy")) * weight
+            group["avg_excess_n"] += weight
+        if row.get("ic") is not None:
+            group["ic_weighted_sum"] += float(row.get("ic")) * weight
+            group["ic_n"] += weight
+
+    out = []
+    for group in grouped.values():
+        out.append({
+            "regime_at_signal": group["regime_at_signal"],
+            "source_bucket": group["source_bucket"],
+            "profile_count": group["profile_count"],
+            "total_n": group["total_n"],
+            "calibrated_profiles": group["calibrated_profiles"],
+            "early_profiles": group["early_profiles"],
+            "insufficient_profiles": group["insufficient_profiles"],
+            "hit_rate": _weighted_average(group, "hit_rate"),
+            "avg_excess_vs_spy": _weighted_average(group, "avg_excess"),
+            "ic": _weighted_average(group, "ic"),
+            "data_lag_filtered": group["data_lag_filtered"],
+        })
+    return sorted(
+        out,
+        key=lambda row: (
+            str(row.get("regime_at_signal") or "unknown"),
+            str(row.get("source_bucket") or "unknown"),
+            -int(row.get("total_n") or 0),
+        ),
+    )
+
+
+def _weighted_average(group: dict[str, Any], prefix: str) -> float | None:
+    n = int(group.get(f"{prefix}_n") or 0)
+    if n <= 0:
+        return None
+    return round(float(group.get(f"{prefix}_weighted_sum") or 0.0) / n, 6)
 
 
 def _profile_from_record(value: Any) -> ConvictionProfile | None:

@@ -19,6 +19,7 @@ class EqualWeightBenchmark(Strategy):
     required_fields: tuple[str, ...] = ()
     optional_fields = ("daily_return_pct",)
     family = "benchmark"
+    alpha_source = False
     core_idea = "Equally weights the eligible ETF universe with a cash floor and position cap."
     best_regimes = ("benchmarking", "broad_participation")
     bad_regimes = ("narrow_leadership", "high_dispersion", "risk_off")

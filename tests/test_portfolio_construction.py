@@ -30,12 +30,16 @@ class PortfolioConstructionTests(unittest.TestCase):
         self.assertIn("factor_exposure_before", out)
         self.assertIn("factor_exposure_after", out)
         self.assertIn("policy_evaluation", out)
-        self.assertEqual(out["objective"]["primary"], "maximize_effective_n")
+        self.assertEqual(out["objective"]["primary"], "maximize_signal_weighted_effective_n")
+        self.assertIn("signal_quality_not_diluted", out["objective"]["subject_to"])
         self.assertIn("factor_concentration_within_group_limits", out["objective"]["subject_to"])
         self.assertEqual(out["diagnostics"]["objective"]["effective_n_target"], 8)
-        self.assertIn("increasing effective N", out["objective"]["rationale"])
+        self.assertIn("without diluting higher-quality signals", out["objective"]["rationale"])
         self.assertEqual(out["construction_source"], "portfolio_construction")
         self.assertEqual(out["diagnostics"]["execution_effect"], "diagnostic_only")
+        self.assertIn("signal_objective_metrics", out)
+        self.assertIn("signal_objective_rows", out)
+        self.assertTrue(out["diagnostics"]["signal_weighted_objective_enabled"])
         self.assertGreater(out["target_weights"]["CASH"], 0.52)
         self.assertTrue(any(item.startswith("factor_limit:tech_growth") for item in out["violations"]))
         self.assertFalse(out["diagnostics"]["consumes_raw_llm_adjusted_weights"])
@@ -79,6 +83,22 @@ class PortfolioConstructionTests(unittest.TestCase):
         self.assertAlmostEqual(out["target_weights"]["QQQ"], 0.10)
         self.assertLessEqual(out["turnover"]["estimated"], 0.100001)
         self.assertTrue(any(item.startswith("turnover_budget:") for item in out["violations"]))
+
+    def test_signal_weighted_objective_penalizes_low_signal_dilution(self):
+        out = PortfolioConstructionModel().construct(
+            base_weights={"SPY": 0.20, "QQQ": 0.20, "CASH": 0.60},
+            current_weights={"SPY": 0.20, "QQQ": 0.20, "CASH": 0.60},
+            signal_strengths={"SPY": 0.9, "QQQ": 0.1},
+            basket_reviews=None,
+            scorecard_permission="normal_rebalance",
+            turnover_budget=None,
+        ).to_dict()
+
+        self.assertAlmostEqual(out["effective_n_after"], 12.5)
+        self.assertLess(out["signal_weighted_effective_n_after"], out["effective_n_after"])
+        self.assertAlmostEqual(out["signal_alignment_score_after"], 0.50)
+        qqq = next(row for row in out["signal_objective_rows"] if row["ticker"] == "QQQ")
+        self.assertAlmostEqual(qqq["signal_weighted_after"], 0.02)
 
     def test_no_add_permission_clips_targets_to_current(self):
         out = PortfolioConstructionModel().construct(
@@ -140,6 +160,26 @@ class PortfolioConstructionTests(unittest.TestCase):
         self.assertAlmostEqual(signals["XLK"], 0.88)
         self.assertAlmostEqual(signals["XLP"], 0.08)
         self.assertAlmostEqual(signals["SOXX"], 0.20)
+
+    def test_build_construction_signals_ignores_non_alpha_strategy_rows(self):
+        signals = build_construction_signal_strengths(
+            {
+                "strategies": {
+                    "strategy_results": [
+                        {
+                            "strategy_name": "equal_weight_benchmark",
+                            "alpha_source": False,
+                            "suggested_use": "primary",
+                            "confidence_score": 1.0,
+                            "selected_tickers": ["SPY"],
+                        }
+                    ],
+                },
+                "rotation": {"signals": {}},
+            }
+        )
+
+        self.assertEqual(signals, {})
 
 
 if __name__ == "__main__":

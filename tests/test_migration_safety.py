@@ -71,6 +71,9 @@ class MigrationSafetyTests(unittest.TestCase):
         self.assertIn('class CommandLifecycleEvent', models)
         self.assertIn('__tablename__ = "command_lifecycle_events"', models)
         self.assertRegex(models, r"\bevent_type\s*=\s*Column\(")
+        self.assertIn('class PerformanceAttribution', models)
+        self.assertIn('__tablename__ = "performance_attribution"', models)
+        self.assertRegex(models, r"\bresidual_alpha_candidate\s*=\s*Column\(")
 
     def test_holdings_factors_legacy_fields_remain_modeled(self):
         models = (REPO_ROOT / "db" / "models.py").read_text(encoding="utf-8")

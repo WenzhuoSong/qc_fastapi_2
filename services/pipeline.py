@@ -84,6 +84,11 @@ from services.auto_pause import (
     default_auto_pause_config,
     load_auto_pause_verdict,
 )
+from services.transaction_cost_gate import (
+    default_transaction_cost_gate_config,
+    evaluate_transaction_cost_gate,
+)
+from services.portfolio_risk_diagnostic import load_portfolio_var_cvar_diagnostic
 from services.empirical_profile_store import (
     build_empirical_profiles_from_feature_store,
     collect_empirical_profile_tickers,
@@ -451,6 +456,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         execution_command_cfg = await get_system_config(db, "execution_command_config")
         account_guard_cfg = await get_system_config(db, "account_state_guard_config")
         auto_pause_cfg    = await get_system_config(db, "auto_pause_config")
+        transaction_cost_cfg = await get_system_config(db, "transaction_cost_gate_config")
         override_cfg    = await get_system_config(db, "circuit_override")
         alert_cfg       = await get_system_config(db, "circuit_pause_alert")
 
@@ -500,6 +506,9 @@ async def _guard_and_config(trigger: str) -> dict | None:
     auto_pause_config = default_auto_pause_config(
         (auto_pause_cfg.value if auto_pause_cfg else {}) or {}
     )
+    transaction_cost_gate_config = default_transaction_cost_gate_config(
+        (transaction_cost_cfg.value if transaction_cost_cfg else {}) or {}
+    )
 
     params_key = f"strategy_{active_name}_params"
     async with AsyncSessionLocal() as db:
@@ -526,6 +535,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "execution_command_config": execution_command_config,
         "account_state_guard_config": account_state_guard_config,
         "auto_pause_config": auto_pause_config,
+        "transaction_cost_gate_config": transaction_cost_gate_config,
     }
 
 
@@ -1769,6 +1779,13 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         current_weights=brief.get("current_weights") or {},
         rebalance_threshold=float((pipeline_context.get("risk_params") or {}).get("rebalance_threshold", 0.02)),
     )
+    await _apply_transaction_cost_gate_observe(
+        analysis_id=analysis_id,
+        risk_out=risk_out,
+        current_weights=brief.get("current_weights") or {},
+        strategy_evidence=evidence_bundle.get("strategies") or {},
+        pipeline_context=pipeline_context,
+    )
     await _apply_final_risk_validation(
         analysis_id=analysis_id,
         risk_out=risk_out,
@@ -1776,6 +1793,11 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         hard_risks_map=brief.get("hard_risks_map") or {},
         critical_alerts=brief.get("critical_alerts") or [],
         pipeline_context=pipeline_context,
+    )
+    await _apply_portfolio_risk_diagnostic(
+        analysis_id=analysis_id,
+        risk_out=risk_out,
+        current_weights=brief.get("current_weights") or {},
     )
     approved = bool(risk_out.get("approved", False))
 
@@ -2161,6 +2183,51 @@ async def _apply_final_execution_policy_cap(
     )
 
 
+async def _apply_transaction_cost_gate_observe(
+    *,
+    analysis_id: int,
+    risk_out: dict,
+    current_weights: dict,
+    strategy_evidence: dict,
+    pipeline_context: dict,
+) -> None:
+    """Attach observe-only transaction cost diagnostics to final target."""
+    if not risk_out.get("target_weights"):
+        return
+
+    rebalance_actions = risk_out.get("rebalance_actions") or compute_rebalance_actions(
+        risk_out.get("target_weights") or {},
+        current_weights or {},
+        float((pipeline_context.get("risk_params") or {}).get("rebalance_threshold", 0.02)),
+    )
+    verdict = evaluate_transaction_cost_gate(
+        target_weights=risk_out.get("target_weights") or {},
+        current_weights=current_weights or {},
+        rebalance_actions=rebalance_actions,
+        strategy_evidence=strategy_evidence or {},
+        config=pipeline_context.get("transaction_cost_gate_config") or {},
+    )
+    risk_out["transaction_cost_gate"] = verdict
+    if verdict.get("warnings"):
+        logger.warning("[COST_GATE] Observe warnings: %s", verdict.get("warnings"))
+    else:
+        logger.info("[COST_GATE] Observe passed with no cost warnings")
+
+    await _save_step_log(
+        analysis_id,
+        "6cc_transaction_cost_gate",
+        "transaction_cost_gate",
+        input_data={
+            "target_weights": risk_out.get("target_weights") or {},
+            "current_weights": current_weights or {},
+            "rebalance_actions": rebalance_actions,
+            "config": pipeline_context.get("transaction_cost_gate_config") or {},
+        },
+        output_data=verdict,
+        duration_ms=0,
+    )
+
+
 async def _apply_final_risk_validation(
     *,
     analysis_id: int,
@@ -2259,6 +2326,60 @@ async def _apply_final_risk_validation(
         duration_ms=0,
         failed=not bool(validation.get("approved")),
     )
+
+
+async def _apply_portfolio_risk_diagnostic(
+    *,
+    analysis_id: int,
+    risk_out: dict,
+    current_weights: dict,
+) -> None:
+    """Attach VaR/CVaR diagnostics after final target validation."""
+    target_weights = risk_out.get("target_weights") or current_weights or {}
+    if not target_weights:
+        return
+
+    try:
+        async with AsyncSessionLocal() as db:
+            diagnostic = await load_portfolio_var_cvar_diagnostic(
+                db,
+                target_weights=target_weights,
+                current_weights=current_weights or {},
+            )
+        risk_out["portfolio_risk_diagnostic"] = diagnostic
+        await _save_step_log(
+            analysis_id,
+            "6cd_portfolio_var_cvar",
+            "portfolio_risk_diagnostic",
+            input_data={
+                "target_weights": target_weights,
+                "current_weights": current_weights or {},
+                "execution_effect": "diagnostic_only",
+            },
+            output_data=diagnostic,
+            duration_ms=0,
+        )
+    except Exception as exc:
+        logger.warning("[Stage6] Portfolio VaR/CVaR diagnostic failed: %s", exc)
+        risk_out["portfolio_risk_diagnostic"] = {
+            "status": "unavailable",
+            "mode": "diagnostic_only",
+            "execution_authority": "none",
+            "error": str(exc),
+        }
+        await _save_step_log(
+            analysis_id,
+            "6cd_portfolio_var_cvar",
+            "portfolio_risk_diagnostic",
+            input_data={
+                "target_weights": target_weights,
+                "current_weights": current_weights or {},
+                "execution_effect": "diagnostic_only",
+            },
+            output_data=risk_out["portfolio_risk_diagnostic"],
+            duration_ms=0,
+            failed=True,
+        )
 
 
 def _build_hedge_intent_plan(

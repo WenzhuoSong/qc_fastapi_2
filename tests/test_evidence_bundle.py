@@ -71,6 +71,11 @@ class EvidenceBundleTest(unittest.TestCase):
             "strategies": [
                 {
                     "strategy_name": "momentum_lite_v1",
+                    "strategy_card": {
+                        "family": "trend_following",
+                        "canonical_family": "momentum",
+                        "alpha_source": True,
+                    },
                     "data_ready": True,
                     "feature_contract": {"can_influence_allocation": True},
                     "risk_profile": {"turnover": 0.25},
@@ -149,6 +154,19 @@ class EvidenceBundleTest(unittest.TestCase):
             bundle["strategies"]["strategy_results"][0]["reason_codes"],
             ["historical_strong", "regime_fit_strong"],
         )
+        self.assertEqual(
+            bundle["strategies"]["strategy_results"][0]["canonical_family"],
+            "momentum",
+        )
+        self.assertTrue(bundle["strategies"]["strategy_results"][0]["alpha_source"])
+        self.assertEqual(
+            bundle["strategies"]["strategy_diversity"]["independent_alpha_family_count"],
+            1,
+        )
+        self.assertEqual(
+            bundle["strategies"]["strategy_diversity"]["actionable_alpha_families"],
+            ["momentum"],
+        )
         self.assertEqual(bundle["strategies"]["strategy_use_summary"]["actionable_count"], 1)
         self.assertEqual(bundle["strategies"]["evidence_summary"]["historical_evidence"], "strong")
         self.assertEqual(bundle["strategies"]["evidence_summary"]["execution_permission"], "advisory")
@@ -177,6 +195,55 @@ class EvidenceBundleTest(unittest.TestCase):
         )
         self.assertEqual(spy_context["empirical_behavior"]["samples"], 80)
         self.assertEqual(bundle["data_quality"]["overall"], "fresh")
+
+    def test_strategy_diversity_does_not_count_momentum_variants_as_independent(self):
+        bundle = build_evidence_bundle(
+            brief={
+                "key_facts": {},
+                "sector_rotation": {},
+                "news_context": {"macro_signals": []},
+                "holdings": [{"ticker": "SPY"}],
+            },
+            quant_baseline={"regime_result": {"regime": "trending_bull", "confidence": "medium"}},
+            playground_bundle={
+                "snapshot_count": 30,
+                "consensus_weights": {"SPY": 0.2, "CASH": 0.8},
+                "strategy_confidence": {
+                    "momentum_lite_v1": {
+                        "confidence_score": 0.72,
+                        "suggested_use": "advisory",
+                    },
+                    "dual_momentum_rotation": {
+                        "confidence_score": 0.80,
+                        "suggested_use": "primary",
+                    },
+                },
+                "strategies": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "strategy_card": {"family": "trend_following", "alpha_source": True},
+                        "data_ready": True,
+                        "risk_profile": {"turnover": 0.2},
+                    },
+                    {
+                        "strategy_name": "dual_momentum_rotation",
+                        "strategy_card": {"family": "dual_momentum", "alpha_source": True},
+                        "data_ready": True,
+                        "risk_profile": {"turnover": 0.2},
+                    },
+                ],
+                "replay_metrics": {
+                    "momentum_lite_v1": {"n_forward_return_samples": 12},
+                    "dual_momentum_rotation": {"n_forward_return_samples": 12},
+                },
+            },
+        )
+
+        diversity = bundle["strategies"]["strategy_diversity"]
+        self.assertEqual(diversity["independent_alpha_family_count"], 1)
+        self.assertEqual(diversity["actionable_alpha_strategy_count"], 2)
+        self.assertEqual(diversity["actionable_alpha_families"], ["momentum"])
+        self.assertTrue(diversity["warnings"])
 
     def test_calibrates_strategy_confidence_once_when_resolver_finds_conflict(self):
         bundle = build_evidence_bundle(

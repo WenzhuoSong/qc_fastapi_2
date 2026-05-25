@@ -16,6 +16,11 @@ from services.news_evidence import build_news_evidence
 from services.execution_gateway import build_execution_gateway
 from services.strategy_confidence_calibrator import calibrate_strategy_confidence
 from services.strategy_certification import certify_strategies
+from services.strategy_diversity import (
+    build_strategy_diversity_summary,
+    canonical_strategy_family,
+    is_strategy_alpha_source,
+)
 
 
 DEFAULT_MAX_AGE_SECONDS = 1800
@@ -158,6 +163,7 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
             },
             "consensus_top5": [],
             "strategy_results": [],
+            "strategy_diversity": build_strategy_diversity_summary([]),
             "turnover_warnings": [],
             "data_quality": "missing",
             "evidence_summary": {
@@ -178,6 +184,7 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
     forward_samples = _max_forward_samples(replay_metrics)
     historical_samples = _max_forward_samples(historical_metrics)
     strategy_results = _strategy_results(playground)
+    strategy_diversity = build_strategy_diversity_summary(strategy_results)
     max_turnover = max(
         [_to_float(item.get("turnover"), 0.0) for item in strategy_results] or [0.0]
     )
@@ -213,6 +220,7 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
         "strategy_use_summary": _strategy_use_summary(playground.get("strategy_confidence") or {}),
         "evidence_summary": playground.get("evidence_summary") or {},
         "strategy_results": strategy_results,
+        "strategy_diversity": strategy_diversity,
         "turnover_warnings": turnover_warnings,
         "data_quality": data_quality,
         "warnings": _unique([str(item) for item in warnings] + turnover_warnings),
@@ -234,6 +242,22 @@ def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
         confidence_row = confidence.get(name) or {}
         walk_forward_row = walk_forward_items.get(name) or {}
         risk_profile = item.get("risk_profile") or {}
+        strategy_card = item.get("strategy_card") if isinstance(item.get("strategy_card"), dict) else {}
+        raw_family = (
+            strategy_card.get("family")
+            or item.get("family")
+            or item.get("strategy_family")
+        )
+        canonical_family = (
+            strategy_card.get("canonical_family")
+            or item.get("canonical_family")
+            or canonical_strategy_family(raw_family)
+        )
+        alpha_source = is_strategy_alpha_source(
+            name,
+            canonical_family,
+            item.get("alpha_source", strategy_card.get("alpha_source")),
+        )
         turnover = _to_float(
             risk_profile.get("turnover"),
             _to_float(item.get("expected_turnover_pct"), _to_float(metrics.get("avg_turnover"))),
@@ -241,6 +265,10 @@ def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
         out.append(
             {
                 "strategy_name": name,
+                "strategy_card": strategy_card,
+                "raw_family": raw_family or "unknown",
+                "canonical_family": canonical_family,
+                "alpha_source": bool(alpha_source),
                 "data_ready": bool(item.get("data_ready")),
                 "can_influence_allocation": bool(
                     (item.get("feature_contract") or {}).get("can_influence_allocation", item.get("data_ready"))
@@ -448,6 +476,7 @@ def _with_calibrated_strategy_confidence(
             row["calibration_reason_codes"] = confidence_row.get("calibration_reason_codes") or []
         calibrated_results.append(row)
     out["strategy_results"] = calibrated_results
+    out["strategy_diversity"] = build_strategy_diversity_summary(calibrated_results)
     return out
 
 

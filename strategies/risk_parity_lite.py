@@ -19,6 +19,7 @@ class RiskParityLite(Strategy):
     required_fields = ("hist_vol_20d",)
     optional_fields = ("atr_pct", "daily_return_pct")
     family = "risk_budgeting"
+    alpha_source = False
     core_idea = "Allocates more weight to lower-volatility ETFs to create a simple volatility-budgeted benchmark."
     best_regimes = ("uncertain", "mixed_rotation", "risk_management_focus")
     bad_regimes = ("strong_single-theme_trend", "volatility_regime_break")

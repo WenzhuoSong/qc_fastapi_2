@@ -36,6 +36,7 @@ from db.models import (
     CommandLifecycleEvent,
     CronRunLog,
     ExecutionLog,
+    PerformanceAttribution,
     QCSnapshot,
     SystemConfig,
 )
@@ -102,6 +103,8 @@ async def build_dashboard_summary() -> dict[str, Any]:
         latest_analysis.get("strategy_evidence") or {}
     )
     live_signal_conviction = await _live_signal_conviction_dashboard()
+    performance_attribution = await _performance_attribution_dashboard()
+    portfolio_risk_diagnostic = latest_analysis.get("portfolio_risk_diagnostic") or {}
     cron_runs = await _latest_cron_runs()
     data_quality_audit = await _data_quality_audit_trend()
     execution = await _latest_execution()
@@ -115,6 +118,8 @@ async def build_dashboard_summary() -> dict[str, Any]:
         "portfolio_construction_readiness": pc_readiness,
         "strategy_evidence": strategy_evidence,
         "live_signal_conviction": live_signal_conviction,
+        "performance_attribution": performance_attribution,
+        "portfolio_risk_diagnostic": portfolio_risk_diagnostic,
         "cron_runs": cron_runs,
         "data_quality_audit": data_quality_audit,
         "execution": execution,
@@ -183,6 +188,12 @@ async def _latest_analysis() -> dict[str, Any]:
         ),
         "final_validation": _compact_final_validation(
             (risk.get("final_validation") if isinstance(risk, dict) else None) or {}
+        ),
+        "transaction_cost_gate": _compact_transaction_cost_gate(
+            (risk.get("transaction_cost_gate") if isinstance(risk, dict) else None) or {}
+        ),
+        "portfolio_risk_diagnostic": _compact_portfolio_risk_diagnostic(
+            (risk.get("portfolio_risk_diagnostic") if isinstance(risk, dict) else None) or {}
         ),
         "account_state_guard": _compact_account_state_guard(
             (risk.get("account_state_guard") if isinstance(risk, dict) else None) or {}
@@ -489,6 +500,55 @@ async def _live_signal_conviction_dashboard() -> dict[str, Any]:
         }
 
 
+async def _performance_attribution_dashboard(limit: int = 12) -> dict[str, Any]:
+    """Load read-only beta/factor/residual attribution rows."""
+    limit = max(min(int(limit or 12), 52), 1)
+    try:
+        async with AsyncSessionLocal() as db:
+            rows = (
+                await db.execute(
+                    select(PerformanceAttribution)
+                    .order_by(desc(PerformanceAttribution.period_end), desc(PerformanceAttribution.id))
+                    .limit(limit)
+                )
+            ).scalars().all()
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"{type(exc).__name__}: {exc}",
+            "latest": {},
+            "return_breakdown_rows": [],
+            "recent_rows": [],
+            "status_rows": [],
+        }
+
+    if not rows:
+        return {
+            "available": False,
+            "reason": "no performance attribution rows",
+            "latest": {},
+            "return_breakdown_rows": [],
+            "recent_rows": [],
+            "status_rows": [],
+        }
+
+    compact_rows = [_compact_performance_attribution_row(row) for row in rows]
+    latest = compact_rows[0]
+    return {
+        "available": True,
+        "latest": latest,
+        "return_breakdown_rows": _performance_attribution_breakdown_rows(latest),
+        "recent_rows": compact_rows,
+        "status_rows": _count_rows(compact_rows, "status", label="status"),
+        "residual_contract": {
+            "label": "residual_alpha_candidate",
+            "meaning": "unexplained return candidate after SPY, QQQ, and momentum proxy",
+            "not_proven_alpha": True,
+            "execution_authority": "none",
+        },
+    }
+
+
 async def _dashboard_config() -> dict[str, Any]:
     async with AsyncSessionLocal() as db:
         playground = (
@@ -680,6 +740,11 @@ def _compact_portfolio_construction_payload(payload: dict[str, Any]) -> dict[str
         objective = diagnostics.get("objective") if isinstance(diagnostics.get("objective"), dict) else {}
     turnover = payload.get("turnover") if isinstance(payload.get("turnover"), dict) else {}
     target_weights = payload.get("target_weights") if isinstance(payload.get("target_weights"), dict) else {}
+    signal_metrics = (
+        payload.get("signal_objective_metrics")
+        if isinstance(payload.get("signal_objective_metrics"), dict)
+        else {}
+    )
     return {
         "available": True,
         "portfolio_construction_mode": payload.get("portfolio_construction_mode") or diagnostics.get("runtime_mode"),
@@ -696,6 +761,14 @@ def _compact_portfolio_construction_payload(payload: dict[str, Any]) -> dict[str
         "effective_n_before": payload.get("effective_n_before"),
         "effective_n_after": payload.get("effective_n_after") or payload.get("effective_n"),
         "effective_n_delta": _number_delta(payload.get("effective_n_after") or payload.get("effective_n"), payload.get("effective_n_before")),
+        "signal_weighted_effective_n_before": payload.get("signal_weighted_effective_n_before"),
+        "signal_weighted_effective_n_after": payload.get("signal_weighted_effective_n_after"),
+        "signal_weighted_effective_n_delta": _number_delta(payload.get("signal_weighted_effective_n_after"), payload.get("signal_weighted_effective_n_before")),
+        "signal_alignment_score_before": payload.get("signal_alignment_score_before"),
+        "signal_alignment_score_after": payload.get("signal_alignment_score_after"),
+        "signal_alignment_score_delta": _number_delta(payload.get("signal_alignment_score_after"), payload.get("signal_alignment_score_before")),
+        "signal_objective_metrics": signal_metrics,
+        "signal_objective_warnings": signal_metrics.get("warnings") or diagnostics.get("signal_objective_warnings") or [],
         "turnover": turnover,
         "turnover_budget": turnover.get("budget") if turnover else objective.get("turnover_budget"),
         "turnover_estimated": turnover.get("estimated"),
@@ -716,6 +789,7 @@ def _compact_portfolio_construction_payload(payload: dict[str, Any]) -> dict[str
             payload.get("basket_exposure_after") or {},
         ),
         "target_weight_rows": _weight_rows(target_weights),
+        "signal_objective_rows": payload.get("signal_objective_rows") or [],
     }
 
 
@@ -773,6 +847,13 @@ def _portfolio_construction_objective_status(
             "effective_n_before": payload.get("effective_n_before"),
             "effective_n_after": payload.get("effective_n_after"),
             "effective_n_delta": payload.get("effective_n_delta"),
+            "signal_weighted_effective_n_before": payload.get("signal_weighted_effective_n_before"),
+            "signal_weighted_effective_n_after": payload.get("signal_weighted_effective_n_after"),
+            "signal_weighted_effective_n_delta": payload.get("signal_weighted_effective_n_delta"),
+            "signal_alignment_score_before": payload.get("signal_alignment_score_before"),
+            "signal_alignment_score_after": payload.get("signal_alignment_score_after"),
+            "signal_alignment_score_delta": payload.get("signal_alignment_score_delta"),
+            "signal_objective_warnings": payload.get("signal_objective_warnings") or [],
             "turnover_budget": payload.get("turnover_budget"),
             "turnover_before_budget": payload.get("turnover_before_budget"),
             "turnover_estimated": payload.get("turnover_estimated"),
@@ -795,6 +876,7 @@ def _portfolio_construction_objective_status(
         "factor_exposure_rows": payload.get("factor_exposure_rows") or [],
         "basket_exposure_rows": payload.get("basket_exposure_rows") or [],
         "target_weight_rows": payload.get("target_weight_rows") or [],
+        "signal_objective_rows": payload.get("signal_objective_rows") or [],
         "weight_change_reasons": _pc_weight_change_rows(ledger_rows),
     }
 
@@ -900,6 +982,11 @@ def _compact_strategy_evidence(strategies: dict[str, Any]) -> dict[str, Any]:
         row for row in (strategies.get("strategy_results") or [])
         if isinstance(row, dict)
     ]
+    strategy_diversity = (
+        strategies.get("strategy_diversity")
+        if isinstance(strategies.get("strategy_diversity"), dict)
+        else {}
+    )
     card_rows: list[dict[str, Any]] = []
     strategy_rows: list[dict[str, Any]] = []
     for row in strategy_results:
@@ -913,6 +1000,9 @@ def _compact_strategy_evidence(strategies: dict[str, Any]) -> dict[str, Any]:
         summary = row.get("evidence_summary") if isinstance(row.get("evidence_summary"), dict) else {}
         strategy_rows.append({
             "strategy": strategy_name,
+            "raw_family": row.get("raw_family"),
+            "canonical_family": row.get("canonical_family"),
+            "alpha_source": row.get("alpha_source"),
             "data_ready": row.get("data_ready"),
             "can_influence_allocation": row.get("can_influence_allocation"),
             "suggested_use": row.get("suggested_use"),
@@ -941,6 +1031,9 @@ def _compact_strategy_evidence(strategies: dict[str, Any]) -> dict[str, Any]:
         "strategy_count": len(strategy_rows),
         "card_count": len(card_rows),
         "evidence_summary": summary,
+        "strategy_diversity": strategy_diversity,
+        "diversity_family_rows": strategy_diversity.get("family_rows") or [],
+        "diversity_strategy_rows": strategy_diversity.get("strategy_rows") or [],
         "strategy_rows": strategy_rows,
         "evidence_card_rows": card_rows,
         "mapping_warning_rows": _evidence_mapping_warning_rows(card_rows),
@@ -1133,6 +1226,8 @@ def _compact_live_signal_conviction_summary(raw: dict[str, Any]) -> dict[str, An
         "historical_prior_profiles": _conviction_profile_display_rows(raw.get("historical_prior_profiles") or []),
         "live_paper_profiles": _conviction_profile_display_rows(raw.get("live_paper_profiles") or []),
         "combined_profiles": _conviction_profile_display_rows(raw.get("combined_profiles") or []),
+        "regime_level_profiles": _conviction_profile_display_rows(raw.get("regime_level_profiles") or []),
+        "regime_summary_rows": _regime_summary_display_rows(raw.get("regime_summary_rows") or []),
         "profile_count_rows": _dict_count_rows(raw.get("profile_counts") or {}, label="source_bucket"),
         "status_count_rows": _dict_count_rows(raw.get("status_counts") or {}, label="status"),
         "display_contract": {
@@ -1182,11 +1277,143 @@ def _conviction_profile_display_rows(rows: list[dict[str, Any]]) -> list[dict[st
     return out
 
 
+def _regime_summary_display_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        out.append({
+            "regime_at_signal": row.get("regime_at_signal"),
+            "source_bucket": row.get("source_bucket"),
+            "profile_count": row.get("profile_count"),
+            "total_n": row.get("total_n"),
+            "calibrated_profiles": row.get("calibrated_profiles"),
+            "early_profiles": row.get("early_profiles"),
+            "insufficient_profiles": row.get("insufficient_profiles"),
+            "hit_rate": row.get("hit_rate"),
+            "avg_excess_vs_spy": row.get("avg_excess_vs_spy"),
+            "ic": row.get("ic"),
+            "data_lag_filtered": row.get("data_lag_filtered"),
+        })
+    return out
+
+
 def _dict_count_rows(counts: dict[str, Any], *, label: str) -> list[dict[str, Any]]:
     return [
         {label: key, "count": value}
         for key, value in sorted(counts.items())
     ]
+
+
+def _compact_performance_attribution_row(row: Any) -> dict[str, Any]:
+    source_tickers = row.source_tickers if isinstance(row.source_tickers, dict) else {}
+    diagnostics = row.diagnostics if isinstance(row.diagnostics, dict) else {}
+    return {
+        "period_key": row.period_key,
+        "period_start": _iso(row.period_start),
+        "period_end": _iso(row.period_end),
+        "generated_at": _iso(row.generated_at),
+        "status": row.status,
+        "attribution_method": row.attribution_method,
+        "portfolio_return": _json_safe_number(row.portfolio_return),
+        "arithmetic_portfolio_return": _json_safe_number(row.arithmetic_portfolio_return),
+        "spy_beta": _json_safe_number(row.spy_beta),
+        "spy_beta_contribution": _json_safe_number(row.spy_beta_contribution),
+        "qqq_beta": _json_safe_number(row.qqq_beta),
+        "qqq_beta_contribution": _json_safe_number(row.qqq_beta_contribution),
+        "momentum_beta": _json_safe_number(row.momentum_beta),
+        "momentum_factor_contribution": _json_safe_number(row.momentum_factor_contribution),
+        "intercept_contribution": _json_safe_number(row.intercept_contribution),
+        "residual_alpha_candidate": _json_safe_number(row.residual_alpha_candidate),
+        "r_squared": _json_safe_number(row.r_squared),
+        "sample_count": row.sample_count,
+        "data_quality": row.data_quality,
+        "benchmark_source": row.benchmark_source,
+        "source_tickers": source_tickers,
+        "momentum_proxy": source_tickers.get("momentum") or diagnostics.get("momentum_proxy"),
+        "residual_label": diagnostics.get("residual_label"),
+        "content_hash": row.content_hash,
+    }
+
+
+def _performance_attribution_breakdown_rows(latest: dict[str, Any]) -> list[dict[str, Any]]:
+    source_tickers = latest.get("source_tickers") if isinstance(latest.get("source_tickers"), dict) else {}
+    return [
+        {
+            "component": "SPY beta",
+            "source": source_tickers.get("spy") or "SPY",
+            "beta": latest.get("spy_beta"),
+            "contribution": latest.get("spy_beta_contribution"),
+        },
+        {
+            "component": "QQQ / growth beta",
+            "source": source_tickers.get("qqq") or "QQQ",
+            "beta": latest.get("qqq_beta"),
+            "contribution": latest.get("qqq_beta_contribution"),
+        },
+        {
+            "component": "momentum proxy",
+            "source": source_tickers.get("momentum") or latest.get("momentum_proxy"),
+            "beta": latest.get("momentum_beta"),
+            "contribution": latest.get("momentum_factor_contribution"),
+        },
+        {
+            "component": "residual alpha candidate",
+            "source": "regression residual",
+            "beta": None,
+            "contribution": latest.get("residual_alpha_candidate"),
+        },
+    ]
+
+
+def _compact_transaction_cost_gate(gate: dict[str, Any]) -> dict[str, Any]:
+    if not gate:
+        return {}
+    rows = [
+        row for row in (gate.get("rows") or [])
+        if isinstance(row, dict)
+    ]
+    summary = gate.get("summary") if isinstance(gate.get("summary"), dict) else {}
+    config = gate.get("config") if isinstance(gate.get("config"), dict) else {}
+    return {
+        "mode": gate.get("mode"),
+        "broker": gate.get("broker"),
+        "status": gate.get("status"),
+        "execution_effect": gate.get("execution_effect"),
+        "summary": summary,
+        "warnings": gate.get("warnings") or [],
+        "config": {
+            "mode": config.get("mode"),
+            "broker": config.get("broker"),
+            "min_edge_to_cost_ratio": config.get("min_edge_to_cost_ratio"),
+            "warn_on_buys_only": config.get("warn_on_buys_only"),
+        },
+        "rows": rows,
+    }
+
+
+def _compact_portfolio_risk_diagnostic(diagnostic: dict[str, Any]) -> dict[str, Any]:
+    if not diagnostic:
+        return {"available": False, "reason": "portfolio risk diagnostic unavailable"}
+    return {
+        "available": True,
+        "contract_version": diagnostic.get("contract_version"),
+        "status": diagnostic.get("status"),
+        "mode": diagnostic.get("mode"),
+        "execution_authority": diagnostic.get("execution_authority"),
+        "target_weight_mutation": diagnostic.get("target_weight_mutation"),
+        "confidence_level": diagnostic.get("confidence_level"),
+        "lookback_days": diagnostic.get("lookback_days"),
+        "source": diagnostic.get("source"),
+        "data_quality": diagnostic.get("data_quality"),
+        "summary": diagnostic.get("summary") or {},
+        "target_historical": diagnostic.get("target_historical") or {},
+        "current_historical": diagnostic.get("current_historical") or {},
+        "target_scenarios": diagnostic.get("target_scenarios") or [],
+        "current_scenarios": diagnostic.get("current_scenarios") or [],
+        "warnings": diagnostic.get("warnings") or [],
+        "error": diagnostic.get("error"),
+    }
 
 
 def _compact_final_validation(validation: dict[str, Any]) -> dict[str, Any]:
@@ -1490,6 +1717,16 @@ def render_dashboard(summary: dict[str, Any]) -> str:
     </section>
 
     <section>
+      <h2>Performance Attribution</h2>
+      {_render_performance_attribution(summary.get("performance_attribution") or {})}
+    </section>
+
+    <section>
+      <h2>Portfolio Risk Diagnostic</h2>
+      {_render_portfolio_risk_diagnostic(summary.get("portfolio_risk_diagnostic") or {})}
+    </section>
+
+    <section>
       <h2>Portfolio Construction Readiness</h2>
       {_render_kv(pc_readiness)}
     </section>
@@ -1550,6 +1787,8 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
     pc_eval = latest.get("portfolio_construction_evaluation") or {}
     pc_gate = latest.get("portfolio_construction_promotion_gate") or {}
     final_validation = latest.get("final_validation") or {}
+    transaction_cost_gate = latest.get("transaction_cost_gate") or {}
+    portfolio_risk = latest.get("portfolio_risk_diagnostic") or {}
     thesis = (governance.get("thesis_status_summary") or {}).get("problem_tickers") or []
     hints = governance.get("manual_action_hints") or []
     return f"""
@@ -1562,6 +1801,9 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
       <h3>Portfolio Construction Evaluation</h3>{_render_kv(pc_eval)}
       <h3>Portfolio Construction Promotion Gate</h3>{_render_kv(pc_gate)}
       <h3>Final Risk Validation</h3>{_render_kv(final_validation)}
+      <h3>Transaction Cost Gate</h3>{_render_kv(transaction_cost_gate, keys=["mode", "broker", "status", "execution_effect", "summary", "warnings"])}
+      <h3>Transaction Cost Rows</h3>{_render_table(transaction_cost_gate.get("rows") or [], ["ticker", "trade_action", "asset_cost_bucket", "abs_delta", "estimated_cost_rate", "cost_drag", "confidence", "conviction_status", "conviction_discount", "expected_edge", "edge_to_cost_ratio", "verdict", "reason"])}
+      <h3>Portfolio Risk Diagnostic</h3>{_render_kv(portfolio_risk, keys=["status", "mode", "execution_authority", "data_quality", "summary", "warnings"])}
       <h3>Manual Review Hints</h3>{_render_table(hints, ["ticker", "suggested_action", "current_weight", "suggested_target", "delta"])}
       <h3>Thesis Problems</h3>{_render_table(thesis, ["ticker", "status", "validator"])}
       <h3>Position Explanations</h3>{_render_table(governance.get("position_explanations") or [], ["ticker", "position_state", "decision", "current_weight", "target_after", "unrealized_pnl_pct", "risk_budget_status", "strategy_support", "action_permission", "strategy_intent", "llm_effect", "construction_effect", "risk_governance_effect", "final_explanation", "why_hold", "why_not_add", "why_not_exit", "next_trigger"])}
@@ -1596,6 +1838,7 @@ def _render_portfolio_construction_objective(pc: dict[str, Any]) -> str:
       <h3>Violations</h3>{_render_list("", pc.get("violations") or [])}
       <h3>Factor Exposure Before / After</h3>{_render_table(pc.get("factor_exposure_rows") or [], ["factor", "before", "after", "delta"])}
       <h3>Basket Exposure Before / After</h3>{_render_table(pc.get("basket_exposure_rows") or [], ["basket", "before", "after", "delta", "limit", "reduced_limit", "violated"])}
+      <h3>Signal-Weighted Objective Rows</h3>{_render_table(pc.get("signal_objective_rows") or [], ["ticker", "signal_strength", "weight_before", "weight_after", "weight_delta", "signal_weighted_before", "signal_weighted_after", "has_signal"])}
       <h3>Target Weights</h3>{_render_table(pc.get("target_weight_rows") or [], ["ticker", "target_weight"])}
       <h3>Weight Change Reasons</h3>{_render_table(pc.get("weight_change_reasons") or [], ["ticker", "portfolio_construction_target", "target_builder_target", "final_target", "changed_by", "construction_effect", "risk_governance_effect", "final_explanation"])}
     """
@@ -1619,13 +1862,25 @@ def _render_strategy_evidence(evidence: dict[str, Any]) -> str:
         "execution_authority": "none",
         "conviction_is_shadow_only": True,
     }
+    diversity = evidence.get("strategy_diversity") or {}
+    diversity_note = {
+        "contract_version": diversity.get("contract_version"),
+        "independent_alpha_family_count": diversity.get("independent_alpha_family_count"),
+        "actionable_alpha_families": diversity.get("actionable_alpha_families") or [],
+        "same_family_not_independent": diversity.get("same_family_not_independent"),
+        "warnings": diversity.get("warnings") or [],
+        "execution_authority": diversity.get("execution_authority"),
+    }
     return f"""
       <div class="grid">
         <article class="card"><h3>Overview</h3>{_render_kv(overview)}</article>
         <article class="card"><h3>Evidence Summary</h3>{_render_kv(summary)}</article>
         <article class="card"><h3>Conviction Display Contract</h3>{_render_kv(conviction_note)}</article>
+        <article class="card"><h3>Strategy Diversity</h3>{_render_kv(diversity_note)}</article>
       </div>
-      <h3>Strategies</h3>{_render_table(evidence.get("strategy_rows") or [], ["strategy", "data_ready", "can_influence_allocation", "suggested_use", "confidence_score", "selected_tickers", "evidence_contract_version", "cards_generated", "missing_mapping_count", "fallback_count", "actions", "conviction_statuses", "reason_codes", "walk_forward_level", "walk_forward_pass_rate", "turnover"])}
+      <h3>Strategies</h3>{_render_table(evidence.get("strategy_rows") or [], ["strategy", "raw_family", "canonical_family", "alpha_source", "data_ready", "can_influence_allocation", "suggested_use", "confidence_score", "selected_tickers", "evidence_contract_version", "cards_generated", "missing_mapping_count", "fallback_count", "actions", "conviction_statuses", "reason_codes", "walk_forward_level", "walk_forward_pass_rate", "turnover"])}
+      <h3>Strategy Family Rows</h3>{_render_table(evidence.get("diversity_family_rows") or [], ["family", "strategy_count", "alpha_source_strategy_count", "actionable_strategy_count", "actionable_alpha_strategy_count", "independent_alpha_counted", "strategy_names", "actionable_alpha_strategy_names", "suggested_uses"])}
+      <h3>Strategy Diversity Rows</h3>{_render_table(evidence.get("diversity_strategy_rows") or [], ["strategy_name", "raw_family", "canonical_family", "alpha_source", "suggested_use", "actionable", "confidence_score", "data_ready", "can_influence_allocation"])}
       <h3>EvidenceCards</h3>{_render_table(evidence.get("evidence_card_rows") or [], ["strategy", "ticker", "role", "action", "signal_type", "horizon", "confidence", "conviction_display", "conviction_status", "conviction_source_bucket", "conviction_n", "effective_confidence", "raw_score", "normalized_score", "max_reasonable_weight", "risk_budget_cost", "branch", "reason", "mapping_role", "weight_formula", "base_cap", "max_weight_multiplier", "effective_confidence_rule", "conviction_shadow_only"])}
       <h3>Mapping And Safety Warnings</h3>{_render_table(evidence.get("mapping_warning_rows") or [], ["strategy", "ticker", "role", "action", "reason", "missing_safety_fields", "allowed_actions", "conviction_status", "conviction_n"])}
       <h3>Role / Action Summary</h3>{_render_table(evidence.get("role_action_rows") or [], ["role", "action", "count", "avg_confidence", "max_reasonable_weight_max", "tickers"])}
@@ -1666,9 +1921,55 @@ def _render_live_signal_conviction(conviction: dict[str, Any]) -> str:
       <h3>Pending Outcomes By Horizon</h3>{_render_table(conviction.get("pending_by_horizon_rows") or [], ["horizon_days", "missing", "mature"])}
       <h3>Profile Counts</h3>{_render_table(conviction.get("profile_count_rows") or [], ["source_bucket", "count"])}
       <h3>Conviction Status Counts</h3>{_render_table(conviction.get("status_count_rows") or [], ["status", "count"])}
+      <h3>Regime-Level Conviction Summary</h3>{_render_table(conviction.get("regime_summary_rows") or [], ["regime_at_signal", "source_bucket", "profile_count", "total_n", "calibrated_profiles", "early_profiles", "insufficient_profiles", "hit_rate", "avg_excess_vs_spy", "ic", "data_lag_filtered"])}
+      <h3>Regime-Level Conviction Profiles</h3>{_render_table(conviction.get("regime_level_profiles") or [], profile_columns)}
       <h3>Historical Prior Profiles</h3>{_render_table(conviction.get("historical_prior_profiles") or [], profile_columns)}
       <h3>Live Paper Profiles</h3>{_render_table(conviction.get("live_paper_profiles") or [], profile_columns)}
       <h3>Combined Profiles</h3>{_render_table(conviction.get("combined_profiles") or [], profile_columns)}
+    """
+
+
+def _render_performance_attribution(attribution: dict[str, Any]) -> str:
+    if not attribution.get("available"):
+        reason = attribution.get("reason") or "No performance attribution rows available."
+        return f"<p class=\"muted\">{escape(str(reason))}</p>"
+    latest = attribution.get("latest") or {}
+    return f"""
+      <div class="grid">
+        <article class="card"><h3>Latest Attribution</h3>{_render_kv(latest, keys=["period_key", "status", "portfolio_return", "arithmetic_portfolio_return", "residual_alpha_candidate", "r_squared", "sample_count", "data_quality"])}</article>
+        <article class="card"><h3>Factor Model</h3>{_render_kv(latest, keys=["attribution_method", "benchmark_source", "momentum_proxy", "source_tickers"])}</article>
+        <article class="card"><h3>Residual Contract</h3>{_render_kv(attribution.get("residual_contract") or {})}</article>
+      </div>
+      <h3>Return Breakdown</h3>{_render_table(attribution.get("return_breakdown_rows") or [], ["component", "source", "beta", "contribution"])}
+      <h3>Recent Attribution Runs</h3>{_render_table(attribution.get("recent_rows") or [], ["period_key", "period_start", "period_end", "status", "portfolio_return", "spy_beta_contribution", "qqq_beta_contribution", "momentum_factor_contribution", "residual_alpha_candidate", "r_squared", "sample_count", "data_quality"])}
+      <h3>Status Counts</h3>{_render_table(attribution.get("status_rows") or [], ["status", "count"])}
+    """
+
+
+def _render_portfolio_risk_diagnostic(diagnostic: dict[str, Any]) -> str:
+    if not diagnostic.get("available"):
+        reason = diagnostic.get("reason") or "No portfolio risk diagnostic available."
+        return f"<p class=\"muted\">{escape(str(reason))}</p>"
+    overview = {
+        "status": diagnostic.get("status"),
+        "mode": diagnostic.get("mode"),
+        "execution_authority": diagnostic.get("execution_authority"),
+        "target_weight_mutation": diagnostic.get("target_weight_mutation"),
+        "confidence_level": diagnostic.get("confidence_level"),
+        "lookback_days": diagnostic.get("lookback_days"),
+        "source": diagnostic.get("source"),
+        "data_quality": diagnostic.get("data_quality"),
+    }
+    return f"""
+      <div class="grid">
+        <article class="card"><h3>Overview</h3>{_render_kv(overview)}</article>
+        <article class="card"><h3>Summary</h3>{_render_kv(diagnostic.get("summary") or {})}</article>
+        <article class="card"><h3>Target Historical VaR / CVaR</h3>{_render_kv(diagnostic.get("target_historical") or {})}</article>
+        <article class="card"><h3>Current Historical VaR / CVaR</h3>{_render_kv(diagnostic.get("current_historical") or {})}</article>
+      </div>
+      <h3>Target Scenario Losses</h3>{_render_table(diagnostic.get("target_scenarios") or [], ["scenario", "portfolio_return", "estimated_loss", "description", "shock_returns"])}
+      <h3>Current Scenario Losses</h3>{_render_table(diagnostic.get("current_scenarios") or [], ["scenario", "portfolio_return", "estimated_loss", "description", "shock_returns"])}
+      <h3>Warnings</h3>{_render_list("", diagnostic.get("warnings") or [])}
     """
 
 

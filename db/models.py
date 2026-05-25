@@ -253,6 +253,40 @@ class StrategyConvictionProfile(Base):
     created_at      = Column(DateTime, nullable=False, default=func.now())
 
 
+class PerformanceAttribution(Base):
+    __tablename__ = "performance_attribution"
+    __table_args__ = (
+        UniqueConstraint("period_key", name="uq_performance_attribution_period_key"),
+    )
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    period_key      = Column(String(80), nullable=False, index=True)
+    period_start    = Column(Date, nullable=False, index=True)
+    period_end      = Column(Date, nullable=False, index=True)
+    generated_at    = Column(DateTime, nullable=False, default=func.now())
+    status          = Column(String(40), nullable=False)
+    attribution_method = Column(String(80), nullable=False)
+    portfolio_return = Column(Float)
+    arithmetic_portfolio_return = Column(Float)
+    spy_beta        = Column(Float)
+    spy_beta_contribution = Column(Float)
+    qqq_beta        = Column(Float)
+    qqq_beta_contribution = Column(Float)
+    momentum_beta   = Column(Float)
+    momentum_factor_contribution = Column(Float)
+    intercept_contribution = Column(Float)
+    residual_alpha_candidate = Column(Float)
+    r_squared       = Column(Float)
+    sample_count    = Column(Integer, nullable=False, default=0)
+    data_quality    = Column(String(40), nullable=False)
+    benchmark_source = Column(String(40), nullable=False)
+    source_tickers  = Column(JSONB)
+    diagnostics     = Column(JSONB)
+    raw_payload     = Column(JSONB)
+    content_hash    = Column(String(64), nullable=False)
+    created_at      = Column(DateTime, nullable=False, default=func.now())
+
+
 class AlertLog(Base):
     __tablename__ = "alerts_log"
     id           = Column(BigInteger, primary_key=True, autoincrement=True)

@@ -1,5 +1,6 @@
 import unittest
 
+from services.strategy_diversity import CANONICAL_FAMILIES
 from strategies import STRATEGY_REGISTRY, get_strategy
 
 
@@ -93,9 +94,16 @@ class StrategyRegistryTest(unittest.TestCase):
             card = strategy.strategy_card()
             self.assertEqual(card["name"], strategy.name)
             self.assertTrue(card["family"])
+            self.assertIn(card["canonical_family"], CANONICAL_FAMILIES)
+            self.assertIsInstance(card["alpha_source"], bool)
             self.assertTrue(card["core_idea"])
             self.assertTrue(card["agent_guidance"])
             self.assertIsInstance(card["failure_modes"], list)
+
+    def test_benchmark_like_strategies_are_not_alpha_sources(self):
+        self.assertFalse(get_strategy("equal_weight_benchmark").strategy_card()["alpha_source"])
+        self.assertFalse(get_strategy("risk_parity_lite").strategy_card()["alpha_source"])
+        self.assertTrue(get_strategy("momentum_lite_v1").strategy_card()["alpha_source"])
 
     def test_registered_strategies_produce_normalized_weights_with_sample_data(self):
         context = {
