@@ -1,6 +1,7 @@
 import unittest
 from datetime import date, datetime, timedelta, timezone
 
+from services.construction_epoch import build_construction_epoch
 from services.historical_signal_replay import (
     SIGNAL_SOURCE_YFINANCE_REPLAY,
     FrozenSignal,
@@ -86,6 +87,7 @@ def _profile(
     avg_excess_vs_spy=0.006,
     ic=0.12,
     data_lag_filtered=3,
+    diagnostics=None,
 ):
     return ConvictionProfile(
         profile_id=f"profile-{source_bucket}-{ticker}-{regime_at_signal}",
@@ -117,7 +119,7 @@ def _profile(
             if source_bucket == SOURCE_BUCKET_COMBINED
             else {source_bucket: n}
         ),
-        diagnostics={"naked_number_guard": True},
+        diagnostics={"naked_number_guard": True, **dict(diagnostics or {})},
         created_at=datetime(2020, 1, 8, tzinfo=timezone.utc),
     )
 
@@ -147,6 +149,10 @@ class StrategyValidationDashboardTest(unittest.TestCase):
         combined = summary["combined_profiles"][0]
         self.assertEqual(combined["last_signal_date"], "2020-01-01")
         self.assertEqual(combined["source_counts"], {"historical_prior": 14})
+        self.assertEqual(combined["statistical_status"], "insufficient")
+        self.assertEqual(combined["construction_epoch_id"], "unknown")
+        self.assertIn("hit_rate_ci", combined)
+        self.assertGreater(combined["hit_rate_ci_width"], 0)
         self.assertEqual(summary["regime_level_profiles"][0]["regime_at_signal"], "trending_bull")
         self.assertIn("regime_summary_rows", summary)
         self.assertEqual(summary["regime_summary_rows"][0]["regime_at_signal"], "trending_bull")
@@ -212,11 +218,48 @@ class StrategyValidationDashboardTest(unittest.TestCase):
         self.assertEqual(bull["profile_count"], 1)
         self.assertEqual(bull["total_n"], 30)
         self.assertEqual(bull["calibrated_profiles"], 1)
+        self.assertEqual(bull["statistical_status_counts"], {"early_signal": 1})
         self.assertEqual(bull["hit_rate"], 0.60)
+        self.assertGreater(bull["hit_rate_ci_width"], 0)
         self.assertEqual(bull["avg_excess_vs_spy"], 0.010)
         self.assertEqual(bull["ic"], 0.20)
         self.assertEqual(defensive["insufficient_profiles"], 1)
+        self.assertEqual(defensive["statistical_status_counts"], {"insufficient": 1})
         self.assertEqual(defensive["data_lag_filtered"], 2)
+
+    def test_regime_summary_separates_construction_epochs(self):
+        shadow = build_construction_epoch(pc_mode="shadow", promotion_config_hash="same")
+        gated = build_construction_epoch(pc_mode="gated", promotion_config_hash="same")
+
+        summary = build_validation_dashboard_summary(
+            signals=[],
+            outcomes=[],
+            profiles=[
+                _profile(
+                    SOURCE_BUCKET_LIVE_PAPER,
+                    status="calibrated",
+                    n=30,
+                    diagnostics={"construction_epoch": shadow},
+                ),
+                _profile(
+                    SOURCE_BUCKET_LIVE_PAPER,
+                    status="calibrated",
+                    n=30,
+                    diagnostics={"construction_epoch": gated},
+                ),
+            ],
+            as_of_date=date(2020, 1, 8),
+            horizons=(5,),
+        )
+
+        rows = {
+            row["construction_epoch_id"]: row
+            for row in summary["regime_summary_rows"]
+        }
+
+        self.assertEqual(set(rows), {shadow["epoch_id"], gated["epoch_id"]})
+        self.assertEqual(rows[shadow["epoch_id"]]["pc_mode"], "shadow")
+        self.assertEqual(rows[gated["epoch_id"]]["pc_mode"], "gated")
 
 
 if __name__ == "__main__":

@@ -13,6 +13,8 @@ from typing import Any
 from services.knowledge_base import build_knowledge_context
 from services.knowledge_resolver import resolve_knowledge
 from services.news_evidence import build_news_evidence
+from services.etf_decay_diagnostics import empty_etf_decay_diagnostics
+from services.liquidity_proxy_diagnostics import empty_liquidity_proxy_diagnostics
 from services.execution_gateway import build_execution_gateway
 from services.strategy_confidence_calibrator import calibrate_strategy_confidence
 from services.strategy_certification import certify_strategies
@@ -21,6 +23,7 @@ from services.strategy_diversity import (
     canonical_strategy_family,
     is_strategy_alpha_source,
 )
+from services.strategy_independence import empty_strategy_independence_summary
 
 
 DEFAULT_MAX_AGE_SECONDS = 1800
@@ -164,6 +167,9 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
             "consensus_top5": [],
             "strategy_results": [],
             "strategy_diversity": build_strategy_diversity_summary([]),
+            "strategy_independence": empty_strategy_independence_summary("no_recent_playground_result"),
+            "etf_decay_diagnostics": empty_etf_decay_diagnostics("no_recent_playground_result"),
+            "liquidity_proxy_diagnostics": empty_liquidity_proxy_diagnostics("no_recent_playground_result"),
             "turnover_warnings": [],
             "data_quality": "missing",
             "evidence_summary": {
@@ -185,6 +191,15 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
     historical_samples = _max_forward_samples(historical_metrics)
     strategy_results = _strategy_results(playground)
     strategy_diversity = build_strategy_diversity_summary(strategy_results)
+    strategy_independence = playground.get("strategy_independence") or empty_strategy_independence_summary(
+        "strategy_independence_missing_from_playground"
+    )
+    etf_decay_diagnostics = playground.get("etf_decay_diagnostics") or empty_etf_decay_diagnostics(
+        "etf_decay_diagnostics_missing_from_playground"
+    )
+    liquidity_proxy_diagnostics = playground.get("liquidity_proxy_diagnostics") or empty_liquidity_proxy_diagnostics(
+        "liquidity_proxy_diagnostics_missing_from_playground"
+    )
     max_turnover = max(
         [_to_float(item.get("turnover"), 0.0) for item in strategy_results] or [0.0]
     )
@@ -221,6 +236,9 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
         "evidence_summary": playground.get("evidence_summary") or {},
         "strategy_results": strategy_results,
         "strategy_diversity": strategy_diversity,
+        "strategy_independence": strategy_independence,
+        "etf_decay_diagnostics": etf_decay_diagnostics,
+        "liquidity_proxy_diagnostics": liquidity_proxy_diagnostics,
         "turnover_warnings": turnover_warnings,
         "data_quality": data_quality,
         "warnings": _unique([str(item) for item in warnings] + turnover_warnings),

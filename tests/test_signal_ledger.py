@@ -52,6 +52,8 @@ class SignalLedgerTest(unittest.TestCase):
         self.assertEqual(signal.diagnostics["source_bucket"], "live_paper")
         self.assertFalse(signal.diagnostics["signal_freeze"]["feature_date_known"])
         self.assertTrue(signal.diagnostics["qc_context"]["policy_version_match"])
+        self.assertEqual(signal.diagnostics["construction_epoch"]["pc_mode"], "unknown")
+        self.assertEqual(signal.diagnostics["construction_epoch"]["execution_authority"], "none")
 
     def test_freeze_live_cards_records_data_lag_when_feature_date_known(self):
         signals = freeze_evidence_cards_for_live(
@@ -60,10 +62,14 @@ class SignalLedgerTest(unittest.TestCase):
             generated_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
             feature_data_date=date(2026, 5, 23),
             regime_at_signal="trending_bull",
+            qc_context={"policy_version": "execution_policy_v1"},
+            portfolio_construction_config={"portfolio_construction_mode": "gated"},
         )
 
         self.assertEqual(signals[0].data_lag_days, 1)
         self.assertEqual(signals[0].feature_data_date, date(2026, 5, 23))
+        self.assertEqual(signals[0].diagnostics["construction_epoch"]["pc_mode"], "gated")
+        self.assertEqual(signals[0].diagnostics["construction_epoch"]["policy_version"], "execution_policy_v1")
 
     def test_write_plan_is_idempotent_for_same_signal_content(self):
         signal = freeze_evidence_cards_for_live(

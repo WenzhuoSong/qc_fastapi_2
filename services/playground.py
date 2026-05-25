@@ -25,6 +25,14 @@ from db.session import AsyncSessionLocal
 from services.feature_authority import authority_for_field, canonical_field_name
 from services.feature_provenance import summarize_feature_provenance
 from services.knowledge_base import build_knowledge_context
+from services.etf_decay_diagnostics import (
+    empty_etf_decay_diagnostics,
+    evaluate_etf_decay_diagnostics_from_snapshots,
+)
+from services.liquidity_proxy_diagnostics import (
+    empty_liquidity_proxy_diagnostics,
+    evaluate_liquidity_proxy_diagnostics_from_snapshots,
+)
 from services.macro_regime_builder import build_deterministic_macro_regime
 from services.quant_baseline import classify_market_regime
 from services.sector_rotation import detect_sector_rotation
@@ -34,6 +42,10 @@ from services.strategy_evidence import (
     summarize_evidence_cards,
 )
 from services.strategy_feature_contract import build_strategy_feature_contract
+from services.strategy_independence import (
+    build_strategy_independence_diagnostics_from_snapshots,
+    empty_strategy_independence_summary,
+)
 from services.strategy_validation_dashboard import load_validation_dashboard_summary
 from services.universe_policy import filter_tradable_research_rows
 from services.walk_forward_validation import validate_walk_forward
@@ -110,6 +122,9 @@ class PlaygroundBundle:
     walk_forward_validation: dict[str, Any] | None = None
     validation_summary: dict[str, Any] = field(default_factory=dict)
     macro_regime_context: dict[str, Any] = field(default_factory=dict)
+    strategy_independence: dict[str, Any] = field(default_factory=dict)
+    etf_decay_diagnostics: dict[str, Any] = field(default_factory=dict)
+    liquidity_proxy_diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -166,6 +181,9 @@ async def run_playground(
     historical_snapshots: list[dict[str, Any]] = []
     historical_metrics: dict[str, dict[str, Any]] = {}
     walk_forward_validation: dict[str, Any] = {}
+    strategy_independence: dict[str, Any] = empty_strategy_independence_summary("historical_replay_not_loaded")
+    etf_decay_diagnostics: dict[str, Any] = empty_etf_decay_diagnostics("historical_replay_not_loaded")
+    liquidity_proxy_diagnostics: dict[str, Any] = empty_liquidity_proxy_diagnostics("historical_replay_not_loaded")
     strategy_confidence: dict[str, dict[str, Any]] = {}
     data_gaps = list(enrichment.get("data_gaps", []))
     if include_historical:
@@ -173,6 +191,24 @@ async def run_playground(
             historical_snapshots = await _read_yfinance_feature_snapshots(days=420)
             historical_metrics = _compute_replay_metrics(historical_snapshots, names) if historical_snapshots else {}
             walk_forward_validation = _compute_walk_forward_validation(historical_snapshots, names) if historical_snapshots else {}
+            strategy_independence = (
+                build_strategy_independence_diagnostics_from_snapshots(
+                    snapshots=historical_snapshots,
+                    strategy_names=names,
+                )
+                if historical_snapshots
+                else empty_strategy_independence_summary("no_yfinance_historical_replay_rows")
+            )
+            etf_decay_diagnostics = (
+                evaluate_etf_decay_diagnostics_from_snapshots(historical_snapshots)
+                if historical_snapshots
+                else empty_etf_decay_diagnostics("no_yfinance_historical_replay_rows")
+            )
+            liquidity_proxy_diagnostics = (
+                evaluate_liquidity_proxy_diagnostics_from_snapshots(historical_snapshots)
+                if historical_snapshots
+                else empty_liquidity_proxy_diagnostics("no_yfinance_historical_replay_rows")
+            )
             data_gaps.extend(_detect_historical_data_gaps(historical_snapshots))
         except Exception as exc:
             logger.warning("[playground] historical replay for live bundle failed: %s", exc)
@@ -212,6 +248,9 @@ async def run_playground(
         data_gaps=list(dict.fromkeys(data_gaps)),
         walk_forward_validation=walk_forward_validation,
         macro_regime_context=macro_regime_context,
+        strategy_independence=strategy_independence,
+        etf_decay_diagnostics=etf_decay_diagnostics,
+        liquidity_proxy_diagnostics=liquidity_proxy_diagnostics,
     )
 
 
@@ -230,6 +269,12 @@ async def run_playground_analysis(
             bundle.historical_snapshot_count = len(historical_snapshots)
             bundle.historical_replay_metrics = _compute_replay_metrics(historical_snapshots, names)
             bundle.walk_forward_validation = _compute_walk_forward_validation(historical_snapshots, names)
+            bundle.strategy_independence = build_strategy_independence_diagnostics_from_snapshots(
+                snapshots=historical_snapshots,
+                strategy_names=names,
+            )
+            bundle.etf_decay_diagnostics = evaluate_etf_decay_diagnostics_from_snapshots(historical_snapshots)
+            bundle.liquidity_proxy_diagnostics = evaluate_liquidity_proxy_diagnostics_from_snapshots(historical_snapshots)
             bundle.strategy_confidence = _compute_strategy_confidence(
                 bundle.strategies,
                 bundle.replay_metrics,
@@ -277,6 +322,9 @@ async def run_playground_analysis(
             data_gaps=["no QC snapshots available"],
             walk_forward_validation={},
             validation_summary=validation_summary,
+            strategy_independence=empty_strategy_independence_summary("no_yfinance_historical_replay_rows"),
+            etf_decay_diagnostics=empty_etf_decay_diagnostics("no_yfinance_historical_replay_rows"),
+            liquidity_proxy_diagnostics=empty_liquidity_proxy_diagnostics("no_yfinance_historical_replay_rows"),
         )
 
     latest_brief = _brief_from_snapshot(snapshots[-1])
@@ -286,6 +334,24 @@ async def run_playground_analysis(
     bundle.historical_snapshot_count = len(historical_snapshots)
     bundle.historical_replay_metrics = _compute_replay_metrics(historical_snapshots, names) if historical_snapshots else {}
     bundle.walk_forward_validation = _compute_walk_forward_validation(historical_snapshots, names) if historical_snapshots else {}
+    bundle.strategy_independence = (
+        build_strategy_independence_diagnostics_from_snapshots(
+            snapshots=historical_snapshots,
+            strategy_names=names,
+        )
+        if historical_snapshots
+        else empty_strategy_independence_summary("no_yfinance_historical_replay_rows")
+    )
+    bundle.etf_decay_diagnostics = (
+        evaluate_etf_decay_diagnostics_from_snapshots(historical_snapshots)
+        if historical_snapshots
+        else empty_etf_decay_diagnostics("no_yfinance_historical_replay_rows")
+    )
+    bundle.liquidity_proxy_diagnostics = (
+        evaluate_liquidity_proxy_diagnostics_from_snapshots(historical_snapshots)
+        if historical_snapshots
+        else empty_liquidity_proxy_diagnostics("no_yfinance_historical_replay_rows")
+    )
     bundle.strategy_confidence = _compute_strategy_confidence(
         bundle.strategies,
         bundle.replay_metrics,

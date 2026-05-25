@@ -107,6 +107,29 @@ class EvidenceBundleTest(unittest.TestCase):
                 },
                 "execution_authority": "none",
             },
+            "strategy_independence": {
+                "contract_version": "strategy_independence_diagnostics_v1",
+                "status": "available",
+                "effective_independent_alpha_count": 1.0,
+                "execution_authority": "none",
+                "target_weight_mutation": "none",
+            },
+            "etf_decay_diagnostics": {
+                "contract_version": "etf_decay_diagnostics_v1",
+                "status": "available",
+                "execution_authority": "none",
+                "target_weight_mutation": "none",
+                "rows": [{"ticker": "TQQQ", "severity": "high"}],
+                "high_decay_tickers": [{"ticker": "TQQQ", "severity": "high"}],
+            },
+            "liquidity_proxy_diagnostics": {
+                "contract_version": "liquidity_proxy_diagnostics_v1",
+                "status": "available",
+                "execution_authority": "none",
+                "target_weight_mutation": "none",
+                "rows": [{"ticker": "SPY", "liquidity_bucket": "highly_liquid"}],
+                "low_liquidity_tickers": [],
+            },
         }
 
         bundle = build_evidence_bundle(
@@ -166,6 +189,30 @@ class EvidenceBundleTest(unittest.TestCase):
         self.assertEqual(
             bundle["strategies"]["strategy_diversity"]["actionable_alpha_families"],
             ["momentum"],
+        )
+        self.assertEqual(
+            bundle["strategies"]["strategy_independence"]["contract_version"],
+            "strategy_independence_diagnostics_v1",
+        )
+        self.assertEqual(
+            bundle["strategies"]["strategy_independence"]["execution_authority"],
+            "none",
+        )
+        self.assertEqual(
+            bundle["strategies"]["etf_decay_diagnostics"]["contract_version"],
+            "etf_decay_diagnostics_v1",
+        )
+        self.assertEqual(
+            bundle["strategies"]["etf_decay_diagnostics"]["execution_authority"],
+            "none",
+        )
+        self.assertEqual(
+            bundle["strategies"]["liquidity_proxy_diagnostics"]["contract_version"],
+            "liquidity_proxy_diagnostics_v1",
+        )
+        self.assertEqual(
+            bundle["strategies"]["liquidity_proxy_diagnostics"]["execution_authority"],
+            "none",
         )
         self.assertEqual(bundle["strategies"]["strategy_use_summary"]["actionable_count"], 1)
         self.assertEqual(bundle["strategies"]["evidence_summary"]["historical_evidence"], "strong")
@@ -321,6 +368,10 @@ class EvidenceBundleTest(unittest.TestCase):
         self.assertIn("No recent Playground result available", strategies["warnings"][0])
         self.assertEqual(bundle["data_quality"]["overall"], "missing")
         self.assertEqual(bundle["news_evidence"]["macro_news_score"]["data_quality"], "limited")
+        self.assertEqual(
+            strategies["liquidity_proxy_diagnostics"]["contract_version"],
+            "liquidity_proxy_diagnostics_v1",
+        )
 
     def test_accepts_prebuilt_news_evidence(self):
         prebuilt_news = {

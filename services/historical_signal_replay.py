@@ -12,6 +12,10 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from typing import Any, Iterable
 
+from services.construction_epoch import (
+    build_historical_replay_construction_epoch,
+    unknown_construction_epoch,
+)
 from services.knowledge_base import build_knowledge_context
 from services.strategy_evidence import EVIDENCE_CONTRACT_VERSION, build_evidence_cards
 from strategies import get_strategy
@@ -127,6 +131,7 @@ def replay_historical_signals(
 
     price_by_ticker = _price_index(rows)
     generated = generated_at or datetime.now(timezone.utc)
+    construction_epoch = build_historical_replay_construction_epoch()
     signals: list[FrozenSignal] = []
     outcomes: list[SignalOutcome] = []
     skipped: dict[str, int] = {}
@@ -187,6 +192,7 @@ def replay_historical_signals(
                     feature_authority="daily_research",
                     regime_at_signal=regime,
                     vix_at_signal=None,
+                    construction_epoch=construction_epoch,
                 )
                 signals.append(signal)
                 outcomes.extend(label_signal_outcomes(
@@ -240,6 +246,7 @@ def freeze_evidence_card(
     feature_authority: str,
     regime_at_signal: str,
     vix_at_signal: float | None,
+    construction_epoch: dict[str, Any] | None = None,
 ) -> FrozenSignal:
     ticker = str(card.get("ticker") or "").upper().strip()
     strategy_id = str(card.get("strategy") or "")
@@ -247,6 +254,10 @@ def freeze_evidence_card(
     action = str(card.get("action") or "watch")
     diagnostics = dict(card.get("diagnostics") or {})
     diagnostics.setdefault("source_bucket", "historical_prior")
+    diagnostics.setdefault(
+        "construction_epoch",
+        construction_epoch or unknown_construction_epoch(),
+    )
     data_lag_days = (signal_date - feature_data_date).days if feature_data_date is not None else None
     signal_id = _stable_id(
         "signal",

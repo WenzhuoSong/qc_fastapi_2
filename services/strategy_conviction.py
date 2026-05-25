@@ -13,6 +13,11 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from typing import Any, Iterable, NamedTuple
 
+from services.construction_epoch import (
+    construction_epoch_from_diagnostics,
+    construction_epoch_from_signal,
+    construction_epoch_id_from_profile,
+)
 from services.historical_signal_replay import (
     SIGNAL_SOURCE_YFINANCE_REPLAY,
     FrozenSignal,
@@ -32,6 +37,14 @@ STATUS_CALIBRATED = "calibrated"
 STATUS_HISTORICAL_REQUIRES_LIVE = "historical_prior_requires_live_confirmation"
 STATUS_EARLY_LIVE_CONFIRMATION = "early_live_confirmation"
 
+STAT_STATUS_INSUFFICIENT = "insufficient"
+STAT_STATUS_EARLY_SIGNAL = "early_signal"
+STAT_STATUS_INDICATIVE = "indicative"
+STAT_STATUS_STATISTICALLY_MEANINGFUL = "statistically_meaningful"
+STAT_INSUFFICIENT_SAMPLES = 30
+STAT_INDICATIVE_SAMPLES = 100
+STAT_MEANINGFUL_SAMPLES = 300
+
 MIN_SAMPLES = 10
 CALIBRATED_SAMPLES = 30
 MAX_DATA_LAG_DAYS = 1
@@ -48,8 +61,9 @@ class _ProfileKey(NamedTuple):
     regime_at_signal: str
     horizon_days: int
     source_bucket: str
+    construction_epoch_id: str
 
-    def without_source_bucket(self) -> tuple[str, str, str | None, str, str, int]:
+    def without_source_bucket(self) -> tuple[str, str, str | None, str, str, int, str]:
         return (
             self.strategy_id,
             self.ticker,
@@ -57,6 +71,7 @@ class _ProfileKey(NamedTuple):
             self.action,
             self.regime_at_signal,
             self.horizon_days,
+            self.construction_epoch_id,
         )
 
 
@@ -91,7 +106,17 @@ class ConvictionProfile:
     created_at: datetime
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        stats = statistical_interpretation(n=self.n, hit_rate=self.hit_rate)
+        diagnostics = data.get("diagnostics") if isinstance(data.get("diagnostics"), dict) else {}
+        data["statistical_status"] = diagnostics.get("statistical_status") or stats["statistical_status"]
+        data["hit_rate_ci"] = diagnostics.get("hit_rate_ci") or stats["hit_rate_ci"]
+        data["hit_rate_ci_width"] = diagnostics.get("hit_rate_ci_width", stats["hit_rate_ci_width"])
+        data["statistical_sample_thresholds"] = stats["sample_thresholds"]
+        epoch = construction_epoch_from_diagnostics(diagnostics)
+        data["construction_epoch"] = dict(epoch)
+        data["construction_epoch_id"] = epoch.get("epoch_id")
+        return data
 
 
 @dataclass(frozen=True)
@@ -238,6 +263,7 @@ def compute_conviction_profiles(
         item.regime_at_signal,
         item.horizon_days,
         item.source_bucket,
+        construction_epoch_id_from_profile(item),
     ))
     return ConvictionComputationResult(
         profiles=profiles,
@@ -264,6 +290,65 @@ def source_bucket_for_signal(signal: FrozenSignal) -> str | None:
     if bucket in {SOURCE_BUCKET_HISTORICAL_PRIOR, SOURCE_BUCKET_LIVE_PAPER}:
         return str(bucket)
     return None
+
+
+def statistical_status_for_samples(n: int) -> str:
+    """Statistical interpretation tier for conviction sample sizes."""
+    count = max(int(n or 0), 0)
+    if count < STAT_INSUFFICIENT_SAMPLES:
+        return STAT_STATUS_INSUFFICIENT
+    if count < STAT_INDICATIVE_SAMPLES:
+        return STAT_STATUS_EARLY_SIGNAL
+    if count < STAT_MEANINGFUL_SAMPLES:
+        return STAT_STATUS_INDICATIVE
+    return STAT_STATUS_STATISTICALLY_MEANINGFUL
+
+
+def wilson_hit_rate_interval(
+    *,
+    hit_rate: float | None,
+    n: int,
+    z: float = 1.96,
+) -> dict[str, Any] | None:
+    """Return a Wilson score interval for a hit-rate point estimate."""
+    count = max(int(n or 0), 0)
+    if hit_rate is None or count <= 0:
+        return None
+    p_hat = _clamp(float(hit_rate), 0.0, 1.0)
+    z2 = z * z
+    denom = 1.0 + z2 / count
+    center = (p_hat + z2 / (2.0 * count)) / denom
+    margin = (
+        z
+        * math.sqrt((p_hat * (1.0 - p_hat) / count) + (z2 / (4.0 * count * count)))
+        / denom
+    )
+    lower = _clamp(center - margin, 0.0, 1.0)
+    upper = _clamp(center + margin, 0.0, 1.0)
+    return {
+        "method": "wilson_score",
+        "confidence_level": 0.95 if abs(z - 1.96) < 1e-9 else None,
+        "n": count,
+        "point_estimate": round(p_hat, 4),
+        "lower": round(lower, 4),
+        "upper": round(upper, 4),
+        "width": round(upper - lower, 4),
+    }
+
+
+def statistical_interpretation(*, n: int, hit_rate: float | None) -> dict[str, Any]:
+    interval = wilson_hit_rate_interval(hit_rate=hit_rate, n=n)
+    return {
+        "statistical_status": statistical_status_for_samples(n),
+        "hit_rate_ci": interval,
+        "hit_rate_ci_width": interval.get("width") if interval else None,
+        "sample_thresholds": {
+            STAT_STATUS_INSUFFICIENT: f"<{STAT_INSUFFICIENT_SAMPLES}",
+            STAT_STATUS_EARLY_SIGNAL: f"{STAT_INSUFFICIENT_SAMPLES}-{STAT_INDICATIVE_SAMPLES - 1}",
+            STAT_STATUS_INDICATIVE: f"{STAT_INDICATIVE_SAMPLES}-{STAT_MEANINGFUL_SAMPLES - 1}",
+            STAT_STATUS_STATISTICALLY_MEANINGFUL: f">={STAT_MEANINGFUL_SAMPLES}",
+        },
+    }
 
 
 def signal_outcome_from_record(value: Any) -> SignalOutcome | None:
@@ -438,6 +523,11 @@ def _build_source_profile(
     if status != STATUS_INSUFFICIENT_SAMPLES:
         conviction = _conviction_score(hit_rate, avg_excess, ic)
     source_counts = {key.source_bucket: n}
+    construction_epoch = (
+        construction_epoch_from_signal(samples[0].signal)
+        if samples
+        else {"epoch_id": key.construction_epoch_id}
+    )
     return _profile_from_metrics(
         key=key,
         as_of_date=as_of_date,
@@ -462,6 +552,9 @@ def _build_source_profile(
             "min_samples": min_samples,
             "calibrated_samples": calibrated_samples,
             "naked_number_guard": True,
+            "construction_epoch": construction_epoch,
+            "construction_epoch_id": construction_epoch.get("epoch_id"),
+            **statistical_interpretation(n=n, hit_rate=hit_rate),
         },
         created_at=created_at,
     )
@@ -475,7 +568,7 @@ def _build_combined_profiles(
     calibrated_samples: int,
     created_at: datetime,
 ) -> list[ConvictionProfile]:
-    by_base_key: dict[tuple[str, str, str | None, str, str, int], dict[str, ConvictionProfile]] = {}
+    by_base_key: dict[tuple[str, str, str | None, str, str, int, str], dict[str, ConvictionProfile]] = {}
     for profile in source_profiles:
         if profile.source_bucket not in {SOURCE_BUCKET_HISTORICAL_PRIOR, SOURCE_BUCKET_LIVE_PAPER}:
             continue
@@ -486,6 +579,7 @@ def _build_combined_profiles(
             profile.action,
             profile.regime_at_signal,
             profile.horizon_days,
+            construction_epoch_id_from_profile(profile),
         )
         by_base_key.setdefault(base, {})[profile.source_bucket] = profile
 
@@ -497,6 +591,7 @@ def _build_combined_profiles(
         item[0][3],
         item[0][4],
         item[0][5],
+        item[0][6],
     )):
         hist = buckets.get(SOURCE_BUCKET_HISTORICAL_PRIOR)
         live = buckets.get(SOURCE_BUCKET_LIVE_PAPER)
@@ -538,7 +633,9 @@ def _build_combined_profiles(
             regime_at_signal=base[4],
             horizon_days=base[5],
             source_bucket=SOURCE_BUCKET_COMBINED,
+            construction_epoch_id=base[6],
         )
+        construction_epoch = _construction_epoch_for_combined_profile(hist, live)
         combined.append(_profile_from_metrics(
             key=key,
             as_of_date=as_of_date,
@@ -600,10 +697,35 @@ def _build_combined_profiles(
                 "min_samples": min_samples,
                 "calibrated_samples": calibrated_samples,
                 "naked_number_guard": True,
+                "construction_epoch": construction_epoch,
+                "construction_epoch_id": construction_epoch.get("epoch_id"),
+                **statistical_interpretation(
+                    n=hist_n + live_n,
+                    hit_rate=_weighted_metric(
+                        hist.hit_rate if hist else None,
+                        live.hit_rate if live else None,
+                        hist_weight,
+                        live_weight,
+                    ),
+                ),
             },
             created_at=created_at,
         ))
     return combined
+
+
+def _construction_epoch_for_combined_profile(
+    hist: ConvictionProfile | None,
+    live: ConvictionProfile | None,
+) -> dict[str, Any]:
+    for profile in (live, hist):
+        if profile is None:
+            continue
+        diagnostics = profile.diagnostics if isinstance(profile.diagnostics, dict) else {}
+        epoch = diagnostics.get("construction_epoch")
+        if isinstance(epoch, dict) and epoch.get("epoch_id"):
+            return dict(epoch)
+    return {"epoch_id": "unknown"}
 
 
 def _profile_from_metrics(
@@ -639,6 +761,7 @@ def _profile_from_metrics(
         key.regime_at_signal,
         key.horizon_days,
         key.source_bucket,
+        key.construction_epoch_id,
     )
     return ConvictionProfile(
         profile_id=profile_id,
@@ -672,6 +795,7 @@ def _profile_from_metrics(
 
 
 def _key_for(signal: FrozenSignal, outcome: SignalOutcome, source_bucket: str) -> _ProfileKey:
+    construction_epoch = construction_epoch_from_signal(signal)
     return _ProfileKey(
         strategy_id=signal.strategy_id or outcome.strategy_id,
         ticker=signal.ticker or outcome.ticker,
@@ -680,10 +804,11 @@ def _key_for(signal: FrozenSignal, outcome: SignalOutcome, source_bucket: str) -
         regime_at_signal=signal.regime_at_signal or "unknown",
         horizon_days=outcome.horizon_days,
         source_bucket=source_bucket,
+        construction_epoch_id=str(construction_epoch.get("epoch_id") or "unknown"),
     )
 
 
-def _sort_key(key: _ProfileKey) -> tuple[str, str, str, str, str, int, str]:
+def _sort_key(key: _ProfileKey) -> tuple[str, str, str, str, str, int, str, str]:
     return (
         key.strategy_id,
         key.ticker,
@@ -692,6 +817,7 @@ def _sort_key(key: _ProfileKey) -> tuple[str, str, str, str, str, int, str]:
         key.regime_at_signal,
         key.horizon_days,
         key.source_bucket,
+        key.construction_epoch_id,
     )
 
 

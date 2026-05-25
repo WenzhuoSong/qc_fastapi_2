@@ -2,6 +2,7 @@ import unittest
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
+from services.construction_epoch import build_construction_epoch
 from services.historical_signal_replay import (
     SIGNAL_SOURCE_YFINANCE_REPLAY,
     FrozenSignal,
@@ -16,9 +17,15 @@ from services.strategy_conviction import (
     STATUS_EARLY_ESTIMATE,
     STATUS_HISTORICAL_REQUIRES_LIVE,
     STATUS_INSUFFICIENT_SAMPLES,
+    STAT_STATUS_EARLY_SIGNAL,
+    STAT_STATUS_INDICATIVE,
+    STAT_STATUS_INSUFFICIENT,
+    STAT_STATUS_STATISTICALLY_MEANINGFUL,
     compute_conviction_profiles,
     conviction_profile_content_hash,
     plan_conviction_profile_writes,
+    statistical_status_for_samples,
+    wilson_hit_rate_interval,
 )
 
 
@@ -35,6 +42,7 @@ def _signal(
     data_lag_days=0,
     ticker="TQQQ",
     regime="trending_bull",
+    diagnostics=None,
 ):
     signal_date = BASE_DATE + timedelta(days=idx)
     feature_date = signal_date - timedelta(days=data_lag_days) if data_lag_days is not None else None
@@ -63,7 +71,7 @@ def _signal(
         regime_at_signal=regime,
         vix_at_signal=None,
         evidence_contract_version="v1",
-        diagnostics={},
+        diagnostics=dict(diagnostics or {}),
         created_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
     )
 
@@ -152,6 +160,7 @@ class StrategyConvictionTest(unittest.TestCase):
         self.assertEqual(profile.status, STATUS_INSUFFICIENT_SAMPLES)
         self.assertIsNone(profile.conviction)
         self.assertEqual(profile.n, 9)
+        self.assertEqual(profile.to_dict()["statistical_status"], STAT_STATUS_INSUFFICIENT)
         self.assertEqual(profile.required_samples, 30)
         self.assertEqual(profile.source_counts, {SOURCE_BUCKET_HISTORICAL_PRIOR: 9})
         self.assertIn("data_lag_filtered", profile.to_dict())
@@ -168,9 +177,25 @@ class StrategyConvictionTest(unittest.TestCase):
 
         profile = _profile(result.profiles, source_bucket=SOURCE_BUCKET_HISTORICAL_PRIOR)
         self.assertEqual(profile.status, STATUS_CALIBRATED)
+        self.assertEqual(profile.to_dict()["statistical_status"], STAT_STATUS_EARLY_SIGNAL)
         self.assertEqual(profile.hit_rate, 1.0)
         self.assertGreater(profile.ic, 0.99)
         self.assertAlmostEqual(profile.conviction, 0.85, places=2)
+        self.assertLess(profile.to_dict()["hit_rate_ci"]["lower"], 1.0)
+
+    def test_statistical_status_thresholds_and_wilson_ci_are_exposed(self):
+        self.assertEqual(statistical_status_for_samples(29), STAT_STATUS_INSUFFICIENT)
+        self.assertEqual(statistical_status_for_samples(30), STAT_STATUS_EARLY_SIGNAL)
+        self.assertEqual(statistical_status_for_samples(100), STAT_STATUS_INDICATIVE)
+        self.assertEqual(statistical_status_for_samples(300), STAT_STATUS_STATISTICALLY_MEANINGFUL)
+
+        ci = wilson_hit_rate_interval(hit_rate=0.60, n=100)
+
+        self.assertEqual(ci["method"], "wilson_score")
+        self.assertEqual(ci["n"], 100)
+        self.assertLess(ci["lower"], 0.60)
+        self.assertGreater(ci["upper"], 0.60)
+        self.assertGreater(ci["width"], 0)
 
     def test_data_lag_filter_excludes_stale_samples_and_counts_them(self):
         good_signals, good_outcomes = _samples(10)
@@ -205,6 +230,51 @@ class StrategyConvictionTest(unittest.TestCase):
         self.assertEqual(branch_a.hit_rate, 1.0)
         self.assertEqual(branch_b.hit_rate, 0.0)
         self.assertGreater(branch_a.conviction, branch_b.conviction)
+
+    def test_construction_epochs_are_separate_profile_populations(self):
+        shadow_epoch = build_construction_epoch(
+            pc_mode="shadow",
+            policy_version="execution_policy_v1",
+            promotion_config_hash="same",
+        )
+        gated_epoch = build_construction_epoch(
+            pc_mode="gated",
+            policy_version="execution_policy_v1",
+            promotion_config_hash="same",
+        )
+        signals = []
+        outcomes = []
+        for idx in range(10):
+            signal = _signal(
+                idx,
+                diagnostics={"construction_epoch": shadow_epoch},
+            )
+            signals.append(signal)
+            outcomes.append(_outcome(signal, hit=True, excess_vs_spy=0.01))
+        for idx in range(10, 20):
+            signal = _signal(
+                idx,
+                diagnostics={"construction_epoch": gated_epoch},
+            )
+            signals.append(signal)
+            outcomes.append(_outcome(signal, hit=False, excess_vs_spy=-0.01))
+
+        result = compute_conviction_profiles(
+            signals,
+            outcomes,
+            as_of_date=date(2020, 2, 1),
+            include_combined=False,
+        )
+
+        self.assertEqual(len(result.profiles), 2)
+        epoch_ids = {profile.to_dict()["construction_epoch_id"] for profile in result.profiles}
+        self.assertEqual(epoch_ids, {shadow_epoch["epoch_id"], gated_epoch["epoch_id"]})
+        hit_rates = {
+            profile.to_dict()["construction_epoch"]["pc_mode"]: profile.hit_rate
+            for profile in result.profiles
+        }
+        self.assertEqual(hit_rates["shadow"], 1.0)
+        self.assertEqual(hit_rates["gated"], 0.0)
 
     def test_combined_requires_live_confirmation_when_live_samples_are_low(self):
         hist_signals, hist_outcomes = _samples(30, source=SIGNAL_SOURCE_YFINANCE_REPLAY, excess=0.01)

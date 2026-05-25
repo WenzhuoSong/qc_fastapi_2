@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from typing import Any
 
+from services.construction_epoch import build_construction_epoch
 from services.historical_signal_replay import FrozenSignal, freeze_evidence_card
 from services.strategy_evidence import EVIDENCE_CONTRACT_VERSION
 
@@ -75,14 +76,21 @@ def freeze_evidence_cards_for_live(
     vix_at_signal: float | None = None,
     signal_source: str = SIGNAL_SOURCE_FASTAPI_LIVE_FREEZE,
     qc_context: dict[str, Any] | None = None,
+    portfolio_construction_config: dict[str, Any] | None = None,
+    construction_epoch: dict[str, Any] | None = None,
 ) -> list[FrozenSignal]:
     """Freeze live/paper EvidenceCards into immutable signal objects."""
     generated = generated_at or datetime.now(timezone.utc)
     tradable_from = tradable_from_date or signal_date
+    epoch = construction_epoch or _live_construction_epoch(
+        qc_context=qc_context,
+        portfolio_construction_config=portfolio_construction_config,
+    )
     signals: list[FrozenSignal] = []
     for card in evidence_cards:
         diagnostics = dict(card.get("diagnostics") or {})
         diagnostics["source_bucket"] = "live_paper"
+        diagnostics["construction_epoch"] = epoch
         diagnostics["signal_freeze"] = {
             "signal_source": signal_source,
             "feature_date_known": feature_data_date is not None,
@@ -102,6 +110,7 @@ def freeze_evidence_cards_for_live(
             feature_authority=feature_authority,
             regime_at_signal=regime_at_signal,
             vix_at_signal=vix_at_signal,
+            construction_epoch=epoch,
         )
         signals.append(signal)
     return signals
@@ -117,6 +126,8 @@ def freeze_playground_bundle(
     feature_authority: str = "mixed",
     signal_source: str = SIGNAL_SOURCE_FASTAPI_LIVE_FREEZE,
     qc_context: dict[str, Any] | None = None,
+    portfolio_construction_config: dict[str, Any] | None = None,
+    construction_epoch: dict[str, Any] | None = None,
 ) -> list[FrozenSignal]:
     """Extract EvidenceCards from a Playground bundle and freeze them."""
     generated = generated_at or _parse_datetime(playground_bundle.get("generated_at")) or datetime.now(timezone.utc)
@@ -142,6 +153,28 @@ def freeze_playground_bundle(
         regime_at_signal=str(playground_bundle.get("regime_label") or "unknown"),
         signal_source=signal_source,
         qc_context=qc_context,
+        portfolio_construction_config=portfolio_construction_config,
+        construction_epoch=construction_epoch,
+    )
+
+
+def _live_construction_epoch(
+    *,
+    qc_context: dict[str, Any] | None,
+    portfolio_construction_config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    context = qc_context if isinstance(qc_context, dict) else {}
+    pc_config = portfolio_construction_config if isinstance(portfolio_construction_config, dict) else {}
+    return build_construction_epoch(
+        pc_mode=context.get("portfolio_construction_mode") or pc_config.get("portfolio_construction_mode"),
+        construction_objective_version=context.get("construction_objective_version"),
+        policy_version=(
+            context.get("policy_version")
+            or context.get("fastapi_policy_version")
+            or context.get("policy_snapshot_version")
+        ),
+        promotion_config=pc_config,
+        source=str(context.get("source") or "fastapi_live_freeze"),
     )
 
 

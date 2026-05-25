@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
+from services.construction_epoch import construction_epoch_from_diagnostics, construction_epoch_from_signal
 from services.historical_signal_replay import DEFAULT_HORIZONS
 from services.signal_outcome_labeler import frozen_signal_from_record
 from services.strategy_conviction import (
@@ -17,6 +18,7 @@ from services.strategy_conviction import (
     SOURCE_BUCKET_LIVE_PAPER,
     ConvictionProfile,
     signal_outcome_from_record,
+    statistical_interpretation,
 )
 
 
@@ -194,6 +196,12 @@ def _pending_outcome_summary(
 
 def _profile_display_row(profile: ConvictionProfile, signals: list[Any]) -> dict[str, Any]:
     last_signal_date = _last_signal_date_for_profile(profile, signals)
+    diagnostics = profile.diagnostics or {}
+    construction_epoch = construction_epoch_from_diagnostics(diagnostics)
+    stats = statistical_interpretation(n=profile.n, hit_rate=profile.hit_rate)
+    statistical_status = diagnostics.get("statistical_status") or stats["statistical_status"]
+    hit_rate_ci = diagnostics.get("hit_rate_ci") or stats["hit_rate_ci"]
+    hit_rate_ci_width = diagnostics.get("hit_rate_ci_width", stats["hit_rate_ci_width"])
     return {
         "strategy": profile.strategy_id,
         "ticker": profile.ticker,
@@ -205,10 +213,19 @@ def _profile_display_row(profile: ConvictionProfile, signals: list[Any]) -> dict
         "n": profile.n,
         "status": profile.status,
         "hit_rate": profile.hit_rate,
+        "hit_rate_ci": hit_rate_ci,
+        "hit_rate_ci_width": hit_rate_ci_width,
         "avg_excess_vs_spy": profile.avg_excess_vs_spy,
         "ic": profile.ic,
         "conviction": profile.conviction,
         "conviction_display": _format_conviction(profile.conviction),
+        "statistical_status": statistical_status,
+        "construction_epoch": construction_epoch,
+        "construction_epoch_id": construction_epoch.get("epoch_id"),
+        "pc_mode": construction_epoch.get("pc_mode"),
+        "construction_objective_version": construction_epoch.get("construction_objective_version"),
+        "policy_version": construction_epoch.get("policy_version"),
+        "promotion_config_hash": construction_epoch.get("promotion_config_hash"),
         "last_signal_date": last_signal_date.isoformat() if last_signal_date else None,
         "data_lag_filtered": profile.data_lag_filtered,
         "source_counts": dict(profile.source_counts or {}),
@@ -217,6 +234,7 @@ def _profile_display_row(profile: ConvictionProfile, signals: list[Any]) -> dict
 
 
 def _last_signal_date_for_profile(profile: ConvictionProfile, signals: list[Any]) -> date | None:
+    profile_epoch = construction_epoch_from_diagnostics(profile.diagnostics or {}).get("epoch_id")
     dates = [
         signal.signal_date
         for signal in signals
@@ -225,11 +243,12 @@ def _last_signal_date_for_profile(profile: ConvictionProfile, signals: list[Any]
         and signal.branch == profile.branch
         and signal.action == profile.action
         and signal.regime_at_signal == profile.regime_at_signal
+        and construction_epoch_from_signal(signal).get("epoch_id") == profile_epoch
     ]
     return max(dates) if dates else None
 
 
-def _profile_display_sort_key(row: dict[str, Any]) -> tuple[int, int, float, str, str]:
+def _profile_display_sort_key(row: dict[str, Any]) -> tuple[int, int, float, str, str, str]:
     status_rank = {
         "calibrated": 0,
         "early_live_confirmation": 1,
@@ -245,10 +264,11 @@ def _profile_display_sort_key(row: dict[str, Any]) -> tuple[int, int, float, str
         -conviction_sort,
         str(row.get("strategy") or ""),
         str(row.get("ticker") or ""),
+        str(row.get("construction_epoch_id") or ""),
     )
 
 
-def _regime_profile_sort_key(row: dict[str, Any]) -> tuple[str, str, int, int, float, str, str]:
+def _regime_profile_sort_key(row: dict[str, Any]) -> tuple[str, str, str, int, int, float, str, str]:
     status_rank = {
         "calibrated": 0,
         "early_live_confirmation": 1,
@@ -261,6 +281,7 @@ def _regime_profile_sort_key(row: dict[str, Any]) -> tuple[str, str, int, int, f
     return (
         str(row.get("regime_at_signal") or "unknown"),
         str(row.get("source_bucket") or ""),
+        str(row.get("construction_epoch_id") or "unknown"),
         status_rank.get(str(row.get("status") or ""), 9),
         -int(row.get("n") or 0),
         -conviction_sort,
@@ -270,28 +291,36 @@ def _regime_profile_sort_key(row: dict[str, Any]) -> tuple[str, str, int, int, f
 
 
 def _regime_summary_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
     for row in rows:
         key = (
             str(row.get("regime_at_signal") or "unknown"),
             str(row.get("source_bucket") or "unknown"),
+            str(row.get("construction_epoch_id") or "unknown"),
         )
         group = grouped.setdefault(
             key,
             {
                 "regime_at_signal": key[0],
                 "source_bucket": key[1],
+                "construction_epoch_id": key[2],
+                "pc_mode": row.get("pc_mode"),
+                "construction_objective_version": row.get("construction_objective_version"),
+                "policy_version": row.get("policy_version"),
                 "profile_count": 0,
                 "total_n": 0,
                 "calibrated_profiles": 0,
                 "early_profiles": 0,
                 "insufficient_profiles": 0,
+                "statistical_status_counts": {},
                 "hit_rate_weighted_sum": 0.0,
                 "avg_excess_weighted_sum": 0.0,
                 "ic_weighted_sum": 0.0,
+                "hit_rate_ci_width_weighted_sum": 0.0,
                 "hit_rate_n": 0,
                 "avg_excess_n": 0,
                 "ic_n": 0,
+                "hit_rate_ci_width_n": 0,
                 "data_lag_filtered": 0,
             },
         )
@@ -307,6 +336,10 @@ def _regime_summary_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             group["insufficient_profiles"] += 1
         else:
             group["early_profiles"] += 1
+        statistical_status = str(row.get("statistical_status") or "unknown")
+        group["statistical_status_counts"][statistical_status] = (
+            group["statistical_status_counts"].get(statistical_status, 0) + 1
+        )
         if row.get("hit_rate") is not None:
             group["hit_rate_weighted_sum"] += float(row.get("hit_rate")) * weight
             group["hit_rate_n"] += weight
@@ -316,18 +349,27 @@ def _regime_summary_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if row.get("ic") is not None:
             group["ic_weighted_sum"] += float(row.get("ic")) * weight
             group["ic_n"] += weight
+        if row.get("hit_rate_ci_width") is not None:
+            group["hit_rate_ci_width_weighted_sum"] += float(row.get("hit_rate_ci_width")) * weight
+            group["hit_rate_ci_width_n"] += weight
 
     out = []
     for group in grouped.values():
         out.append({
             "regime_at_signal": group["regime_at_signal"],
             "source_bucket": group["source_bucket"],
+            "construction_epoch_id": group["construction_epoch_id"],
+            "pc_mode": group.get("pc_mode"),
+            "construction_objective_version": group.get("construction_objective_version"),
+            "policy_version": group.get("policy_version"),
             "profile_count": group["profile_count"],
             "total_n": group["total_n"],
             "calibrated_profiles": group["calibrated_profiles"],
             "early_profiles": group["early_profiles"],
             "insufficient_profiles": group["insufficient_profiles"],
+            "statistical_status_counts": dict(sorted(group["statistical_status_counts"].items())),
             "hit_rate": _weighted_average(group, "hit_rate"),
+            "hit_rate_ci_width": _weighted_average(group, "hit_rate_ci_width"),
             "avg_excess_vs_spy": _weighted_average(group, "avg_excess"),
             "ic": _weighted_average(group, "ic"),
             "data_lag_filtered": group["data_lag_filtered"],
@@ -337,6 +379,7 @@ def _regime_summary_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         key=lambda row: (
             str(row.get("regime_at_signal") or "unknown"),
             str(row.get("source_bucket") or "unknown"),
+            str(row.get("construction_epoch_id") or "unknown"),
             -int(row.get("total_n") or 0),
         ),
     )

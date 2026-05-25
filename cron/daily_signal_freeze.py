@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from db.queries import get_system_config
 from db.session import AsyncSessionLocal
 from services.cron_audit import audit_cron_run
+from services.execution_policy import policy_snapshot
 from services.playground import run_playground_analysis
 from services.signal_ledger import freeze_playground_bundle, persist_frozen_signals
 from tools.notify_tools import tool_send_telegram
@@ -38,6 +39,7 @@ async def main() -> None:
                 return
 
             playground_cfg = await _read_playground_config()
+            pc_config = await _read_pc_promotion_config()
             days = int(playground_cfg.get("lookback_days", 30))
             strategies = playground_cfg.get("strategies") or None
             bundle = await run_playground_analysis(days=days, strategy_names=strategies)
@@ -54,7 +56,10 @@ async def main() -> None:
                     "source": "daily_signal_freeze",
                     "snapshot_count": bundle.snapshot_count,
                     "historical_snapshot_count": bundle.historical_snapshot_count,
+                    "policy_version": policy_snapshot()["version"],
+                    "portfolio_construction_mode": pc_config.get("portfolio_construction_mode"),
                 },
+                portfolio_construction_config=pc_config,
             )
             async with AsyncSessionLocal() as db:
                 result = await persist_frozen_signals(db, signals)
@@ -94,6 +99,12 @@ async def _read_config() -> dict:
 async def _read_playground_config() -> dict:
     async with AsyncSessionLocal() as db:
         cfg = await get_system_config(db, "playground_config")
+    return (cfg.value if cfg else {}) or {}
+
+
+async def _read_pc_promotion_config() -> dict:
+    async with AsyncSessionLocal() as db:
+        cfg = await get_system_config(db, "portfolio_construction_promotion_config")
     return (cfg.value if cfg else {}) or {}
 
 
