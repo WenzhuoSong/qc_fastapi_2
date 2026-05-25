@@ -8,9 +8,13 @@ errors without changing the cron's normal exception behavior.
 from __future__ import annotations
 
 import logging
+import math
 import time
+from dataclasses import asdict, is_dataclass
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 from sqlalchemy import select
@@ -38,7 +42,11 @@ class CronAuditRun:
             return
 
     def set_summary(self, **kwargs: Any) -> None:
-        self.summary.update({key: value for key, value in kwargs.items() if value is not None})
+        self.summary.update({
+            str(key): _json_safe(value)
+            for key, value in kwargs.items()
+            if value is not None
+        })
 
     def mark_skipped(self, reason: str | None = None) -> None:
         self.status = "skipped"
@@ -106,7 +114,7 @@ async def _finish_run(audit: CronAuditRun, error_message: str | None) -> None:
             row.status = audit.status
             row.duration_ms = duration_ms
             row.rows_written = audit.rows_written
-            row.summary = audit.summary
+            row.summary = _json_safe(audit.summary)
             row.error_message = error_message
             await db.commit()
     except Exception as exc:
@@ -129,3 +137,28 @@ def _row_to_dict(row: CronRunLog) -> dict[str, Any]:
 
 def _utcnow_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _json_safe(value: Any) -> Any:
+    """Return a JSONB-safe value for asyncpg/Postgres inserts."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else str(value)
+    if isinstance(value, Decimal):
+        return float(value) if value.is_finite() else str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
+    if is_dataclass(value):
+        return _json_safe(asdict(value))
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, set):
+        return [_json_safe(item) for item in sorted(value, key=lambda item: str(item))]
+    return str(value)

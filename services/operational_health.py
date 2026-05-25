@@ -5,6 +5,8 @@ from datetime import UTC, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from services.market_calendar import is_us_equity_trading_day, us_equity_holiday_name
+
 
 FRESHNESS_LIMITS_HOURS = {
     "qc_heartbeat": 2,
@@ -13,6 +15,7 @@ FRESHNESS_LIMITS_HOURS = {
     "news_cache": 6,
     "memory_write": 36,
 }
+FAILED_CRON_LOOKBACK_HOURS = 48
 
 MARKET_TZ = ZoneInfo("America/New_York")
 MARKET_OPEN = time(9, 30)
@@ -34,6 +37,9 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
         QCSnapshot,
     )
     from db.session import AsyncSessionLocal
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    failed_cron_cutoff = now - timedelta(hours=FAILED_CRON_LOOKBACK_HOURS)
 
     async with AsyncSessionLocal() as db:
         heartbeat = (
@@ -82,12 +88,12 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
             await db.execute(
                 select(CronRunLog)
                 .where(CronRunLog.status == "failed")
+                .where(CronRunLog.started_at >= failed_cron_cutoff)
                 .order_by(desc(CronRunLog.started_at))
                 .limit(5)
             )
         ).scalars().all()
 
-    now = datetime.now(UTC).replace(tzinfo=None)
     checks = {
         "qc_heartbeat": _heartbeat_freshness_check(
             label="QC heartbeat",
@@ -262,13 +268,16 @@ def _heartbeat_freshness_check(
     market_now = now.replace(tzinfo=UTC).astimezone(MARKET_TZ)
     market_time = market_now.time()
     in_strict_market = (
-        market_now.weekday() < 5
+        is_us_equity_trading_day(market_now.date())
         and HEARTBEAT_STRICT_AFTER <= market_time <= MARKET_CLOSE
     )
     if in_strict_market:
         return check
 
-    if market_now.weekday() >= 5 or market_time > MARKET_CLOSE or market_time < MARKET_OPEN:
+    if not is_us_equity_trading_day(market_now.date()):
+        holiday = us_equity_holiday_name(market_now.date())
+        reason = f"market closed: {holiday}" if holiday else "market closed"
+    elif market_time > MARKET_CLOSE or market_time < MARKET_OPEN:
         reason = "market closed"
     else:
         reason = "opening grace"
@@ -324,15 +333,14 @@ def _latest_expected_daily_research_date(market_now: datetime):
     """Return the latest trading date daily research data should cover by now."""
     current_date = market_now.date()
     current_time = market_now.time()
-    weekday = market_now.weekday()
 
-    if weekday < 5 and current_time >= MARKET_CLOSE:
+    if is_us_equity_trading_day(current_date) and current_time >= MARKET_CLOSE:
         return current_date
 
     days_back = 1
     while True:
         candidate = current_date - timedelta(days=days_back)
-        if candidate.weekday() < 5:
+        if is_us_equity_trading_day(candidate):
             return candidate
         days_back += 1
 

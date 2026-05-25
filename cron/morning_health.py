@@ -20,6 +20,7 @@ from services.operational_health import (
     format_operational_health_report,
 )
 from services.operational_alerts import send_operational_alerts
+from services.market_calendar import us_equity_market_status
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,19 +33,19 @@ MARKET_TZ = ZoneInfo("America/New_York")
 
 def _market_status_line(now: datetime | None = None) -> str:
     """Format a short US market status line using New York time."""
-    market_now = now.astimezone(MARKET_TZ) if now else datetime.now(MARKET_TZ)
-    label = market_now.strftime("%Y-%m-%d %H:%M %Z")
-
-    if market_now.weekday() >= 5:
-        status = "US market closed"
-    elif market_now.hour < 9 or (market_now.hour == 9 and market_now.minute < 30):
-        status = "US market opens soon" if market_now.hour >= 6 else "US market premarket"
-    elif market_now.hour < 16:
-        status = "US market open"
+    status = us_equity_market_status(now)
+    if not status.is_trading_day:
+        label = f"US market closed: {status.reason}"
+    elif status.phase == "opens_soon":
+        label = "US market opens soon"
+    elif status.phase == "premarket":
+        label = "US market premarket"
+    elif status.is_open:
+        label = "US market open"
     else:
-        status = "US market closed"
+        label = "US market closed"
 
-    return f"  {status} ({label})"
+    return f"  {label} ({status.market_time})"
 
 
 async def main() -> None:

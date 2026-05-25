@@ -108,6 +108,22 @@ class OperationalHealthTests(unittest.TestCase):
         self.assertEqual(check["state"], "stale")
         self.assertTrue(check["blocking"])
 
+    def test_heartbeat_stale_is_not_blocking_on_market_holiday(self):
+        now = datetime(2026, 5, 25, 15, 0, 0)  # Memorial Day 11:00 ET
+
+        check = _heartbeat_freshness_check(
+            label="QC heartbeat",
+            timestamp=now - timedelta(hours=65),
+            now=now,
+            max_age_hours=2,
+            blocker=True,
+            missing_blocker=True,
+        )
+
+        self.assertEqual(check["state"], "ok")
+        self.assertFalse(check["blocking"])
+        self.assertEqual(check["reason"], "market closed: Memorial Day")
+
     def test_trading_day_freshness_allows_friday_data_before_monday_open(self):
         now = datetime(2026, 5, 18, 13, 2, 0)  # Monday 09:02 ET
         friday_after_close = datetime(2026, 5, 15, 20, 30, 0)  # Friday 16:30 ET
@@ -125,6 +141,24 @@ class OperationalHealthTests(unittest.TestCase):
         self.assertEqual(check["state"], "ok")
         self.assertEqual(check["reason"], "trading calendar grace")
         self.assertEqual(check["expected_research_date"], "2026-05-15")
+        self.assertFalse(check["blocking"])
+
+    def test_trading_day_freshness_allows_friday_data_on_memorial_day(self):
+        now = datetime(2026, 5, 25, 15, 0, 0)  # Memorial Day 11:00 ET
+        friday_after_close = datetime(2026, 5, 22, 20, 30, 0)  # Friday 16:30 ET
+
+        check = _trading_day_freshness_check(
+            label="Daily features",
+            timestamp=friday_after_close,
+            now=now,
+            max_age_hours=36,
+            blocker=False,
+            missing_blocker=False,
+        )
+
+        self.assertGreater(check["age_hours"], 36)
+        self.assertEqual(check["state"], "ok")
+        self.assertEqual(check["expected_research_date"], "2026-05-22")
         self.assertFalse(check["blocking"])
 
     def test_trading_day_freshness_marks_older_session_stale_before_monday_open(self):

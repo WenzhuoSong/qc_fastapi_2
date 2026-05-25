@@ -9,6 +9,7 @@ import logging
 from datetime import date, timedelta
 
 from services.cron_audit import audit_cron_run
+from services.market_calendar import us_equity_market_status
 from services.pipeline import run_full_pipeline
 from tools.notify_tools import tool_send_telegram
 
@@ -53,6 +54,14 @@ async def _resolve_trigger() -> str:
 async def main() -> None:
     try:
         async with audit_cron_run("hourly_analysis") as audit:
+            market_status = us_equity_market_status()
+            if not market_status.is_trading_day:
+                reason = f"market_closed:{market_status.reason}"
+                audit.mark_skipped(reason)
+                audit.set_summary(market_status=market_status.to_dict())
+                logger.info("[hourly] Skipping pipeline: %s", reason)
+                return
+
             trigger = await _resolve_trigger()
             result = await run_full_pipeline(trigger=trigger)
             if result.get("status", "").startswith("skipped"):

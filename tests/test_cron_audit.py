@@ -1,6 +1,8 @@
 import importlib
 import sys
 import unittest
+from datetime import date, datetime
+from decimal import Decimal
 from unittest.mock import patch
 
 
@@ -45,6 +47,23 @@ class CronAuditRunTest(unittest.TestCase):
         self.assertNotIn("none_value", audit.summary)
         self.assertEqual(audit.status, "skipped")
         self.assertEqual(audit.summary["skip_reason"], "disabled")
+
+    def test_summary_values_are_json_safe(self):
+        audit = CronAuditRun("hourly_analysis")
+
+        audit.set_summary(
+            decimal_value=Decimal("1.25"),
+            dt=datetime(2026, 5, 25, 9, 3),
+            day=date(2026, 5, 25),
+            tags={"b", "a"},
+            nested={"x": Decimal("2.5")},
+        )
+
+        self.assertEqual(audit.summary["decimal_value"], 1.25)
+        self.assertEqual(audit.summary["dt"], "2026-05-25T09:03:00")
+        self.assertEqual(audit.summary["day"], "2026-05-25")
+        self.assertEqual(audit.summary["tags"], ["a", "b"])
+        self.assertEqual(audit.summary["nested"], {"x": 2.5})
 
 
 if __name__ == "__main__":
