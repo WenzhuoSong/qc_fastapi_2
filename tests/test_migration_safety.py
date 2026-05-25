@@ -55,6 +55,7 @@ class MigrationSafetyTests(unittest.TestCase):
         self.assertIn('class MarketDailyFeature', models)
         self.assertIn('__tablename__ = "market_daily_features"', models)
         self.assertRegex(models, r"\brsi_10\s*=\s*Column\(")
+        self.assertRegex(models, r"\bbeta_vs_spy\s*=\s*Column\(")
         self.assertRegex(models, r"raw_payload\s*=\s*Column\(JSONB\)")
         self.assertIn('class StrategyFrozenSignal', models)
         self.assertIn('__tablename__ = "strategy_frozen_signals"', models)

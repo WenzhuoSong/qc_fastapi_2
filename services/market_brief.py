@@ -29,6 +29,7 @@ from db.models import MacroNewsCache, QCSnapshot, TickerNewsLibrary
 from db.session import AsyncSessionLocal
 from services.feature_authority_mode import normalize_feature_authority_mode
 from services.feature_provenance import summarize_feature_provenance
+from services.macro_regime_builder import build_deterministic_macro_regime
 from services.market_feature_store import latest_feature_map
 from services.market_brief_contexts import build_memory_context, build_scenario_context
 from services.market_snapshot_merge import merge_market_snapshots
@@ -76,6 +77,10 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
     sector_rotation = detect_sector_rotation(holdings)
     sector_rotation["signals"] = rotation_signal_strengths(sector_rotation)
     feature_provenance = summarize_feature_provenance(holdings)
+    macro_regime_context = build_deterministic_macro_regime(
+        holdings,
+        news_context=news_context,
+    )
 
     prose = _build_prose(key_facts, holdings, sector_rotation)
 
@@ -91,6 +96,7 @@ async def build_market_brief(pipeline_context: dict) -> dict[str, Any]:
         "current_weights":    current_weights,
         "portfolio":          portfolio,
         "news_context":       news_context,
+        "macro_regime_context": macro_regime_context,
         "feature_provenance": feature_provenance,
         "sector_rotation":    sector_rotation,
         "sector_rotation_section": format_rotation_for_prompt(sector_rotation),

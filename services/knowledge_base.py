@@ -349,6 +349,7 @@ def _compact_strategy(item: dict[str, Any]) -> dict[str, Any]:
         "best_regimes": item.get("best_regimes") or [],
         "weak_regimes": item.get("weak_regimes") or [],
         "required_features": item.get("required_features") or [],
+        "optional_features": item.get("optional_features") or [],
         "failure_modes": item.get("failure_modes") or [],
         "governance_implications": item.get("governance_implications") or [],
         "compatibility_mappings": item.get("compatibility_mappings") or [],

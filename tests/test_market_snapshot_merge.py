@@ -75,6 +75,7 @@ class MarketSnapshotMergeTests(unittest.TestCase):
                 "high_price": 206.0,
                 "low_price": 199.0,
                 "volume": 2000,
+                "beta_vs_spy": 1.15,
                 "trading_date": "2026-05-14",
             }
         }
@@ -90,6 +91,7 @@ class MarketSnapshotMergeTests(unittest.TestCase):
         self.assertEqual(xlk["high_price"], 206.0)
         self.assertEqual(xlk["low_price"], 199.0)
         self.assertEqual(xlk["volume"], 2000)
+        self.assertEqual(xlk["beta_vs_spy"], 1.15)
         self.assertNotIn("mom_60d", xlk)
         self.assertEqual(xlk["legacy_qc_indicators"]["mom_60d"], 99.0)
 

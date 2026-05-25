@@ -4,7 +4,8 @@ category: defensive_factor
 summary: Defensive allocation preference toward lower-volatility ETFs and cash-like assets.
 best_regimes: [high_vol, defensive, risk_off]
 weak_regimes: [trending_bull, risk_on]
-required_features: [atr_pct, hist_vol_20d, beta_vs_spy]
+required_features: [atr_pct, hist_vol_20d, mom_252d]
+optional_features: [beta_vs_spy, unrealized_pnl_pct, daily_return_pct]
 positive_signals:
   - high market volatility
   - stale or limited data quality

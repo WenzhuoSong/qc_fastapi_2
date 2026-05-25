@@ -150,13 +150,15 @@ def fetch_yfinance_feature_rows(
     except ImportError as exc:
         raise RuntimeError("yfinance is not installed. Add yfinance to requirements and redeploy.") from exc
 
-    if not tickers:
+    clean_tickers = sorted({ticker.upper().strip() for ticker in tickers if ticker})
+    if not clean_tickers:
         return []
 
     import pandas as pd
 
+    download_tickers = sorted(set(clean_tickers) | {"SPY"})
     data = yf.download(
-        tickers=" ".join(tickers),
+        tickers=" ".join(download_tickers),
         period=f"{max(int(lookback_days), 30)}d",
         interval="1d",
         group_by="ticker",
@@ -169,18 +171,34 @@ def fetch_yfinance_feature_rows(
 
     rows: list[dict[str, Any]] = []
     multi_ticker = isinstance(data.columns, pd.MultiIndex)
-    for ticker in tickers:
-        if multi_ticker:
-            if ticker not in data.columns.get_level_values(0):
-                continue
-            frame = data[ticker].copy()
-        else:
-            frame = data.copy()
-        rows.extend(compute_feature_rows_from_frame(ticker, frame))
+    frames = {
+        ticker: _frame_for_ticker(data, ticker, multi_ticker)
+        for ticker in download_tickers
+    }
+    benchmark_frame = frames.get("SPY")
+    for ticker in clean_tickers:
+        frame = frames.get(ticker)
+        if frame is None:
+            continue
+        rows.extend(compute_feature_rows_from_frame(ticker, frame, benchmark_frame=benchmark_frame))
     return rows
 
 
-def compute_feature_rows_from_frame(ticker: str, frame) -> list[dict[str, Any]]:
+def _frame_for_ticker(data: Any, ticker: str, multi_ticker: bool):
+    if data is None or data.empty:
+        return None
+    if multi_ticker:
+        if ticker not in data.columns.get_level_values(0):
+            return None
+        return data[ticker].copy()
+    return data.copy()
+
+
+def compute_feature_rows_from_frame(
+    ticker: str,
+    frame,
+    benchmark_frame=None,
+) -> list[dict[str, Any]]:
     """Convert a yfinance OHLCV DataFrame into normalized feature rows."""
     if frame is None or frame.empty:
         return []
@@ -217,6 +235,10 @@ def compute_feature_rows_from_frame(ticker: str, frame) -> list[dict[str, Any]]:
     bb_lower = bb_mid - 2 * bb_std
     bb_width = bb_upper - bb_lower
     df["bb_position"] = (close - bb_lower) / bb_width.replace(0, math.nan)
+    if ticker.upper() == "SPY":
+        df["beta_vs_spy"] = 1.0
+    else:
+        df["beta_vs_spy"] = _rolling_beta_vs_spy(close, benchmark_frame)
 
     rows: list[dict[str, Any]] = []
     for idx, row in df.iterrows():
@@ -248,6 +270,7 @@ def compute_feature_rows_from_frame(ticker: str, frame) -> list[dict[str, Any]]:
             "rsi_14": _num(row.get("rsi_14"), digits=2),
             "atr_pct": _num(row.get("atr_pct")),
             "bb_position": _num(row.get("bb_position"), digits=4),
+            "beta_vs_spy": _num(row.get("beta_vs_spy"), digits=4),
             "data_quality_flag": quality,
             "raw_payload": {
                 "provider": YFINANCE_SOURCE,
@@ -312,6 +335,24 @@ def _true_range(df):
     import pandas as pd
 
     return pd.concat(ranges, axis=1).max(axis=1)
+
+
+def _rolling_beta_vs_spy(close, benchmark_frame):
+    if benchmark_frame is None or getattr(benchmark_frame, "empty", True):
+        return close * math.nan
+
+    spy = benchmark_frame.copy()
+    spy = spy.rename(columns={col: _normalize_col(col) for col in spy.columns})
+    if "close" not in spy.columns:
+        return close * math.nan
+
+    spy_adj_col = "adj_close" if "adj_close" in spy.columns else "close"
+    spy_close = spy[spy_adj_col].sort_index()
+    asset_returns = close.pct_change(1)
+    spy_returns = spy_close.pct_change(1).reindex(asset_returns.index)
+    spy_var = spy_returns.rolling(60, min_periods=40).var()
+    beta = asset_returns.rolling(60, min_periods=40).cov(spy_returns) / spy_var.replace(0, math.nan)
+    return beta
 
 
 def _quality_flag(row: Any, close_price: float | None, volume: int | None) -> str:

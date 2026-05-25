@@ -35,6 +35,7 @@ FEATURE_COLUMNS = [
     "rsi_14",
     "atr_pct",
     "bb_position",
+    "beta_vs_spy",
     "data_quality_flag",
     "raw_payload",
 ]
@@ -49,6 +50,7 @@ async def ensure_market_daily_feature_schema(db: Any) -> None:
         "ALTER TABLE market_daily_features ADD COLUMN IF NOT EXISTS rsi_14 NUMERIC(6,2)",
         "ALTER TABLE market_daily_features ADD COLUMN IF NOT EXISTS atr_pct NUMERIC(8,6)",
         "ALTER TABLE market_daily_features ADD COLUMN IF NOT EXISTS bb_position NUMERIC(6,4)",
+        "ALTER TABLE market_daily_features ADD COLUMN IF NOT EXISTS beta_vs_spy NUMERIC(6,4)",
     )
     for sql in migrations:
         await db.execute(text(sql))
@@ -157,7 +159,7 @@ async def get_latest_feature_state(
     if not row:
         return {"trading_date": None, "missing_fields": []}
 
-    required_history_fields = ("rsi_10", "rsi_14", "atr_pct", "bb_position")
+    required_history_fields = ("rsi_10", "rsi_14", "atr_pct", "bb_position", "beta_vs_spy")
     return {
         "trading_date": row.trading_date,
         "missing_fields": [
@@ -247,6 +249,7 @@ def model_to_feature_dict(row: Any) -> dict[str, Any]:
         "rsi_14": _float_or_none(row.rsi_14),
         "atr_pct": _float_or_none(row.atr_pct),
         "bb_position": _float_or_none(row.bb_position),
+        "beta_vs_spy": _float_or_none(row.beta_vs_spy),
         "data_quality_flag": row.data_quality_flag,
     }
 

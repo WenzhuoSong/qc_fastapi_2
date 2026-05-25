@@ -60,6 +60,7 @@ async def init_db():
         "ALTER TABLE market_daily_features ADD COLUMN IF NOT EXISTS rsi_14 NUMERIC(6,2)",
         "ALTER TABLE market_daily_features ADD COLUMN IF NOT EXISTS atr_pct NUMERIC(8,6)",
         "ALTER TABLE market_daily_features ADD COLUMN IF NOT EXISTS bb_position NUMERIC(6,4)",
+        "ALTER TABLE market_daily_features ADD COLUMN IF NOT EXISTS beta_vs_spy NUMERIC(6,4)",
         "ALTER TABLE execution_log ADD COLUMN IF NOT EXISTS command_id VARCHAR(64)",
         "ALTER TABLE execution_log ADD COLUMN IF NOT EXISTS qc_status VARCHAR(32) DEFAULT 'submitted'",
         "ALTER TABLE execution_log ADD COLUMN IF NOT EXISTS qc_ack_at TIMESTAMP",

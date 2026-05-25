@@ -136,6 +136,7 @@ class MarketDailyFeature(Base):
     rsi_14          = Column(Numeric(6, 2))
     atr_pct         = Column(Numeric(8, 6))
     bb_position     = Column(Numeric(6, 4))
+    beta_vs_spy     = Column(Numeric(6, 4))
     data_quality_flag = Column(String(40), default="ok")
     raw_payload     = Column(JSONB)
     created_at      = Column(DateTime, nullable=False, default=func.now())

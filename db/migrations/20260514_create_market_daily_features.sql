@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS market_daily_features (
     rsi_14 NUMERIC(6,2),
     atr_pct NUMERIC(8,6),
     bb_position NUMERIC(6,4),
+    beta_vs_spy NUMERIC(6,4),
     data_quality_flag VARCHAR(40) DEFAULT 'ok',
     raw_payload JSONB,
     created_at TIMESTAMP DEFAULT now() NOT NULL,
@@ -44,4 +45,5 @@ ALTER TABLE market_daily_features
 ADD COLUMN IF NOT EXISTS rsi_10 NUMERIC(6,2),
 ADD COLUMN IF NOT EXISTS rsi_14 NUMERIC(6,2),
 ADD COLUMN IF NOT EXISTS atr_pct NUMERIC(8,6),
-ADD COLUMN IF NOT EXISTS bb_position NUMERIC(6,4);
+ADD COLUMN IF NOT EXISTS bb_position NUMERIC(6,4),
+ADD COLUMN IF NOT EXISTS beta_vs_spy NUMERIC(6,4);

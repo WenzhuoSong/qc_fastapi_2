@@ -42,7 +42,32 @@ class YfinanceBackfillTest(unittest.TestCase):
         self.assertIsNotNone(last["rsi_14"])
         self.assertIsNotNone(last["atr_pct"])
         self.assertIsNotNone(last["bb_position"])
+        self.assertEqual(last["beta_vs_spy"], 1.0)
         self.assertGreater(last["dollar_volume"], 0)
+
+    def test_compute_feature_rows_with_benchmark_beta(self):
+        dates = pd.date_range("2026-01-01", periods=120, freq="B")
+        spy = pd.DataFrame({
+            "Open": [100 + i * 0.5 for i in range(120)],
+            "High": [101 + i * 0.5 for i in range(120)],
+            "Low": [99 + i * 0.5 for i in range(120)],
+            "Close": [100 + i * 0.5 for i in range(120)],
+            "Adj Close": [100 + i * 0.5 for i in range(120)],
+            "Volume": [1000 + i for i in range(120)],
+        }, index=dates)
+        qqq = pd.DataFrame({
+            "Open": [100 + i for i in range(120)],
+            "High": [101 + i for i in range(120)],
+            "Low": [99 + i for i in range(120)],
+            "Close": [100 + i for i in range(120)],
+            "Adj Close": [100 + i for i in range(120)],
+            "Volume": [2000 + i for i in range(120)],
+        }, index=dates)
+
+        rows = compute_feature_rows_from_frame("QQQ", qqq, benchmark_frame=spy)
+
+        self.assertIsNotNone(rows[-1]["beta_vs_spy"])
+        self.assertGreater(rows[-1]["beta_vs_spy"], 0)
 
     def test_missing_required_columns_returns_empty(self):
         frame = pd.DataFrame({"Close": [1.0, 2.0]})

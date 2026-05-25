@@ -25,6 +25,7 @@ from db.session import AsyncSessionLocal
 from services.feature_authority import authority_for_field, canonical_field_name
 from services.feature_provenance import summarize_feature_provenance
 from services.knowledge_base import build_knowledge_context
+from services.macro_regime_builder import build_deterministic_macro_regime
 from services.quant_baseline import classify_market_regime
 from services.sector_rotation import detect_sector_rotation
 from services.strategy_evidence import (
@@ -108,6 +109,7 @@ class PlaygroundBundle:
     data_gaps: list[str]
     walk_forward_validation: dict[str, Any] | None = None
     validation_summary: dict[str, Any] = field(default_factory=dict)
+    macro_regime_context: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -127,6 +129,10 @@ async def run_playground(
     sector_rotation = brief.get("sector_rotation") or detect_sector_rotation(holdings)
     spy_holding = next((h for h in holdings if (h.get("ticker") or "").upper() == "SPY"), {})
     regime = classify_market_regime(portfolio, spy_holding, holdings=holdings)
+    macro_regime_context = brief.get("macro_regime_context") or build_deterministic_macro_regime(
+        holdings,
+        news_context=brief.get("news_context") or {},
+    )
     context = {
         "regime": regime.regime.value,
         "confidence": _confidence_to_float(regime.confidence),
@@ -136,6 +142,10 @@ async def run_playground(
         "risk_params": brief.get("risk_params") or {},
         "current_weights": current_weights,
         "sector_rotation": sector_rotation,
+        "macro_context": macro_regime_context,
+        "rate_regime_label": macro_regime_context.get("rate_regime_label"),
+        "inflation_regime_label": macro_regime_context.get("inflation_regime_label"),
+        "growth_regime_label": macro_regime_context.get("growth_regime_label"),
     }
 
     names = strategy_names or DEFAULT_PLAYGROUND_STRATEGIES
@@ -201,6 +211,7 @@ async def run_playground(
         ),
         data_gaps=list(dict.fromkeys(data_gaps)),
         walk_forward_validation=walk_forward_validation,
+        macro_regime_context=macro_regime_context,
     )
 
 
@@ -741,6 +752,7 @@ def _feature_row_to_holding_fields(feature: dict[str, Any]) -> dict[str, Any]:
         "rsi_14": feature.get("rsi_14"),
         "atr_pct": feature.get("atr_pct"),
         "bb_position": feature.get("bb_position"),
+        "beta_vs_spy": feature.get("beta_vs_spy"),
     }
 
 
@@ -1425,6 +1437,7 @@ def _feature_model_to_holding(row: Any) -> dict[str, Any]:
         "rsi_14": _float_or_none(getattr(row, "rsi_14", None)),
         "atr_pct": _float_or_none(getattr(row, "atr_pct", None)),
         "bb_position": _float_or_none(getattr(row, "bb_position", None)),
+        "beta_vs_spy": _float_or_none(getattr(row, "beta_vs_spy", None)),
     }
     filled_fields = sorted(
         field for field, value in holding.items()
@@ -1477,6 +1490,7 @@ def _compute_replay_metrics(
             portfolio = brief.get("portfolio") or {}
             spy = next((h for h in holdings if (h.get("ticker") or "").upper() == "SPY"), {})
             regime = classify_market_regime(portfolio, spy, holdings=holdings)
+            macro_regime_context = brief.get("macro_regime_context") or build_deterministic_macro_regime(holdings)
             context = {
                 "regime": regime.regime.value,
                 "confidence": _confidence_to_float(regime.confidence),
@@ -1486,6 +1500,10 @@ def _compute_replay_metrics(
                 "risk_params": {},
                 "current_weights": brief.get("current_weights") or {},
                 "sector_rotation": brief.get("sector_rotation") or {},
+                "macro_context": macro_regime_context,
+                "rate_regime_label": macro_regime_context.get("rate_regime_label"),
+                "inflation_regime_label": macro_regime_context.get("inflation_regime_label"),
+                "growth_regime_label": macro_regime_context.get("growth_regime_label"),
             }
             result = _run_one_strategy(name, holdings, context, previous_weights.get(name, {}))
             weights = result.weights
@@ -1652,6 +1670,7 @@ def _strategy_forward_returns_for_snapshots(
         portfolio = brief.get("portfolio") or {}
         spy = next((h for h in holdings if (h.get("ticker") or "").upper() == "SPY"), {})
         regime = classify_market_regime(portfolio, spy, holdings=holdings)
+        macro_regime_context = brief.get("macro_regime_context") or build_deterministic_macro_regime(holdings)
         context = {
             "regime": regime.regime.value,
             "confidence": _confidence_to_float(regime.confidence),
@@ -1661,6 +1680,10 @@ def _strategy_forward_returns_for_snapshots(
             "risk_params": {},
             "current_weights": brief.get("current_weights") or {},
             "sector_rotation": brief.get("sector_rotation") or {},
+            "macro_context": macro_regime_context,
+            "rate_regime_label": macro_regime_context.get("rate_regime_label"),
+            "inflation_regime_label": macro_regime_context.get("inflation_regime_label"),
+            "growth_regime_label": macro_regime_context.get("growth_regime_label"),
         }
         next_returns = _extract_daily_returns(_raw_snapshot_rows(snapshots[idx + 1]))
         if not next_returns:
@@ -1688,6 +1711,7 @@ def _brief_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "current_weights": _extract_current_weights(holdings),
         "risk_params": {},
         "sector_rotation": detect_sector_rotation(holdings),
+        "macro_regime_context": build_deterministic_macro_regime(holdings),
     }
 
 

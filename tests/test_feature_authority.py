@@ -28,7 +28,7 @@ class FeatureAuthorityTests(unittest.TestCase):
         self.assertTrue(is_authoritative("weight_current", "qc_heartbeat"))
 
     def test_yfinance_daily_research_is_authoritative(self):
-        for field in ["return_20d", "return_60d", "rsi_14", "atr_pct", "hist_vol_20d"]:
+        for field in ["return_20d", "return_60d", "rsi_14", "atr_pct", "hist_vol_20d", "beta_vs_spy"]:
             self.assertEqual(authority_for_field(field, "yfinance"), FeatureAuthority.DAILY_RESEARCH)
             self.assertTrue(is_authoritative(field, "yfinance"))
 
