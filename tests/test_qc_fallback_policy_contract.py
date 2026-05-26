@@ -61,6 +61,15 @@ class QCFallbackPolicyContractTest(unittest.TestCase):
         self.assertIn('"open_order_count_after": open_after', text)
         self.assertIn("unknown tickers rejected", text)
 
+    def test_qc_command_payload_helper_supports_dotnet_dictionary(self):
+        text = QC_FILE.read_text()
+
+        self.assertIn("def _get_field(data, key: str, default=None):", text)
+        self.assertIn('hasattr(data, "ContainsKey")', text)
+        self.assertIn("data.ContainsKey(key)", text)
+        self.assertIn("return data[key]", text)
+        self.assertIn("def _is_mapping_like(raw) -> bool:", text)
+
     def test_qc_thematic_fallback_cap_is_not_legacy_five_percent(self):
         qc_policy = _load_qc_policy_constants()
 

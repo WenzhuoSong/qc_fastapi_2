@@ -109,6 +109,8 @@ async def run_executor_async(
                 reason="aborted_no_weights",
             ),
         }
+    execution_throttle = risk_out.get("execution_throttle") or {}
+    desired_weights = execution_throttle.get("desired_target_weights") or weights
 
     # Gate 3: weight check (excluding CASH)
     equity_w = {k: v for k, v in weights.items() if k != "CASH"}
@@ -119,7 +121,7 @@ async def run_executor_async(
             "execution_status": "rejected",
             "execution_audit": build_execution_audit_payload(
                 action_status="rejected",
-                proposed_weights=weights,
+                proposed_weights=desired_weights,
                 reason="aborted_weight_overflow",
             ),
         }
@@ -147,7 +149,7 @@ async def run_executor_async(
             "execution_status": "rejected",
             "execution_audit": build_execution_audit_payload(
                 action_status="rejected",
-                proposed_weights=weights,
+                proposed_weights=desired_weights,
                 reason="blocked_by_execution_policy",
             ),
             "preflight": preflight,
@@ -172,7 +174,7 @@ async def run_executor_async(
             "error": err,
             "execution_audit": build_execution_audit_payload(
                 action_status="failed",
-                proposed_weights=weights,
+                proposed_weights=desired_weights,
                 command_id=command_id,
                 rebalance_actions=risk_out.get("rebalance_actions") or [],
                 estimated_cost_pct=risk_out.get("estimated_cost_pct"),
@@ -212,7 +214,7 @@ async def run_executor_async(
             "preflight": command_preflight,
             "execution_audit": build_execution_audit_payload(
                 action_status="rejected",
-                proposed_weights=weights,
+                proposed_weights=desired_weights,
                 command_id=command_id,
                 rebalance_actions=risk_out.get("rebalance_actions") or [],
                 estimated_cost_pct=risk_out.get("estimated_cost_pct"),
@@ -243,6 +245,15 @@ async def run_executor_async(
             + f"\nCost: {float(risk_out.get('estimated_cost_pct', 0) or 0):.2%}"
             + "\nAwaiting QC algorithm confirmation."
         )
+        if execution_throttle.get("applied"):
+            before = (execution_throttle.get("metrics_before") or {}).get("buy_delta")
+            after = (execution_throttle.get("metrics_after") or {}).get("buy_delta")
+            deferred = execution_throttle.get("deferred_buy_delta")
+            msg += (
+                "\nExecution throttle: "
+                f"buy_delta {float(before or 0):.2%}->{float(after or 0):.2%}, "
+                f"deferred {float(deferred or 0):.2%}"
+            )
         await tool_send_telegram({"text": msg})
         qc_ack = await wait_for_qc_ack_detail(command_id)
         qc_status = qc_ack.get("qc_status")
@@ -273,7 +284,7 @@ async def run_executor_async(
             "policy_sync": policy_sync,
             "execution_audit": build_execution_audit_payload(
                 action_status="accepted" if qc_status == "accepted" else "sent",
-                proposed_weights=weights,
+                proposed_weights=desired_weights,
                 sent_weights=weights,
                 command_id=result.get("command_id", command_id),
                 rebalance_actions=risk_out.get("rebalance_actions") or [],
@@ -293,7 +304,7 @@ async def run_executor_async(
         "policy_sync": policy_sync,
         "execution_audit": build_execution_audit_payload(
             action_status="failed",
-            proposed_weights=weights,
+            proposed_weights=desired_weights,
             command_id=command_id,
             rebalance_actions=risk_out.get("rebalance_actions") or [],
             estimated_cost_pct=risk_out.get("estimated_cost_pct"),

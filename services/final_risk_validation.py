@@ -23,6 +23,7 @@ ALLOWED_POST_RISK_MUTATIONS = {
     "cash_raise_from_policy_cap",
     "decay_risk_auto_reduce",
     "emergency_reduce_only",
+    "execution_buy_delta_throttle",
 }
 
 CONDITIONAL_POST_RISK_MUTATIONS = {

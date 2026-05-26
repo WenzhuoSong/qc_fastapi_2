@@ -72,6 +72,7 @@ from services.proposal_shaper import shape_proposal_before_risk
 from services.position_governance import apply_position_governance
 from services.execution_policy import policy_snapshot
 from services.final_execution_policy_cap import apply_final_execution_policy_cap
+from services.execution_throttle import apply_execution_throttle
 from services.final_risk_validation import validate_final_execution_target
 from services.final_risk_validation_config import default_final_risk_validation_config
 from services.account_state_guard import (
@@ -1780,6 +1781,13 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         current_weights=brief.get("current_weights") or {},
         rebalance_threshold=float((pipeline_context.get("risk_params") or {}).get("rebalance_threshold", 0.02)),
     )
+    await _apply_execution_throttle(
+        analysis_id=analysis_id,
+        risk_out=risk_out,
+        current_weights=brief.get("current_weights") or {},
+        rebalance_threshold=float((pipeline_context.get("risk_params") or {}).get("rebalance_threshold", 0.02)),
+        pipeline_context=pipeline_context,
+    )
     await _apply_transaction_cost_gate_observe(
         analysis_id=analysis_id,
         risk_out=risk_out,
@@ -2232,6 +2240,65 @@ async def _apply_transaction_cost_gate_observe(
             "config": pipeline_context.get("transaction_cost_gate_config") or {},
         },
         output_data=verdict,
+        duration_ms=0,
+    )
+
+
+async def _apply_execution_throttle(
+    *,
+    analysis_id: int,
+    risk_out: dict,
+    current_weights: dict,
+    rebalance_threshold: float,
+    pipeline_context: dict,
+) -> None:
+    """Stage final target to per-command execution-delta limits."""
+    if not risk_out.get("approved") or not risk_out.get("target_weights"):
+        return
+
+    desired = dict(risk_out.get("target_weights") or {})
+    throttle = apply_execution_throttle(
+        target_weights=desired,
+        current_weights=current_weights or {},
+        config=pipeline_context.get("execution_command_config") or {},
+    )
+    risk_out["execution_throttle"] = throttle
+    if throttle.get("applied"):
+        staged = throttle.get("staged_target_weights") or {}
+        risk_out["target_weights"] = staged
+        risk_out["execution_desired_target_weights"] = throttle.get("desired_target_weights") or desired
+        risk_out["execution_deferred_delta"] = throttle.get("deferred_delta") or {}
+        risk_out["rebalance_actions"] = compute_rebalance_actions(
+            staged,
+            current_weights or {},
+            rebalance_threshold,
+        )
+        risk_out["estimated_cost_pct"] = estimate_cost_pct(risk_out["rebalance_actions"])
+        risk_out["n_holdings"] = sum(
+            1 for ticker, weight in staged.items()
+            if ticker != "CASH" and float(weight or 0.0) > 0.01
+        )
+        risk_out.setdefault("overlays_applied", []).append("execution_throttle")
+        risk_out.setdefault("post_risk_mutation_types", []).extend(throttle.get("mutation_types") or [])
+        logger.warning(
+            "[EXECUTION_THROTTLE] staged target | buy_delta %s -> %s | deferred=%s",
+            (throttle.get("metrics_before") or {}).get("buy_delta"),
+            (throttle.get("metrics_after") or {}).get("buy_delta"),
+            throttle.get("deferred_buy_delta"),
+        )
+    else:
+        logger.info("[EXECUTION_THROTTLE] no staging needed: %s", throttle.get("reason"))
+
+    await _save_step_log(
+        analysis_id,
+        "6ccb_execution_throttle",
+        "execution_throttle",
+        input_data={
+            "target_weights_desired": desired,
+            "current_weights": current_weights or {},
+            "config": pipeline_context.get("execution_command_config") or {},
+        },
+        output_data=throttle,
         duration_ms=0,
     )
 
