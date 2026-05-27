@@ -1,7 +1,11 @@
 import unittest
 from pathlib import Path
 
-from services.execution_preflight import command_weight_delta_metrics, preflight_execution_weights
+from services.execution_preflight import (
+    _policy_sync_ack_status,
+    command_weight_delta_metrics,
+    preflight_execution_weights,
+)
 
 
 class ExecutorPreflightTests(unittest.TestCase):
@@ -35,6 +39,9 @@ class ExecutorPreflightTests(unittest.TestCase):
         send_pos = text.index("result = await tool_send_weight_command")
 
         self.assertLess(sync_pos, send_pos)
+        self.assertIn("create_or_update_policy_sync_log", text)
+        self.assertIn("wait_for_qc_ack_detail(policy_sync_id", text)
+        self.assertIn("policy_sync_not_accepted", text)
         self.assertIn("PolicySync failed before", text)
         self.assertIn("No command sent to QC", text)
 
@@ -70,6 +77,20 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertEqual(result["buy_delta"], 0.25)
         self.assertEqual(result["sell_delta"], 0.08)
         self.assertEqual(result["gross_turnover"], 0.165)
+
+    def test_policy_sync_success_requires_qc_ack_status(self):
+        self.assertEqual(
+            _policy_sync_ack_status({"success": True, "ack": {"qc_status": "accepted"}}),
+            "accepted",
+        )
+        self.assertIsNone(_policy_sync_ack_status({"success": True}))
+
+    def test_daily_execution_activity_excludes_preflight_and_qc_rejected_rows(self):
+        text = Path("services/execution_log_store.py").read_text()
+
+        self.assertIn('qc_status in {"not_sent", "rejected"}', text)
+        self.assertIn('qc_status in {"submitted", "accepted", "timeout_no_ack"}', text)
+        self.assertIn("if not _counts_toward_daily_turnover(row):", text)
 
     def test_executor_does_not_overwrite_duplicate_command_log(self):
         text = Path("agents/executor.py").read_text()

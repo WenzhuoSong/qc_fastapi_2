@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, time
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy import desc
 
 from db.models import CommandLifecycleEvent, ExecutionLog
@@ -86,6 +86,60 @@ async def create_or_update_submitted_log(
         await db.commit()
 
 
+async def create_or_update_policy_sync_log(
+    *,
+    command_id: str,
+    analysis_id: int | None = None,
+    policy_version: str | None = None,
+    policy_payload: dict[str, Any] | None = None,
+    qc_response: dict[str, Any] | None = None,
+    status: str = "pending_send",
+    qc_status: str = "pending",
+) -> None:
+    """Create a local row before PolicySync is sent so fast QC ACKs are not lost."""
+    payload = {
+        "action_status": status,
+        "command_id": command_id,
+        "policy_version": policy_version,
+        "policy_payload": policy_payload or {},
+        "qc_response": qc_response or {},
+        "recorded_at": datetime.now(UTC).isoformat(),
+    }
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(ExecutionLog).where(ExecutionLog.command_id == command_id))
+        row = result.scalar_one_or_none()
+        if row:
+            row.analysis_id = analysis_id or row.analysis_id
+            row.command_type = row.command_type or "policy_sync"
+            row.command_payload = payload
+            row.qc_response = qc_response or row.qc_response
+            row.status = status
+            if row.qc_status not in {"accepted", "rejected"}:
+                row.qc_status = qc_status
+        else:
+            db.add(
+                ExecutionLog(
+                    analysis_id=analysis_id,
+                    command_id=command_id,
+                    command_type="policy_sync",
+                    command_payload=payload,
+                    qc_response=qc_response,
+                    status=status,
+                    qc_status=qc_status,
+                )
+            )
+        await append_command_lifecycle_event(
+            db,
+            command_id=command_id,
+            analysis_id=analysis_id,
+            event_type="created" if status == "pending_send" else "submitted_to_qc",
+            event_status=status,
+            source="fastapi",
+            payload=payload,
+        )
+        await db.commit()
+
+
 async def update_execution_result(
     *,
     command_id: str,
@@ -102,6 +156,8 @@ async def update_execution_result(
             row.command_payload = audit_payload
             row.qc_response = qc_response or row.qc_response
             row.status = status
+            if status in {"failed", "rejected", "skipped"} and row.qc_ack_at is None and row.qc_status in {None, "submitted"}:
+                row.qc_status = "not_sent"
         else:
             db.add(
                 ExecutionLog(
@@ -111,7 +167,7 @@ async def update_execution_result(
                     command_payload=audit_payload,
                     qc_response=qc_response,
                     status=status,
-                    qc_status="submitted",
+                    qc_status="not_sent" if status in {"failed", "rejected", "skipped"} else "submitted",
                 )
             )
         event_type = "execution_result"
@@ -188,11 +244,24 @@ async def update_qc_status(
             if qc_response is not None:
                 row.qc_response = qc_response
         else:
-            await db.execute(
-                update(ExecutionLog)
-                .where(ExecutionLog.command_id == command_id)
-                .values(**values)
+            row = ExecutionLog(
+                analysis_id=_analysis_id_from_command_id(command_id),
+                command_id=command_id,
+                command_type=_command_type_from_id(command_id),
+                command_payload={
+                    "action_status": "qc_ack_without_local_row",
+                    "command_id": command_id,
+                    "reason": rejection_reason,
+                    "qc_response": qc_response or {},
+                    "recorded_at": datetime.now(UTC).isoformat(),
+                },
+                qc_response=qc_response,
+                status="ack_received",
+                qc_status=qc_status,
+                qc_ack_at=ack_time,
+                qc_rejection_reason=rejection_reason,
             )
+            db.add(row)
         event_type = {
             "accepted": "qc_accepted",
             "rejected": "qc_rejected",
@@ -273,13 +342,11 @@ async def summarize_today_execution_activity(now: datetime | None = None) -> dic
                 .where(ExecutionLog.executed_at >= start)
             )
         ).scalars().all()
-    command_rows = [
-        row for row in rows
-        if getattr(row, "status", None) in {"sent", "accepted", "timeout_no_ack"}
-        or getattr(row, "qc_status", None) in {"submitted", "accepted", "rejected", "timeout_no_ack"}
-    ]
+    command_rows = [row for row in rows if _counts_toward_daily_command(row)]
     gross_turnover = 0.0
     for row in command_rows:
+        if not _counts_toward_daily_turnover(row):
+            continue
         payload = getattr(row, "command_payload", None) or {}
         preflight = payload.get("command_preflight") or {}
         metrics = preflight.get("metrics") or {}
@@ -293,8 +360,45 @@ async def summarize_today_execution_activity(now: datetime | None = None) -> dic
     }
 
 
+def _counts_toward_daily_command(row: Any) -> bool:
+    """Count only weight commands that were actually sent or are pending/accepted."""
+    if getattr(row, "command_type", None) != "weight_adjustment":
+        return False
+    status = str(getattr(row, "status", "") or "").lower()
+    qc_status = str(getattr(row, "qc_status", "") or "").lower()
+    if qc_status in {"not_sent", "rejected"}:
+        return False
+    return status in {"sent", "accepted", "timeout_no_ack"} or qc_status in {"submitted", "accepted", "timeout_no_ack"}
+
+
+def _counts_toward_daily_turnover(row: Any) -> bool:
+    if not _counts_toward_daily_command(row):
+        return False
+    qc_status = str(getattr(row, "qc_status", "") or "").lower()
+    return qc_status in {"submitted", "accepted", "timeout_no_ack"}
+
+
 async def mark_timeout(command_id: str) -> None:
     await update_qc_status(command_id, "timeout_no_ack", rejection_reason="no QC ack before timeout")
+
+
+def _command_type_from_id(command_id: str) -> str:
+    command = str(command_id or "")
+    if command.endswith("_policy"):
+        return "policy_sync"
+    return "weight_adjustment" if command.startswith("analysis_") else "unknown"
+
+
+def _analysis_id_from_command_id(command_id: str) -> int | None:
+    command = str(command_id or "")
+    if command.endswith("_policy"):
+        command = command[:-7]
+    if not command.startswith("analysis_"):
+        return None
+    try:
+        return int(command.split("_", 1)[1])
+    except (TypeError, ValueError, IndexError):
+        return None
 
 
 async def append_reconciliation_from_account_snapshot(db, account_state: dict[str, Any]) -> int:

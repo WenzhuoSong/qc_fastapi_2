@@ -17,7 +17,12 @@ from services.feature_authority_mode import (
     normalize_feature_authority_mode,
 )
 from services.pc_promotion_config import default_pc_promotion_config, format_pc_promotion_config
-from services.execution_log_store import create_or_update_submitted_log, record_preflight_block
+from services.execution_ack_tracker import wait_for_qc_ack_detail
+from services.execution_log_store import (
+    create_or_update_policy_sync_log,
+    create_or_update_submitted_log,
+    record_preflight_block,
+)
 from services.execution_policy import policy_snapshot
 from services.execution_preflight import preflight_execution_command, preflight_execution_weights
 from config             import get_settings
@@ -76,7 +81,36 @@ async def _cmd_confirm() -> str:
         return f"❌ Execution preflight blocked: {weight_preflight.get('policy_evaluation', {}).get('violations')}"
 
     policy = policy_snapshot()
-    policy_sync = await tool_send_policy_sync({"command_id": f"{command_id}_policy", "payload": policy})
+    policy_sync_id = f"{command_id}_policy"
+    await create_or_update_policy_sync_log(
+        command_id=policy_sync_id,
+        analysis_id=analysis_id,
+        policy_version=policy.get("version"),
+        policy_payload=policy,
+        status="pending_send",
+        qc_status="pending",
+    )
+    policy_sync = await tool_send_policy_sync({"command_id": policy_sync_id, "payload": policy})
+    await create_or_update_policy_sync_log(
+        command_id=policy_sync_id,
+        analysis_id=analysis_id,
+        policy_version=policy.get("version"),
+        policy_payload=policy,
+        qc_response=policy_sync.get("response"),
+        status="sent" if policy_sync.get("success") else "failed",
+        qc_status="submitted" if policy_sync.get("success") else "not_sent",
+    )
+    if not policy_sync.get("success"):
+        return f"❌ PolicySync failed: {policy_sync.get('error', 'unknown')}"
+    policy_sync_ack = await wait_for_qc_ack_detail(policy_sync_id, timeout_seconds=15)
+    policy_sync["ack"] = policy_sync_ack
+    policy_sync["ack_status"] = policy_sync_ack.get("qc_status")
+    if policy_sync_ack.get("qc_status") != "accepted":
+        return (
+            "❌ PolicySync not accepted. "
+            f"status={policy_sync_ack.get('qc_status')} "
+            f"reason={policy_sync_ack.get('qc_rejection_reason') or 'unknown'}"
+        )
     command_preflight = await preflight_execution_command(
         command_id=command_id or "",
         analysis_id=analysis_id,

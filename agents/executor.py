@@ -6,7 +6,11 @@ from tools.notify_tools import tool_send_telegram
 from tools.db_tools import tool_verify_approval_token
 from services.execution_audit import build_execution_audit_payload
 from services.execution_ack_tracker import wait_for_qc_ack_detail
-from services.execution_log_store import create_or_update_submitted_log, record_preflight_block
+from services.execution_log_store import (
+    create_or_update_policy_sync_log,
+    create_or_update_submitted_log,
+    record_preflight_block,
+)
 from services.execution_policy import policy_snapshot
 from services.execution_preflight import preflight_execution_command, preflight_execution_weights
 
@@ -160,7 +164,24 @@ async def run_executor_async(
     policy = policy_snapshot()
     policy_version = policy.get("version")
     policy_sync_id = f"{command_id}_policy"
+    await create_or_update_policy_sync_log(
+        command_id=policy_sync_id,
+        analysis_id=analysis_id,
+        policy_version=policy_version,
+        policy_payload=policy,
+        status="pending_send",
+        qc_status="pending",
+    )
     policy_sync = await tool_send_policy_sync({"command_id": policy_sync_id, "payload": policy})
+    await create_or_update_policy_sync_log(
+        command_id=policy_sync_id,
+        analysis_id=analysis_id,
+        policy_version=policy_version,
+        policy_payload=policy,
+        qc_response=policy_sync.get("response"),
+        status="sent" if policy_sync.get("success") else "failed",
+        qc_status="submitted" if policy_sync.get("success") else "not_sent",
+    )
     if not policy_sync.get("success"):
         err = policy_sync.get("error", "policy sync failed")
         await tool_send_telegram({
@@ -179,6 +200,31 @@ async def run_executor_async(
                 rebalance_actions=risk_out.get("rebalance_actions") or [],
                 estimated_cost_pct=risk_out.get("estimated_cost_pct"),
                 reason="policy_sync_failed",
+            ),
+        }
+    policy_sync_ack = await wait_for_qc_ack_detail(policy_sync_id, timeout_seconds=15)
+    policy_sync["ack"] = policy_sync_ack
+    policy_sync["ack_status"] = policy_sync_ack.get("qc_status")
+    if policy_sync_ack.get("qc_status") != "accepted":
+        reason = policy_sync_ack.get("qc_rejection_reason") or policy_sync_ack.get("qc_status") or "policy sync ack missing"
+        await tool_send_telegram({
+            "text": (
+                f"⛔ PolicySync not accepted before `{_command_label(command_id)}`\n"
+                f"policy_command={policy_sync_id} status={policy_sync_ack.get('qc_status')} reason={reason}\n"
+                "No command sent to QC."
+            )
+        })
+        return {
+            "execution_status": "failed",
+            "error": reason,
+            "policy_sync": policy_sync,
+            "execution_audit": build_execution_audit_payload(
+                action_status="failed",
+                proposed_weights=desired_weights,
+                command_id=command_id,
+                rebalance_actions=risk_out.get("rebalance_actions") or [],
+                estimated_cost_pct=risk_out.get("estimated_cost_pct"),
+                reason="policy_sync_not_accepted",
             ),
         }
 

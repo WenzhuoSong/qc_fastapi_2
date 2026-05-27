@@ -50,6 +50,7 @@ async def preflight_execution_command(
     metrics = command_weight_delta_metrics(target, current)
     submission_state = await command_submission_state(command_id=command_id, analysis_id=analysis_id)
     today = await summarize_today_execution_activity()
+    policy_sync_ack_status = _policy_sync_ack_status(policy_sync_result)
 
     checks: dict[str, dict[str, Any]] = {
         "command_id_present": {
@@ -78,9 +79,9 @@ async def preflight_execution_command(
             "threshold": "FastAPI policy_version required in command payload",
         },
         "policy_sync_success": {
-            "pass": bool((policy_sync_result or {}).get("success")),
+            "pass": bool((policy_sync_result or {}).get("success")) and policy_sync_ack_status == "accepted",
             "actual": policy_sync_result,
-            "threshold": "successful QC PolicySync required before SetWeights",
+            "threshold": "QC PolicySync ACK accepted required before SetWeights",
         },
         "daily_command_count_ok": {
             "pass": int(today.get("command_count") or 0) < int(cfg["max_daily_commands"]),
@@ -138,6 +139,19 @@ def command_weight_delta_metrics(
         "sell_delta": round(sell_delta, 6),
         "gross_turnover": round(gross / 2.0, 6),
     }
+
+
+def _policy_sync_ack_status(policy_sync_result: dict[str, Any] | None) -> str | None:
+    if not isinstance(policy_sync_result, dict):
+        return None
+    direct = policy_sync_result.get("ack_status") or policy_sync_result.get("qc_status")
+    if direct:
+        return str(direct).lower().strip()
+    ack = policy_sync_result.get("ack")
+    if isinstance(ack, dict):
+        value = ack.get("qc_status")
+        return str(value).lower().strip() if value else None
+    return None
 
 
 def _command_config(config: dict[str, Any] | None) -> dict[str, Any]:

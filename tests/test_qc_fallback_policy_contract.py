@@ -55,8 +55,8 @@ class QCFallbackPolicyContractTest(unittest.TestCase):
         self.assertIn("_is_reduce_only_command", text)
         self.assertIn("_current_portfolio_weight", text)
         self.assertIn('"policy_mismatch": bool(policy_mismatch)', text)
-        self.assertIn('"actual_target_weights": actual_target_weights or {}', text)
-        self.assertIn('"order_summary": order_summary or {}', text)
+        self.assertIn('"actual_target_weights": self._dict_from_qc_object(actual_target_weights or {})', text)
+        self.assertIn('"order_summary": self._dict_from_qc_object(order_summary or {})', text)
         self.assertIn("def _ticket_summaries", text)
         self.assertIn('"open_order_count_after": open_after', text)
         self.assertIn("unknown tickers rejected", text)
@@ -69,6 +69,16 @@ class QCFallbackPolicyContractTest(unittest.TestCase):
         self.assertIn("data.ContainsKey(key)", text)
         self.assertIn("return data[key]", text)
         self.assertIn("def _is_mapping_like(raw) -> bool:", text)
+
+    def test_qc_policy_sync_ack_path_is_no_throw_for_none_values(self):
+        text = QC_FILE.read_text()
+
+        self.assertIn("payload = self._dict_from_qc_object(self._get_field(data, \"payload\", {}) or {})", text)
+        self.assertIn('if raw is None:', text)
+        self.assertIn("orders = self.transactions.get_open_orders()", text)
+        self.assertIn("return len(list(orders or []))", text)
+        self.assertIn("target_weights = self._dict_from_qc_object(getattr(self, \"_target_weights\", {}) or {})", text)
+        self.assertIn("actual_target_weights\": self._dict_from_qc_object(actual_target_weights or {})", text)
 
     def test_qc_thematic_fallback_cap_is_not_legacy_five_percent(self):
         qc_policy = _load_qc_policy_constants()
