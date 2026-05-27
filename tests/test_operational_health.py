@@ -5,12 +5,61 @@ from services.operational_health import (
     _freshness_check,
     _heartbeat_freshness_check,
     _trading_day_freshness_check,
+    _yfinance_ticker_health_check,
     classify_operational_health,
     format_operational_health_report,
 )
 
 
 class OperationalHealthTests(unittest.TestCase):
+    def test_yfinance_ticker_health_reports_each_etf(self):
+        class Row:
+            def __init__(self, ticker, trading_date, **values):
+                self.ticker = ticker
+                self.trading_date = trading_date
+                self.data_quality_flag = values.pop("data_quality_flag", "ok")
+                for key, value in values.items():
+                    setattr(self, key, value)
+
+        now = datetime(2026, 5, 26, 21, 0, 0)  # Tuesday after close ET
+        full_row = {
+            "close_price": 100,
+            "return_1d": 0.01,
+            "return_20d": 0.05,
+            "hist_vol_20d": 0.02,
+            "rsi_14": 55,
+            "atr_pct": 0.01,
+            "beta_vs_spy": 1.0,
+            "return_60d": 0.08,
+            "return_252d": 0.2,
+            "sma_200": 95,
+        }
+        check = _yfinance_ticker_health_check(
+            universe=["SPY", "DRAM", "MISSING"],
+            latest_rows={
+                "SPY": Row("SPY", datetime(2026, 5, 26).date(), **full_row),
+                "DRAM": Row(
+                    "DRAM",
+                    datetime(2026, 5, 26).date(),
+                    **{**full_row, "return_60d": None, "return_252d": None, "sma_200": None},
+                ),
+            },
+            stats_by_ticker={
+                "SPY": {"row_count": 300, "first_date": datetime(2025, 1, 1).date()},
+                "DRAM": {"row_count": 37, "first_date": datetime(2026, 4, 2).date()},
+            },
+            now=now,
+        )
+
+        self.assertEqual(check["ticker_count"], 3)
+        self.assertEqual(check["issue_count"], 1)
+        self.assertEqual(check["insufficient_history_count"], 1)
+        dram = next(row for row in check["rows"] if row["ticker"] == "DRAM")
+        self.assertEqual(dram["state"], "ok")
+        self.assertEqual(dram["history_status"], "insufficient_history")
+        missing = next(row for row in check["rows"] if row["ticker"] == "MISSING")
+        self.assertEqual(missing["state"], "missing")
+
     def test_classifies_execution_blocker_vs_research_degradation(self):
         now = datetime(2026, 5, 15, 12, 0, 0)
         checks = {

@@ -13,6 +13,7 @@ from services.execution_log_store import (
 )
 from services.execution_policy import policy_snapshot
 from services.execution_preflight import preflight_execution_command, preflight_execution_weights
+from services.transaction_cost_gate import format_transaction_cost_gate_summary
 
 logger = logging.getLogger("qc_fastapi_2.executor")
 
@@ -291,6 +292,9 @@ async def run_executor_async(
             + f"\nCost: {float(risk_out.get('estimated_cost_pct', 0) or 0):.2%}"
             + "\nAwaiting QC algorithm confirmation."
         )
+        cost_gate_summary = format_transaction_cost_gate_summary(risk_out.get("transaction_cost_gate") or {})
+        if cost_gate_summary:
+            msg += f"\n{cost_gate_summary}"
         if execution_throttle.get("applied"):
             before = (execution_throttle.get("metrics_before") or {}).get("buy_delta")
             after = (execution_throttle.get("metrics_after") or {}).get("buy_delta")

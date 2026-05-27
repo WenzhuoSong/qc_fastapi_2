@@ -1,7 +1,7 @@
 """Daily operational health summary."""
 from __future__ import annotations
 
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -16,6 +16,15 @@ FRESHNESS_LIMITS_HOURS = {
     "memory_write": 36,
 }
 FAILED_CRON_LOOKBACK_HOURS = 48
+YFINANCE_CORE_HEALTH_FIELDS = (
+    "close_price",
+    "return_1d",
+    "return_20d",
+    "hist_vol_20d",
+    "rsi_14",
+    "atr_pct",
+)
+YFINANCE_LONG_HISTORY_FIELDS = ("return_60d", "return_252d", "sma_200", "beta_vs_spy")
 
 MARKET_TZ = ZoneInfo("America/New_York")
 MARKET_OPEN = time(9, 30)
@@ -25,7 +34,7 @@ MARKET_CLOSE = time(16, 0)
 
 async def build_operational_health_snapshot() -> dict[str, Any]:
     """Read operational freshness and recent job health from the database."""
-    from sqlalchemy import desc, select
+    from sqlalchemy import desc, func, select
 
     from db.models import (
         AgentAnalysis,
@@ -37,9 +46,16 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
         QCSnapshot,
     )
     from db.session import AsyncSessionLocal
+    from services.execution_policy import TICKER_ROLES, TickerRole
 
     now = datetime.now(UTC).replace(tzinfo=None)
     failed_cron_cutoff = now - timedelta(hours=FAILED_CRON_LOOKBACK_HOURS)
+
+    health_universe = sorted(
+        ticker
+        for ticker, role in TICKER_ROLES.items()
+        if role not in {TickerRole.WATCHLIST, TickerRole.UNKNOWN}
+    )
 
     async with AsyncSessionLocal() as db:
         heartbeat = (
@@ -66,6 +82,31 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
                 .limit(1)
             )
         ).scalar_one_or_none()
+        yfinance_rows = (
+            await db.execute(
+                select(MarketDailyFeature)
+                .where(MarketDailyFeature.source == "yfinance")
+                .where(MarketDailyFeature.ticker.in_(health_universe))
+                .order_by(
+                    MarketDailyFeature.ticker,
+                    desc(MarketDailyFeature.trading_date),
+                    desc(MarketDailyFeature.updated_at),
+                )
+            )
+        ).scalars().all()
+        yfinance_stats_rows = (
+            await db.execute(
+                select(
+                    MarketDailyFeature.ticker,
+                    func.count(MarketDailyFeature.id),
+                    func.min(MarketDailyFeature.trading_date),
+                    func.max(MarketDailyFeature.trading_date),
+                )
+                .where(MarketDailyFeature.source == "yfinance")
+                .where(MarketDailyFeature.ticker.in_(health_universe))
+                .group_by(MarketDailyFeature.ticker)
+            )
+        ).all()
         news = (
             await db.execute(select(MacroNewsCache).where(MacroNewsCache.id == 1))
         ).scalar_one_or_none()
@@ -94,6 +135,20 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
             )
         ).scalars().all()
 
+    yfinance_ticker_health = _yfinance_ticker_health_check(
+        universe=health_universe,
+        latest_rows=_latest_yfinance_rows_by_ticker(yfinance_rows),
+        stats_by_ticker={
+            str(ticker): {
+                "row_count": int(count or 0),
+                "first_date": first_date,
+                "latest_date": latest_date,
+            }
+            for ticker, count, first_date, latest_date in yfinance_stats_rows
+        },
+        now=now,
+    )
+
     checks = {
         "qc_heartbeat": _heartbeat_freshness_check(
             label="QC heartbeat",
@@ -119,6 +174,7 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
             blocker=False,
             missing_blocker=False,
         ),
+        "yfinance_ticker_health": yfinance_ticker_health,
         "news_cache": _freshness_check(
             label="News cache",
             timestamp=getattr(news, "updated_at", None),
@@ -201,6 +257,14 @@ def format_operational_health_report(snapshot: dict[str, Any]) -> str:
         age = check.get("age_hours")
         age_text = "never updated" if age is None else f"{age:.1f}h"
         lines.append(f"- {check.get('label', key)}: {check.get('state', 'unknown')} ({age_text})")
+    ticker_health = checks.get("yfinance_ticker_health") or {}
+    if ticker_health:
+        lines.append(
+            "- YFinance ETF health: "
+            f"{ticker_health.get('state', 'unknown')} "
+            f"({ticker_health.get('ok_count', 0)}/{ticker_health.get('ticker_count', 0)} ok, "
+            f"issues={ticker_health.get('issue_count', 0)})"
+        )
 
     pipeline = checks.get("pipeline_status") or {}
     lines.append(f"- Pipeline: {pipeline.get('status', 'unknown')}")
@@ -327,6 +391,125 @@ def _trading_day_freshness_check(
             "expected_research_date": expected_date.isoformat(),
         })
     return check
+
+
+def _latest_yfinance_rows_by_ticker(rows: list[Any]) -> dict[str, Any]:
+    latest: dict[str, Any] = {}
+    for row in rows:
+        ticker = str(getattr(row, "ticker", "") or "").upper().strip()
+        if ticker and ticker not in latest:
+            latest[ticker] = row
+    return latest
+
+
+def _yfinance_ticker_health_check(
+    *,
+    universe: list[str],
+    latest_rows: dict[str, Any],
+    stats_by_ticker: dict[str, dict[str, Any]],
+    now: datetime,
+) -> dict[str, Any]:
+    market_now = now.replace(tzinfo=UTC).astimezone(MARKET_TZ)
+    expected_date = _latest_expected_daily_research_date(market_now)
+    rows: list[dict[str, Any]] = []
+    issue_count = 0
+    ok_count = 0
+    insufficient_history_count = 0
+
+    for ticker in sorted({str(item).upper().strip() for item in universe if item}):
+        row = latest_rows.get(ticker)
+        stats = stats_by_ticker.get(ticker) or {}
+        if row is None:
+            rows.append({
+                "ticker": ticker,
+                "state": "missing",
+                "reason": "missing_yfinance_row",
+                "trading_date": None,
+                "row_count": int(stats.get("row_count") or 0),
+                "missing_core_fields": list(YFINANCE_CORE_HEALTH_FIELDS),
+                "missing_long_history_fields": list(YFINANCE_LONG_HISTORY_FIELDS),
+                "history_status": "missing",
+            })
+            issue_count += 1
+            continue
+
+        trading_date = getattr(row, "trading_date", None)
+        missing_core = [
+            field for field in YFINANCE_CORE_HEALTH_FIELDS
+            if getattr(row, field, None) is None
+        ]
+        missing_long = [
+            field for field in YFINANCE_LONG_HISTORY_FIELDS
+            if getattr(row, field, None) is None
+        ]
+        quality = str(getattr(row, "data_quality_flag", "") or "ok").lower()
+        row_count = int(stats.get("row_count") or 0)
+        stale = bool(trading_date and trading_date < expected_date)
+        if trading_date is None:
+            state = "missing"
+            reason = "missing_trading_date"
+        elif stale:
+            state = "stale"
+            reason = f"latest {trading_date.isoformat()} < expected {expected_date.isoformat()}"
+        elif quality not in {"ok", "none", ""}:
+            state = "degraded"
+            reason = f"data_quality_flag={quality}"
+        elif missing_core:
+            state = "degraded"
+            reason = "missing_core_fields:" + ",".join(missing_core)
+        else:
+            state = "ok"
+            reason = "ready"
+            ok_count += 1
+
+        if missing_long:
+            history_status = "insufficient_history" if row_count < 260 else "missing_long_history_fields"
+            insufficient_history_count += 1 if history_status == "insufficient_history" else 0
+        else:
+            history_status = "long_history_ready"
+
+        if state != "ok":
+            issue_count += 1
+
+        rows.append({
+            "ticker": ticker,
+            "state": state,
+            "reason": reason,
+            "trading_date": trading_date.isoformat() if isinstance(trading_date, date) else None,
+            "expected_date": expected_date.isoformat(),
+            "row_count": row_count,
+            "first_date": _date_iso(stats.get("first_date")),
+            "missing_core_fields": missing_core,
+            "missing_long_history_fields": missing_long,
+            "history_status": history_status,
+            "data_quality_flag": quality,
+        })
+
+    state = "ok" if issue_count == 0 else "degraded"
+    sample_issues = [row for row in rows if row["state"] != "ok"][:8]
+    return {
+        "label": "YFinance ETF health",
+        "state": state,
+        "reason": (
+            "all tracked ETFs have current core yfinance fields"
+            if issue_count == 0
+            else f"{issue_count} ETF yfinance issues"
+        ),
+        "blocking": False,
+        "ticker_count": len(rows),
+        "ok_count": ok_count,
+        "issue_count": issue_count,
+        "insufficient_history_count": insufficient_history_count,
+        "expected_research_date": expected_date.isoformat(),
+        "sample_issues": sample_issues,
+        "rows": rows,
+    }
+
+
+def _date_iso(value: Any) -> str | None:
+    if isinstance(value, date):
+        return value.isoformat()
+    return None
 
 
 def _latest_expected_daily_research_date(market_now: datetime):

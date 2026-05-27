@@ -88,6 +88,13 @@ class QCFallbackPolicyContractTest(unittest.TestCase):
         self.assertEqual(qc_policy["ROLE_CAPS"]["thematic"]["max_single"], 0.075)
         self.assertGreater(qc_policy["ROLE_CAPS"]["thematic"]["max_single"], 0.051)
 
+    def test_qc_universe_matches_fastapi_execution_policy(self):
+        qc_policy = _load_qc_policy_constants()
+        qc_universe = _load_qc_universe_constants()
+
+        self.assertEqual(qc_universe, set(qc_policy["TICKER_ROLES"]))
+        self.assertEqual(qc_universe, set(TICKER_ROLES))
+
 
 def _load_qc_policy_constants() -> dict:
     tree = ast.parse(QC_FILE.read_text())
@@ -110,6 +117,24 @@ def _load_qc_policy_constants() -> dict:
     }
 
 
+def _load_qc_universe_constants() -> set[str]:
+    tree = ast.parse(QC_FILE.read_text())
+    class_node = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "QCAgenticV1"
+    )
+    env: dict[str, object] = {}
+    for node in class_node.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        if target.id in {"CORE_UNIVERSE", "SATELLITE_UNIVERSE", "HEDGE_UNIVERSE"}:
+            env[target.id] = _eval_policy_node(node.value, env)
+    return set(env["CORE_UNIVERSE"]) | set(env["SATELLITE_UNIVERSE"]) | set(env["HEDGE_UNIVERSE"])
+
+
 def _eval_policy_node(node: ast.AST, env: dict[str, object]):
     if isinstance(node, ast.Constant):
         return node.value
@@ -120,6 +145,8 @@ def _eval_policy_node(node: ast.AST, env: dict[str, object]):
             _eval_policy_node(key, env): _eval_policy_node(value, env)
             for key, value in zip(node.keys, node.values)
         }
+    if isinstance(node, ast.List):
+        return [_eval_policy_node(item, env) for item in node.elts]
     raise AssertionError(f"Unsupported QC policy node: {ast.dump(node)}")
 
 

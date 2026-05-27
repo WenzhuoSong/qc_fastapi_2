@@ -38,11 +38,10 @@ BROAD_MARKET = [
     "IWM",   # Russell 2000
 ]
 
-# 3 支宏观对冲
+# 2 支宏观对冲
 MACRO_HEDGE = [
     "GLD",   # Gold
     "TLT",   # 20+ yr Treasury
-    "HYG",   # HY Corporate Credit
 ]
 
 DEFAULT_ETF_UNIVERSE: list[str] = SPDR_SECTORS + BROAD_MARKET + MACRO_HEDGE

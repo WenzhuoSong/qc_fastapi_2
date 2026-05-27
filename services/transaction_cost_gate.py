@@ -58,6 +58,27 @@ class CostGateEvidence:
     conviction_discount: float
 
 
+def format_transaction_cost_gate_summary(gate: dict[str, Any] | None) -> str:
+    """Return a compact non-blocking cost diagnostic line for operator messages."""
+    if not isinstance(gate, dict) or not gate:
+        return ""
+    summary = gate.get("summary") or {}
+    broker = gate.get("broker") or DEFAULT_BROKER
+    mode = gate.get("mode") or DEFAULT_MODE
+    total_drag = summary.get("total_cost_drag")
+    warning_count = int(summary.get("warning_count") or 0)
+    min_ratio = summary.get("min_edge_to_cost_ratio")
+    cost_model = summary.get("cost_model") or f"{broker}_return_drag_v1"
+    parts = [f"Cost gate: {mode} {broker}"]
+    if total_drag is not None:
+        parts.append(f"drag {float(total_drag or 0.0):.3%}")
+    if min_ratio is not None:
+        parts.append(f"min edge/cost {float(min_ratio):.2f}x")
+    parts.append(f"warnings {warning_count}")
+    parts.append(f"model {cost_model}")
+    return " | ".join(parts)
+
+
 def default_transaction_cost_gate_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
     raw = dict(config or {})
     mode = str(raw.get("mode") or DEFAULT_MODE).strip().lower()

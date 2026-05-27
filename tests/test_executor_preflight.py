@@ -6,6 +6,7 @@ from services.execution_preflight import (
     command_weight_delta_metrics,
     preflight_execution_weights,
 )
+from services.transaction_cost_gate import format_transaction_cost_gate_summary
 
 
 class ExecutorPreflightTests(unittest.TestCase):
@@ -108,6 +109,23 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn("order_summary: dict[str, Any] | None", text)
         self.assertIn("fill_summary: dict[str, Any] | None", text)
         self.assertIn("account_state: dict[str, Any] | None", text)
+
+    def test_executor_surfaces_transaction_cost_gate_summary(self):
+        summary = format_transaction_cost_gate_summary({
+            "mode": "observe",
+            "broker": "IBKR",
+            "summary": {
+                "total_cost_drag": 0.000914,
+                "min_edge_to_cost_ratio": 1.2,
+                "warning_count": 2,
+                "cost_model": "IBKR_return_drag_v1",
+            }
+        })
+
+        self.assertIn("Cost gate: observe IBKR", summary)
+        self.assertIn("drag 0.091%", summary)
+        self.assertIn("min edge/cost 1.20x", summary)
+        self.assertIn("warnings 2", summary)
 
 
 if __name__ == "__main__":
