@@ -88,8 +88,10 @@ class StrategyResult:
     weights: dict[str, float]
     score_breakdown: list[dict[str, Any]]
     selected_tickers: list[str]
-    expected_turnover_pct: float
-    estimated_cost_pct: float
+    expected_turnover_pct: float | None
+    estimated_cost_pct: float | None
+    diagnostic_turnover_pct: float | None
+    turnover_status: str
     regime_fit: str
     data_ready: bool
     data_readiness: dict[str, Any]
@@ -440,6 +442,7 @@ async def _ensure_playground_features(
     missing_after = _missing_required_by_ticker(enriched, required_fields)
     still_missing = {ticker: fields for ticker, fields in missing_after.items() if fields}
     if still_missing:
+        data_gaps.extend(_insufficient_history_gap_notes(enriched, still_missing))
         data_gaps.append(f"strategy-required fields still missing after yfinance enrichment: {still_missing}")
     else:
         data_gaps.append("missing strategy fields filled from yfinance research feature layer")
@@ -585,14 +588,18 @@ def _run_one_strategy(
     strategy = get_strategy(name)
     readiness = strategy.data_readiness(holdings)
     feature_contract = build_strategy_feature_contract(strategy, holdings)
-    if readiness.get("ready") and feature_contract.get("can_influence_allocation"):
+    can_score = bool(readiness.get("ready") and feature_contract.get("can_influence_allocation"))
+    if can_score:
         scored = strategy.score(holdings, context)
         weights = strategy.optimize(scored, context)
     else:
         scored = []
         weights = {"CASH": 1.0}
     actions = compute_rebalance_actions(weights, current_weights, threshold=1e-9)
-    turnover = sum(abs(float(a["weight_delta"])) for a in actions) / 2.0
+    turnover = _turnover(weights, current_weights)
+    expected_turnover = round(turnover, 6) if can_score else None
+    estimated_cost = estimate_cost_pct(actions) if can_score else None
+    turnover_status = "actionable" if can_score else "cash_fallback_not_actionable"
     score_breakdown = [_score_to_dict(item) for item in scored]
     evidence_cards = _build_strategy_evidence_cards(
         strategy=strategy,
@@ -608,17 +615,25 @@ def _run_one_strategy(
         weights=weights,
         score_breakdown=score_breakdown,
         selected_tickers=[ticker for ticker, weight in weights.items() if ticker != "CASH" and weight > 0.01],
-        expected_turnover_pct=round(turnover, 6),
-        estimated_cost_pct=estimate_cost_pct(actions),
+        expected_turnover_pct=expected_turnover,
+        estimated_cost_pct=estimated_cost,
+        diagnostic_turnover_pct=round(turnover, 6),
+        turnover_status=turnover_status,
         regime_fit=_strategy_regime_fit(name, context.get("regime", "")),
-        data_ready=bool(readiness.get("ready")),
+        data_ready=can_score,
         data_readiness={
             **readiness,
             "requirements": strategy.data_requirements(),
         },
         feature_contract=feature_contract,
         data_quality=_build_data_quality(readiness, holdings, strategy.required_fields),
-        risk_profile=_build_risk_profile(weights, turnover, estimate_cost_pct(actions)),
+        risk_profile=_build_risk_profile(
+            weights,
+            expected_turnover,
+            estimated_cost,
+            diagnostic_turnover=turnover,
+            turnover_status=turnover_status,
+        ),
         memory_feedback=memory_feedback or _neutral_memory_feedback(name, context.get("regime", "")),
         agent_interpretation=_build_agent_interpretation(
             strategy, scored, weights, context, readiness, feature_contract, memory_feedback
@@ -795,6 +810,45 @@ def _merge_feature_map(
     return enriched
 
 
+LONG_LOOKBACK_REQUIRED_DAYS = {
+    "mom_60d": 60,
+    "return_60d": 60,
+    "mom_252d": 252,
+    "return_252d": 252,
+    "sma_200": 200,
+}
+
+
+def _insufficient_history_gap_notes(
+    holdings: list[dict[str, Any]],
+    missing_by_ticker: dict[str, list[str]],
+) -> list[str]:
+    """Explain young ETFs separately from true feature-fetch failures."""
+    by_ticker = {
+        (row.get("ticker") or "").upper().strip(): row
+        for row in holdings
+        if (row.get("ticker") or "").upper().strip()
+    }
+    notes: list[str] = []
+    for ticker, fields in sorted(missing_by_ticker.items()):
+        long_fields = [field for field in fields if field in LONG_LOOKBACK_REQUIRED_DAYS]
+        if not long_fields:
+            continue
+        row = by_ticker.get(ticker) or {}
+        has_price_data = any(
+            row.get(field) is not None
+            for field in ("close_price", "price", "return_1d", "return_5d", "mom_20d", "hist_vol_20d")
+        )
+        if not has_price_data:
+            continue
+        required_days = max(LONG_LOOKBACK_REQUIRED_DAYS[field] for field in long_fields)
+        notes.append(
+            f"{ticker} has price data but insufficient listed history for "
+            f"{','.join(sorted(long_fields))}; requires up to {required_days} trading days"
+        )
+    return notes
+
+
 def _feature_row_to_holding_fields(feature: dict[str, Any]) -> dict[str, Any]:
     return {
         "price": feature.get("close_price") or feature.get("adj_close_price"),
@@ -863,8 +917,11 @@ def _build_data_quality(
 
 def _build_risk_profile(
     weights: dict[str, float],
-    turnover: float,
-    estimated_cost: float,
+    turnover: float | None,
+    estimated_cost: float | None,
+    *,
+    diagnostic_turnover: float | None = None,
+    turnover_status: str = "actionable",
 ) -> dict[str, Any]:
     non_cash = {ticker: float(weight) for ticker, weight in weights.items() if ticker != "CASH" and weight > 0}
     max_single = max(non_cash.values()) if non_cash else 0.0
@@ -874,7 +931,14 @@ def _build_risk_profile(
     elif max_single >= 0.12 or len(non_cash) <= 6:
         concentration = "medium"
     return {
-        "turnover": round(turnover, 6),
+        "turnover": round(turnover, 6) if turnover is not None else None,
+        "diagnostic_turnover": round(diagnostic_turnover, 6) if diagnostic_turnover is not None else None,
+        "fallback_cash_turnover": (
+            round(diagnostic_turnover, 6)
+            if turnover_status == "cash_fallback_not_actionable" and diagnostic_turnover is not None
+            else None
+        ),
+        "turnover_status": turnover_status,
         "estimated_cost": estimated_cost,
         "position_count": len(non_cash),
         "max_single_weight": round(max_single, 6),
@@ -1109,7 +1173,9 @@ def _execution_intel_status_from_metrics(live_metrics: dict[str, Any]) -> str:
     return "live_available"
 
 
-def _turnover_penalty(turnover: float) -> float:
+def _turnover_penalty(turnover: float | None) -> float:
+    if turnover is None:
+        return 0.0
     if turnover <= 0.20:
         return 0.0
     if turnover <= 0.50:
@@ -1155,8 +1221,10 @@ def _strategy_confidence_notes(
     notes.append(f"live_qc_reliability={live_level}")
     if walk_forward:
         notes.append(f"walk_forward={walk_forward.get('level', 'unknown')}")
-    if result.expected_turnover_pct > 0.50:
+    if result.expected_turnover_pct is not None and result.expected_turnover_pct > 0.50:
         notes.append("high_turnover")
+    elif result.expected_turnover_pct is None and result.turnover_status == "cash_fallback_not_actionable":
+        notes.append("turnover_not_applicable_data_fallback")
     if strategy_conflict:
         notes.append("strategy_weights_conflict_with_regime")
     return notes
@@ -1205,9 +1273,11 @@ def _strategy_confidence_reason_codes(
         codes.extend(str(code) for code in walk_forward.get("reason_codes") or [])
     else:
         codes.append("walk_forward_missing")
-    if result.expected_turnover_pct > 0.50:
+    if result.expected_turnover_pct is None and result.turnover_status == "cash_fallback_not_actionable":
+        codes.append("turnover_not_applicable_data_fallback")
+    elif result.expected_turnover_pct is not None and result.expected_turnover_pct > 0.50:
         codes.append("high_turnover")
-    elif result.expected_turnover_pct > 0.20:
+    elif result.expected_turnover_pct is not None and result.expected_turnover_pct > 0.20:
         codes.append("moderate_turnover")
     else:
         codes.append("low_turnover")
@@ -2061,6 +2131,9 @@ def _format_strategy_confidence_summary(bundle: PlaygroundBundle, limit: int = 4
         live_samples = int(row.get("live_samples") or 0)
         hist_samples = int(row.get("historical_samples") or 0)
         current_turnover = _format_pct(result.expected_turnover_pct if result else None)
+        fallback_turnover = ""
+        if result and result.expected_turnover_pct is None and result.turnover_status == "cash_fallback_not_actionable":
+            fallback_turnover = f", cash_fallback_turnover={_format_pct(result.diagnostic_turnover_pct)}"
         hist_turnover = _format_pct(metrics.get("avg_turnover"))
         sharpe = metrics.get("sharpe")
         sharpe_text = f"{float(sharpe):.2f}" if sharpe is not None else "n/a"
@@ -2069,7 +2142,7 @@ def _format_strategy_confidence_summary(bundle: PlaygroundBundle, limit: int = 4
             f"- {escape(name)}: use={escape(str(row.get('suggested_use') or 'unknown'))}, "
             f"confidence={confidence_score}, hist={escape(str(historical))}/{hist_samples}, "
             f"live_samples={live_samples}, sharpe={sharpe_text}, "
-            f"current_turnover={current_turnover}, hist_avg_turnover={hist_turnover}"
+            f"current_turnover={current_turnover}, hist_avg_turnover={hist_turnover}{fallback_turnover}"
         )
         if codes:
             lines.append(f"  reasons={escape(codes)}")

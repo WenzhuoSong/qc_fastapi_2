@@ -276,10 +276,14 @@ def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
             canonical_family,
             item.get("alpha_source", strategy_card.get("alpha_source")),
         )
-        turnover = _to_float(
-            risk_profile.get("turnover"),
-            _to_float(item.get("expected_turnover_pct"), _to_float(metrics.get("avg_turnover"))),
-        )
+        data_ready = bool(item.get("data_ready"))
+        turnover_status = str(risk_profile.get("turnover_status") or item.get("turnover_status") or "")
+        turnover = None
+        if data_ready and turnover_status != "cash_fallback_not_actionable":
+            turnover = _to_float(
+                risk_profile.get("turnover"),
+                _to_float(item.get("expected_turnover_pct"), _to_float(metrics.get("avg_turnover"))),
+            )
         out.append(
             {
                 "strategy_name": name,
@@ -287,12 +291,15 @@ def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
                 "raw_family": raw_family or "unknown",
                 "canonical_family": canonical_family,
                 "alpha_source": bool(alpha_source),
-                "data_ready": bool(item.get("data_ready")),
+                "data_ready": data_ready,
                 "can_influence_allocation": bool(
                     (item.get("feature_contract") or {}).get("can_influence_allocation", item.get("data_ready"))
                 ),
                 "regime_fit": item.get("regime_fit"),
                 "turnover": turnover,
+                "turnover_status": turnover_status or None,
+                "diagnostic_turnover": _to_float(risk_profile.get("diagnostic_turnover"), None),
+                "fallback_cash_turnover": _to_float(risk_profile.get("fallback_cash_turnover"), None),
                 "estimated_cost_pct": _to_float(item.get("estimated_cost_pct")),
                 "selected_tickers": item.get("selected_tickers") or [],
                 "evidence_contract_version": item.get("evidence_contract_version"),

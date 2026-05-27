@@ -55,6 +55,7 @@ def _load_sector_rotation_exports():
             "_feature_rows_to_snapshots": playground._feature_rows_to_snapshots,
             "_format_evidence_summary": playground._format_evidence_summary,
             "_format_strategy_confidence_summary": playground._format_strategy_confidence_summary,
+            "_insufficient_history_gap_notes": playground._insufficient_history_gap_notes,
             "_max_drawdown": playground._max_drawdown,
             "_merge_feature_map": playground._merge_feature_map,
             "_recent_snapshot_row_limit": playground._recent_snapshot_row_limit,
@@ -72,14 +73,32 @@ def _load_sector_rotation_exports():
 globals().update(_load_sector_rotation_exports())
 
 
+def _with_yfinance_sources(holdings):
+    out = []
+    for row in holdings:
+        enriched = dict(row)
+        filled = [
+            key for key, value in enriched.items()
+            if key not in {"ticker", "universe_role", "feature_sources"}
+            and value is not None
+        ]
+        enriched["feature_sources"] = [{
+            "source": "yfinance",
+            "filled_fields": filled,
+            "trading_date": date.today().isoformat(),
+        }]
+        out.append(enriched)
+    return out
+
+
 class SectorRotationTests(unittest.TestCase):
     def test_detects_risk_on_rotation(self):
-        holdings = [
+        holdings = _with_yfinance_sources([
             {"ticker": "XLK", "mom_60d": 0.08, "mom_20d": 0.04, "return_5d": 0.02, "hist_vol_20d": 0.015},
             {"ticker": "XLY", "mom_60d": 0.05, "mom_20d": 0.03, "return_5d": 0.01, "hist_vol_20d": 0.018},
             {"ticker": "XLP", "mom_60d": -0.01, "mom_20d": -0.005, "return_5d": -0.002, "hist_vol_20d": 0.010},
             {"ticker": "XLU", "mom_60d": -0.02, "mom_20d": -0.010, "return_5d": -0.004, "hist_vol_20d": 0.011},
-        ]
+        ])
 
         result = detect_sector_rotation(holdings)
 
@@ -89,10 +108,10 @@ class SectorRotationTests(unittest.TestCase):
         self.assertGreater(result["risk_appetite_score"], 0.015)
 
     def test_rotation_signal_strengths_are_deterministic_and_signed(self):
-        holdings = [
+        holdings = _with_yfinance_sources([
             {"ticker": "XLK", "mom_60d": 0.08, "mom_20d": 0.04, "return_5d": 0.02, "hist_vol_20d": 0.015},
             {"ticker": "XLP", "mom_60d": -0.02, "mom_20d": -0.01, "return_5d": -0.004, "hist_vol_20d": 0.010},
-        ]
+        ])
 
         result = detect_sector_rotation(holdings)
         first = rotation_signal_strengths(result)
@@ -115,12 +134,12 @@ class SectorRotationTests(unittest.TestCase):
         self.assertEqual(xlk["data_quality"], "legacy_fallback")
 
     def test_detects_defensive_rotation_when_safe_havens_lead(self):
-        holdings = [
+        holdings = _with_yfinance_sources([
             {"ticker": "TLT", "mom_60d": 0.07, "mom_20d": 0.03, "return_5d": 0.02, "hist_vol_20d": 0.012},
             {"ticker": "GLD", "mom_60d": 0.06, "mom_20d": 0.03, "return_5d": 0.01, "hist_vol_20d": 0.012},
             {"ticker": "XLK", "mom_60d": -0.04, "mom_20d": -0.02, "return_5d": -0.01, "hist_vol_20d": 0.025},
             {"ticker": "XLY", "mom_60d": -0.03, "mom_20d": -0.02, "return_5d": -0.01, "hist_vol_20d": 0.025},
-        ]
+        ])
 
         result = detect_sector_rotation(holdings)
 
@@ -334,6 +353,24 @@ class SectorRotationTests(unittest.TestCase):
         self.assertEqual(enriched[0]["feature_sources"][0]["authority_by_field"]["mom_60d"], "daily_research")
         self.assertEqual(enriched[0]["feature_sources"][0]["canonical_aliases"]["mom_60d"], "return_60d")
 
+    def test_young_etf_missing_long_momentum_reports_insufficient_history(self):
+        notes = _insufficient_history_gap_notes(
+            [
+                {
+                    "ticker": "DRAM",
+                    "close_price": 52.0,
+                    "mom_20d": 0.12,
+                    "mom_60d": None,
+                    "mom_252d": None,
+                }
+            ],
+            {"DRAM": ["mom_60d", "mom_252d"]},
+        )
+
+        self.assertEqual(len(notes), 1)
+        self.assertIn("DRAM has price data", notes[0])
+        self.assertIn("requires up to 252 trading days", notes[0])
+
     def test_replay_metrics_suppress_sharpe_until_enough_samples(self):
         snapshots = []
         for i in range(3):
@@ -400,7 +437,7 @@ class SectorRotationTests(unittest.TestCase):
         self.assertEqual(snapshots[0]["holdings"][0]["rsi_14"], 55.0)
 
     def test_strategy_confidence_combines_historical_and_live_evidence(self):
-        holdings = [
+        holdings = _with_yfinance_sources([
             {
                 "ticker": "SPY",
                 "mom_20d": 0.02,
@@ -419,7 +456,7 @@ class SectorRotationTests(unittest.TestCase):
                 "atr_pct": 0.018,
                 "hist_vol_20d": 0.22,
             },
-        ]
+        ])
         result = _run_one_strategy(
             "momentum_lite_v1",
             holdings,
@@ -450,7 +487,7 @@ class SectorRotationTests(unittest.TestCase):
         self.assertIn("regime_fit_strong", row["reason_codes"])
 
     def test_strategy_confidence_summary_is_structured_for_telegram(self):
-        holdings = [
+        holdings = _with_yfinance_sources([
             {
                 "ticker": "SPY",
                 "mom_20d": 0.02,
@@ -469,7 +506,7 @@ class SectorRotationTests(unittest.TestCase):
                 "atr_pct": 0.018,
                 "hist_vol_20d": 0.22,
             },
-        ]
+        ])
         result = _run_one_strategy(
             "momentum_lite_v1",
             holdings,
@@ -530,7 +567,7 @@ class SectorRotationTests(unittest.TestCase):
     def test_strategy_confidence_summary_prioritizes_risk_reason_codes(self):
         result = _run_one_strategy(
             "momentum_lite_v1",
-            [
+            _with_yfinance_sources([
                 {
                     "ticker": "SPY",
                     "mom_20d": 0.02,
@@ -540,7 +577,7 @@ class SectorRotationTests(unittest.TestCase):
                     "atr_pct": 0.011,
                     "hist_vol_20d": 0.14,
                 }
-            ],
+            ]),
             {"regime": "trending_bull", "risk_params": {"max_single_position": 0.2}},
             {},
         )
@@ -592,10 +629,47 @@ class SectorRotationTests(unittest.TestCase):
         self.assertIn("high_turnover", reason_line)
         self.assertLess(reason_line.index("consensus_regime_conflict"), reason_line.index("historical_strong"))
 
+    def test_data_not_ready_cash_fallback_turnover_is_not_strategy_turnover(self):
+        result = _run_one_strategy(
+            "momentum_lite_v1",
+            _with_yfinance_sources([
+                {
+                    "ticker": "SPY",
+                    "mom_20d": 0.02,
+                    "mom_60d": 0.05,
+                    "rsi_14": 55,
+                    "atr_pct": 0.011,
+                }
+            ]),
+            {"regime": "trending_bull", "risk_params": {"max_single_position": 0.2}},
+            {"SPY": 0.50, "CASH": 0.50},
+        )
+
+        self.assertFalse(result.data_ready)
+        self.assertIsNone(result.expected_turnover_pct)
+        self.assertEqual(result.turnover_status, "cash_fallback_not_actionable")
+        self.assertAlmostEqual(result.diagnostic_turnover_pct, 0.50)
+        self.assertIsNone(result.risk_profile["turnover"])
+        self.assertAlmostEqual(result.risk_profile["fallback_cash_turnover"], 0.50)
+
+        confidence = _compute_strategy_confidence(
+            [result],
+            live_metrics={},
+            historical_metrics={"momentum_lite_v1": {"metric_reliability": {"level": "medium"}}},
+            regime="trending_bull",
+            consensus_weights={"CASH": 1.0},
+        )
+        codes = confidence["momentum_lite_v1"]["reason_codes"]
+
+        self.assertIn("data_not_ready", codes)
+        self.assertIn("turnover_not_applicable_data_fallback", codes)
+        self.assertNotIn("moderate_turnover", codes)
+        self.assertEqual(confidence["momentum_lite_v1"]["turnover_penalty"], 0.0)
+
     def test_bundle_consensus_conflict_does_not_leak_to_aligned_strategy_reasons(self):
         result = _run_one_strategy(
             "momentum_lite_v1",
-            [
+            _with_yfinance_sources([
                 {
                     "ticker": "SPY",
                     "mom_20d": 0.02,
@@ -614,7 +688,7 @@ class SectorRotationTests(unittest.TestCase):
                     "atr_pct": 0.018,
                     "hist_vol_20d": 0.22,
                 },
-            ],
+            ]),
             {"regime": "trending_bull", "risk_params": {"max_single_position": 0.2}},
             {},
         )
@@ -726,7 +800,7 @@ class SectorRotationTests(unittest.TestCase):
         self.assertAlmostEqual(_max_drawdown([0.10, -0.05, -0.05, 0.02]), 0.0975)
 
     def test_strategy_result_includes_agent_consumable_explanation(self):
-        holdings = [
+        holdings = _with_yfinance_sources([
             {
                 "ticker": "SPY",
                 "mom_20d": 0.02,
@@ -745,7 +819,7 @@ class SectorRotationTests(unittest.TestCase):
                 "atr_pct": 0.018,
                 "hist_vol_20d": 0.22,
             },
-        ]
+        ])
         context = {
             "regime": "trending_bull",
             "risk_params": {"max_single_position": 0.20, "min_cash_pct": 0.05},
@@ -760,7 +834,7 @@ class SectorRotationTests(unittest.TestCase):
         self.assertTrue(result.data_quality["ready"])
 
     def test_playground_consensus_discounts_weak_memory_feedback(self):
-        holdings = [
+        holdings = _with_yfinance_sources([
             {
                 "ticker": "SPY",
                 "mom_20d": 0.02,
@@ -779,7 +853,7 @@ class SectorRotationTests(unittest.TestCase):
                 "atr_pct": 0.018,
                 "hist_vol_20d": 0.22,
             },
-        ]
+        ])
         context = {
             "regime": "trending_bull",
             "risk_params": {"max_single_position": 0.20, "min_cash_pct": 0.05},

@@ -15,6 +15,9 @@ from typing import Any
 
 
 AUDIT_NAME = "qc_yfinance_feature_parity"
+EXPECTED_NORMALIZED_RETURN_MAE_MAX = 0.05
+DAILY_SNAPSHOT_PACKET = "daily_feature_snapshot"
+HEARTBEAT_PACKET = "heartbeat"
 
 RETURN_FIELDS = {
     "daily_return_pct",
@@ -75,6 +78,7 @@ WITH latest_qc_by_day AS (
   SELECT
     q.trading_date,
     q.packet_type,
+    COALESCE(q.raw_payload->>'schema_version', 'legacy') AS schema_version,
     q.received_at,
     upper(elem->>'ticker') AS ticker,
     {ROLE_CASE_SQL} AS ticker_role,
@@ -100,14 +104,15 @@ WITH latest_qc_by_day AS (
 )
 SELECT
   packet_type,
+  schema_version,
   ticker_role,
   COUNT(*) AS joined_rows,
   COUNT(DISTINCT trading_date) AS days,
   COUNT(DISTINCT ticker) AS tickers,
   {", ".join(metric_selects)}
 FROM joined
-GROUP BY packet_type, ticker_role
-ORDER BY packet_type, ticker_role
+GROUP BY packet_type, schema_version, ticker_role
+ORDER BY packet_type, schema_version, ticker_role
 """.strip()
 
 
@@ -126,6 +131,7 @@ WITH latest_qc_by_day AS (
   SELECT
     q.trading_date,
     q.packet_type,
+    COALESCE(q.raw_payload->>'schema_version', 'legacy') AS schema_version,
     upper(elem->>'ticker') AS ticker,
     {ROLE_CASE_SQL} AS ticker_role,
     NULLIF(elem->>'mom_20d', '')::numeric AS qc_mom_20d,
@@ -195,10 +201,15 @@ def normalize_rows(rows: list[Any]) -> list[dict[str, Any]]:
 
 def build_summary(rows: list[dict[str, Any]], *, lookback_days: int) -> dict[str, Any]:
     unit_risks = []
+    severe_unit_risks = []
+    expected_unit_mismatches = []
+    heartbeat_lag_classes = []
     high_drift_classes = []
     packet_totals: dict[str, int] = {}
     max_raw_mom_error = 0.0
-    max_norm_mom_error = 0.0
+    max_percent_normalized_mom_error = 0.0
+    max_contract_mom_error = 0.0
+    daily_snapshot_max_contract_mom_error = 0.0
 
     for row in rows:
         packet = str(row.get("packet_type") or "unknown")
@@ -211,15 +222,28 @@ def build_summary(rows: list[dict[str, Any]], *, lookback_days: int) -> dict[str
                 "joined_rows": int(row.get("joined_rows") or 0),
                 "reason": "levered_or_inverse_etf_expected_to_have_larger_qc_yfinance_drift",
             })
+        heartbeat_lag = detect_heartbeat_daily_feature_lag(row)
+        if heartbeat_lag:
+            heartbeat_lag_classes.append(heartbeat_lag)
         for field in RETURN_FIELDS:
             risk = detect_unit_risk(row, field)
             if risk:
                 unit_risks.append(risk)
+                if risk.get("severity") == "normalized_drift":
+                    severe_unit_risks.append(risk)
+                else:
+                    expected_unit_mismatches.append(risk)
         for field in ("mom_20d", "mom_60d", "mom_252d"):
-            max_raw_mom_error = max(max_raw_mom_error, float(row.get(f"maxe_{field}") or 0.0))
-            max_norm_mom_error = max(max_norm_mom_error, float(row.get(f"maxe_{field}_norm") or 0.0))
+            raw_error = float(row.get(f"maxe_{field}") or 0.0)
+            percent_normalized_error = float(row.get(f"maxe_{field}_norm") or 0.0)
+            contract_error = min(raw_error, percent_normalized_error)
+            max_raw_mom_error = max(max_raw_mom_error, raw_error)
+            max_percent_normalized_mom_error = max(max_percent_normalized_mom_error, percent_normalized_error)
+            max_contract_mom_error = max(max_contract_mom_error, contract_error)
+            if packet == DAILY_SNAPSHOT_PACKET:
+                daily_snapshot_max_contract_mom_error = max(daily_snapshot_max_contract_mom_error, contract_error)
 
-    status = "unit_risk" if unit_risks else "ok"
+    status = "normalized_drift" if severe_unit_risks else ("expected_unit_mismatch" if unit_risks else "ok")
     return {
         "audit_name": AUDIT_NAME,
         "created_at": datetime.now(UTC).isoformat(),
@@ -228,15 +252,25 @@ def build_summary(rows: list[dict[str, Any]], *, lookback_days: int) -> dict[str
         "packet_totals": packet_totals,
         "row_count": len(rows),
         "unit_risk_count": len(unit_risks),
+        "expected_unit_mismatch_count": len(expected_unit_mismatches),
+        "severe_unit_risk_count": len(severe_unit_risks),
         "unit_risks": unit_risks[:25],
+        "severe_unit_risks": severe_unit_risks[:25],
+        "expected_unit_mismatches": expected_unit_mismatches[:25],
+        "heartbeat_lag_class_count": len(heartbeat_lag_classes),
+        "heartbeat_lag_classes": heartbeat_lag_classes[:25],
         "high_drift_classes": high_drift_classes[:25],
         "max_raw_momentum_error": round(max_raw_mom_error, 6),
-        "max_normalized_momentum_error": round(max_norm_mom_error, 6),
+        "max_percent_normalized_momentum_error": round(max_percent_normalized_mom_error, 6),
+        "max_normalized_momentum_error": round(max_contract_mom_error, 6),
+        "daily_snapshot_max_contract_momentum_error": round(daily_snapshot_max_contract_mom_error, 6),
         "rows": rows,
     }
 
 
 def detect_unit_risk(row: dict[str, Any], field: str) -> dict[str, Any] | None:
+    if str(row.get("packet_type") or "") != DAILY_SNAPSHOT_PACKET:
+        return None
     raw_mae = _float(row.get(f"mae_{field}"))
     norm_mae = _float(row.get(f"mae_{field}_norm"))
     raw_max = _float(row.get(f"maxe_{field}"))
@@ -247,14 +281,47 @@ def detect_unit_risk(row: dict[str, Any], field: str) -> dict[str, Any] | None:
     normalization_helps = norm_mae < raw_mae * 0.25
     if not (raw_is_large and normalization_helps):
         return None
+    severity = "expected_unit_mismatch"
+    if (
+        str(row.get("ticker_role") or "") != "hedge_levered"
+        and norm_mae > EXPECTED_NORMALIZED_RETURN_MAE_MAX
+    ):
+        severity = "normalized_drift"
     return {
         "packet_type": row.get("packet_type"),
+        "schema_version": row.get("schema_version"),
         "ticker_role": row.get("ticker_role"),
         "field": field,
         "n": n,
         "raw_mae": round(raw_mae, 6),
         "normalized_mae": round(norm_mae, 6),
-        "reason": "qc_return_field_appears_to_use_percent_points",
+        "severity": severity,
+        "reason": (
+            "qc_return_field_uses_percent_points_but_normalizes_cleanly"
+            if severity == "expected_unit_mismatch"
+            else "qc_return_field_still_drifts_after_percent_point_normalization"
+        ),
+    }
+
+
+def detect_heartbeat_daily_feature_lag(row: dict[str, Any]) -> dict[str, Any] | None:
+    """Heartbeat daily indicators can lag until the daily bar consolidates."""
+    if str(row.get("packet_type") or "") != HEARTBEAT_PACKET:
+        return None
+    max_raw = max(
+        _float(row.get("mae_mom_20d")) or 0.0,
+        _float(row.get("mae_mom_60d")) or 0.0,
+        _float(row.get("mae_mom_252d")) or 0.0,
+    )
+    if max_raw <= 0.01:
+        return None
+    return {
+        "packet_type": row.get("packet_type"),
+        "schema_version": row.get("schema_version"),
+        "ticker_role": row.get("ticker_role"),
+        "joined_rows": int(row.get("joined_rows") or 0),
+        "max_raw_momentum_mae": round(max_raw, 6),
+        "reason": "heartbeat_daily_indicators_may_lag_until_eod_use_daily_feature_snapshot_for_research_parity",
     }
 
 
@@ -266,6 +333,11 @@ def build_markdown_report(summary: dict[str, Any], samples: list[dict[str, Any]]
         f"- Lookback days: {summary.get('lookback_days')}",
         f"- Joined rows: {sum((summary.get('packet_totals') or {}).values())}",
         f"- Unit risks: {summary.get('unit_risk_count')}",
+        f"- Expected unit mismatches: {summary.get('expected_unit_mismatch_count')}",
+        f"- Severe unit risks: {summary.get('severe_unit_risk_count')}",
+        f"- Heartbeat lag classes: {summary.get('heartbeat_lag_class_count')}",
+        f"- Max contract momentum error: {summary.get('max_normalized_momentum_error')}",
+        f"- Daily snapshot max contract momentum error: {summary.get('daily_snapshot_max_contract_momentum_error')}",
         "",
         "## Packet Totals",
         "",
@@ -279,13 +351,14 @@ def build_markdown_report(summary: dict[str, Any], samples: list[dict[str, Any]]
         "",
         "## Summary By Packet And Role",
         "",
-        "| packet | role | rows | mae_mom20_raw | mae_mom20_norm | mae_mom60_raw | mae_mom60_norm | mae_rsi | mae_atr |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| packet | schema | role | rows | mae_mom20_raw | mae_mom20_norm | mae_mom60_raw | mae_mom60_norm | mae_rsi | mae_atr |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|",
     ])
     for row in summary.get("rows") or []:
         lines.append(
-            "| {packet} | {role} | {rows} | {m20} | {m20n} | {m60} | {m60n} | {rsi} | {atr} |".format(
+            "| {packet} | {schema} | {role} | {rows} | {m20} | {m20n} | {m60} | {m60n} | {rsi} | {atr} |".format(
                 packet=row.get("packet_type"),
+                schema=row.get("schema_version"),
                 role=row.get("ticker_role"),
                 rows=row.get("joined_rows"),
                 m20=_fmt(row.get("mae_mom_20d")),
@@ -301,11 +374,27 @@ def build_markdown_report(summary: dict[str, Any], samples: list[dict[str, Any]]
         lines.extend(["", "## Unit Risk Flags", ""])
         for risk in summary["unit_risks"]:
             lines.append(
-                "- {packet}/{role}/{field}: raw_mae={raw}, normalized_mae={norm} ({reason})".format(
+                "- {packet}/{schema}/{role}/{field}: raw_mae={raw}, normalized_mae={norm}, severity={severity} ({reason})".format(
                     packet=risk.get("packet_type"),
+                    schema=risk.get("schema_version"),
                     role=risk.get("ticker_role"),
                     field=risk.get("field"),
                     raw=risk.get("raw_mae"),
+                    norm=risk.get("normalized_mae"),
+                    severity=risk.get("severity"),
+                    reason=risk.get("reason"),
+                )
+            )
+
+    if summary.get("severe_unit_risks"):
+        lines.extend(["", "## Severe Unit Risks", ""])
+        for risk in summary["severe_unit_risks"]:
+            lines.append(
+                "- {packet}/{schema}/{role}/{field}: normalized_mae={norm} ({reason})".format(
+                    packet=risk.get("packet_type"),
+                    schema=risk.get("schema_version"),
+                    role=risk.get("ticker_role"),
+                    field=risk.get("field"),
                     norm=risk.get("normalized_mae"),
                     reason=risk.get("reason"),
                 )
@@ -323,19 +412,34 @@ def build_markdown_report(summary: dict[str, Any], samples: list[dict[str, Any]]
                 )
             )
 
+    if summary.get("heartbeat_lag_classes"):
+        lines.extend(["", "## Heartbeat Daily-Feature Lag Classes", ""])
+        for item in summary["heartbeat_lag_classes"]:
+            lines.append(
+                "- {packet}/{schema}/{role}: rows={rows}, max_raw_momentum_mae={mae} ({reason})".format(
+                    packet=item.get("packet_type"),
+                    schema=item.get("schema_version"),
+                    role=item.get("ticker_role"),
+                    rows=item.get("joined_rows"),
+                    mae=item.get("max_raw_momentum_mae"),
+                    reason=item.get("reason"),
+                )
+            )
+
     if samples:
         lines.extend([
             "",
             "## Largest Raw Divergence Samples",
             "",
-            "| date | packet | role | ticker | qc_mom20 | yf_return20 | raw_e20 | norm_e20 | qc_mom60 | yf_return60 | raw_e60 | norm_e60 |",
-            "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| date | packet | schema | role | ticker | qc_mom20 | yf_return20 | raw_e20 | norm_e20 | qc_mom60 | yf_return60 | raw_e60 | norm_e60 |",
+            "|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
         ])
         for row in samples:
             lines.append(
-                "| {date} | {packet} | {role} | {ticker} | {qm20} | {yf20} | {e20} | {e20n} | {qm60} | {yf60} | {e60} | {e60n} |".format(
+                "| {date} | {packet} | {schema} | {role} | {ticker} | {qm20} | {yf20} | {e20} | {e20n} | {qm60} | {yf60} | {e60} | {e60n} |".format(
                     date=row.get("trading_date"),
                     packet=row.get("packet_type"),
+                    schema=row.get("schema_version"),
                     role=row.get("ticker_role"),
                     ticker=row.get("ticker"),
                     qm20=_fmt(row.get("qc_mom_20d")),

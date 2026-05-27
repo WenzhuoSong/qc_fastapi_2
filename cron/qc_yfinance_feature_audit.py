@@ -50,9 +50,13 @@ async def main() -> None:
             lookback_days=summary.get("lookback_days"),
             joined_rows=joined_rows,
             unit_risk_count=summary.get("unit_risk_count"),
+            expected_unit_mismatch_count=summary.get("expected_unit_mismatch_count"),
+            severe_unit_risk_count=summary.get("severe_unit_risk_count"),
+            heartbeat_lag_class_count=summary.get("heartbeat_lag_class_count"),
             high_drift_classes=high_drift_count,
             max_raw_momentum_error=summary.get("max_raw_momentum_error"),
             max_normalized_momentum_error=summary.get("max_normalized_momentum_error"),
+            daily_snapshot_max_contract_momentum_error=summary.get("daily_snapshot_max_contract_momentum_error"),
         )
         logger.info(
             "[QC_YFINANCE_AUDIT] done status=%s joined_rows=%s unit_risks=%s high_drift_classes=%s",
@@ -77,9 +81,13 @@ def _format_telegram_summary(summary: dict) -> str:
         f"Lookback: {summary.get('lookback_days')}d\n"
         f"Joined rows: {joined_rows}\n"
         f"Unit risks: {summary.get('unit_risk_count')}\n"
+        f"Expected unit mismatches: {summary.get('expected_unit_mismatch_count')}\n"
+        f"Severe unit risks: {summary.get('severe_unit_risk_count')}\n"
+        f"Heartbeat lag classes: {summary.get('heartbeat_lag_class_count')}\n"
         f"High-drift classes: {len(summary.get('high_drift_classes') or [])}\n"
         f"Max raw momentum error: {summary.get('max_raw_momentum_error')}\n"
-        f"Max normalized momentum error: {summary.get('max_normalized_momentum_error')}"
+        f"Max contract momentum error: {summary.get('max_normalized_momentum_error')}\n"
+        f"Daily snapshot max contract error: {summary.get('daily_snapshot_max_contract_momentum_error')}"
     )
 
 
