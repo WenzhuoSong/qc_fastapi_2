@@ -14,6 +14,7 @@ DEFAULT_ACCOUNT_STATE_GUARD_CONFIG: dict[str, Any] = {
     "require_no_open_orders": True,
     "require_buying_power": True,
     "require_policy_version": True,
+    "expected_policy_version": None,
     "require_explicit_account_state": False,
     "ok_account_statuses": ["ok"],
     "ok_data_statuses": ["ok"],
@@ -201,6 +202,17 @@ def evaluate_account_state_guard(
         threshold="known policy_version",
         reason="missing_policy_version",
     )
+    expected_policy_version = str(cfg.get("expected_policy_version") or "").strip()
+    if expected_policy_version:
+        _add_check(
+            checks,
+            blockers,
+            "policy_version_matches_expected",
+            policy_version == expected_policy_version,
+            actual=policy_version or None,
+            threshold=expected_policy_version,
+            reason="policy_version_mismatch",
+        )
 
     open_order_count = _int_or_none(snapshot.get("open_order_count"))
     has_open_orders = _bool_or_none(snapshot.get("has_open_orders"))
@@ -381,6 +393,7 @@ def _public_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "require_no_open_orders": cfg.get("require_no_open_orders"),
         "require_buying_power": cfg.get("require_buying_power"),
         "require_policy_version": cfg.get("require_policy_version"),
+        "expected_policy_version": cfg.get("expected_policy_version"),
         "require_explicit_account_state": cfg.get("require_explicit_account_state"),
     }
 

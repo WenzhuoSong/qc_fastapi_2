@@ -2,10 +2,11 @@
 全局常量 —— ETF UNIVERSE 与市场分类。
 
 Phase 1 只做 ETF 维度。UNIVERSE 的来源策略（Option C）：
-    默认硬编码 17 个 ETF   ∪   最新 QC 快照里出现过的所有 ticker
+    默认硬编码 17 个 ETF   ∪   execution policy 可交易 ticker   ∪   最新 QC 快照里出现过的所有 ticker
 
 这样可以保证：
   - 冷启动时有 17 只可跑（硬编码）
+  - 所有可交易 policy ticker 都能被 yfinance/research 作业覆盖
   - QC 实际发送不同 ETF 时自动扩展（动态 union）
   - 某个硬编码 ETF 临时从 QC 消失也不会漏掉（仍在硬编码里）
 """
@@ -63,17 +64,27 @@ BROAD_MARKET_SET = set(BROAD_MARKET)
 
 async def resolve_universe() -> list[str]:
     """
-    返回当前的 ETF UNIVERSE = 默认硬编码 ∪ 最新 QC 快照里出现过的所有 ticker。
+    返回当前的 ETF UNIVERSE = 默认硬编码 ∪ execution policy 可交易 ticker ∪ 最新 QC 快照里出现过的所有 ticker。
 
     冷启动（无快照）时回落到 DEFAULT_ETF_UNIVERSE。
     不读 CASH。
     """
-    from db.session import AsyncSessionLocal
-    from db.queries import get_latest_snapshots
-
     tickers: set[str] = set(DEFAULT_ETF_UNIVERSE)
+    try:
+        from services.execution_policy import TICKER_ROLES, TickerRole
+
+        tickers.update(
+            ticker
+            for ticker, role in TICKER_ROLES.items()
+            if role not in {TickerRole.WATCHLIST, TickerRole.UNKNOWN}
+        )
+    except Exception:
+        pass
 
     try:
+        from db.session import AsyncSessionLocal
+        from db.queries import get_latest_snapshots
+
         async with AsyncSessionLocal() as db:
             snaps = await get_latest_snapshots(db, limit=1)
             if snaps:

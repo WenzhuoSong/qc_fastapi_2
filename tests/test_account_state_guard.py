@@ -87,6 +87,31 @@ class AccountStateGuardTests(unittest.TestCase):
         self.assertFalse(result["allowed"])
         self.assertIn("open_orders_present_or_unknown", result["blockers"])
 
+    def test_blocking_mode_disallows_policy_version_mismatch(self):
+        now = datetime(2026, 5, 24, 15, 0, 0)
+        result = evaluate_account_state_guard(
+            {
+                "recorded_at": now,
+                "source_packet_type": "heartbeat",
+                "contract_version": "v1",
+                "account_status": "ok",
+                "data_status": "ok",
+                "policy_version": "sprint8a_fallback",
+                "buying_power": 50000,
+                "open_order_count": 0,
+                "has_open_orders": False,
+                "holdings_weights": {"SPY": 0.4},
+                "raw_snapshot": {"explicit_account_state": True},
+            },
+            config={"mode": "blocking", "expected_policy_version": "sprint8a"},
+            now=now,
+        )
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertFalse(result["allowed"])
+        self.assertIn("policy_version_mismatch", result["blockers"])
+        self.assertEqual(result["checks"]["policy_version_matches_expected"]["actual"], "sprint8a_fallback")
+
     def test_detects_account_holdings_mismatch_snapshot_rows(self):
         now = datetime(2026, 5, 24, 15, 0, 0)
         result = evaluate_account_state_guard(

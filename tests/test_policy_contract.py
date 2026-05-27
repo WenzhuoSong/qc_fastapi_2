@@ -1,6 +1,7 @@
+import asyncio
 import unittest
 
-from constants import DEFAULT_ETF_UNIVERSE
+from constants import DEFAULT_ETF_UNIVERSE, resolve_universe
 from services.execution_policy import TICKER_ROLES, TickerRole
 from services.group_contract import GROUP_DEFINITIONS, PRIMARY_GROUP
 
@@ -32,6 +33,16 @@ class PolicyContractTests(unittest.TestCase):
             if TICKER_ROLES.get(ticker) in {TickerRole.WATCHLIST, TickerRole.UNKNOWN}
         )
         self.assertFalse(non_tradable, f"DEFAULT_ETF_UNIVERSE contains non-tradable tickers: {non_tradable}")
+
+    def test_resolved_universe_covers_tradable_policy_tickers(self):
+        universe = set(asyncio.run(resolve_universe()))
+        expected = {
+            ticker
+            for ticker, role in TICKER_ROLES.items()
+            if role not in {TickerRole.WATCHLIST, TickerRole.UNKNOWN}
+        }
+
+        self.assertFalse(sorted(expected - universe))
 
 
 if __name__ == "__main__":
