@@ -106,6 +106,16 @@ _DEFAULTS = {
         "max_buy_delta": 0.15,
         "max_sell_delta": 0.20,
     },
+
+    # Control-plane recovery for FastAPI/QC policy drift. This may send
+    # PolicySync only; it never authorizes SetWeights in the same cycle.
+    "policy_sync_recovery_config": {
+        "enabled": True,
+        "max_recovery_attempts": 3,
+        "max_consecutive_mismatch_cycles": 5,
+        "fire_and_forget": True,
+        "expected_policy_version_source": "execution_policy",
+    },
 }
 
 

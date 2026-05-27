@@ -85,6 +85,10 @@ from services.auto_pause import (
     default_auto_pause_config,
     load_auto_pause_verdict,
 )
+from services.policy_sync_recovery import (
+    default_policy_sync_recovery_config,
+    run_policy_sync_recovery,
+)
 from services.transaction_cost_gate import (
     default_transaction_cost_gate_config,
     evaluate_transaction_cost_gate,
@@ -458,6 +462,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         execution_command_cfg = await get_system_config(db, "execution_command_config")
         account_guard_cfg = await get_system_config(db, "account_state_guard_config")
         auto_pause_cfg    = await get_system_config(db, "auto_pause_config")
+        policy_sync_recovery_cfg = await get_system_config(db, "policy_sync_recovery_config")
         transaction_cost_cfg = await get_system_config(db, "transaction_cost_gate_config")
         override_cfg    = await get_system_config(db, "circuit_override")
         alert_cfg       = await get_system_config(db, "circuit_pause_alert")
@@ -505,8 +510,12 @@ async def _guard_and_config(trigger: str) -> dict | None:
     account_state_guard_config = default_account_state_guard_config(
         (account_guard_cfg.value if account_guard_cfg else {}) or {}
     )
+    account_state_guard_config["expected_policy_version"] = str(policy_snapshot().get("version") or "")
     auto_pause_config = default_auto_pause_config(
         (auto_pause_cfg.value if auto_pause_cfg else {}) or {}
+    )
+    policy_sync_recovery_config = default_policy_sync_recovery_config(
+        (policy_sync_recovery_cfg.value if policy_sync_recovery_cfg else {}) or {}
     )
     transaction_cost_gate_config = default_transaction_cost_gate_config(
         (transaction_cost_cfg.value if transaction_cost_cfg else {}) or {}
@@ -537,6 +546,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "execution_command_config": execution_command_config,
         "account_state_guard_config": account_state_guard_config,
         "auto_pause_config": auto_pause_config,
+        "policy_sync_recovery_config": policy_sync_recovery_config,
         "transaction_cost_gate_config": transaction_cost_gate_config,
     }
 
@@ -708,17 +718,36 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             account_state_guard.get("pipeline_enforcement"),
             account_state_guard.get("blockers") or [],
         )
-    if account_guard_effect.get("should_block_pipeline"):
-        tracker.end_run("skipped_account_state_guard")
-        return {
-            "status": "skipped_account_state_guard",
-            "account_state_guard": account_state_guard,
+
+    try:
+        policy_sync_recovery = await run_policy_sync_recovery(
+            account_guard_result=account_state_guard,
+            config=pipeline_context.get("policy_sync_recovery_config") or {},
+        )
+    except Exception as policy_sync_recovery_error:
+        policy_sync_recovery = {
+            "enabled": True,
+            "status": "unavailable",
+            "action": "none",
+            "reason": "policy_sync_recovery_unavailable",
+            "trading_blocked": False,
+            "warnings": [str(policy_sync_recovery_error)],
         }
+        logger.warning("[policy_sync_recovery] unavailable: %s", policy_sync_recovery_error)
+    pipeline_context["policy_sync_recovery"] = policy_sync_recovery
+    if policy_sync_recovery.get("status") in {"recoverable", "unrecoverable"}:
+        logger.warning(
+            "[policy_sync_recovery] status=%s action=%s reason=%s",
+            policy_sync_recovery.get("status"),
+            policy_sync_recovery.get("action"),
+            policy_sync_recovery.get("reason"),
+        )
 
     try:
         auto_pause = await load_auto_pause_verdict(
             config=pipeline_context.get("auto_pause_config") or {},
             account_state_guard=account_state_guard,
+            policy_sync_recovery=policy_sync_recovery,
         )
     except Exception as auto_pause_error:
         auto_pause = {
@@ -747,6 +776,27 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         if pipeline_context.get("auth_mode") == "FULL_AUTO":
             tracker.end_run("skipped_auto_paused")
             return {"status": "skipped_auto_paused", "auto_pause": auto_pause}
+
+    if (
+        account_guard_effect.get("should_block_pipeline")
+        and policy_sync_recovery.get("status") == "recoverable"
+    ):
+        tracker.end_run("skipped_policy_sync_recovery")
+        return {
+            "status": "skipped_policy_sync_recovery",
+            "account_state_guard": account_state_guard,
+            "policy_sync_recovery": policy_sync_recovery,
+            "auto_pause": auto_pause,
+        }
+
+    if account_guard_effect.get("should_block_pipeline"):
+        tracker.end_run("skipped_account_state_guard")
+        return {
+            "status": "skipped_account_state_guard",
+            "account_state_guard": account_state_guard,
+            "policy_sync_recovery": policy_sync_recovery,
+            "auto_pause": auto_pause,
+        }
 
     if not tracker.is_disabled:
         regime_result_for_tracker = pipeline_context.get("regime_result")

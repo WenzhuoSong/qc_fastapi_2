@@ -48,6 +48,7 @@ async def load_auto_pause_verdict(
     *,
     config: dict[str, Any] | None = None,
     account_state_guard: dict[str, Any] | None = None,
+    policy_sync_recovery: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Load recent execution state and evaluate auto-pause triggers."""
@@ -56,6 +57,7 @@ async def load_auto_pause_verdict(
     return evaluate_auto_pause_triggers(
         execution_events=events,
         account_state_guard=account_state_guard,
+        policy_sync_recovery=policy_sync_recovery,
         config=cfg,
         now=now,
     )
@@ -97,6 +99,7 @@ def evaluate_auto_pause_triggers(
     *,
     execution_events: list[dict[str, Any]] | None = None,
     account_state_guard: dict[str, Any] | None = None,
+    policy_sync_recovery: dict[str, Any] | None = None,
     config: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -121,9 +124,10 @@ def evaluate_auto_pause_triggers(
     events = execution_events or []
     triggers = [
         _consecutive_qc_rejects_trigger(events, cfg),
-        _policy_mismatch_timeout_trigger(events, cfg, now),
+        _policy_mismatch_timeout_trigger(events, cfg, now, policy_sync_recovery),
+        _policy_sync_recovery_exhausted_trigger(policy_sync_recovery or {}),
         _account_state_stale_trigger(account_state_guard or {}, cfg),
-        _account_state_guard_failure_trigger(account_state_guard or {}, cfg),
+        _account_state_guard_failure_trigger(account_state_guard or {}, cfg, policy_sync_recovery),
     ]
     fired = [item for item in triggers if item["triggered"]]
     would_pause = bool(fired)
@@ -174,8 +178,19 @@ def _policy_mismatch_timeout_trigger(
     events: list[dict[str, Any]],
     cfg: dict[str, Any],
     now: datetime,
+    policy_sync_recovery: dict[str, Any] | None,
 ) -> dict[str, Any]:
     threshold_minutes = float(cfg["policy_mismatch_alert_after_minutes"])
+    if _recoverable_policy_sync_recovery(policy_sync_recovery):
+        return {
+            "name": "policy_mismatch_timeout",
+            "triggered": False,
+            "value": 0.0,
+            "threshold": threshold_minutes,
+            "severity": "high",
+            "details": "suppressed by policy_sync_recovery",
+            "evidence": [{"policy_sync_recovery": policy_sync_recovery or {}}],
+        }
     latest = events[0] if events else None
     mismatch = latest if latest and _is_policy_mismatch_event(latest) else None
     age_minutes = None
@@ -195,6 +210,20 @@ def _policy_mismatch_timeout_trigger(
             else "latest QC event is not a stale policy mismatch"
         ),
         "evidence": [_event_evidence(mismatch)] if mismatch else [],
+    }
+
+
+def _policy_sync_recovery_exhausted_trigger(policy_sync_recovery: dict[str, Any]) -> dict[str, Any]:
+    triggered = str(policy_sync_recovery.get("status") or "").lower().strip() == "unrecoverable"
+    reason = policy_sync_recovery.get("reason") or "policy_sync_recovery_unrecoverable"
+    return {
+        "name": "policy_sync_recovery_exhausted",
+        "triggered": triggered,
+        "value": 1 if triggered else 0,
+        "threshold": 1,
+        "severity": "high",
+        "details": f"policy sync recovery exhausted: {reason}" if triggered else "policy sync recovery not exhausted",
+        "evidence": [{"policy_sync_recovery": policy_sync_recovery}],
     }
 
 
@@ -225,10 +254,15 @@ def _account_state_stale_trigger(account_guard: dict[str, Any], cfg: dict[str, A
     }
 
 
-def _account_state_guard_failure_trigger(account_guard: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+def _account_state_guard_failure_trigger(
+    account_guard: dict[str, Any],
+    cfg: dict[str, Any],
+    policy_sync_recovery: dict[str, Any] | None,
+) -> dict[str, Any]:
     enabled = bool(cfg.get("pause_on_account_state_guard_failure", True))
     blockers = list(account_guard.get("blockers") or [])
-    triggered = enabled and bool(account_guard.get("would_block")) and bool(blockers)
+    suppressed = _recoverable_policy_sync_recovery(policy_sync_recovery)
+    triggered = enabled and not suppressed and bool(account_guard.get("would_block")) and bool(blockers)
     return {
         "name": "account_state_guard_failure",
         "triggered": triggered,
@@ -238,9 +272,11 @@ def _account_state_guard_failure_trigger(account_guard: dict[str, Any], cfg: dic
         "details": (
             f"account_state_guard would block: {', '.join(blockers)}"
             if triggered
+            else "account_state_guard failure suppressed by policy_sync_recovery"
+            if suppressed
             else "account_state_guard did not report blocking failures"
         ),
-        "evidence": [{"status": account_guard.get("status"), "blockers": blockers}],
+        "evidence": [{"status": account_guard.get("status"), "blockers": blockers, "policy_sync_recovery": policy_sync_recovery or {}}],
     }
 
 
@@ -280,10 +316,20 @@ def _primary_trigger(fired: list[dict[str, Any]]) -> dict[str, Any] | None:
     priority = {
         "consecutive_qc_rejects": 0,
         "policy_mismatch_timeout": 1,
-        "account_state_stale": 2,
-        "account_state_guard_failure": 3,
+        "policy_sync_recovery_exhausted": 2,
+        "account_state_stale": 3,
+        "account_state_guard_failure": 4,
     }
     return sorted(fired, key=lambda item: priority.get(str(item.get("name")), 99))[0]
+
+
+def _recoverable_policy_sync_recovery(recovery: dict[str, Any] | None) -> bool:
+    try:
+        from services.policy_sync_recovery import policy_sync_recovery_suppresses_auto_pause
+
+        return policy_sync_recovery_suppresses_auto_pause(recovery)
+    except Exception:
+        return False
 
 
 def _is_policy_mismatch_event(event: dict[str, Any]) -> bool:

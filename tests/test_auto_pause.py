@@ -95,6 +95,53 @@ class AutoPauseTests(unittest.TestCase):
         self.assertTrue(result["would_pause"])
         self.assertEqual(result["primary_trigger"], "account_state_stale")
 
+    def test_recoverable_policy_sync_recovery_suppresses_account_guard_pause(self):
+        now = datetime(2026, 5, 24, 15, 10, 0)
+        result = evaluate_auto_pause_triggers(
+            execution_events=[
+                _event(
+                    "analysis_205",
+                    "rejected",
+                    now - timedelta(minutes=30),
+                    "policy_version_mismatch_with_buy",
+                    qc_response={"policy_mismatch": True},
+                )
+            ],
+            account_state_guard={
+                "status": "blocked",
+                "would_block": True,
+                "blockers": ["policy_version_mismatch"],
+                "snapshot": {"age_seconds": 60},
+            },
+            policy_sync_recovery={
+                "status": "recoverable",
+                "action": "waiting_for_confirmation",
+                "reason": "waiting_for_policy_version_confirmation",
+            },
+            config={"mode": "active"},
+            now=now,
+        )
+
+        self.assertFalse(result["would_pause"])
+        self.assertFalse(result["should_pause"])
+        self.assertEqual(result["status"], "pass")
+
+    def test_unrecoverable_policy_sync_recovery_triggers_pause(self):
+        result = evaluate_auto_pause_triggers(
+            execution_events=[],
+            account_state_guard=_clean_guard(),
+            policy_sync_recovery={
+                "status": "unrecoverable",
+                "action": "none",
+                "reason": "max_recovery_attempts_exhausted",
+            },
+            config={"mode": "active"},
+            now=datetime(2026, 5, 24, 15, 10, 0),
+        )
+
+        self.assertTrue(result["should_pause"])
+        self.assertEqual(result["primary_trigger"], "policy_sync_recovery_exhausted")
+
     def test_default_config_is_json_serializable(self):
         config = default_auto_pause_config({"mode": "surprise"})
 
