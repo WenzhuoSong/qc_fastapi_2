@@ -76,6 +76,45 @@ class TransactionCostGateTests(unittest.TestCase):
         self.assertEqual(out["rows"][0]["verdict"], "missing_signal_edge")
         self.assertIn("missing EvidenceCard", out["warnings"][0])
 
+    def test_operationally_calibrated_without_statistical_maturity_has_low_edge(self):
+        out = evaluate_transaction_cost_gate(
+            target_weights={"SPY": 0.12, "CASH": 0.88},
+            current_weights={"SPY": 0.10, "CASH": 0.90},
+            rebalance_actions=[
+                {
+                    "ticker": "SPY",
+                    "action": "buy",
+                    "weight_current": 0.10,
+                    "weight_target": 0.12,
+                    "weight_delta": 0.02,
+                }
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "evidence_cards": [
+                            {
+                                "ticker": "SPY",
+                                "role": "core",
+                                "action": "increase",
+                                "confidence": 0.9,
+                                "conviction": 0.3,
+                                "conviction_status": "calibrated",
+                                "conviction_n": 40,
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+
+        row = out["rows"][0]
+        self.assertEqual(row["conviction_status"], "calibrated")
+        self.assertEqual(row["conviction_statistical_status"], "early_signal")
+        self.assertEqual(row["conviction_discount"], 0.03)
+        self.assertEqual(row["verdict"], "low_edge_to_cost")
+
     def test_watch_signal_does_not_support_buy_edge(self):
         out = evaluate_transaction_cost_gate(
             target_weights={"QQQ": 0.12, "CASH": 0.88},

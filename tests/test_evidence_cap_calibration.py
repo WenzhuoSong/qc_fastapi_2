@@ -52,11 +52,15 @@ class EvidenceCapCalibrationTest(unittest.TestCase):
         self.assertEqual(report["recommended_config"]["mode"], "gated")
         self.assertEqual(
             report["recommended_vote_thresholds"]["increase"]["or_single_conviction_status"],
-            ["calibrated", "statistically_meaningful"],
+            ["indicative", "statistically_meaningful"],
         )
         self.assertIn("risk_off", report["recommended_vote_thresholds"]["hedge"]["requires_regime"])
         self.assertEqual(report["operator_action"], "operator_review_then_optionally_enable_gated")
         self.assertEqual(report["observe_summary"]["observe_cycles"], 12)
+        self.assertEqual(
+            report["conviction_summary"]["statistical_status_counts"],
+            {"early_signal": 1, "indicative": 1, "statistically_meaningful": 1},
+        )
         self.assertAlmostEqual(report["observe_summary"]["would_clip_rate"], 2 / 24, places=6)
         self.assertEqual(report["young_etf_summary"]["cap_range_status"], "within_expected_range")
         self.assertTrue(report["recommended_config"]["young_etf_cap_within_expected_range"])

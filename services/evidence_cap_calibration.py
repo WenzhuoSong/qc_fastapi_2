@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from statistics import median
 from typing import Any, Iterable
 
+from services.conviction_decision import decision_statistical_status
 from services.evidence_cap_config import (
     DEFAULT_MAX_CALIBRATION_AGE_DAYS,
     DEFAULT_MAX_WOULD_CLIP_RATE,
@@ -25,7 +26,7 @@ EXPECTED_YOUNG_ETF_CAP_RANGE = {"min": 0.01, "max": 0.03}
 DEFAULT_VOTE_THRESHOLDS = {
     "increase": {
         "min_voted_count": 2,
-        "or_single_conviction_status": ["calibrated", "statistically_meaningful"],
+        "or_single_conviction_status": ["indicative", "statistically_meaningful"],
     },
     "reduce": {
         "min_voted_count": 1,
@@ -37,8 +38,8 @@ DEFAULT_VOTE_THRESHOLDS = {
     },
 }
 
-MEANINGFUL_CONVICTION_STATUSES = {"statistically_meaningful", "calibrated", "indicative"}
-EARLY_CONVICTION_STATUSES = {"early_signal", "early_estimate", "early_live_confirmation"}
+MEANINGFUL_CONVICTION_STATUSES = {"statistically_meaningful", "indicative"}
+EARLY_CONVICTION_STATUSES = {"early_signal"}
 REJECT_EVENT_TYPES = {"qc_rejected", "rejected", "command_rejected"}
 
 
@@ -232,13 +233,16 @@ def _young_etf_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _conviction_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     status_counts = _top_counts(str(row.get("status") or "unknown") for row in rows)
+    statistical_status_counts = _top_counts(str(row.get("statistical_status") or "insufficient") for row in rows)
     source_counts = _top_counts(str(row.get("source_bucket") or "unknown") for row in rows)
-    meaningful = sum(1 for row in rows if str(row.get("status") or "") in MEANINGFUL_CONVICTION_STATUSES)
-    early = sum(1 for row in rows if str(row.get("status") or "") in EARLY_CONVICTION_STATUSES)
+    meaningful = sum(
+        1 for row in rows if str(row.get("statistical_status") or "") in MEANINGFUL_CONVICTION_STATUSES
+    )
+    early = sum(1 for row in rows if str(row.get("statistical_status") or "") in EARLY_CONVICTION_STATUSES)
     insufficient = sum(
         1
         for row in rows
-        if str(row.get("status") or "") not in MEANINGFUL_CONVICTION_STATUSES | EARLY_CONVICTION_STATUSES
+        if str(row.get("statistical_status") or "") not in MEANINGFUL_CONVICTION_STATUSES | EARLY_CONVICTION_STATUSES
     )
     ns = [_to_float(row.get("n"), None) for row in rows]
     ns = [value for value in ns if value is not None]
@@ -250,6 +254,7 @@ def _conviction_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "meaningful_profile_ratio": _safe_ratio(meaningful, len(rows)),
         "median_n": _rounded_median(ns),
         "status_counts": status_counts,
+        "statistical_status_counts": statistical_status_counts,
         "source_counts": source_counts,
     }
 
@@ -417,12 +422,21 @@ def _extract_cap_diagnostics(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_profile(value: Any) -> dict[str, Any]:
+    diagnostics = _record_get(value, "diagnostics")
+    diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+    n = _record_get(value, "n")
+    status = _record_get(value, "status")
     return {
         "strategy_id": _record_get(value, "strategy_id"),
         "ticker": _record_get(value, "ticker"),
         "source_bucket": _record_get(value, "source_bucket"),
-        "status": _record_get(value, "status"),
-        "n": _record_get(value, "n"),
+        "status": status,
+        "statistical_status": decision_statistical_status(
+            status=_record_get(value, "statistical_status") or status,
+            n=_optional_int(n),
+            diagnostics=diagnostics,
+        ),
+        "n": n,
         "conviction": _record_get(value, "conviction"),
         "as_of_date": _iso_or_none(_record_get(value, "as_of_date")),
     }
@@ -472,6 +486,13 @@ def _to_float(value: Any, default: float | None) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _iso_or_none(value: Any) -> str | None:

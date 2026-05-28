@@ -8,11 +8,13 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any
 
+from services.conviction_decision import decision_statistical_status
 from services.strategy_conviction import (
     SOURCE_BUCKET_COMBINED,
     SOURCE_BUCKET_HISTORICAL_PRIOR,
     SOURCE_BUCKET_LIVE_PAPER,
-    STATUS_CALIBRATED,
+    STAT_STATUS_INDICATIVE,
+    STAT_STATUS_STATISTICALLY_MEANINGFUL,
 )
 from services.strategy_diversity import (
     ALPHA_FAMILIES,
@@ -35,6 +37,7 @@ SOURCE_BUCKET_PRIORITY = {
     SOURCE_BUCKET_HISTORICAL_PRIOR: 2,
 }
 WEAK_HIT_RATE_THRESHOLD = 0.45
+STATISTICALLY_MATURE_STATUSES = {STAT_STATUS_INDICATIVE, STAT_STATUS_STATISTICALLY_MEANINGFUL}
 
 
 async def load_strategy_regime_gap_analysis(
@@ -95,7 +98,7 @@ def build_strategy_regime_gap_analysis(
     alpha_rows = [_alpha_run_row(row) for row in (alpha_validation_runs or [])]
     calibrated_alpha = [
         row for row in profile_rows
-        if row["alpha_source"] and row["status"] == STATUS_CALIBRATED
+        if row["alpha_source"] and row["statistical_status"] in STATISTICALLY_MATURE_STATUSES
     ]
     regime_rows = _regime_rows(calibrated_alpha)
     family_rows = _family_rows(calibrated_alpha)
@@ -138,6 +141,7 @@ def build_strategy_regime_gap_analysis(
         "expected_alpha_families": list(ALPHA_FAMILIES),
         "profile_count": len(profile_rows),
         "calibrated_alpha_profile_count": len(calibrated_alpha),
+        "statistically_mature_alpha_profile_count": len(calibrated_alpha),
         "actionable_alpha_families": actionable_families,
         "actionable_alpha_family_count": len(actionable_families),
         "momentum_overconcentration": momentum_overconcentration,
@@ -156,6 +160,10 @@ def build_strategy_regime_gap_analysis(
 def _profile_row(value: Any) -> dict[str, Any]:
     strategy_id = str(_record_get(value, "strategy_id") or "").strip()
     family, alpha_source = _strategy_family(strategy_id)
+    diagnostics = _record_get(value, "diagnostics")
+    diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+    status = str(_record_get(value, "status") or "unknown")
+    n = _to_int(_record_get(value, "n"), 0)
     return {
         "strategy_id": strategy_id,
         "ticker": str(_record_get(value, "ticker") or "").upper().strip(),
@@ -164,8 +172,13 @@ def _profile_row(value: Any) -> dict[str, Any]:
         "regime": str(_record_get(value, "regime_at_signal") or "unknown"),
         "horizon_days": _to_int(_record_get(value, "horizon_days"), 0),
         "source_bucket": str(_record_get(value, "source_bucket") or "unknown"),
-        "status": str(_record_get(value, "status") or "unknown"),
-        "n": _to_int(_record_get(value, "n"), 0),
+        "status": status,
+        "statistical_status": decision_statistical_status(
+            status=_record_get(value, "statistical_status") or status,
+            n=n,
+            diagnostics=diagnostics,
+        ),
+        "n": n,
         "hit_rate": _to_float(_record_get(value, "hit_rate")),
         "avg_excess_vs_spy": _to_float(_record_get(value, "avg_excess_vs_spy")),
         "ic": _to_float(_record_get(value, "ic")),

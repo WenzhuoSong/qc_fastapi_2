@@ -13,13 +13,12 @@ from services.strategy_conviction import (
     SOURCE_BUCKET_COMBINED,
     SOURCE_BUCKET_HISTORICAL_PRIOR,
     SOURCE_BUCKET_LIVE_PAPER,
-    STATUS_CALIBRATED,
     STATUS_EARLY_ESTIMATE,
     STATUS_EARLY_LIVE_CONFIRMATION,
     STATUS_HISTORICAL_REQUIRES_LIVE,
     STATUS_INSUFFICIENT_SAMPLES,
-    STAT_STATUS_INDICATIVE,
     STAT_STATUS_STATISTICALLY_MEANINGFUL,
+    STAT_STATUS_INDICATIVE,
     statistical_interpretation,
 )
 from services.strategy_diversity import (
@@ -27,15 +26,24 @@ from services.strategy_diversity import (
     canonical_strategy_family,
     is_strategy_alpha_source,
 )
+from services.alpha_decision_profile import (
+    RESIDUAL_ALPHA_EPSILON,
+    build_alpha_decision_profiles,
+)
+from services.alpha_decision_policy import evaluate_alpha_decision_policy
 from services.strategy_regime_gap_analysis import build_strategy_regime_gap_analysis
 
 
 PROMOTE_HIT_RATE_THRESHOLD = 0.55
 DEGRADE_HIT_RATE_THRESHOLD = 0.45
 ARCHIVE_HIT_RATE_THRESHOLD = 0.40
-PROMOTE_MIN_TOTAL_N = 30
+PROMOTE_MIN_TOTAL_N = 100
 MAX_PROMOTION_ESTIMATED_COST_PCT = 0.003
 MAX_PROMOTION_TURNOVER = 0.50
+MIN_PROMOTION_REDUNDANCY_MULTIPLIER = 0.50
+ATTRIBUTION_MIN_SAMPLES_PER_WINDOW = 20
+ATTRIBUTION_MIN_TOTAL_SAMPLES_FOR_DEGRADATION = 60
+ATTRIBUTION_CONSECUTIVE_NEGATIVE_WINDOWS = 3
 STATISTICAL_PROMOTION_STATUSES = {
     STAT_STATUS_INDICATIVE,
     STAT_STATUS_STATISTICALLY_MEANINGFUL,
@@ -63,7 +71,7 @@ async def load_strategy_promotion_recommendations(
     """Load persisted diagnostics and build recommendation rows."""
     from sqlalchemy import desc, func, select
 
-    from db.models import AgentAnalysis, AgentStepLog, AlphaValidationRun, StrategyConvictionProfile
+    from db.models import AgentAnalysis, AgentStepLog, AlphaValidationRun, PerformanceAttribution, StrategyConvictionProfile, SystemConfig
 
     target_date = as_of_date or datetime.now(timezone.utc).date()
     latest_profile_date_result = await db.execute(
@@ -92,6 +100,18 @@ async def load_strategy_promotion_recommendations(
         .limit(30)
     )
     alpha_rows = list(alpha_result.scalars().all())
+
+    attribution_result = await db.execute(
+        select(PerformanceAttribution)
+        .order_by(desc(PerformanceAttribution.period_end), desc(PerformanceAttribution.id))
+        .limit(12)
+    )
+    attribution_rows = list(attribution_result.scalars().all())
+    alpha_policy_config_row = (
+        await db.execute(
+            select(SystemConfig).where(SystemConfig.key == "alpha_decision_policy_config").limit(1)
+        )
+    ).scalar_one_or_none()
 
     latest_analysis = (
         await db.execute(
@@ -123,6 +143,8 @@ async def load_strategy_promotion_recommendations(
         profiles=profile_rows,
         strategy_evidence=strategy_evidence,
         alpha_validation_runs=alpha_rows,
+        performance_attribution_rows=attribution_rows,
+        alpha_decision_policy_config=(alpha_policy_config_row.value if alpha_policy_config_row else {}) or {},
         as_of_date=target_date,
     )
     if latest_profile_date is not None:
@@ -137,12 +159,37 @@ def build_strategy_promotion_recommendations(
     profiles: list[Any],
     strategy_evidence: dict[str, Any] | None = None,
     alpha_validation_runs: list[Any] | None = None,
+    performance_attribution_rows: list[Any] | None = None,
+    alpha_decision_policy_config: dict[str, Any] | None = None,
     as_of_date: date | None = None,
 ) -> dict[str, Any]:
     profile_rows = _dedupe_profiles([_profile_row(item) for item in profiles])
     alpha_rows = [_alpha_run_row(row) for row in (alpha_validation_runs or [])]
+    attribution_rows = [_performance_attribution_row(row) for row in (performance_attribution_rows or [])]
     evidence_index = _strategy_evidence_index(strategy_evidence or {})
-    diagnostic_context = _promotion_diagnostic_context(strategy_evidence or {}, alpha_rows)
+    alpha_decision_summary = build_alpha_decision_profiles(
+        profiles=profiles,
+        performance_attribution_rows=performance_attribution_rows or [],
+        alpha_validation_runs=alpha_validation_runs or [],
+        strategy_independence=(
+            (strategy_evidence or {}).get("strategy_independence")
+            if isinstance((strategy_evidence or {}).get("strategy_independence"), dict)
+            else {}
+        ),
+        strategy_evidence=strategy_evidence or {},
+        as_of_date=as_of_date,
+    )
+    alpha_decision_policy = evaluate_alpha_decision_policy(
+        alpha_decision_policy_config or {},
+        alpha_decision_summary=alpha_decision_summary,
+    )
+    diagnostic_context = _promotion_diagnostic_context(
+        strategy_evidence or {},
+        alpha_rows,
+        attribution_rows=attribution_rows,
+        alpha_decision_summary=alpha_decision_summary,
+        alpha_decision_policy=alpha_decision_policy,
+    )
     gap_summary = build_strategy_regime_gap_analysis(
         profiles=profiles,
         alpha_validation_runs=alpha_validation_runs or [],
@@ -182,15 +229,37 @@ def build_strategy_promotion_recommendations(
         "gap_status": gap_summary.get("status"),
         "gap_warnings": gap_summary.get("warnings") or [],
         "latest_alpha_validation": alpha_rows[0] if alpha_rows else {},
+        "latest_performance_attribution": attribution_rows[0] if attribution_rows else {},
+        "alpha_decision_profiles": {
+            "status": alpha_decision_summary.get("status"),
+            "profile_count": alpha_decision_summary.get("profile_count"),
+            "eligible_count": alpha_decision_summary.get("eligible_count"),
+            "raw_alpha_strategy_count": alpha_decision_summary.get("raw_alpha_strategy_count"),
+            "independence_adjusted_strategy_count": alpha_decision_summary.get(
+                "independence_adjusted_strategy_count"
+            ),
+            "independence_consumption": alpha_decision_summary.get("independence_consumption") or {},
+            "status_counts": alpha_decision_summary.get("status_counts") or {},
+            "residual_alpha_status_counts": alpha_decision_summary.get("residual_alpha_status_counts") or {},
+            "cost_status_counts": alpha_decision_summary.get("cost_status_counts") or {},
+            "net_edge_status_counts": alpha_decision_summary.get("net_edge_status_counts") or {},
+        },
+        "alpha_decision_policy": alpha_decision_policy,
         "policy": {
             "promote_hit_rate_threshold": PROMOTE_HIT_RATE_THRESHOLD,
             "degrade_hit_rate_threshold": DEGRADE_HIT_RATE_THRESHOLD,
             "archive_hit_rate_threshold": ARCHIVE_HIT_RATE_THRESHOLD,
             "promote_min_total_n": PROMOTE_MIN_TOTAL_N,
             "statistical_promotion_statuses": sorted(STATISTICAL_PROMOTION_STATUSES),
-            "non_calibrated_statuses_require_more_samples": sorted(NON_CALIBRATED_STATUSES),
+            "operational_statuses_requiring_statistical_mapping": sorted(NON_CALIBRATED_STATUSES),
+            "statistical_maturity_gate": sorted(STATISTICAL_PROMOTION_STATUSES),
             "max_promotion_estimated_cost_pct": MAX_PROMOTION_ESTIMATED_COST_PCT,
             "max_promotion_turnover": MAX_PROMOTION_TURNOVER,
+            "require_non_negative_residual_alpha_when_attribution_quality_passes": True,
+            "min_promotion_redundancy_multiplier": MIN_PROMOTION_REDUNDANCY_MULTIPLIER,
+            "attribution_min_samples_per_window": ATTRIBUTION_MIN_SAMPLES_PER_WINDOW,
+            "attribution_min_total_samples_for_degradation": ATTRIBUTION_MIN_TOTAL_SAMPLES_FOR_DEGRADATION,
+            "attribution_consecutive_negative_windows": ATTRIBUTION_CONSECUTIVE_NEGATIVE_WINDOWS,
             "promotion_requires_independence_decay_liquidity_cost_alignment": True,
             "operator_approval_required": True,
         },
@@ -217,18 +286,48 @@ def _strategy_recommendations(
             or evidence.get("suggested_use")
             or "unknown"
         )
-        calibrated = [row for row in rows if row["status"] == STATUS_CALIBRATED]
-        non_calibrated = [row for row in rows if row["status"] in NON_CALIBRATED_STATUSES]
-        weak = [row for row in calibrated if _is_weak_profile(row)]
-        strong = [row for row in calibrated if _is_promotable_profile(row)]
-        statistically_early = [
-            row for row in calibrated
+        statistically_ready = [
+            row for row in rows
+            if row.get("statistical_status") in STATISTICAL_PROMOTION_STATUSES
+        ]
+        statistically_immature = [
+            row for row in rows
             if row.get("statistical_status") not in STATISTICAL_PROMOTION_STATUSES
+        ]
+        weak = [row for row in statistically_ready if _is_weak_profile(row)]
+        strong = [row for row in statistically_ready if _is_promotable_profile(row)]
+        statistically_early = [
+            row for row in statistically_immature
+            if _is_operationally_ready_but_statistically_immature(row)
             and _is_directionally_positive(row)
         ]
         family = _first(rows, "canonical_family")
+        residual_context = _residual_alpha_context(
+            strategy_id=strategy_id,
+            profiles=rows,
+            diagnostic_context=diagnostic_context,
+        )
 
-        if weak and current_use in ACTIONABLE_USES:
+        if residual_context.get("degradation_eligible") and current_use in ACTIONABLE_USES:
+            out.append(_recommendation_row(
+                recommendation="demote_to_watch_only_review",
+                priority="high",
+                strategy_id=strategy_id,
+                canonical_family=family,
+                current_use=current_use,
+                recommended_use="watch_only",
+                profiles=rows,
+                reasons=[
+                    "negative_residual_alpha_repeated_windows",
+                    *residual_context.get("reasons", []),
+                ],
+                operator_action=(
+                    "review strategy use; residual alpha has been negative across "
+                    "enough attribution windows to consider demotion"
+                ),
+                evidence_checks={"residual_alpha": residual_context},
+            ))
+        elif weak and current_use in ACTIONABLE_USES:
             out.append(_recommendation_row(
                 recommendation="demote_to_watch_only_review",
                 priority="high",
@@ -239,6 +338,7 @@ def _strategy_recommendations(
                 profiles=weak,
                 reasons=_weak_reasons(weak) + ["current_use_actionable"],
                 operator_action="review strategy use; demote to watch_only if weakness is confirmed",
+                evidence_checks={"residual_alpha": residual_context},
             ))
         elif strong and current_use not in ACTIONABLE_USES:
             evidence_checks = _promotion_evidence_checks(
@@ -262,7 +362,7 @@ def _strategy_recommendations(
                     recommended_use=current_use if current_use != "unknown" else "watch_only",
                     profiles=strong,
                     reasons=[
-                        "calibrated_positive_conviction_but_evidence_gates_not_clear",
+                        "statistically_ready_positive_conviction_but_evidence_gates_not_clear",
                         *evidence_checks["reasons"],
                     ],
                     operator_action=(
@@ -281,7 +381,7 @@ def _strategy_recommendations(
                     current_use=current_use,
                     recommended_use="advisory",
                     profiles=strong,
-                    reasons=["calibrated_positive_conviction", "operator_approval_required"],
+                    reasons=["statistically_ready_positive_conviction", "operator_approval_required"],
                     operator_action="review evidence before changing suggested_use to advisory",
                     evidence_checks=evidence_checks,
                 ))
@@ -300,7 +400,7 @@ def _strategy_recommendations(
                 ],
                 operator_action="do not promote from conviction until statistical_status is indicative or better",
             ))
-        elif non_calibrated and not calibrated:
+        elif statistically_immature:
             out.append(_recommendation_row(
                 recommendation="require_more_samples",
                 priority="medium" if current_use in ACTIONABLE_USES else "low",
@@ -308,8 +408,8 @@ def _strategy_recommendations(
                 canonical_family=family,
                 current_use=current_use,
                 recommended_use=current_use if current_use != "unknown" else "watch_only",
-                profiles=non_calibrated,
-                reasons=sorted({row["status"] for row in non_calibrated}),
+                profiles=statistically_immature,
+                reasons=_sample_maturity_reasons(statistically_immature),
                 operator_action="do not promote or demote from conviction until samples mature",
             ))
         elif weak:
@@ -358,6 +458,15 @@ def _family_regime_recommendations(gap_summary: dict[str, Any]) -> list[dict[str
             "avg_excess_vs_spy": avg_excess,
             "ic": ic,
             "conviction": None,
+            "residual_alpha_status": "family_level",
+            "residual_alpha": None,
+            "net_edge_status": "family_level",
+            "gross_expected_edge": None,
+            "estimated_ibkr_cost_pct": None,
+            "cost_adjusted_edge": None,
+            "edge_to_cost_ratio": None,
+            "redundancy_multiplier": None,
+            "max_positive_correlation": None,
             "reasons": row.get("reasons") or [],
             "blockers": ["operator_approval_required"],
             "operator_action": "review whether this family should be disabled for the regime",
@@ -382,11 +491,37 @@ def _research_gap_recommendations(gap_summary: dict[str, Any]) -> list[dict[str,
             "avg_excess_vs_spy": None,
             "ic": None,
             "conviction": None,
+            "residual_alpha_status": "not_applicable_research_gap",
+            "residual_alpha": None,
+            "net_edge_status": "not_applicable_research_gap",
+            "gross_expected_edge": None,
+            "estimated_ibkr_cost_pct": None,
+            "cost_adjusted_edge": None,
+            "edge_to_cost_ratio": None,
+            "redundancy_multiplier": None,
+            "max_positive_correlation": None,
             "reasons": [row.get("reason")],
             "blockers": ["not_an_execution_change"],
             "operator_action": "prioritize strategy research for this regime/family",
         })
     return out
+
+
+def _is_operationally_ready_but_statistically_immature(row: dict[str, Any]) -> bool:
+    return bool(
+        str(row.get("status") or "") == "calibrated"
+        and row.get("statistical_status") not in STATISTICAL_PROMOTION_STATUSES
+    )
+
+
+def _sample_maturity_reasons(rows: list[dict[str, Any]]) -> list[str]:
+    reasons = set()
+    for row in rows:
+        operational = str(row.get("status") or "unknown")
+        statistical = str(row.get("statistical_status") or "unknown")
+        reasons.add(operational)
+        reasons.add(f"statistical_status:{statistical}")
+    return sorted(reasons)
 
 
 def _recommendation_row(
@@ -405,6 +540,12 @@ def _recommendation_row(
 ) -> dict[str, Any]:
     regimes = sorted({str(row.get("regime") or "unknown") for row in profiles})
     blocker_list = _unique(["operator_approval_required", *(blockers or [])])
+    residual = (evidence_checks or {}).get("residual_alpha")
+    residual = residual if isinstance(residual, dict) else {}
+    independence = (evidence_checks or {}).get("independence")
+    independence = independence if isinstance(independence, dict) else {}
+    cost = (evidence_checks or {}).get("cost")
+    cost = cost if isinstance(cost, dict) else {}
     return {
         "recommendation": recommendation,
         "priority": priority,
@@ -425,6 +566,19 @@ def _recommendation_row(
         "conviction": _weighted_average(profiles, "conviction"),
         "statistical_status_counts": _status_counts(profiles, "statistical_status"),
         "max_hit_rate_ci_width": _max_float(profiles, "hit_rate_ci_width"),
+        "residual_alpha_status": residual.get("status"),
+        "residual_alpha": residual.get("residual_alpha"),
+        "residual_alpha_trend": residual.get("trend"),
+        "attribution_model_quality": residual.get("attribution_model_quality"),
+        "independence_cluster_id": independence.get("cluster_id"),
+        "redundancy_multiplier": independence.get("redundancy_multiplier"),
+        "redundancy_penalty": independence.get("redundancy_penalty"),
+        "max_positive_correlation": independence.get("max_positive_correlation"),
+        "net_edge_status": cost.get("net_edge_status"),
+        "gross_expected_edge": cost.get("gross_expected_edge"),
+        "estimated_ibkr_cost_pct": cost.get("estimated_ibkr_cost_pct"),
+        "cost_adjusted_edge": cost.get("cost_adjusted_edge"),
+        "edge_to_cost_ratio": cost.get("edge_to_cost_ratio"),
         "reasons": _unique(reasons),
         "blockers": blocker_list,
         "evidence_checks": evidence_checks or {},
@@ -435,6 +589,10 @@ def _recommendation_row(
 def _promotion_diagnostic_context(
     strategy_evidence: dict[str, Any],
     alpha_rows: list[dict[str, Any]],
+    *,
+    attribution_rows: list[dict[str, Any]] | None = None,
+    alpha_decision_summary: dict[str, Any] | None = None,
+    alpha_decision_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     independence = (
         strategy_evidence.get("strategy_independence")
@@ -456,6 +614,184 @@ def _promotion_diagnostic_context(
         "etf_decay_diagnostics": decay,
         "liquidity_proxy_diagnostics": liquidity,
         "latest_alpha_validation": alpha_rows[0] if alpha_rows else {},
+        "performance_attribution_rows": attribution_rows or [],
+        "attribution_model_quality": _attribution_model_quality(attribution_rows or []),
+        "alpha_decision_summary": alpha_decision_summary or {},
+        "alpha_decision_policy": alpha_decision_policy or {},
+        "alpha_decision_index": _alpha_decision_index(alpha_decision_summary or {}),
+    }
+
+
+def _attribution_model_quality(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Basic sufficiency check before residual alpha can gate recommendations."""
+    valid = [
+        row for row in rows
+        if str(row.get("status") or "") in {"attributed", "ok", "available"}
+        and _to_float(row.get("residual_alpha_candidate")) is not None
+        and _to_int(row.get("sample_count"), 0) >= ATTRIBUTION_MIN_SAMPLES_PER_WINDOW
+    ]
+    residuals = [_to_float(row.get("residual_alpha_candidate")) for row in valid]
+    residuals = [value for value in residuals if value is not None]
+    total_samples = sum(_to_int(row.get("sample_count"), 0) for row in valid)
+    missing_model_version = [
+        str(row.get("period_key") or idx)
+        for idx, row in enumerate(valid)
+        if not str(row.get("attribution_method") or "").strip()
+    ]
+    autocorr = _lag1_autocorrelation(residuals)
+    warnings: list[str] = []
+    if len(valid) < ATTRIBUTION_CONSECUTIVE_NEGATIVE_WINDOWS:
+        warnings.append("insufficient_attribution_windows")
+    if total_samples < ATTRIBUTION_MIN_TOTAL_SAMPLES_FOR_DEGRADATION:
+        warnings.append("insufficient_attribution_samples")
+    if missing_model_version:
+        warnings.append("missing_attribution_model_version")
+    if autocorr is not None and abs(autocorr) > 0.80:
+        warnings.append("structured_residual_autocorrelation")
+    beta_fields = ("spy_beta", "qqq_beta", "momentum_beta")
+    beta_available = any(any(row.get(field) is not None for field in beta_fields) for row in valid)
+    if not beta_available:
+        warnings.append("regime_specific_beta_stability_not_available")
+
+    hard_warnings = {
+        "insufficient_attribution_windows",
+        "insufficient_attribution_samples",
+        "missing_attribution_model_version",
+        "structured_residual_autocorrelation",
+    }
+    passes = not (hard_warnings & set(warnings))
+    return {
+        "passes": passes,
+        "status": "passes" if passes else "insufficient",
+        "valid_window_count": len(valid),
+        "total_samples": total_samples,
+        "residual_autocorrelation": autocorr,
+        "residual_distribution_status": "available" if residuals else "missing",
+        "beta_stability_status": "available" if beta_available else "not_available",
+        "model_version_present": not missing_model_version,
+        "warnings": sorted(set(warnings)),
+        "policy": {
+            "min_samples_per_window": ATTRIBUTION_MIN_SAMPLES_PER_WINDOW,
+            "min_total_samples_for_degradation": ATTRIBUTION_MIN_TOTAL_SAMPLES_FOR_DEGRADATION,
+            "consecutive_negative_windows": ATTRIBUTION_CONSECUTIVE_NEGATIVE_WINDOWS,
+        },
+    }
+
+
+def _residual_alpha_context(
+    *,
+    strategy_id: str,
+    profiles: list[dict[str, Any]],
+    diagnostic_context: dict[str, Any],
+) -> dict[str, Any]:
+    quality = diagnostic_context.get("attribution_model_quality") or {}
+    alpha_decision = diagnostic_context.get("alpha_decision_summary") or {}
+    rows = [
+        row for row in (alpha_decision.get("rows") or [])
+        if isinstance(row, dict) and str(row.get("strategy_id") or "") == strategy_id
+    ]
+    selected = _best_alpha_decision_row(rows, profiles)
+    trend = _residual_alpha_trend(diagnostic_context.get("performance_attribution_rows") or [])
+    status = str((selected or {}).get("residual_alpha_status") or "insufficient")
+    residual = _to_float((selected or {}).get("residual_alpha"))
+    reasons: list[str] = []
+    passes = True
+    if not quality.get("passes"):
+        reasons.append("attribution_model_quality_insufficient")
+    elif status == "negative":
+        passes = False
+        reasons.append("negative_residual_alpha")
+
+    degradation_eligible = bool(
+        quality.get("passes")
+        and trend.get("consecutive_negative_windows", 0) >= ATTRIBUTION_CONSECUTIVE_NEGATIVE_WINDOWS
+        and trend.get("total_valid_samples", 0) >= ATTRIBUTION_MIN_TOTAL_SAMPLES_FOR_DEGRADATION
+    )
+    if degradation_eligible:
+        reasons.append("negative_residual_alpha_degradation_threshold_met")
+
+    return {
+        "passes": passes,
+        "status": status,
+        "residual_alpha": residual,
+        "source": (selected or {}).get("residual_alpha_source") or "missing",
+        "profile_id": (selected or {}).get("alpha_decision_profile_id"),
+        "strategy_id": strategy_id,
+        "trend": trend,
+        "degradation_eligible": degradation_eligible,
+        "attribution_model_quality": quality,
+        "reasons": sorted(set(reasons)),
+    }
+
+
+def _best_alpha_decision_row(
+    rows: list[dict[str, Any]],
+    profiles: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    regimes = {str(row.get("regime") or "unknown") for row in profiles}
+    regime_rows = [row for row in rows if str(row.get("regime") or "unknown") in regimes]
+    candidates = regime_rows or rows
+    rank = {"eligible": 0, "watch_only": 1, "needs_more_samples": 2, "degraded": 3}
+    return sorted(
+        candidates,
+        key=lambda row: (
+            rank.get(str(row.get("decision_status") or ""), 9),
+            -_to_int(row.get("sample_count"), 0),
+            str(row.get("strategy_id") or ""),
+        ),
+    )[0]
+
+
+def _alpha_decision_index(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for row in summary.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        strategy_id = str(row.get("strategy_id") or "").strip()
+        if not strategy_id:
+            continue
+        current = out.get(strategy_id)
+        if current is None or _alpha_decision_row_rank(row) < _alpha_decision_row_rank(current):
+            out[strategy_id] = row
+    return out
+
+
+def _alpha_decision_row_rank(row: dict[str, Any]) -> tuple[int, int]:
+    status_rank = {"eligible": 0, "watch_only": 1, "needs_more_samples": 2, "degraded": 3}
+    return (
+        status_rank.get(str(row.get("decision_status") or ""), 9),
+        -_to_int(row.get("sample_count"), 0),
+    )
+
+
+def _residual_alpha_trend(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    valid = [
+        row for row in rows
+        if _to_float(row.get("residual_alpha_candidate")) is not None
+        and _to_int(row.get("sample_count"), 0) >= ATTRIBUTION_MIN_SAMPLES_PER_WINDOW
+    ]
+    consecutive_negative = 0
+    for row in valid:
+        value = _to_float(row.get("residual_alpha_candidate"))
+        if value is not None and value < -RESIDUAL_ALPHA_EPSILON:
+            consecutive_negative += 1
+            continue
+        break
+    total_samples = sum(_to_int(row.get("sample_count"), 0) for row in valid)
+    latest = valid[0] if valid else {}
+    return {
+        "window_count": len(valid),
+        "total_valid_samples": total_samples,
+        "consecutive_negative_windows": consecutive_negative,
+        "latest_residual_alpha": _to_float(latest.get("residual_alpha_candidate")),
+        "latest_period_key": latest.get("period_key"),
+        "policy": {
+            "min_samples_per_window": ATTRIBUTION_MIN_SAMPLES_PER_WINDOW,
+            "min_total_samples_for_degradation": ATTRIBUTION_MIN_TOTAL_SAMPLES_FOR_DEGRADATION,
+            "consecutive_negative_windows": ATTRIBUTION_CONSECUTIVE_NEGATIVE_WINDOWS,
+        },
     }
 
 
@@ -476,6 +812,7 @@ def _promotion_evidence_checks(
             strategy_id=strategy_id,
             evidence_index=evidence_index,
             diagnostics=diagnostic_context.get("strategy_independence") or {},
+            alpha_decision_index=diagnostic_context.get("alpha_decision_index") or {},
         ),
         "regime_coverage": _regime_coverage_check(
             strong_profiles=strong_profiles,
@@ -491,8 +828,15 @@ def _promotion_evidence_checks(
             diagnostics=diagnostic_context.get("liquidity_proxy_diagnostics") or {},
         ),
         "cost": _cost_check(
+            strategy_id=strategy_id,
             evidence=evidence,
             latest_alpha=diagnostic_context.get("latest_alpha_validation") or {},
+            alpha_decision_index=diagnostic_context.get("alpha_decision_index") or {},
+        ),
+        "residual_alpha": _residual_alpha_context(
+            strategy_id=strategy_id,
+            profiles=all_profiles,
+            diagnostic_context=diagnostic_context,
         ),
     }
     for name, check in checks.items():
@@ -526,6 +870,7 @@ def _independence_check(
     strategy_id: str,
     evidence_index: dict[str, dict[str, Any]],
     diagnostics: dict[str, Any],
+    alpha_decision_index: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     pairs = diagnostics.get("high_correlation_pairs") or []
     conflicts: list[dict[str, Any]] = []
@@ -545,14 +890,33 @@ def _independence_check(
                 "correlation": _to_float(pair.get("correlation")),
                 "overlap": pair.get("overlap"),
             })
+    alpha_profile = alpha_decision_index.get(strategy_id, {})
+    redundancy_multiplier = _to_float(alpha_profile.get("redundancy_multiplier"))
+    if redundancy_multiplier is None:
+        redundancy_multiplier = 1.0
+    max_positive_correlation = _to_float(alpha_profile.get("max_positive_correlation"))
+    most_correlated_strategy = alpha_profile.get("most_correlated_strategy")
+    credit_conflict = bool(redundancy_multiplier < MIN_PROMOTION_REDUNDANCY_MULTIPLIER)
     return {
-        "passes": not conflicts,
+        "passes": not conflicts and not credit_conflict,
         "status": diagnostics.get("status") or "missing",
+        "cluster_id": alpha_profile.get("independence_cluster_id"),
+        "redundancy_multiplier": redundancy_multiplier,
+        "redundancy_penalty": round(1.0 - redundancy_multiplier, 6),
+        "max_positive_correlation": max_positive_correlation,
+        "most_correlated_strategy": most_correlated_strategy,
+        "min_promotion_redundancy_multiplier": MIN_PROMOTION_REDUNDANCY_MULTIPLIER,
         "conflicts": conflicts,
-        "reasons": [
+        "reasons": _unique([
             f"high_correlation_with_actionable:{item['strategy']}:{item.get('correlation')}"
             for item in conflicts
-        ],
+        ] + (
+            [
+                "redundancy_multiplier_below_promotion_threshold:"
+                f"{redundancy_multiplier}:{MIN_PROMOTION_REDUNDANCY_MULTIPLIER}"
+            ]
+            if credit_conflict else []
+        )),
     }
 
 
@@ -637,11 +1001,23 @@ def _liquidity_check(*, tickers: list[str], diagnostics: dict[str, Any]) -> dict
     }
 
 
-def _cost_check(*, evidence: dict[str, Any], latest_alpha: dict[str, Any]) -> dict[str, Any]:
+def _cost_check(
+    *,
+    strategy_id: str,
+    evidence: dict[str, Any],
+    latest_alpha: dict[str, Any],
+    alpha_decision_index: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     conflicts: list[dict[str, Any]] = []
     estimated_cost = _to_float(evidence.get("estimated_cost_pct"))
     turnover = _to_float(evidence.get("turnover"))
     latest_low_edge = _to_int(latest_alpha.get("low_edge_trade_count"), 0)
+    alpha_profile = alpha_decision_index.get(strategy_id, {})
+    net_edge_status = str(alpha_profile.get("net_edge_status") or alpha_profile.get("cost_status") or "")
+    cost_adjusted_edge = _to_float(alpha_profile.get("cost_adjusted_edge"))
+    gross_edge = _to_float(alpha_profile.get("gross_expected_edge"))
+    edge_to_cost_ratio = _to_float(alpha_profile.get("edge_to_cost_ratio"))
+    estimated_ibkr_cost = _to_float(alpha_profile.get("estimated_ibkr_cost_pct"))
     if estimated_cost is not None and estimated_cost > MAX_PROMOTION_ESTIMATED_COST_PCT:
         conflicts.append({
             "type": "strategy_estimated_cost_high",
@@ -660,9 +1036,23 @@ def _cost_check(*, evidence: dict[str, Any], latest_alpha: dict[str, Any]) -> di
             "low_edge_trade_count": latest_low_edge,
             "min_edge_to_cost_ratio": latest_alpha.get("min_edge_to_cost_ratio"),
         })
+    if net_edge_status in {"negative_after_cost", "low_edge_after_cost"}:
+        conflicts.append({
+            "type": f"net_edge_{net_edge_status}",
+            "gross_expected_edge": gross_edge,
+            "estimated_ibkr_cost_pct": estimated_ibkr_cost,
+            "cost_adjusted_edge": cost_adjusted_edge,
+            "edge_to_cost_ratio": edge_to_cost_ratio,
+        })
     return {
         "passes": not conflicts,
         "conflicts": conflicts,
+        "net_edge_status": net_edge_status or None,
+        "gross_expected_edge": gross_edge,
+        "estimated_ibkr_cost_pct": estimated_ibkr_cost,
+        "cost_adjusted_edge": cost_adjusted_edge,
+        "edge_to_cost_ratio": edge_to_cost_ratio,
+        "cost_model": alpha_profile.get("cost_model"),
         "estimated_cost_pct": estimated_cost,
         "turnover": turnover,
         "latest_low_edge_trade_count": latest_low_edge,
@@ -888,6 +1278,25 @@ def _alpha_run_row(row: Any) -> dict[str, Any]:
     }
 
 
+def _performance_attribution_row(row: Any) -> dict[str, Any]:
+    return {
+        "period_key": _record_get(row, "period_key"),
+        "period_start": _iso(_record_get(row, "period_start")),
+        "period_end": _iso(_record_get(row, "period_end")),
+        "generated_at": _iso(_record_get(row, "generated_at")),
+        "status": _record_get(row, "status"),
+        "attribution_method": _record_get(row, "attribution_method"),
+        "residual_alpha_candidate": _to_float(_record_get(row, "residual_alpha_candidate")),
+        "sample_count": _to_int(_record_get(row, "sample_count"), 0),
+        "spy_beta": _to_float(_record_get(row, "spy_beta")),
+        "qqq_beta": _to_float(_record_get(row, "qqq_beta")),
+        "momentum_beta": _to_float(_record_get(row, "momentum_beta")),
+        "r_squared": _to_float(_record_get(row, "r_squared")),
+        "data_quality": _record_get(row, "data_quality"),
+        "benchmark_source": _record_get(row, "benchmark_source"),
+    }
+
+
 def _weighted_average(rows: list[dict[str, Any]], field: str) -> float | None:
     total = 0.0
     weight_sum = 0
@@ -917,6 +1326,22 @@ def _status_counts(rows: list[dict[str, Any]], field: str) -> dict[str, int]:
         key = str(row.get(field) or "unknown")
         counts[key] = counts.get(key, 0) + 1
     return dict(sorted(counts.items()))
+
+
+def _lag1_autocorrelation(values: list[float]) -> float | None:
+    if len(values) < 4:
+        return None
+    left = values[:-1]
+    right = values[1:]
+    mean_left = sum(left) / len(left)
+    mean_right = sum(right) / len(right)
+    cov = sum((a - mean_left) * (b - mean_right) for a, b in zip(left, right))
+    var_left = sum((a - mean_left) ** 2 for a in left)
+    var_right = sum((b - mean_right) ** 2 for b in right)
+    denom = (var_left * var_right) ** 0.5
+    if denom <= 0:
+        return None
+    return round(cov / denom, 6)
 
 
 def _first(rows: list[dict[str, Any]], key: str) -> str:

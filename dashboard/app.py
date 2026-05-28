@@ -115,6 +115,20 @@ async def build_dashboard_summary() -> dict[str, Any]:
     alpha_validation_trend = await _alpha_validation_trend_dashboard()
     strategy_regime_gap_analysis = await _strategy_regime_gap_analysis_dashboard()
     strategy_promotion_recommendations = await _strategy_promotion_recommendations_dashboard()
+    alpha_decision_profiles = await _alpha_decision_profiles_dashboard()
+    alpha_decision_policy = _alpha_decision_policy_dashboard_status(
+        config.get("alpha_decision_policy_config") or {},
+        alpha_decision_profiles,
+        evidence_cap_calibration,
+    )
+    alpha_decision_review_surface = _alpha_decision_review_surface_status(
+        policy=alpha_decision_policy,
+        profiles=alpha_decision_profiles,
+        recommendations=strategy_promotion_recommendations,
+        portfolio_construction=pc_objective,
+        performance_attribution=performance_attribution,
+        strategy_evidence=strategy_evidence,
+    )
     cron_runs = await _latest_cron_runs()
     data_quality_audit = await _data_quality_audit_trend()
     execution = await _latest_execution()
@@ -134,6 +148,9 @@ async def build_dashboard_summary() -> dict[str, Any]:
         "alpha_validation_trend": alpha_validation_trend,
         "strategy_regime_gap_analysis": strategy_regime_gap_analysis,
         "strategy_promotion_recommendations": strategy_promotion_recommendations,
+        "alpha_decision_profiles": alpha_decision_profiles,
+        "alpha_decision_policy": alpha_decision_policy,
+        "alpha_decision_review_surface": alpha_decision_review_surface,
         "cron_runs": cron_runs,
         "data_quality_audit": data_quality_audit,
         "execution": execution,
@@ -696,6 +713,226 @@ async def _strategy_promotion_recommendations_dashboard() -> dict[str, Any]:
         }
 
 
+async def _alpha_decision_profiles_dashboard() -> dict[str, Any]:
+    """Load read-only alpha decision profiles."""
+    try:
+        from services.alpha_decision_profile import load_alpha_decision_profiles
+
+        async with AsyncSessionLocal() as db:
+            raw = await load_alpha_decision_profiles(db, row_limit=5000)
+        raw["available"] = True
+        return raw
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"{type(exc).__name__}: {exc}",
+            "contract_version": "alpha_decision_profiles_v1",
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+            "decision_input_only": True,
+            "recommendation_only": True,
+            "rows": [],
+            "status_counts": {},
+            "warnings": [],
+        }
+
+
+def _alpha_decision_policy_dashboard_status(
+    config: dict[str, Any],
+    alpha_decision_profiles: dict[str, Any],
+    evidence_cap_calibration: dict[str, Any],
+) -> dict[str, Any]:
+    """Render current alpha-decision policy mode and gated blockers."""
+    try:
+        from services.alpha_decision_policy import evaluate_alpha_decision_policy
+
+        return {
+            "available": True,
+            **evaluate_alpha_decision_policy(
+                config or {},
+                alpha_decision_summary=alpha_decision_profiles or {},
+                evidence_cap_calibration=evidence_cap_calibration or {},
+            ),
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"{type(exc).__name__}: {exc}",
+            "contract_version": "alpha_decision_policy_v1",
+            "mode": "observe",
+            "effective_mode": "observe",
+            "gated_enabled": False,
+            "recommendation_effect": False,
+            "allocation_effect": False,
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+            "blockers": ["policy_status_unavailable"],
+            "warnings": [],
+        }
+
+
+def _alpha_decision_review_surface_status(
+    *,
+    policy: dict[str, Any],
+    profiles: dict[str, Any],
+    recommendations: dict[str, Any],
+    portfolio_construction: dict[str, Any],
+    performance_attribution: dict[str, Any],
+    strategy_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Build one operator-facing alpha decision review surface."""
+    profile_rows = [
+        row for row in profiles.get("rows") or []
+        if isinstance(row, dict)
+    ]
+    recommendation_rows = [
+        row for row in recommendations.get("recommendations") or []
+        if isinstance(row, dict)
+    ]
+    pc_alpha_rows = [
+        row for row in portfolio_construction.get("alpha_decision_objective_rows") or []
+        if isinstance(row, dict)
+    ]
+    cluster_rows = [
+        row for row in portfolio_construction.get("strategy_cluster_exposure_rows") or []
+        if isinstance(row, dict)
+    ]
+    independence = strategy_evidence.get("strategy_independence") or {}
+    latest_attr = performance_attribution.get("latest") or {}
+    checklist = {
+        "mode_visible": bool(policy.get("effective_mode")),
+        "no_naked_conviction_numbers": _profile_rows_have_sample_and_status(profile_rows),
+        "promotion_rows_include_residual_alpha_and_cost_status": _recommendation_rows_have_alpha_cost_columns(recommendation_rows),
+        "strategy_counts_show_effective_independent_count": (
+            profiles.get("strategy_count") is not None
+            and profiles.get("independence_adjusted_strategy_count") is not None
+        ),
+        "pc_raw_vs_adjusted_diagnostics_available": bool(pc_alpha_rows),
+        "net_alpha_view_available": bool(profile_rows) or bool(latest_attr),
+        "policy_prevents_target_builder_bypass": bool(policy.get("never_bypasses_target_builder")),
+    }
+    return {
+        "available": True,
+        "contract_version": "alpha_decision_review_surface_v1",
+        "execution_authority": "none",
+        "target_weight_mutation": "none",
+        "mode": policy.get("mode"),
+        "effective_mode": policy.get("effective_mode"),
+        "gated_enabled": policy.get("gated_enabled"),
+        "recommendation_effect": policy.get("recommendation_effect"),
+        "allocation_effect": policy.get("allocation_effect"),
+        "review_checklist": checklist,
+        "statistical_maturity": {
+            "profile_count": profiles.get("profile_count"),
+            "strategy_count": profiles.get("strategy_count"),
+            "raw_alpha_strategy_count": profiles.get("raw_alpha_strategy_count"),
+            "independence_adjusted_strategy_count": profiles.get("independence_adjusted_strategy_count"),
+            "status_counts": profiles.get("status_counts") or {},
+            "residual_alpha_status_counts": profiles.get("residual_alpha_status_counts") or {},
+            "net_edge_status_counts": profiles.get("net_edge_status_counts") or {},
+        },
+        "strategy_independence": {
+            "status": independence.get("status"),
+            "strategy_count": independence.get("strategy_count"),
+            "alpha_strategy_count": independence.get("alpha_strategy_count"),
+            "effective_independent_alpha_count": independence.get("effective_independent_alpha_count"),
+            "high_correlation_pair_count": independence.get("high_correlation_pair_count"),
+            "low_correlation_pair_count": independence.get("low_correlation_pair_count"),
+            "operator_review_required": independence.get("operator_review_required"),
+        },
+        "promotion_review": {
+            "status": recommendations.get("status"),
+            "recommendation_count": recommendations.get("recommendation_count"),
+            "high_priority_count": recommendations.get("high_priority_count"),
+            "recommendation_counts": recommendations.get("recommendation_counts") or {},
+            "alpha_decision_policy_effective_mode": (
+                recommendations.get("alpha_decision_policy") or {}
+            ).get("effective_mode"),
+        },
+        "pc_review": {
+            "mode": portfolio_construction.get("mode"),
+            "policy_effective_mode": portfolio_construction.get("alpha_decision_policy_effective_mode"),
+            "allocation_effect": portfolio_construction.get("alpha_decision_policy_allocation_effect"),
+            "independence_adjusted_net_signal_effective_n_before": portfolio_construction.get(
+                "independence_adjusted_net_signal_effective_n_before"
+            ),
+            "independence_adjusted_net_signal_effective_n_after": portfolio_construction.get(
+                "independence_adjusted_net_signal_effective_n_after"
+            ),
+            "independence_adjusted_net_signal_effective_n_delta": portfolio_construction.get(
+                "independence_adjusted_net_signal_effective_n_delta"
+            ),
+            "target_builder_consumed": (portfolio_construction.get("safety_contract") or {}).get(
+                "target_builder_consumed"
+            ),
+        },
+        "latest_residual_alpha": {
+            "period_key": latest_attr.get("period_key"),
+            "residual_alpha_candidate": latest_attr.get("residual_alpha_candidate"),
+            "r_squared": latest_attr.get("r_squared"),
+            "sample_count": latest_attr.get("sample_count"),
+            "data_quality": latest_attr.get("data_quality"),
+        },
+        "net_alpha_rows": _net_alpha_review_rows(profile_rows),
+        "promotion_review_rows": recommendation_rows,
+        "strategy_cluster_review_rows": cluster_rows,
+        "pc_before_after_rows": pc_alpha_rows,
+        "warnings": _alpha_decision_review_warnings(checklist, policy),
+    }
+
+
+def _profile_rows_have_sample_and_status(rows: list[dict[str, Any]]) -> bool:
+    return all(
+        row.get("sample_count") is not None and row.get("statistical_status") is not None
+        for row in rows
+    )
+
+
+def _recommendation_rows_have_alpha_cost_columns(rows: list[dict[str, Any]]) -> bool:
+    return all(
+        "residual_alpha_status" in row
+        and "residual_alpha" in row
+        and "net_edge_status" in row
+        and "cost_adjusted_edge" in row
+        for row in rows
+    )
+
+
+def _net_alpha_review_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        out.append({
+            "strategy_id": row.get("strategy_id"),
+            "strategy_family": row.get("strategy_family"),
+            "regime": row.get("regime"),
+            "construction_epoch_id": row.get("construction_epoch_id"),
+            "sample_count": row.get("sample_count"),
+            "statistical_status": row.get("statistical_status"),
+            "residual_alpha_status": row.get("residual_alpha_status"),
+            "residual_alpha": row.get("residual_alpha"),
+            "gross_expected_edge": row.get("gross_expected_edge"),
+            "estimated_ibkr_cost_pct": row.get("estimated_ibkr_cost_pct"),
+            "cost_adjusted_edge": row.get("cost_adjusted_edge"),
+            "edge_to_cost_ratio": row.get("edge_to_cost_ratio"),
+            "net_edge_status": row.get("net_edge_status"),
+            "redundancy_multiplier": row.get("redundancy_multiplier"),
+            "decision_multiplier": row.get("decision_multiplier"),
+            "decision_status": row.get("decision_status"),
+        })
+    return out
+
+
+def _alpha_decision_review_warnings(checklist: dict[str, Any], policy: dict[str, Any]) -> list[str]:
+    warnings = [
+        f"review_check_failed:{key}"
+        for key, value in checklist.items()
+        if not value
+    ]
+    if policy.get("mode") == "gated" and not policy.get("allocation_effect"):
+        warnings.append("gated_requested_but_policy_blocked")
+    return sorted(set(warnings))
+
+
 async def _evidence_cap_calibration_dashboard(config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Load read-only evidence cap calibration diagnostics."""
     try:
@@ -745,11 +982,17 @@ async def _dashboard_config() -> dict[str, Any]:
                 select(SystemConfig).where(SystemConfig.key == "evidence_cap_config").limit(1)
             )
         ).scalar_one_or_none()
+        alpha_decision_policy = (
+            await db.execute(
+                select(SystemConfig).where(SystemConfig.key == "alpha_decision_policy_config").limit(1)
+            )
+        ).scalar_one_or_none()
     return {
         "playground_config": (playground.value if playground else {}) or {},
         "circuit_state": (circuit.value if circuit else {}) or {},
         "portfolio_construction_promotion_config": (pc_promotion.value if pc_promotion else {}) or {},
         "evidence_cap_config": (evidence_cap.value if evidence_cap else {}) or {},
+        "alpha_decision_policy_config": (alpha_decision_policy.value if alpha_decision_policy else {}) or {},
     }
 
 
@@ -925,6 +1168,11 @@ def _compact_portfolio_construction_payload(payload: dict[str, Any]) -> dict[str
         if isinstance(payload.get("signal_objective_metrics"), dict)
         else {}
     )
+    alpha_metrics = (
+        payload.get("alpha_decision_objective_metrics")
+        if isinstance(payload.get("alpha_decision_objective_metrics"), dict)
+        else {}
+    )
     return {
         "available": True,
         "portfolio_construction_mode": payload.get("portfolio_construction_mode") or diagnostics.get("runtime_mode"),
@@ -947,8 +1195,19 @@ def _compact_portfolio_construction_payload(payload: dict[str, Any]) -> dict[str
         "signal_alignment_score_before": payload.get("signal_alignment_score_before"),
         "signal_alignment_score_after": payload.get("signal_alignment_score_after"),
         "signal_alignment_score_delta": _number_delta(payload.get("signal_alignment_score_after"), payload.get("signal_alignment_score_before")),
+        "independence_adjusted_net_signal_effective_n_before": payload.get("independence_adjusted_net_signal_effective_n_before"),
+        "independence_adjusted_net_signal_effective_n_after": payload.get("independence_adjusted_net_signal_effective_n_after"),
+        "independence_adjusted_net_signal_effective_n_delta": _number_delta(payload.get("independence_adjusted_net_signal_effective_n_after"), payload.get("independence_adjusted_net_signal_effective_n_before")),
+        "independence_adjusted_signal_alignment_score_before": payload.get("independence_adjusted_signal_alignment_score_before"),
+        "independence_adjusted_signal_alignment_score_after": payload.get("independence_adjusted_signal_alignment_score_after"),
+        "independence_adjusted_signal_alignment_score_delta": _number_delta(payload.get("independence_adjusted_signal_alignment_score_after"), payload.get("independence_adjusted_signal_alignment_score_before")),
         "signal_objective_metrics": signal_metrics,
+        "alpha_decision_objective_metrics": alpha_metrics,
+        "alpha_decision_policy": alpha_metrics.get("alpha_decision_policy") or {},
+        "alpha_decision_policy_effective_mode": alpha_metrics.get("policy_effective_mode") or diagnostics.get("alpha_decision_policy_effective_mode"),
+        "alpha_decision_policy_allocation_effect": alpha_metrics.get("policy_allocation_effect") or diagnostics.get("alpha_decision_policy_allocation_effect"),
         "signal_objective_warnings": signal_metrics.get("warnings") or diagnostics.get("signal_objective_warnings") or [],
+        "alpha_decision_objective_warnings": alpha_metrics.get("warnings") or diagnostics.get("alpha_decision_objective_warnings") or [],
         "turnover": turnover,
         "turnover_budget": turnover.get("budget") if turnover else objective.get("turnover_budget"),
         "turnover_estimated": turnover.get("estimated"),
@@ -970,6 +1229,8 @@ def _compact_portfolio_construction_payload(payload: dict[str, Any]) -> dict[str
         ),
         "target_weight_rows": _weight_rows(target_weights),
         "signal_objective_rows": payload.get("signal_objective_rows") or [],
+        "alpha_decision_objective_rows": payload.get("alpha_decision_objective_rows") or [],
+        "strategy_cluster_exposure_rows": payload.get("strategy_cluster_exposure_rows") or [],
     }
 
 
@@ -1030,10 +1291,17 @@ def _portfolio_construction_objective_status(
             "signal_weighted_effective_n_before": payload.get("signal_weighted_effective_n_before"),
             "signal_weighted_effective_n_after": payload.get("signal_weighted_effective_n_after"),
             "signal_weighted_effective_n_delta": payload.get("signal_weighted_effective_n_delta"),
+            "independence_adjusted_net_signal_effective_n_before": payload.get("independence_adjusted_net_signal_effective_n_before"),
+            "independence_adjusted_net_signal_effective_n_after": payload.get("independence_adjusted_net_signal_effective_n_after"),
+            "independence_adjusted_net_signal_effective_n_delta": payload.get("independence_adjusted_net_signal_effective_n_delta"),
             "signal_alignment_score_before": payload.get("signal_alignment_score_before"),
             "signal_alignment_score_after": payload.get("signal_alignment_score_after"),
             "signal_alignment_score_delta": payload.get("signal_alignment_score_delta"),
+            "independence_adjusted_signal_alignment_score_before": payload.get("independence_adjusted_signal_alignment_score_before"),
+            "independence_adjusted_signal_alignment_score_after": payload.get("independence_adjusted_signal_alignment_score_after"),
+            "independence_adjusted_signal_alignment_score_delta": payload.get("independence_adjusted_signal_alignment_score_delta"),
             "signal_objective_warnings": payload.get("signal_objective_warnings") or [],
+            "alpha_decision_objective_warnings": payload.get("alpha_decision_objective_warnings") or [],
             "turnover_budget": payload.get("turnover_budget"),
             "turnover_before_budget": payload.get("turnover_before_budget"),
             "turnover_estimated": payload.get("turnover_estimated"),
@@ -1057,6 +1325,8 @@ def _portfolio_construction_objective_status(
         "basket_exposure_rows": payload.get("basket_exposure_rows") or [],
         "target_weight_rows": payload.get("target_weight_rows") or [],
         "signal_objective_rows": payload.get("signal_objective_rows") or [],
+        "alpha_decision_objective_rows": payload.get("alpha_decision_objective_rows") or [],
+        "strategy_cluster_exposure_rows": payload.get("strategy_cluster_exposure_rows") or [],
         "weight_change_reasons": _pc_weight_change_rows(ledger_rows),
     }
 
@@ -1658,7 +1928,7 @@ def _regime_summary_display_rows(rows: list[dict[str, Any]]) -> list[dict[str, A
             "source_bucket": row.get("source_bucket"),
             "profile_count": row.get("profile_count"),
             "total_n": row.get("total_n"),
-            "calibrated_profiles": row.get("calibrated_profiles"),
+            "operational_calibrated_profiles": row.get("calibrated_profiles"),
             "early_profiles": row.get("early_profiles"),
             "insufficient_profiles": row.get("insufficient_profiles"),
             "hit_rate": row.get("hit_rate"),
@@ -2184,6 +2454,21 @@ def render_dashboard(summary: dict[str, Any]) -> str:
     </section>
 
     <section>
+      <h2>Alpha Decision Policy</h2>
+      {_render_alpha_decision_policy(summary.get("alpha_decision_policy") or {})}
+    </section>
+
+    <section>
+      <h2>Alpha Decision Review Surface</h2>
+      {_render_alpha_decision_review_surface(summary.get("alpha_decision_review_surface") or {})}
+    </section>
+
+    <section>
+      <h2>Alpha Decision Profiles</h2>
+      {_render_alpha_decision_profiles(summary.get("alpha_decision_profiles") or {})}
+    </section>
+
+    <section>
       <h2>Strategy Family / Regime Gap Analysis</h2>
       {_render_strategy_regime_gap_analysis(summary.get("strategy_regime_gap_analysis") or {})}
     </section>
@@ -2295,6 +2580,7 @@ def _render_portfolio_construction_objective(pc: dict[str, Any]) -> str:
         <article class="card"><h3>Objective</h3>{_render_kv(pc.get("objective") or {})}</article>
         <article class="card"><h3>Objective Metrics</h3>{_render_kv(pc.get("objective_metrics") or {})}</article>
         <article class="card"><h3>Safety Contract</h3>{_render_kv(pc.get("safety_contract") or {})}</article>
+        <article class="card"><h3>Alpha Decision Policy</h3>{_render_kv(pc.get("alpha_decision_policy") or {})}</article>
       </div>
       <div class="grid">
         <article class="card"><h3>Readiness</h3>{_render_kv(pc.get("readiness") or {})}</article>
@@ -2306,6 +2592,8 @@ def _render_portfolio_construction_objective(pc: dict[str, Any]) -> str:
       <h3>Factor Exposure Before / After</h3>{_render_table(pc.get("factor_exposure_rows") or [], ["factor", "before", "after", "delta"])}
       <h3>Basket Exposure Before / After</h3>{_render_table(pc.get("basket_exposure_rows") or [], ["basket", "before", "after", "delta", "limit", "reduced_limit", "violated"])}
       <h3>Signal-Weighted Objective Rows</h3>{_render_table(pc.get("signal_objective_rows") or [], ["ticker", "signal_strength", "weight_before", "weight_after", "weight_delta", "signal_weighted_before", "signal_weighted_after", "has_signal"])}
+      <h3>Alpha Decision Objective Rows</h3>{_render_table(pc.get("alpha_decision_objective_rows") or [], ["ticker", "raw_signal_strength", "independence_adjusted_signal_strength", "weight_before", "weight_after", "weight_delta", "alpha_decision_weighted_before", "alpha_decision_weighted_after", "cluster_id", "redundancy_multiplier", "decision_multiplier", "net_edge_status", "gross_expected_edge", "estimated_ibkr_cost_pct", "cost_adjusted_edge", "edge_to_cost_ratio", "policy_effective_mode", "allocation_effect"])}
+      <h3>Strategy Cluster Exposure Rows</h3>{_render_table(pc.get("strategy_cluster_exposure_rows") or [], ["cluster_id", "strategies", "tickers", "weight_before", "weight_after", "weight_delta", "cluster_equity_share_after", "avg_redundancy_multiplier"])}
       <h3>Target Weights</h3>{_render_table(pc.get("target_weight_rows") or [], ["ticker", "target_weight"])}
       <h3>Weight Change Reasons</h3>{_render_table(pc.get("weight_change_reasons") or [], ["ticker", "portfolio_construction_target", "target_builder_target", "final_target", "changed_by", "construction_effect", "risk_governance_effect", "final_explanation"])}
     """
@@ -2322,6 +2610,8 @@ def _render_strategy_evidence(evidence: dict[str, Any]) -> str:
         "data_quality": evidence.get("data_quality"),
         "regime_label": evidence.get("regime_label"),
         "strategy_count": evidence.get("strategy_count"),
+        "alpha_strategy_count": independence.get("alpha_strategy_count"),
+        "effective_independent_alpha_count": independence.get("effective_independent_alpha_count"),
         "card_count": evidence.get("card_count"),
     }
     conviction_note = {
@@ -2437,7 +2727,7 @@ def _render_live_signal_conviction(conviction: dict[str, Any]) -> str:
       <h3>Pending Outcomes By Horizon</h3>{_render_table(conviction.get("pending_by_horizon_rows") or [], ["horizon_days", "missing", "mature"])}
       <h3>Profile Counts</h3>{_render_table(conviction.get("profile_count_rows") or [], ["source_bucket", "count"])}
       <h3>Conviction Status Counts</h3>{_render_table(conviction.get("status_count_rows") or [], ["status", "count"])}
-      <h3>Regime-Level Conviction Summary</h3>{_render_table(conviction.get("regime_summary_rows") or [], ["regime_at_signal", "source_bucket", "profile_count", "total_n", "calibrated_profiles", "early_profiles", "insufficient_profiles", "hit_rate", "avg_excess_vs_spy", "ic", "data_lag_filtered"])}
+      <h3>Regime-Level Conviction Summary</h3>{_render_table(conviction.get("regime_summary_rows") or [], ["regime_at_signal", "source_bucket", "profile_count", "total_n", "operational_calibrated_profiles", "early_profiles", "insufficient_profiles", "hit_rate", "avg_excess_vs_spy", "ic", "data_lag_filtered"])}
       <h3>Regime-Level Conviction Profiles</h3>{_render_table(conviction.get("regime_level_profiles") or [], profile_columns)}
       <h3>Historical Prior Profiles</h3>{_render_table(conviction.get("historical_prior_profiles") or [], profile_columns)}
       <h3>Live Paper Profiles</h3>{_render_table(conviction.get("live_paper_profiles") or [], profile_columns)}
@@ -2569,6 +2859,10 @@ def _render_strategy_promotion_recommendations(recommendations: dict[str, Any]) 
         "latest_analysis_id": recommendations.get("latest_analysis_id"),
         "profile_count": recommendations.get("profile_count"),
         "strategy_count": recommendations.get("strategy_count"),
+        "raw_alpha_strategy_count": (recommendations.get("alpha_decision_profiles") or {}).get("raw_alpha_strategy_count"),
+        "independence_adjusted_strategy_count": (
+            recommendations.get("alpha_decision_profiles") or {}
+        ).get("independence_adjusted_strategy_count"),
         "recommendation_count": recommendations.get("recommendation_count"),
         "high_priority_count": recommendations.get("high_priority_count"),
     }
@@ -2585,9 +2879,114 @@ def _render_strategy_promotion_recommendations(recommendations: dict[str, Any]) 
         <article class="card"><h3>Recommendation Contract</h3>{_render_kv(contract)}</article>
         <article class="card"><h3>Recommendation Counts</h3>{_render_kv(recommendations.get("recommendation_counts") or {})}</article>
       </div>
-      <h3>Recommendation Rows</h3>{_render_table(recommendations.get("recommendations") or [], ["priority", "recommendation", "strategy_id", "canonical_family", "regime", "current_use", "recommended_use", "sample_count", "profile_count", "hit_rate", "avg_excess_vs_spy", "ic", "conviction", "reasons", "blockers", "operator_action"])}
+      <h3>Recommendation Rows</h3>{_render_table(recommendations.get("recommendations") or [], ["priority", "recommendation", "strategy_id", "canonical_family", "regime", "current_use", "recommended_use", "sample_count", "profile_count", "hit_rate", "avg_excess_vs_spy", "ic", "conviction", "statistical_status_counts", "residual_alpha_status", "residual_alpha", "net_edge_status", "gross_expected_edge", "estimated_ibkr_cost_pct", "cost_adjusted_edge", "edge_to_cost_ratio", "redundancy_multiplier", "max_positive_correlation", "reasons", "blockers", "operator_action"])}
       <h3>Recommendation Policy</h3>{_render_kv(recommendations.get("policy") or {})}
       <h3>Warnings</h3>{_render_list("", recommendations.get("warnings") or [])}
+    """
+
+
+def _render_alpha_decision_policy(policy: dict[str, Any]) -> str:
+    if not policy.get("available", True):
+        return f"<p class=\"muted\">{escape(str(policy.get('reason') or 'Alpha decision policy unavailable.'))}</p>"
+    overview = {
+        "mode": policy.get("mode"),
+        "effective_mode": policy.get("effective_mode"),
+        "gated_enabled": policy.get("gated_enabled"),
+        "recommendation_effect": policy.get("recommendation_effect"),
+        "allocation_effect": policy.get("allocation_effect"),
+        "would_affect_allocation": policy.get("would_affect_allocation"),
+    }
+    contract = {
+        "contract_version": policy.get("contract_version"),
+        "execution_authority": policy.get("execution_authority"),
+        "target_weight_mutation": policy.get("target_weight_mutation"),
+        "never_bypasses_target_builder": policy.get("never_bypasses_target_builder"),
+        "full_auto_safety_preconditions_unchanged": policy.get("full_auto_safety_preconditions_unchanged"),
+    }
+    return f"""
+      <div class="grid">
+        <article class="card"><h3>Alpha Decision Policy Mode</h3>{_render_kv(overview)}</article>
+        <article class="card"><h3>Alpha Decision Policy Contract</h3>{_render_kv(contract)}</article>
+        <article class="card"><h3>Gated Criteria</h3>{_render_kv(policy.get("criteria") or {})}</article>
+      </div>
+      <h3>Decision Rules</h3>{_render_kv(policy.get("decision_rules") or {})}
+      <h3>Gated Blockers</h3>{_render_list("", policy.get("blockers") or [])}
+      <h3>Warnings</h3>{_render_list("", policy.get("warnings") or [])}
+    """
+
+
+def _render_alpha_decision_review_surface(review: dict[str, Any]) -> str:
+    if not review.get("available"):
+        return f"<p class=\"muted\">{escape(str(review.get('reason') or 'Alpha decision review surface unavailable.'))}</p>"
+    mode = {
+        "mode": review.get("mode"),
+        "effective_mode": review.get("effective_mode"),
+        "gated_enabled": review.get("gated_enabled"),
+        "recommendation_effect": review.get("recommendation_effect"),
+        "allocation_effect": review.get("allocation_effect"),
+    }
+    contract = {
+        "contract_version": review.get("contract_version"),
+        "execution_authority": review.get("execution_authority"),
+        "target_weight_mutation": review.get("target_weight_mutation"),
+    }
+    return f"""
+      <div class="grid">
+        <article class="card"><h3>Review Mode</h3>{_render_kv(mode)}</article>
+        <article class="card"><h3>Review Contract</h3>{_render_kv(contract)}</article>
+        <article class="card"><h3>Review Checklist</h3>{_render_kv(review.get("review_checklist") or {})}</article>
+      </div>
+      <div class="grid">
+        <article class="card"><h3>Statistical Maturity And Independence</h3>{_render_kv(review.get("statistical_maturity") or {})}</article>
+        <article class="card"><h3>Strategy Independence</h3>{_render_kv(review.get("strategy_independence") or {})}</article>
+        <article class="card"><h3>Promotion Review</h3>{_render_kv(review.get("promotion_review") or {})}</article>
+      </div>
+      <div class="grid">
+        <article class="card"><h3>PC Before / After Allocation Diagnostics</h3>{_render_kv(review.get("pc_review") or {})}</article>
+        <article class="card"><h3>Latest Residual Alpha</h3>{_render_kv(review.get("latest_residual_alpha") or {})}</article>
+      </div>
+      <h3>Net Alpha Review Rows</h3>{_render_table(review.get("net_alpha_rows") or [], ["strategy_id", "strategy_family", "regime", "construction_epoch_id", "sample_count", "statistical_status", "residual_alpha_status", "residual_alpha", "gross_expected_edge", "estimated_ibkr_cost_pct", "cost_adjusted_edge", "edge_to_cost_ratio", "net_edge_status", "redundancy_multiplier", "decision_multiplier", "decision_status"])}
+      <h3>Promotion Review Rows</h3>{_render_table(review.get("promotion_review_rows") or [], ["priority", "recommendation", "strategy_id", "canonical_family", "regime", "current_use", "recommended_use", "sample_count", "statistical_status_counts", "residual_alpha_status", "residual_alpha", "net_edge_status", "gross_expected_edge", "estimated_ibkr_cost_pct", "cost_adjusted_edge", "edge_to_cost_ratio", "redundancy_multiplier", "max_positive_correlation", "reasons", "blockers", "operator_action"])}
+      <h3>Strategy Cluster Review Rows</h3>{_render_table(review.get("strategy_cluster_review_rows") or [], ["cluster_id", "strategies", "tickers", "weight_before", "weight_after", "weight_delta", "cluster_equity_share_after", "avg_redundancy_multiplier"])}
+      <h3>PC Alpha Decision Before / After Rows</h3>{_render_table(review.get("pc_before_after_rows") or [], ["ticker", "raw_signal_strength", "independence_adjusted_signal_strength", "weight_before", "weight_after", "weight_delta", "alpha_decision_weighted_before", "alpha_decision_weighted_after", "cluster_id", "redundancy_multiplier", "decision_multiplier", "net_edge_status", "gross_expected_edge", "estimated_ibkr_cost_pct", "cost_adjusted_edge", "edge_to_cost_ratio", "policy_effective_mode", "allocation_effect"])}
+      <h3>Review Warnings</h3>{_render_list("", review.get("warnings") or [])}
+    """
+
+
+def _render_alpha_decision_profiles(profiles: dict[str, Any]) -> str:
+    if not profiles.get("available"):
+        reason = profiles.get("reason") or "No alpha decision profiles available."
+        return f"<p class=\"muted\">{escape(str(reason))}</p>"
+    overview = {
+        "status": profiles.get("status"),
+        "as_of_date": profiles.get("as_of_date"),
+        "latest_profile_date": profiles.get("latest_profile_date"),
+        "profile_count": profiles.get("profile_count"),
+        "source_profile_count": profiles.get("source_profile_count"),
+        "strategy_count": profiles.get("strategy_count"),
+        "raw_alpha_strategy_count": profiles.get("raw_alpha_strategy_count"),
+        "independence_adjusted_strategy_count": profiles.get("independence_adjusted_strategy_count"),
+        "eligible_count": profiles.get("eligible_count"),
+    }
+    contract = {
+        "contract_version": profiles.get("contract_version"),
+        "execution_authority": profiles.get("execution_authority"),
+        "target_weight_mutation": profiles.get("target_weight_mutation"),
+        "decision_input_only": profiles.get("decision_input_only"),
+        "recommendation_only": profiles.get("recommendation_only"),
+    }
+    return f"""
+      <div class="grid">
+        <article class="card"><h3>Alpha Decision Overview</h3>{_render_kv(overview)}</article>
+        <article class="card"><h3>Alpha Decision Contract</h3>{_render_kv(contract)}</article>
+        <article class="card"><h3>Independence Consumption</h3>{_render_kv(profiles.get("independence_consumption") or {})}</article>
+      </div>
+      <h3>Decision Status Counts</h3>{_render_kv(profiles.get("status_counts") or {})}
+      <h3>Residual Alpha Status Counts</h3>{_render_kv(profiles.get("residual_alpha_status_counts") or {})}
+      <h3>Cost Status Counts</h3>{_render_kv(profiles.get("cost_status_counts") or {})}
+      <h3>Net Edge Status Counts</h3>{_render_kv(profiles.get("net_edge_status_counts") or {})}
+      <h3>Alpha Decision Rows</h3>{_render_table(profiles.get("rows") or [], ["decision_status", "strategy_id", "strategy_family", "regime", "sample_count", "statistical_status", "residual_alpha_status", "cost_status", "net_edge_status", "gross_expected_edge", "estimated_ibkr_cost_pct", "cost_adjusted_edge", "edge_to_cost_ratio", "independence_cluster_id", "redundancy_multiplier", "max_positive_correlation", "decision_multiplier"])}
+      <h3>Warnings</h3>{_render_list("", profiles.get("warnings") or [])}
     """
 
 

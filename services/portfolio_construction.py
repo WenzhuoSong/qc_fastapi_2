@@ -10,27 +10,38 @@ from typing import Any
 
 from services.execution_policy import evaluate_policy
 from services.group_contract import GROUP_DEFINITIONS, calc_factor_exposure, get_factor_tags
+from services.alpha_decision_profile import redundancy_multiplier
+from services.alpha_decision_policy import (
+    default_alpha_decision_policy_config,
+    evaluate_alpha_decision_policy,
+)
 
 
 NO_ADD_PERMISSIONS = {"hold_or_trim", "reduce_risk_only", "defensive_only", "cash_only"}
+ALPHA_DECISION_OBJECTIVE_CONTRACT_VERSION = "pc_alpha_decision_objective_v1"
 
 
 @dataclass
 class ConstructionObjective:
-    primary: str = "maximize_signal_weighted_effective_n"
+    primary: str = "maximize_independence_adjusted_net_signal_effective_n"
     subject_to: list[str] = field(default_factory=lambda: [
         "signal_quality_not_diluted",
+        "alpha_decision_quality_not_diluted",
         "factor_concentration_within_group_limits",
         "active_basket_exposure_within_multiplier_limit",
         "turnover_within_budget",
         "execution_policy_allowed",
+        "etf_evidence_caps",
+        "cost_aware_weak_signal_constraints",
+        "max_cluster_exposure_by_correlated_strategy_group",
     ])
     turnover_budget: float | None = None
     effective_n_target: int = 8
     allow_cash_raise: bool = True
     rationale: str = (
         "Paper-live canary objective: improve diversification without diluting higher-quality "
-        "signals, subject to factor concentration, active-basket, execution-policy, and turnover constraints."
+        "alpha-decision evidence, subject to factor concentration, active-basket, evidence-cap, "
+        "execution-policy, cost, cluster-exposure, and turnover constraints."
     )
 
     def to_dict(self) -> dict[str, Any]:
@@ -54,6 +65,13 @@ class PortfolioConstructionResult:
     signal_alignment_score_after: float
     signal_objective_metrics: dict[str, Any]
     signal_objective_rows: list[dict[str, Any]]
+    independence_adjusted_net_signal_effective_n_before: float
+    independence_adjusted_net_signal_effective_n_after: float
+    independence_adjusted_signal_alignment_score_before: float
+    independence_adjusted_signal_alignment_score_after: float
+    alpha_decision_objective_metrics: dict[str, Any]
+    alpha_decision_objective_rows: list[dict[str, Any]]
+    strategy_cluster_exposure_rows: list[dict[str, Any]]
     turnover: dict[str, Any]
     construction_steps: list[str]
     violations: list[str]
@@ -78,6 +96,7 @@ class PortfolioConstructionModel:
         base_weights: dict[str, Any],
         current_weights: dict[str, Any],
         signal_strengths: dict[str, Any] | None = None,
+        alpha_decision_context: dict[str, Any] | None = None,
         basket_reviews: dict[str, Any] | list[dict[str, Any]] | None = None,
         scorecard_permission: str | None = None,
         turnover_budget: float | None = None,
@@ -89,12 +108,15 @@ class PortfolioConstructionModel:
         active_baskets = _active_basket_groups(basket_reviews)
         budget = _optional_float(turnover_budget)
         objective = objective or ConstructionObjective(turnover_budget=budget)
+        alpha_context = _clean_alpha_decision_context(alpha_decision_context or {})
+        alpha_signals = _alpha_adjusted_signal_strengths(signals, alpha_context)
         steps: list[str] = ["base_weights"]
         violations: list[str] = []
         factor_before = _factor_exposures(base)
         basket_before = _basket_exposures(base, active_baskets, self.basket_limit_multiplier)
         effective_n_before = round(_effective_n(base), 6)
         signal_metrics_before = _signal_objective_metrics(base, signals)
+        alpha_metrics_before = _signal_objective_metrics(base, alpha_signals)
 
         weights = dict(base)
         weights, factor_violations = self._apply_factor_limits(weights)
@@ -130,14 +152,35 @@ class PortfolioConstructionModel:
         basket_after = _basket_exposures(weights, active_baskets, self.basket_limit_multiplier)
         effective_n_after = round(_effective_n(weights), 6)
         signal_metrics_after = _signal_objective_metrics(weights, signals)
+        alpha_metrics_after = _signal_objective_metrics(weights, alpha_signals)
         signal_objective_metrics = _signal_objective_summary(
             before=signal_metrics_before,
             after=signal_metrics_after,
+        )
+        alpha_cluster_rows = _strategy_cluster_exposure_rows(
+            before=base,
+            after=weights,
+            alpha_context=alpha_context,
+        )
+        alpha_decision_objective_metrics = _alpha_decision_objective_summary(
+            old_before=signal_metrics_before,
+            old_after=signal_metrics_after,
+            before=alpha_metrics_before,
+            after=alpha_metrics_after,
+            cluster_rows=alpha_cluster_rows,
+            alpha_context=alpha_context,
         )
         signal_objective_rows = _signal_objective_rows(
             before=base,
             after=weights,
             signals=signals,
+        )
+        alpha_decision_objective_rows = _alpha_decision_objective_rows(
+            before=base,
+            after=weights,
+            signals=signals,
+            alpha_signals=alpha_signals,
+            alpha_context=alpha_context,
         )
         policy_evaluation = evaluate_policy(
             weights=weights,
@@ -164,6 +207,13 @@ class PortfolioConstructionModel:
             signal_alignment_score_after=signal_metrics_after["signal_alignment_score"],
             signal_objective_metrics=signal_objective_metrics,
             signal_objective_rows=signal_objective_rows,
+            independence_adjusted_net_signal_effective_n_before=alpha_metrics_before["signal_weighted_effective_n"],
+            independence_adjusted_net_signal_effective_n_after=alpha_metrics_after["signal_weighted_effective_n"],
+            independence_adjusted_signal_alignment_score_before=alpha_metrics_before["signal_alignment_score"],
+            independence_adjusted_signal_alignment_score_after=alpha_metrics_after["signal_alignment_score"],
+            alpha_decision_objective_metrics=alpha_decision_objective_metrics,
+            alpha_decision_objective_rows=alpha_decision_objective_rows,
+            strategy_cluster_exposure_rows=alpha_cluster_rows,
             turnover={
                 "estimated_before_budget": round(turnover_before, 6),
                 "estimated": round(turnover_after, 6),
@@ -187,7 +237,15 @@ class PortfolioConstructionModel:
                 "ticker_count": len([ticker for ticker in weights if ticker != "CASH" and weights[ticker] > 1e-9]),
                 "signal_strength_count": len(signals),
                 "signal_weighted_objective_enabled": True,
+                "alpha_decision_objective_enabled": True,
+                "alpha_decision_context_available": bool(alpha_context.get("strategy_rows")),
+                "alpha_decision_context_contract_version": alpha_context.get("contract_version"),
+                "alpha_decision_policy_mode": alpha_context.get("policy_mode"),
+                "alpha_decision_policy_effective_mode": alpha_context.get("policy_effective_mode"),
+                "alpha_decision_policy_allocation_effect": alpha_context.get("policy_allocation_effect"),
+                "alpha_decision_policy_recommendation_effect": alpha_context.get("policy_recommendation_effect"),
                 "signal_objective_warnings": signal_objective_metrics.get("warnings") or [],
+                "alpha_decision_objective_warnings": alpha_decision_objective_metrics.get("warnings") or [],
             },
         )
 
@@ -298,6 +356,208 @@ def build_construction_signal_strengths(evidence_bundle: dict | None) -> dict[st
     strategy_signals = _strategy_signal_strengths(bundle.get("strategies") or {})
     rotation_signals = _clean_signals((bundle.get("rotation") or {}).get("signals") or {})
     return _merge_signal_strengths(strategy_signals, rotation_signals)
+
+
+def build_construction_alpha_decision_context(
+    evidence_bundle: dict | None,
+    *,
+    alpha_decision_profiles: dict | None = None,
+    policy_config: dict | None = None,
+) -> dict[str, Any]:
+    """Build alpha-quality context for PC diagnostics.
+
+    The context is diagnostic-only. It does not authorize target construction
+    and does not change the target weights produced by ``construct``.
+    """
+    bundle = evidence_bundle or {}
+    strategies = bundle.get("strategies") if isinstance(bundle.get("strategies"), dict) else {}
+    evidence_rows = _strategy_result_rows(strategies)
+    profile_rows = _alpha_decision_profile_rows(alpha_decision_profiles)
+    policy = evaluate_alpha_decision_policy(
+        default_alpha_decision_policy_config(policy_config or {}),
+        alpha_decision_summary=alpha_decision_profiles or {},
+    )
+    profiles_by_strategy = {
+        str(row.get("strategy_id") or ""): row
+        for row in profile_rows
+        if str(row.get("strategy_id") or "")
+    }
+    independence = (
+        strategies.get("strategy_independence")
+        if isinstance(strategies.get("strategy_independence"), dict)
+        else {}
+    )
+    independence_context = _strategy_independence_context(independence)
+
+    strategy_rows: list[dict[str, Any]] = []
+    ticker_adjustments: dict[str, dict[str, Any]] = {}
+    for row in evidence_rows:
+        name = row["strategy_name"]
+        profile = profiles_by_strategy.get(name, {})
+        selected_tickers = sorted(set(row["selected_tickers"]) | set(profile.get("tickers") or []))
+        if not selected_tickers:
+            continue
+        confidence = _optional_float(row.get("confidence_score"))
+        if confidence is None:
+            confidence = 1.0 if profile else 0.0
+        redundancy = _optional_float(profile.get("redundancy_multiplier"))
+        if redundancy is None:
+            redundancy = independence_context["redundancy_by_strategy"].get(name, 1.0)
+        decision_multiplier = _optional_float(profile.get("decision_multiplier"))
+        net_signal_multiplier = decision_multiplier if decision_multiplier is not None else redundancy
+        adjusted_signal = round(max(min(confidence * net_signal_multiplier, 1.0), 0.0), 6)
+        cluster_id = (
+            profile.get("independence_cluster_id")
+            or independence_context["cluster_by_strategy"].get(name)
+            or f"independent:{name}"
+        )
+        strategy_row = {
+            "strategy_name": name,
+            "selected_tickers": selected_tickers,
+            "confidence_score": round(float(confidence), 6),
+            "cluster_id": cluster_id,
+            "redundancy_multiplier": round(float(redundancy), 6),
+            "decision_multiplier": round(float(net_signal_multiplier), 6),
+            "independence_adjusted_signal_strength": adjusted_signal,
+            "decision_status": profile.get("decision_status"),
+            "statistical_status": profile.get("statistical_status"),
+            "residual_alpha_status": profile.get("residual_alpha_status"),
+            "cost_status": profile.get("cost_status"),
+            "net_edge_status": profile.get("net_edge_status"),
+            "gross_expected_edge": profile.get("gross_expected_edge"),
+            "estimated_ibkr_cost_pct": profile.get("estimated_ibkr_cost_pct"),
+            "cost_adjusted_edge": profile.get("cost_adjusted_edge"),
+            "edge_to_cost_ratio": profile.get("edge_to_cost_ratio"),
+        }
+        strategy_rows.append(strategy_row)
+        for ticker in selected_tickers:
+            current = ticker_adjustments.get(ticker)
+            candidate = {
+                "ticker": ticker,
+                "strategy_name": name,
+                "cluster_id": cluster_id,
+                "redundancy_multiplier": round(float(redundancy), 6),
+                "decision_multiplier": round(float(net_signal_multiplier), 6),
+                "independence_adjusted_signal_strength": adjusted_signal,
+                "net_edge_status": profile.get("net_edge_status"),
+                "gross_expected_edge": profile.get("gross_expected_edge"),
+                "estimated_ibkr_cost_pct": profile.get("estimated_ibkr_cost_pct"),
+                "cost_adjusted_edge": profile.get("cost_adjusted_edge"),
+                "edge_to_cost_ratio": profile.get("edge_to_cost_ratio"),
+            }
+            if current is None or adjusted_signal > float(current.get("independence_adjusted_signal_strength") or 0.0):
+                ticker_adjustments[ticker] = candidate
+
+    raw_alpha_count = len({row["strategy_name"] for row in strategy_rows})
+    adjusted_count = round(sum(float(row.get("redundancy_multiplier") or 0.0) for row in strategy_rows), 6)
+    return {
+        "contract_version": ALPHA_DECISION_OBJECTIVE_CONTRACT_VERSION,
+        "source": "evidence_bundle_and_alpha_decision_profiles",
+        "strategy_rows": strategy_rows,
+        "ticker_adjustments": ticker_adjustments,
+        "raw_alpha_strategy_count": raw_alpha_count,
+        "independence_adjusted_strategy_count": adjusted_count,
+        "strategy_independence_status": independence.get("status"),
+        "alpha_decision_policy": policy,
+        "policy_mode": policy.get("mode"),
+        "policy_effective_mode": policy.get("effective_mode"),
+        "policy_recommendation_effect": policy.get("recommendation_effect"),
+        "policy_allocation_effect": policy.get("allocation_effect"),
+        "would_affect_allocation": policy.get("would_affect_allocation"),
+        "execution_authority": "none",
+        "target_weight_mutation": "none",
+    }
+
+
+def _strategy_result_rows(strategies: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in strategies.get("strategy_results") or []:
+        if not isinstance(row, dict):
+            continue
+        use = str(row.get("suggested_use") or "")
+        if use not in {"primary", "advisory"}:
+            continue
+        if row.get("alpha_source") is False:
+            continue
+        name = str(row.get("strategy_name") or row.get("strategy") or "").strip()
+        if not name:
+            continue
+        selected = [
+            str(ticker or "").upper().strip()
+            for ticker in row.get("selected_tickers") or []
+            if str(ticker or "").upper().strip() and str(ticker or "").upper().strip() != "CASH"
+        ]
+        rows.append({
+            "strategy_name": name,
+            "confidence_score": _optional_float(row.get("confidence_score")) or 0.0,
+            "selected_tickers": sorted(set(selected)),
+            "suggested_use": use,
+        })
+    return rows
+
+
+def _alpha_decision_profile_rows(raw: dict | None) -> list[dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return []
+    rows = raw.get("rows") if isinstance(raw.get("rows"), list) else []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _strategy_independence_context(raw: dict[str, Any]) -> dict[str, Any]:
+    pairs = [
+        _strategy_pair_row(row)
+        for row in ((raw.get("pair_rows") or []) + (raw.get("high_correlation_pairs") or []))
+        if isinstance(row, dict)
+    ]
+    graph: dict[str, set[str]] = {}
+    positive_by_strategy: dict[str, list[float]] = {}
+    for row in pairs:
+        left = row.get("left_strategy")
+        right = row.get("right_strategy")
+        corr = _optional_float(row.get("correlation"))
+        if not left or not right or corr is None or corr <= 0:
+            continue
+        positive_by_strategy.setdefault(left, []).append(corr)
+        positive_by_strategy.setdefault(right, []).append(corr)
+        if corr >= 0.65:
+            graph.setdefault(left, set()).add(right)
+            graph.setdefault(right, set()).add(left)
+
+    cluster_by_strategy: dict[str, str] = {}
+    for component in _connected_components(graph):
+        cluster_id = "corr_cluster:" + _stable_hash(component)[:12]
+        for strategy_name in component:
+            cluster_by_strategy[strategy_name] = cluster_id
+
+    redundancy_by_strategy = {
+        strategy_name: redundancy_multiplier(max(correlations))
+        for strategy_name, correlations in positive_by_strategy.items()
+        if correlations
+    }
+    return {
+        "cluster_by_strategy": cluster_by_strategy,
+        "redundancy_by_strategy": redundancy_by_strategy,
+    }
+
+
+def _strategy_pair_row(row: dict[str, Any]) -> dict[str, Any]:
+    left = (
+        row.get("left_strategy")
+        or row.get("left")
+        or row.get("strategy_a")
+        or row.get("strategy_1")
+    )
+    right = (
+        row.get("right_strategy")
+        or row.get("right")
+        or row.get("strategy_b")
+        or row.get("strategy_2")
+    )
+    return {
+        "left_strategy": str(left or "").strip(),
+        "right_strategy": str(right or "").strip(),
+        "correlation": _optional_float(row.get("correlation")),
+    }
 
 
 def _active_basket_groups(raw: dict[str, Any] | list[dict[str, Any]] | None) -> set[str]:
@@ -568,6 +828,88 @@ def _signal_objective_summary(
     }
 
 
+def _alpha_adjusted_signal_strengths(
+    signals: dict[str, float],
+    alpha_context: dict[str, Any],
+) -> dict[str, float]:
+    adjustments = alpha_context.get("ticker_adjustments")
+    adjustments = adjustments if isinstance(adjustments, dict) else {}
+    out: dict[str, float] = {}
+    for ticker in sorted(set(signals) | set(adjustments)):
+        raw_signal = float(signals.get(ticker, 0.0) or 0.0)
+        row = adjustments.get(ticker) if isinstance(adjustments.get(ticker), dict) else {}
+        multiplier = _optional_float(row.get("decision_multiplier"))
+        if multiplier is None:
+            adjusted_strength = _optional_float(row.get("independence_adjusted_signal_strength"))
+            if adjusted_strength is not None and ticker not in signals:
+                out[ticker] = round(max(min(adjusted_strength, 1.0), -1.0), 6)
+            else:
+                out[ticker] = 0.0
+            continue
+        out[ticker] = round(max(min(raw_signal * multiplier, 1.0), -1.0), 6)
+    return out
+
+
+def _alpha_decision_objective_summary(
+    *,
+    old_before: dict[str, float],
+    old_after: dict[str, float],
+    before: dict[str, float],
+    after: dict[str, float],
+    cluster_rows: list[dict[str, Any]],
+    alpha_context: dict[str, Any],
+) -> dict[str, Any]:
+    warnings: list[str] = []
+    if not alpha_context.get("strategy_rows"):
+        warnings.append("missing_alpha_decision_context")
+    if (
+        after["effective_n"] > before["effective_n"] + 1e-9
+        and after["signal_weighted_effective_n"] < before["signal_weighted_effective_n"] - 1e-9
+    ):
+        warnings.append("diversification_diluted_independence_adjusted_net_signal_effective_n")
+    max_cluster_share = max(
+        (_optional_float(row.get("cluster_equity_share_after")) or 0.0 for row in cluster_rows),
+        default=0.0,
+    )
+    if max_cluster_share > 0.70:
+        warnings.append("portfolio_construction_mostly_one_strategy_cluster")
+    raw_count = _optional_float(alpha_context.get("raw_alpha_strategy_count")) or 0.0
+    adjusted_count = _optional_float(alpha_context.get("independence_adjusted_strategy_count")) or 0.0
+    if raw_count >= 2 and adjusted_count < raw_count * 0.50:
+        warnings.append("alpha_strategy_count_collapses_after_redundancy")
+
+    return {
+        "contract_version": ALPHA_DECISION_OBJECTIVE_CONTRACT_VERSION,
+        "old_objective": {
+            "name": "signal_weighted_effective_n",
+            "before": old_before,
+            "after": old_after,
+        },
+        "new_objective": {
+            "name": "independence_adjusted_net_signal_effective_n",
+            "before": before,
+            "after": after,
+            "delta": {
+                key: round(float(after.get(key, 0.0) or 0.0) - float(before.get(key, 0.0) or 0.0), 6)
+                for key in sorted(set(before) | set(after))
+            },
+        },
+        "raw_alpha_strategy_count": alpha_context.get("raw_alpha_strategy_count"),
+        "independence_adjusted_strategy_count": alpha_context.get("independence_adjusted_strategy_count"),
+        "alpha_decision_policy": alpha_context.get("alpha_decision_policy") or {},
+        "policy_mode": alpha_context.get("policy_mode"),
+        "policy_effective_mode": alpha_context.get("policy_effective_mode"),
+        "policy_recommendation_effect": alpha_context.get("policy_recommendation_effect"),
+        "policy_allocation_effect": alpha_context.get("policy_allocation_effect"),
+        "would_affect_allocation": alpha_context.get("would_affect_allocation"),
+        "max_cluster_equity_share_after": round(max_cluster_share, 6),
+        "cluster_count": len(cluster_rows),
+        "warnings": sorted(set(warnings)),
+        "execution_authority": "none",
+        "target_weight_mutation": "none",
+    }
+
+
 def _signal_objective_rows(
     *,
     before: dict[str, float],
@@ -591,6 +933,180 @@ def _signal_objective_rows(
             "has_signal": signal is not None,
         })
     return rows
+
+
+def _alpha_decision_objective_rows(
+    *,
+    before: dict[str, float],
+    after: dict[str, float],
+    signals: dict[str, float],
+    alpha_signals: dict[str, float],
+    alpha_context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    adjustments = alpha_context.get("ticker_adjustments")
+    adjustments = adjustments if isinstance(adjustments, dict) else {}
+    rows: list[dict[str, Any]] = []
+    for ticker in sorted((set(before) | set(after) | set(signals) | set(alpha_signals)) - {"CASH"}):
+        raw_signal = signals.get(ticker)
+        alpha_signal = alpha_signals.get(ticker)
+        before_weight = float(before.get(ticker, 0.0) or 0.0)
+        after_weight = float(after.get(ticker, 0.0) or 0.0)
+        adjustment = adjustments.get(ticker) if isinstance(adjustments.get(ticker), dict) else {}
+        positive_alpha = max(float(alpha_signal or 0.0), 0.0) if alpha_signal is not None else 0.0
+        rows.append({
+            "ticker": ticker,
+            "raw_signal_strength": None if raw_signal is None else round(float(raw_signal), 6),
+            "independence_adjusted_signal_strength": (
+                None if alpha_signal is None else round(float(alpha_signal), 6)
+            ),
+            "weight_before": round(before_weight, 6),
+            "weight_after": round(after_weight, 6),
+            "weight_delta": round(after_weight - before_weight, 6),
+            "alpha_decision_weighted_before": round(before_weight * positive_alpha, 6),
+            "alpha_decision_weighted_after": round(after_weight * positive_alpha, 6),
+            "strategy_name": adjustment.get("strategy_name"),
+            "cluster_id": adjustment.get("cluster_id"),
+            "redundancy_multiplier": adjustment.get("redundancy_multiplier"),
+            "decision_multiplier": adjustment.get("decision_multiplier"),
+            "net_edge_status": adjustment.get("net_edge_status"),
+            "gross_expected_edge": adjustment.get("gross_expected_edge"),
+            "estimated_ibkr_cost_pct": adjustment.get("estimated_ibkr_cost_pct"),
+            "cost_adjusted_edge": adjustment.get("cost_adjusted_edge"),
+            "edge_to_cost_ratio": adjustment.get("edge_to_cost_ratio"),
+            "policy_effective_mode": alpha_context.get("policy_effective_mode"),
+            "allocation_effect": alpha_context.get("policy_allocation_effect"),
+            "has_alpha_decision_signal": alpha_signal is not None and abs(float(alpha_signal or 0.0)) > 1e-12,
+        })
+    return rows
+
+
+def _strategy_cluster_exposure_rows(
+    *,
+    before: dict[str, float],
+    after: dict[str, float],
+    alpha_context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    strategy_rows = [
+        row for row in alpha_context.get("strategy_rows") or []
+        if isinstance(row, dict)
+    ]
+    clusters: dict[str, dict[str, Any]] = {}
+    for row in strategy_rows:
+        cluster_id = str(row.get("cluster_id") or f"independent:{row.get('strategy_name') or 'unknown'}")
+        cluster = clusters.setdefault(
+            cluster_id,
+            {
+                "cluster_id": cluster_id,
+                "strategies": set(),
+                "tickers": set(),
+                "redundancy_multipliers": [],
+            },
+        )
+        strategy_name = str(row.get("strategy_name") or "").strip()
+        if strategy_name:
+            cluster["strategies"].add(strategy_name)
+        for ticker in row.get("selected_tickers") or []:
+            clean = str(ticker or "").upper().strip()
+            if clean and clean != "CASH":
+                cluster["tickers"].add(clean)
+        multiplier = _optional_float(row.get("redundancy_multiplier"))
+        if multiplier is not None:
+            cluster["redundancy_multipliers"].append(multiplier)
+
+    equity_after = sum(float(value or 0.0) for ticker, value in after.items() if ticker != "CASH")
+    out: list[dict[str, Any]] = []
+    for cluster_id, row in sorted(clusters.items()):
+        tickers = sorted(row["tickers"])
+        before_weight = sum(float(before.get(ticker, 0.0) or 0.0) for ticker in tickers)
+        after_weight = sum(float(after.get(ticker, 0.0) or 0.0) for ticker in tickers)
+        multipliers = row["redundancy_multipliers"]
+        avg_multiplier = sum(multipliers) / len(multipliers) if multipliers else None
+        out.append({
+            "cluster_id": cluster_id,
+            "strategies": sorted(row["strategies"]),
+            "tickers": tickers,
+            "weight_before": round(before_weight, 6),
+            "weight_after": round(after_weight, 6),
+            "weight_delta": round(after_weight - before_weight, 6),
+            "cluster_equity_share_after": round(after_weight / equity_after, 6) if equity_after > 0 else 0.0,
+            "strategy_count": len(row["strategies"]),
+            "ticker_count": len(tickers),
+            "avg_redundancy_multiplier": round(avg_multiplier, 6) if avg_multiplier is not None else None,
+        })
+    return out
+
+
+def _clean_alpha_decision_context(raw: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {
+            "contract_version": ALPHA_DECISION_OBJECTIVE_CONTRACT_VERSION,
+            "strategy_rows": [],
+            "ticker_adjustments": {},
+            "raw_alpha_strategy_count": 0,
+            "independence_adjusted_strategy_count": 0.0,
+            "alpha_decision_policy": evaluate_alpha_decision_policy(),
+            "policy_mode": "observe",
+            "policy_effective_mode": "observe",
+            "policy_recommendation_effect": False,
+            "policy_allocation_effect": False,
+            "would_affect_allocation": True,
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+        }
+    strategy_rows = [
+        row for row in raw.get("strategy_rows") or []
+        if isinstance(row, dict)
+    ]
+    adjustments = raw.get("ticker_adjustments") if isinstance(raw.get("ticker_adjustments"), dict) else {}
+    policy = raw.get("alpha_decision_policy") if isinstance(raw.get("alpha_decision_policy"), dict) else {}
+    return {
+        "contract_version": str(raw.get("contract_version") or ALPHA_DECISION_OBJECTIVE_CONTRACT_VERSION),
+        "source": raw.get("source"),
+        "strategy_rows": strategy_rows,
+        "ticker_adjustments": {
+            str(ticker or "").upper().strip(): dict(row)
+            for ticker, row in adjustments.items()
+            if str(ticker or "").upper().strip() and isinstance(row, dict)
+        },
+        "raw_alpha_strategy_count": int(raw.get("raw_alpha_strategy_count") or len(strategy_rows)),
+        "independence_adjusted_strategy_count": _optional_float(raw.get("independence_adjusted_strategy_count")) or 0.0,
+        "alpha_decision_policy": policy or evaluate_alpha_decision_policy(),
+        "policy_mode": raw.get("policy_mode") or policy.get("mode"),
+        "policy_effective_mode": raw.get("policy_effective_mode") or policy.get("effective_mode"),
+        "policy_recommendation_effect": bool(raw.get("policy_recommendation_effect")),
+        "policy_allocation_effect": bool(raw.get("policy_allocation_effect")),
+        "would_affect_allocation": bool(raw.get("would_affect_allocation", True)),
+        "execution_authority": "none",
+        "target_weight_mutation": "none",
+    }
+
+
+def _connected_components(graph: dict[str, set[str]]) -> list[list[str]]:
+    seen: set[str] = set()
+    out: list[list[str]] = []
+    for node in sorted(graph):
+        if node in seen:
+            continue
+        stack = [node]
+        component: list[str] = []
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            component.append(current)
+            stack.extend(sorted(graph.get(current, set()) - seen))
+        out.append(sorted(component))
+    return out
+
+
+def _stable_hash(value: Any) -> str:
+    import hashlib
+    import json
+
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def _optional_float(value: Any) -> float | None:

@@ -8,6 +8,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from services.conviction_decision import (
+    decision_conviction_discount,
+    decision_statistical_status,
+)
 
 DEFAULT_BROKER = "IBKR"
 DEFAULT_MODE = "observe"
@@ -54,6 +58,7 @@ class CostGateEvidence:
     confidence: float
     conviction: float | None
     conviction_status: str
+    conviction_statistical_status: str
     effective_confidence: float | None
     conviction_discount: float
 
@@ -211,6 +216,9 @@ def _evaluate_action(
         "confidence": round(confidence, 6),
         "conviction": evidence.conviction if evidence else None,
         "conviction_status": evidence.conviction_status if evidence else "missing_profile",
+        "conviction_statistical_status": (
+            evidence.conviction_statistical_status if evidence else "insufficient"
+        ),
         "conviction_discount": round(conviction_discount, 6),
         "expected_horizon_return_proxy": round(expected_proxy, 6),
         "expected_edge": round(expected_edge, 8),
@@ -284,10 +292,11 @@ def _normalize_evidence_card(card: dict[str, Any]) -> CostGateEvidence:
     conviction = _optional_float(card.get("conviction"))
     effective_confidence = _optional_float(card.get("effective_confidence"))
     status = str(card.get("conviction_status") or "missing_profile")
+    statistical_status = _decision_status_from_card(card, status=status)
     if effective_confidence is not None and confidence > 0:
         discount = max(min(effective_confidence / confidence, 1.0), 0.0)
     else:
-        discount = _conviction_discount(status, conviction)
+        discount = _conviction_discount(statistical_status, conviction)
     return CostGateEvidence(
         strategy=card.get("strategy"),
         role=card.get("role"),
@@ -295,23 +304,35 @@ def _normalize_evidence_card(card: dict[str, Any]) -> CostGateEvidence:
         confidence=round(max(confidence, 0.0), 6),
         conviction=conviction,
         conviction_status=status,
+        conviction_statistical_status=statistical_status,
         effective_confidence=effective_confidence,
         conviction_discount=round(discount, 6),
     )
 
 
-def _conviction_discount(status: str, conviction: float | None) -> float:
-    normalized = status.strip().lower()
-    if normalized in {"insufficient_samples", "missing_profile", "missing"}:
+def _decision_status_from_card(card: dict[str, Any], *, status: str) -> str:
+    diagnostics = card.get("diagnostics") if isinstance(card.get("diagnostics"), dict) else {}
+    conviction_diag = diagnostics.get("conviction") if isinstance(diagnostics.get("conviction"), dict) else {}
+    n = _optional_int(card.get("conviction_n"))
+    if n is None:
+        n = _optional_int(conviction_diag.get("n"))
+    return decision_statistical_status(
+        status=(
+            card.get("conviction_statistical_status")
+            or card.get("statistical_status")
+            or conviction_diag.get("statistical_status")
+            or status
+        ),
+        n=n,
+        diagnostics=conviction_diag,
+    )
+
+
+def _conviction_discount(statistical_status: str, conviction: float | None) -> float:
+    if conviction is None:
         return 0.0
     base = max(min(float(conviction or 0.0), 1.0), 0.0)
-    if normalized == "historical_prior_requires_live_confirmation":
-        return base * 0.5
-    if normalized == "early_estimate":
-        return base * 0.75
-    if normalized in {"calibrated", "available"}:
-        return base
-    return base
+    return base * decision_conviction_discount(statistical_status)
 
 
 def _evidence_rank(evidence: CostGateEvidence) -> tuple[float, float, str]:
@@ -383,6 +404,13 @@ def _optional_float(value: Any) -> float | None:
     if number != number or number in {float("inf"), float("-inf")}:
         return None
     return number
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _to_float(value: Any, default: float) -> float:

@@ -216,9 +216,10 @@ class StrategyEvidenceTest(unittest.TestCase):
         self.assertEqual(with_conviction.max_reasonable_weight, baseline.max_reasonable_weight)
         self.assertEqual(with_conviction.conviction, 0.5)
         self.assertEqual(with_conviction.conviction_status, "early_estimate")
+        self.assertEqual(with_conviction.conviction_statistical_status, "insufficient")
         self.assertEqual(with_conviction.conviction_source_bucket, "combined")
         self.assertEqual(with_conviction.conviction_n, 14)
-        self.assertAlmostEqual(with_conviction.effective_confidence, 0.4)
+        self.assertAlmostEqual(with_conviction.effective_confidence, 0.0)
         self.assertTrue(with_conviction.diagnostics["conviction"]["shadow_only"])
 
     def test_insufficient_conviction_samples_keep_effective_confidence_zero(self):
@@ -271,7 +272,8 @@ class StrategyEvidenceTest(unittest.TestCase):
         )
 
         self.assertEqual(cards[0].conviction, 0.9)
-        self.assertAlmostEqual(cards[0].effective_confidence, 0.4)
+        self.assertEqual(cards[0].conviction_statistical_status, "early_signal")
+        self.assertAlmostEqual(cards[0].effective_confidence, 0.072)
         self.assertIn("historical_prior_requires_live_confirmation", cards[0].reason)
 
     def test_action_not_allowed_by_asset_profile_falls_back_to_watch(self):

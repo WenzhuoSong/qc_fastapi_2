@@ -4,6 +4,10 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
+from services.conviction_decision import (
+    decision_effective_confidence,
+    decision_statistical_status,
+)
 from strategies.base import ScoredTicker, Strategy
 
 
@@ -39,6 +43,7 @@ CONVICTION_SOURCE_PRIORITY = {
 class _ConvictionOverlay:
     conviction: float | None
     status: str
+    statistical_status: str
     source_bucket: str | None
     n: int
     effective_confidence: float
@@ -70,6 +75,7 @@ class EvidenceCard:
     branch: str | None
     reason: str
     conviction_status: str = "missing_profile"
+    conviction_statistical_status: str = "insufficient"
     conviction_source_bucket: str | None = None
     conviction_n: int = 0
     effective_confidence: float = 0.0
@@ -311,6 +317,7 @@ def _build_one_card(
         branch=branch,
         reason=reason,
         conviction_status=conviction.status,
+        conviction_statistical_status=conviction.statistical_status,
         conviction_source_bucket=conviction.source_bucket,
         conviction_n=conviction.n,
         effective_confidence=conviction.effective_confidence,
@@ -358,6 +365,7 @@ def _fallback_card(
         branch=_branch(scored, {}, regime=None, ticker=ticker, role=role, action="watch", strategy=strategy.name),
         reason=reason,
         conviction_status="missing_profile",
+        conviction_statistical_status="insufficient",
         conviction_source_bucket=None,
         conviction_n=0,
         effective_confidence=0.0,
@@ -420,6 +428,12 @@ def _normalize_conviction_profiles(profiles: list[Any]) -> list[dict[str, Any]]:
         row["horizon_days"] = _to_int(row.get("horizon_days") or row.get("horizon"), 0)
         row["n"] = _to_int(row.get("n") or row.get("conviction_n"), 0)
         row["conviction"] = _optional_float(row.get("conviction"))
+        diagnostics = row.get("diagnostics") if isinstance(row.get("diagnostics"), dict) else {}
+        row["statistical_status"] = decision_statistical_status(
+            status=str(row.get("statistical_status") or row.get("status") or ""),
+            n=row["n"],
+            diagnostics=diagnostics,
+        )
         rows.append(row)
     return rows
 
@@ -444,6 +458,11 @@ def _conviction_overlay(
         return _missing_conviction_overlay(confidence)
 
     status = str(profile.get("status") or "unknown")
+    statistical_status = decision_statistical_status(
+        status=str(profile.get("statistical_status") or status),
+        n=_to_int(profile.get("n"), 0),
+        diagnostics=profile.get("diagnostics") if isinstance(profile.get("diagnostics"), dict) else {},
+    )
     source_bucket = str(profile.get("source_bucket") or "unknown")
     conviction = _optional_float(profile.get("conviction"))
     n = _to_int(profile.get("n"), 0)
@@ -451,21 +470,31 @@ def _conviction_overlay(
         effective = 0.0
         reason_code = "insufficient_conviction_samples"
     elif status == "historical_prior_requires_live_confirmation":
-        effective = _clamp(confidence * 0.5)
+        effective = decision_effective_confidence(
+            confidence=confidence,
+            conviction=conviction,
+            statistical_status=statistical_status,
+        )
         reason_code = "historical_prior_requires_live_confirmation"
     else:
-        effective = _clamp(confidence * _clamp(conviction))
+        effective = decision_effective_confidence(
+            confidence=confidence,
+            conviction=conviction,
+            statistical_status=statistical_status,
+        )
         reason_code = None
 
     return _ConvictionOverlay(
         conviction=round(conviction, 6) if conviction is not None else None,
         status=status,
+        statistical_status=statistical_status,
         source_bucket=source_bucket,
         n=n,
         effective_confidence=round(effective, 6),
         reason_code=reason_code,
         diagnostics={
             "status": status,
+            "statistical_status": statistical_status,
             "source_bucket": source_bucket,
             "n": n,
             "horizon_days": _to_int(profile.get("horizon_days"), 0),
@@ -475,7 +504,7 @@ def _conviction_overlay(
             "hit_rate": _optional_float(profile.get("hit_rate")),
             "avg_excess_vs_spy": _optional_float(profile.get("avg_excess_vs_spy")),
             "ic": _optional_float(profile.get("ic")),
-            "effective_confidence_rule": _effective_confidence_rule(status, conviction),
+            "effective_confidence_rule": _effective_confidence_rule(status, conviction, statistical_status),
             "shadow_only": True,
         },
     )
@@ -485,12 +514,14 @@ def _missing_conviction_overlay(confidence: float) -> _ConvictionOverlay:
     return _ConvictionOverlay(
         conviction=None,
         status="missing_profile",
+        statistical_status="insufficient",
         source_bucket=None,
         n=0,
         effective_confidence=0.0,
         reason_code=None,
         diagnostics={
             "status": "missing_profile",
+            "statistical_status": "insufficient",
             "source_bucket": None,
             "n": 0,
             "effective_confidence_rule": "missing_profile->0",
@@ -527,12 +558,10 @@ def _conviction_profile_sort_key(profile: dict[str, Any]) -> tuple[int, int, int
     return (source_rank, horizon_rank, -_to_int(profile.get("n"), 0))
 
 
-def _effective_confidence_rule(status: str, conviction: float | None) -> str:
+def _effective_confidence_rule(status: str, conviction: float | None, statistical_status: str) -> str:
     if status == "insufficient_samples" or conviction is None:
         return "insufficient_or_missing->0"
-    if status == "historical_prior_requires_live_confirmation":
-        return "confidence*0.5"
-    return "confidence*conviction"
+    return f"confidence*conviction*decision_discount({statistical_status})"
 
 
 def _assets_by_ticker(context: dict[str, Any]) -> dict[str, dict[str, Any]]:

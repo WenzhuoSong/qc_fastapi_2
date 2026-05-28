@@ -116,6 +116,29 @@ _DEFAULTS = {
         "fire_and_forget": True,
         "expected_policy_version_source": "execution_policy",
     },
+
+    # Alpha decision diagnostics consumption policy. This never authorizes
+    # direct execution; gated allocation impact requires explicit operator
+    # review and still flows through target_builder and all risk gates.
+    "alpha_decision_policy_config": {
+        "mode": "observe",
+        "min_status_for_promotion": "indicative",
+        "min_status_for_allocation_full_credit": "statistically_meaningful",
+        "require_positive_residual_alpha": True,
+        "require_cost_adjusted_edge_positive": True,
+        "max_full_credit_correlation": 0.4,
+        "max_allowed_duplicate_correlation": 0.8,
+        "cost_model": "ibkr_proxy",
+        "min_observe_cycles_before_gated": 20,
+        "operator_approval_required_for_gated": True,
+        "operator_gated_approved": False,
+        "raw_adjusted_diagnostics_reviewed": False,
+        "dry_run_report_reviewed": False,
+        "unexpected_mature_degradation_false_positive_count": 0,
+        "evidence_cap_calibration_fresh": False,
+        "dashboard_naked_conviction_blocked": True,
+        "observe_cycles": 0,
+    },
 }
 
 

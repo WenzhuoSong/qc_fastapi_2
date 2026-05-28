@@ -14,7 +14,7 @@ def profile(
     horizon_days: int = 5,
     source_bucket: str = "combined",
     status: str = "calibrated",
-    n: int = 40,
+    n: int = 120,
     hit_rate: float = 0.6,
     avg_excess_vs_spy: float = 0.01,
     ic: float = 0.1,

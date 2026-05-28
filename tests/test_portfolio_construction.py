@@ -1,6 +1,10 @@
 import unittest
 
-from services.portfolio_construction import PortfolioConstructionModel, build_construction_signal_strengths
+from services.portfolio_construction import (
+    PortfolioConstructionModel,
+    build_construction_alpha_decision_context,
+    build_construction_signal_strengths,
+)
 
 
 class PortfolioConstructionTests(unittest.TestCase):
@@ -30,16 +34,22 @@ class PortfolioConstructionTests(unittest.TestCase):
         self.assertIn("factor_exposure_before", out)
         self.assertIn("factor_exposure_after", out)
         self.assertIn("policy_evaluation", out)
-        self.assertEqual(out["objective"]["primary"], "maximize_signal_weighted_effective_n")
+        self.assertEqual(out["objective"]["primary"], "maximize_independence_adjusted_net_signal_effective_n")
         self.assertIn("signal_quality_not_diluted", out["objective"]["subject_to"])
+        self.assertIn("alpha_decision_quality_not_diluted", out["objective"]["subject_to"])
+        self.assertIn("max_cluster_exposure_by_correlated_strategy_group", out["objective"]["subject_to"])
         self.assertIn("factor_concentration_within_group_limits", out["objective"]["subject_to"])
         self.assertEqual(out["diagnostics"]["objective"]["effective_n_target"], 8)
-        self.assertIn("without diluting higher-quality signals", out["objective"]["rationale"])
+        self.assertIn("without diluting higher-quality alpha-decision evidence", out["objective"]["rationale"])
         self.assertEqual(out["construction_source"], "portfolio_construction")
         self.assertEqual(out["diagnostics"]["execution_effect"], "diagnostic_only")
         self.assertIn("signal_objective_metrics", out)
         self.assertIn("signal_objective_rows", out)
+        self.assertIn("alpha_decision_objective_metrics", out)
+        self.assertIn("alpha_decision_objective_rows", out)
+        self.assertIn("strategy_cluster_exposure_rows", out)
         self.assertTrue(out["diagnostics"]["signal_weighted_objective_enabled"])
+        self.assertTrue(out["diagnostics"]["alpha_decision_objective_enabled"])
         self.assertGreater(out["target_weights"]["CASH"], 0.52)
         self.assertTrue(any(item.startswith("factor_limit:tech_growth") for item in out["violations"]))
         self.assertFalse(out["diagnostics"]["consumes_raw_llm_adjusted_weights"])
@@ -99,6 +109,185 @@ class PortfolioConstructionTests(unittest.TestCase):
         self.assertAlmostEqual(out["signal_alignment_score_after"], 0.50)
         qqq = next(row for row in out["signal_objective_rows"] if row["ticker"] == "QQQ")
         self.assertAlmostEqual(qqq["signal_weighted_after"], 0.02)
+
+    def test_alpha_decision_objective_penalizes_correlated_duplicate_signals(self):
+        evidence_bundle = {
+            "strategies": {
+                "strategy_results": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "suggested_use": "advisory",
+                        "confidence_score": 0.9,
+                        "selected_tickers": ["QQQ"],
+                    },
+                    {
+                        "strategy_name": "absolute_trend_following_lite",
+                        "suggested_use": "advisory",
+                        "confidence_score": 0.9,
+                        "selected_tickers": ["XLK"],
+                    },
+                ],
+                "strategy_independence": {
+                    "status": "available",
+                    "pair_rows": [
+                        {
+                            "left_strategy": "momentum_lite_v1",
+                            "right_strategy": "absolute_trend_following_lite",
+                            "correlation": 0.82,
+                        }
+                    ],
+                },
+            },
+            "rotation": {"signals": {"QQQ": 1.0, "XLK": 1.0}},
+        }
+        signals = build_construction_signal_strengths(evidence_bundle)
+        alpha_context = build_construction_alpha_decision_context(evidence_bundle)
+        out = PortfolioConstructionModel().construct(
+            base_weights={"QQQ": 0.20, "XLK": 0.20, "CASH": 0.60},
+            current_weights={"QQQ": 0.20, "XLK": 0.20, "CASH": 0.60},
+            signal_strengths=signals,
+            alpha_decision_context=alpha_context,
+            basket_reviews=None,
+            scorecard_permission="normal_rebalance",
+            turnover_budget=None,
+        ).to_dict()
+
+        self.assertAlmostEqual(out["signal_weighted_effective_n_after"], 2.0)
+        self.assertAlmostEqual(out["independence_adjusted_net_signal_effective_n_after"], 2.0)
+        self.assertAlmostEqual(
+            out["alpha_decision_objective_metrics"]["independence_adjusted_strategy_count"],
+            0.1,
+        )
+        self.assertIn(
+            "alpha_strategy_count_collapses_after_redundancy",
+            out["alpha_decision_objective_metrics"]["warnings"],
+        )
+        cluster = out["strategy_cluster_exposure_rows"][0]
+        self.assertEqual(cluster["strategy_count"], 2)
+        self.assertAlmostEqual(cluster["weight_after"], 0.35)
+        qqq = next(row for row in out["alpha_decision_objective_rows"] if row["ticker"] == "QQQ")
+        self.assertAlmostEqual(qqq["redundancy_multiplier"], 0.05)
+        self.assertAlmostEqual(qqq["decision_multiplier"], 0.05)
+
+    def test_negative_correlation_keeps_alpha_decision_signal_credit(self):
+        evidence_bundle = {
+            "strategies": {
+                "strategy_results": [
+                    {
+                        "strategy_name": "volatility_hedge_lite",
+                        "suggested_use": "advisory",
+                        "confidence_score": 0.8,
+                        "selected_tickers": ["VIXY"],
+                    },
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "suggested_use": "advisory",
+                        "confidence_score": 0.8,
+                        "selected_tickers": ["SPY"],
+                    },
+                ],
+                "strategy_independence": {
+                    "status": "available",
+                    "pair_rows": [
+                        {
+                            "left_strategy": "volatility_hedge_lite",
+                            "right_strategy": "momentum_lite_v1",
+                            "correlation": -0.45,
+                        }
+                    ],
+                },
+            },
+            "rotation": {"signals": {"VIXY": 1.0, "SPY": 1.0}},
+        }
+        alpha_context = build_construction_alpha_decision_context(evidence_bundle)
+
+        self.assertEqual(alpha_context["independence_adjusted_strategy_count"], 2.0)
+        vixy = alpha_context["ticker_adjustments"]["VIXY"]
+        self.assertAlmostEqual(vixy["redundancy_multiplier"], 1.0)
+        self.assertAlmostEqual(vixy["independence_adjusted_signal_strength"], 0.8)
+
+    def test_alpha_decision_context_carries_net_edge_into_pc_rows(self):
+        evidence_bundle = {
+            "strategies": {
+                "strategy_results": [
+                    {
+                        "strategy_name": "mean_reversion_lite",
+                        "suggested_use": "advisory",
+                        "confidence_score": 0.8,
+                        "selected_tickers": ["SPY"],
+                    }
+                ],
+            },
+            "rotation": {"signals": {"SPY": 1.0}},
+        }
+        alpha_context = build_construction_alpha_decision_context(
+            evidence_bundle,
+            alpha_decision_profiles={
+                "rows": [
+                    {
+                        "strategy_id": "mean_reversion_lite",
+                        "tickers": ["SPY"],
+                        "independence_cluster_id": "independent:mean_reversion_lite",
+                        "redundancy_multiplier": 1.0,
+                        "decision_multiplier": 0.25,
+                        "net_edge_status": "low_edge_after_cost",
+                        "gross_expected_edge": 0.003,
+                        "estimated_ibkr_cost_pct": 0.002,
+                        "cost_adjusted_edge": 0.001,
+                        "edge_to_cost_ratio": 1.5,
+                    }
+                ]
+            },
+        )
+        out = PortfolioConstructionModel().construct(
+            base_weights={"SPY": 0.20, "CASH": 0.80},
+            current_weights={"SPY": 0.20, "CASH": 0.80},
+            signal_strengths=build_construction_signal_strengths(evidence_bundle),
+            alpha_decision_context=alpha_context,
+            basket_reviews=None,
+            scorecard_permission="normal_rebalance",
+            turnover_budget=None,
+        ).to_dict()
+
+        row = next(item for item in out["alpha_decision_objective_rows"] if item["ticker"] == "SPY")
+        self.assertEqual(row["net_edge_status"], "low_edge_after_cost")
+        self.assertAlmostEqual(row["gross_expected_edge"], 0.003)
+        self.assertAlmostEqual(row["estimated_ibkr_cost_pct"], 0.002)
+        self.assertAlmostEqual(row["cost_adjusted_edge"], 0.001)
+        self.assertAlmostEqual(row["edge_to_cost_ratio"], 1.5)
+        self.assertEqual(row["policy_effective_mode"], "observe")
+        self.assertFalse(row["allocation_effect"])
+
+    def test_alpha_decision_context_exposes_policy_mode_without_execution_authority(self):
+        evidence_bundle = {
+            "strategies": {
+                "strategy_results": [
+                    {
+                        "strategy_name": "mean_reversion_lite",
+                        "suggested_use": "advisory",
+                        "confidence_score": 0.8,
+                        "selected_tickers": ["SPY"],
+                    }
+                ],
+            },
+            "rotation": {"signals": {"SPY": 1.0}},
+        }
+        alpha_context = build_construction_alpha_decision_context(
+            evidence_bundle,
+            policy_config={
+                "mode": "gated",
+                "observe_cycles": 25,
+                "operator_gated_approved": True,
+                "raw_adjusted_diagnostics_reviewed": True,
+                "dry_run_report_reviewed": True,
+                "evidence_cap_calibration_fresh": True,
+            },
+        )
+
+        self.assertEqual(alpha_context["policy_effective_mode"], "gated")
+        self.assertTrue(alpha_context["policy_allocation_effect"])
+        self.assertEqual(alpha_context["execution_authority"], "none")
+        self.assertEqual(alpha_context["target_weight_mutation"], "none")
 
     def test_no_add_permission_clips_targets_to_current(self):
         out = PortfolioConstructionModel().construct(

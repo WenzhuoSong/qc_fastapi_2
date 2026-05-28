@@ -8,39 +8,23 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from services.conviction_decision import (
+    decision_conviction_discount,
+    decision_statistical_status,
+)
 from services.execution_policy import get_policy
 from services.strategy_evidence import EvidenceCard
 
 
 CONTRACT_VERSION = "evidence_quality_cap_v1"
 DEFAULT_MIN_MULTIPLIER = 0.10
-DEFAULT_CONVICTION_DISCOUNT = 0.30
 DEFAULT_HISTORY_DISCOUNT_WHEN_UNKNOWN = 1.0
-
-CONVICTION_DISCOUNT_MAP = {
-    "statistically_meaningful": 1.0,
-    "calibrated": 0.80,
-    "indicative": 0.60,
-    "early_signal": 0.45,
-    "early_live_confirmation": 0.45,
-    "early_estimate": 0.45,
-    "historical_prior_requires_live_confirmation": 0.50,
-    "insufficient": 0.30,
-    "insufficient_samples": 0.30,
-    "missing_profile": 0.30,
-}
 
 CONVICTION_STATUS_PRIORITY = {
     "statistically_meaningful": 80,
-    "calibrated": 70,
     "indicative": 60,
-    "historical_prior_requires_live_confirmation": 50,
     "early_signal": 40,
-    "early_live_confirmation": 40,
-    "early_estimate": 40,
     "insufficient": 30,
-    "insufficient_samples": 30,
-    "missing_profile": 10,
 }
 
 
@@ -59,6 +43,7 @@ class EvidenceQualityCapDiagnostic:
     static_cap: float
     coverage_ratio: float
     conviction_status: str
+    operational_conviction_status: str
     conviction_discount: float
     history_days: int | None
     history_discount: float
@@ -104,7 +89,8 @@ def evaluate_evidence_quality_caps(
         cards = cards_by_ticker.get(ticker) or []
         static_cap = _static_cap(ticker, cards)
         coverage_ratio = _clamp(_to_float(row.get("coverage_ratio"), 0.0))
-        conviction_status = _best_conviction_status(cards)
+        operational_conviction_status = _best_operational_conviction_status(cards)
+        conviction_status = _best_decision_conviction_status(cards)
         conviction_discount = get_conviction_discount(conviction_status)
         history_days = _history_days(row, cards)
         history_discount = _history_discount(history_days, cfg.unknown_history_discount)
@@ -122,6 +108,7 @@ def evaluate_evidence_quality_caps(
             static_cap=round(static_cap, 6),
             coverage_ratio=round(coverage_ratio, 6),
             conviction_status=conviction_status,
+            operational_conviction_status=operational_conviction_status,
             conviction_discount=round(conviction_discount, 6),
             history_days=history_days,
             history_discount=round(history_discount, 6),
@@ -140,7 +127,7 @@ def evaluate_evidence_quality_caps(
 
 
 def get_conviction_discount(status: str | None) -> float:
-    return CONVICTION_DISCOUNT_MAP.get(str(status or "missing_profile"), DEFAULT_CONVICTION_DISCOUNT)
+    return decision_conviction_discount(status)
 
 
 def evidence_quality_multiplier(
@@ -205,11 +192,36 @@ def _static_cap(ticker: str, cards: list[dict[str, Any]]) -> float:
     return max(0.0, min(float(asset_cap), role_cap))
 
 
-def _best_conviction_status(cards: list[dict[str, Any]]) -> str:
+def _best_decision_conviction_status(cards: list[dict[str, Any]]) -> str:
+    statuses = [_decision_status_from_card(row) for row in cards]
+    if not statuses:
+        return "insufficient"
+    return max(statuses, key=lambda item: CONVICTION_STATUS_PRIORITY.get(item, 0))
+
+
+def _best_operational_conviction_status(cards: list[dict[str, Any]]) -> str:
     statuses = [str(row.get("conviction_status") or "missing_profile") for row in cards]
     if not statuses:
         return "missing_profile"
-    return max(statuses, key=lambda item: CONVICTION_STATUS_PRIORITY.get(item, 0))
+    return statuses[0] if len(statuses) == 1 else ",".join(sorted(set(statuses)))
+
+
+def _decision_status_from_card(row: dict[str, Any]) -> str:
+    diagnostics = row.get("diagnostics") if isinstance(row.get("diagnostics"), dict) else {}
+    conviction_diag = diagnostics.get("conviction") if isinstance(diagnostics.get("conviction"), dict) else {}
+    n = _optional_int(row.get("conviction_n"))
+    if n is None:
+        n = _optional_int(conviction_diag.get("n"))
+    return decision_statistical_status(
+        status=(
+            row.get("conviction_statistical_status")
+            or row.get("statistical_status")
+            or conviction_diag.get("statistical_status")
+            or row.get("conviction_status")
+        ),
+        n=n,
+        diagnostics=conviction_diag,
+    )
 
 
 def _history_days(row: dict[str, Any], cards: list[dict[str, Any]]) -> int | None:

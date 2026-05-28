@@ -81,6 +81,13 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('"signal_weighted_effective_n_before": payload.get("signal_weighted_effective_n_before")', source)
         self.assertIn('"signal_alignment_score_after": payload.get("signal_alignment_score_after")', source)
         self.assertIn('"signal_objective_rows": payload.get("signal_objective_rows") or []', source)
+        self.assertIn('"independence_adjusted_net_signal_effective_n_before": payload.get("independence_adjusted_net_signal_effective_n_before")', source)
+        self.assertIn('"alpha_decision_objective_rows": payload.get("alpha_decision_objective_rows") or []', source)
+        self.assertIn('"strategy_cluster_exposure_rows": payload.get("strategy_cluster_exposure_rows") or []', source)
+        self.assertIn("Alpha Decision Objective Rows", source)
+        self.assertIn("Strategy Cluster Exposure Rows", source)
+        self.assertIn("estimated_ibkr_cost_pct", source)
+        self.assertIn("cost_adjusted_edge", source)
 
     def test_dashboard_surfaces_data_quality_audit_trend(self):
         source = Path("dashboard/app.py").read_text()
@@ -192,7 +199,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('"data_lag_filtered": row.get("data_lag_filtered")', source)
         self.assertIn('"regime_level_profiles": _conviction_profile_display_rows', source)
         self.assertIn('"regime_summary_rows": _regime_summary_display_rows', source)
-        self.assertIn('"calibrated_profiles": row.get("calibrated_profiles")', source)
+        self.assertIn('"operational_calibrated_profiles": row.get("calibrated_profiles")', source)
 
     def test_dashboard_surfaces_performance_attribution(self):
         source = Path("dashboard/app.py").read_text()
@@ -269,6 +276,68 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('"recommendation_only": True', source)
         self.assertIn('"execution_authority": "none"', source)
         self.assertIn('"target_weight_mutation": "none"', source)
+
+    def test_dashboard_summary_loads_alpha_decision_profiles(self):
+        source = Path("dashboard/app.py").read_text()
+
+        self.assertIn("def _alpha_decision_profiles_dashboard", source)
+        self.assertIn("def _render_alpha_decision_profiles", source)
+        self.assertIn("load_alpha_decision_profiles", source)
+        self.assertIn('"alpha_decision_profiles": alpha_decision_profiles', source)
+        self.assertIn('"contract_version": "alpha_decision_profiles_v1"', source)
+        self.assertIn('"decision_input_only": True', source)
+        self.assertIn('"recommendation_only": True', source)
+        self.assertIn('"execution_authority": "none"', source)
+        self.assertIn('"target_weight_mutation": "none"', source)
+        self.assertIn("Alpha Decision Profiles", source)
+        self.assertIn("Alpha Decision Overview", source)
+        self.assertIn("Independence Consumption", source)
+        self.assertIn('"raw_alpha_strategy_count": profiles.get("raw_alpha_strategy_count")', source)
+        self.assertIn('"independence_adjusted_strategy_count": profiles.get("independence_adjusted_strategy_count")', source)
+        self.assertIn('"effective_independent_alpha_count": independence.get("effective_independent_alpha_count")', source)
+        self.assertIn('"raw_alpha_strategy_count": (recommendations.get("alpha_decision_profiles") or {}).get("raw_alpha_strategy_count")', source)
+        self.assertIn("redundancy_multiplier", source)
+        self.assertIn("gross_expected_edge", source)
+        self.assertIn("net_edge_status", source)
+
+    def test_dashboard_surfaces_alpha_decision_policy(self):
+        source = Path("dashboard/app.py").read_text()
+        pipeline_source = Path("services/pipeline.py").read_text()
+        seed_source = Path("db/seed.py").read_text()
+
+        self.assertIn("def _alpha_decision_policy_dashboard_status", source)
+        self.assertIn("def _render_alpha_decision_policy", source)
+        self.assertIn('"alpha_decision_policy_config": (alpha_decision_policy.value if alpha_decision_policy else {}) or {}', source)
+        self.assertIn('"alpha_decision_policy": alpha_decision_policy', source)
+        self.assertIn("Alpha Decision Policy", source)
+        self.assertIn("Alpha Decision Policy Mode", source)
+        self.assertIn("Gated Blockers", source)
+        self.assertIn("evaluate_alpha_decision_policy", source)
+        self.assertIn("default_alpha_decision_policy_config", pipeline_source)
+        self.assertIn('"alpha_decision_policy_config": alpha_decision_policy_config', pipeline_source)
+        self.assertIn('"alpha_decision_policy_config"', seed_source)
+        self.assertIn('"mode": "observe"', seed_source)
+
+    def test_dashboard_surfaces_alpha_decision_review_surface(self):
+        source = Path("dashboard/app.py").read_text()
+
+        self.assertIn("def _alpha_decision_review_surface_status", source)
+        self.assertIn("def _render_alpha_decision_review_surface", source)
+        self.assertIn('"alpha_decision_review_surface": alpha_decision_review_surface', source)
+        self.assertIn("Alpha Decision Review Surface", source)
+        self.assertIn("Review Checklist", source)
+        self.assertIn("Statistical Maturity And Independence", source)
+        self.assertIn("Net Alpha Review Rows", source)
+        self.assertIn("Promotion Review Rows", source)
+        self.assertIn("Strategy Cluster Review Rows", source)
+        self.assertIn("PC Alpha Decision Before / After Rows", source)
+        self.assertIn("PC Before / After Allocation Diagnostics", source)
+        self.assertIn("no_naked_conviction_numbers", source)
+        self.assertIn("promotion_rows_include_residual_alpha_and_cost_status", source)
+        self.assertIn("strategy_counts_show_effective_independent_count", source)
+        self.assertIn("residual_alpha_status", source)
+        self.assertIn("cost_adjusted_edge", source)
+        self.assertIn("effective_independent_alpha_count", source)
 
     def test_dashboard_surfaces_transaction_cost_gate(self):
         source = Path("dashboard/app.py").read_text()

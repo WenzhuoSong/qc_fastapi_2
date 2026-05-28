@@ -55,7 +55,11 @@ from services.evidence_bundle import build_evidence_bundle
 from services.market_scorecard import build_market_scorecard
 from services.news_evidence   import build_news_evidence
 from services.decision_style  import resolve_decision_style
-from services.portfolio_construction import PortfolioConstructionModel, build_construction_signal_strengths
+from services.portfolio_construction import (
+    PortfolioConstructionModel,
+    build_construction_alpha_decision_context,
+    build_construction_signal_strengths,
+)
 from services.portfolio_construction_gate import construction_input_for_target_builder
 from services.pc_promotion_config import default_pc_promotion_config
 from services.decision_ledger import (
@@ -99,6 +103,7 @@ from services.transaction_cost_gate import (
     evaluate_transaction_cost_gate,
 )
 from services.evidence_cap_config import default_evidence_cap_config
+from services.alpha_decision_policy import default_alpha_decision_policy_config
 from services.portfolio_risk_diagnostic import load_portfolio_var_cvar_diagnostic
 from services.alpha_validation_persistence import persist_alpha_validation_run
 from services.mutation_ownership import (
@@ -498,6 +503,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         policy_sync_recovery_cfg = await get_system_config(db, "policy_sync_recovery_config")
         transaction_cost_cfg = await get_system_config(db, "transaction_cost_gate_config")
         evidence_cap_cfg = await get_system_config(db, "evidence_cap_config")
+        alpha_decision_policy_cfg = await get_system_config(db, "alpha_decision_policy_config")
         override_cfg    = await get_system_config(db, "circuit_override")
         alert_cfg       = await get_system_config(db, "circuit_pause_alert")
 
@@ -557,6 +563,9 @@ async def _guard_and_config(trigger: str) -> dict | None:
     evidence_cap_config = default_evidence_cap_config(
         (evidence_cap_cfg.value if evidence_cap_cfg else {}) or {}
     )
+    alpha_decision_policy_config = default_alpha_decision_policy_config(
+        (alpha_decision_policy_cfg.value if alpha_decision_policy_cfg else {}) or {}
+    )
 
     full_auto_safety_violations = full_auto_safety_precondition_violations(
         auth_mode=auth_mode,
@@ -603,6 +612,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "policy_sync_recovery_config": policy_sync_recovery_config,
         "transaction_cost_gate_config": transaction_cost_gate_config,
         "evidence_cap_config": evidence_cap_config,
+        "alpha_decision_policy_config": alpha_decision_policy_config,
     }
 
 
@@ -1422,10 +1432,15 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                     else "5e_portfolio_construction_shadow"
                 )
                 signal_strengths = build_construction_signal_strengths(evidence_bundle)
+                alpha_decision_context = build_construction_alpha_decision_context(
+                    evidence_bundle,
+                    policy_config=pipeline_context.get("alpha_decision_policy_config") or {},
+                )
                 portfolio_construction_payload = PortfolioConstructionModel().construct(
                     base_weights=base_weights,
                     current_weights=brief.get("current_weights") or {},
                     signal_strengths=signal_strengths,
+                    alpha_decision_context=alpha_decision_context,
                     basket_reviews=(pre_risk_governance.portfolio_summary or {}).get("basket_reviews") or [],
                     scorecard_permission=(market_scorecard or {}).get("investment_permission"),
                     turnover_budget=_effective_portfolio_turnover_budget(market_scorecard, decision_style),
@@ -1448,6 +1463,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                         "base_weights": base_weights,
                         "current_weights": brief.get("current_weights") or {},
                         "signal_strengths": signal_strengths,
+                        "alpha_decision_context": alpha_decision_context,
                         "basket_reviews": (pre_risk_governance.portfolio_summary or {}).get("basket_reviews") or [],
                         "scorecard_permission": (market_scorecard or {}).get("investment_permission"),
                         "turnover_budget": _effective_portfolio_turnover_budget(market_scorecard, decision_style),
