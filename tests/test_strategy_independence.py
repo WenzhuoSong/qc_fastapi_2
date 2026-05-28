@@ -42,6 +42,8 @@ class StrategyIndependenceTest(unittest.TestCase):
         self.assertEqual(summary["target_weight_mutation"], "none")
         self.assertEqual(summary["alpha_strategy_count"], 3)
         self.assertLess(summary["effective_independent_alpha_count"], 3)
+        self.assertEqual(summary["baseline_review"]["baseline_established"], False)
+        self.assertEqual(summary["baseline_review"]["operator_review_required"], True)
         self.assertEqual(summary["high_correlation_pairs"][0]["left"], "absolute_trend_following_lite")
         self.assertEqual(summary["high_correlation_pairs"][0]["right"], "momentum_lite_v1")
         self.assertTrue(summary["inverse_correlation_pairs"])
@@ -49,6 +51,39 @@ class StrategyIndependenceTest(unittest.TestCase):
             "high_strategy_correlation:absolute_trend_following_lite:momentum_lite_v1:1.0",
             summary["warnings"],
         )
+        self.assertIn(
+            "no_low_correlation_strategy_pair_below_abs_0.40:operator_review_required",
+            summary["warnings"],
+        )
+
+    def test_summary_establishes_baseline_when_low_correlation_pair_exists(self):
+        days = [date(2026, 1, 1) + timedelta(days=idx) for idx in range(8)]
+        return_series = {
+            "momentum_lite_v1": [
+                {"date": day.isoformat(), "return": value}
+                for day, value in zip(days, [0.010, -0.004, 0.006, 0.012, -0.005, 0.003, 0.004, -0.002])
+            ],
+            "seasonality_month_end_lite": [
+                {"date": day.isoformat(), "return": value}
+                for day, value in zip(days, [0.002, 0.001, -0.001, 0.002, 0.001, -0.002, 0.001, 0.0])
+            ],
+        }
+        metadata = {
+            "momentum_lite_v1": {"canonical_family": "momentum", "alpha_source": True},
+            "seasonality_month_end_lite": {"canonical_family": "seasonality_flow", "alpha_source": True},
+        }
+
+        summary = build_strategy_independence_summary(
+            return_series=return_series,
+            strategy_metadata=metadata,
+            min_overlap=4,
+        )
+
+        self.assertEqual(summary["status"], "available")
+        self.assertEqual(summary["baseline_review"]["baseline_established"], True)
+        self.assertEqual(summary["baseline_review"]["operator_review_required"], False)
+        self.assertEqual(summary["baseline_review"]["low_correlation_pair_count"], 1)
+        self.assertEqual(len(summary["low_correlation_pairs"]), 1)
 
     def test_replay_builds_diagnostics_without_lookahead(self):
         snapshots = [
@@ -149,4 +184,3 @@ def _row(
 
 if __name__ == "__main__":
     unittest.main()
-

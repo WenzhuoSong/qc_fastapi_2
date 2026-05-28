@@ -22,6 +22,7 @@ CONTRACT_VERSION = "strategy_independence_diagnostics_v1"
 DEFAULT_MIN_OVERLAP = 30
 HIGH_CORRELATION_THRESHOLD = 0.70
 INVERSE_CORRELATION_THRESHOLD = -0.50
+LOW_ABS_CORRELATION_THRESHOLD = 0.40
 
 
 def empty_strategy_independence_summary(reason: str = "no_strategy_return_series") -> dict[str, Any]:
@@ -35,12 +36,22 @@ def empty_strategy_independence_summary(reason: str = "no_strategy_return_series
         "avg_positive_correlation": None,
         "avg_abs_correlation": None,
         "pair_rows": [],
+        "low_correlation_pairs": [],
         "high_correlation_pairs": [],
         "inverse_correlation_pairs": [],
         "family_correlation_rows": [],
         "strategy_rows": [],
         "correlation_matrix": {},
         "warnings": [reason],
+        "baseline_review": {
+            "baseline_established": False,
+            "correlation_matrix_available": False,
+            "low_correlation_pair_count": 0,
+            "low_abs_correlation_threshold": LOW_ABS_CORRELATION_THRESHOLD,
+            "operator_review_required": True,
+            "operator_acceptance_supported": True,
+            "reason": reason,
+        },
         "execution_authority": "none",
         "target_weight_mutation": "none",
     }
@@ -240,6 +251,10 @@ def build_strategy_independence_summary(
         row for row in valid_pairs
         if float(row["correlation"]) >= high_correlation_threshold
     ]
+    low_pairs = [
+        row for row in valid_pairs
+        if float(row["abs_correlation"]) < LOW_ABS_CORRELATION_THRESHOLD
+    ]
     inverse_pairs = [
         row for row in valid_pairs
         if float(row["correlation"]) <= inverse_correlation_threshold
@@ -265,10 +280,18 @@ def build_strategy_independence_summary(
     )
     warnings = _warnings(
         high_pairs=high_pairs,
+        low_pairs=low_pairs,
         pair_rows=pair_rows,
         min_overlap=max(int(min_overlap), 2),
         alpha_names=alpha_names,
         effective_alpha=effective_alpha,
+    )
+    baseline_review = _baseline_review(
+        strategy_rows=strategy_rows,
+        valid_pairs=valid_pairs,
+        low_pairs=low_pairs,
+        correlation_matrix_available=bool(valid_pairs),
+        min_overlap=max(int(min_overlap), 2),
     )
 
     if not any(row["sample_count"] for row in strategy_rows):
@@ -287,16 +310,19 @@ def build_strategy_independence_summary(
             round(avg_alpha_positive, 4) if avg_alpha_positive is not None else None
         ),
         "pair_rows": pair_rows,
+        "low_correlation_pairs": low_pairs,
         "high_correlation_pairs": high_pairs,
         "inverse_correlation_pairs": inverse_pairs,
         "family_correlation_rows": _family_correlation_rows(valid_pairs),
         "strategy_rows": strategy_rows,
         "correlation_matrix": _correlation_matrix(strategy_rows, valid_pairs),
         "warnings": warnings,
+        "baseline_review": baseline_review,
         "method": {
             "return_series": "strategy_weights_on_T_times_ticker_return_on_T_plus_1",
             "effective_count": "n_alpha/(1+(n_alpha-1)*avg_positive_alpha_correlation)",
             "positive_correlation_penalty_only": True,
+            "low_abs_correlation_threshold": LOW_ABS_CORRELATION_THRESHOLD,
         },
         "execution_authority": "none",
         "target_weight_mutation": "none",
@@ -577,6 +603,7 @@ def _correlation_matrix(
 def _warnings(
     *,
     high_pairs: list[dict[str, Any]],
+    low_pairs: list[dict[str, Any]],
     pair_rows: list[dict[str, Any]],
     min_overlap: int,
     alpha_names: list[str],
@@ -593,7 +620,46 @@ def _warnings(
         warnings.append(
             f"effective_independent_alpha_count_low:{effective_alpha:.2f}/{len(alpha_names)}"
         )
+    if len(alpha_names) >= 2 and not low_pairs:
+        warnings.append(
+            f"no_low_correlation_strategy_pair_below_abs_{LOW_ABS_CORRELATION_THRESHOLD:.2f}:operator_review_required"
+        )
     return warnings
+
+
+def _baseline_review(
+    *,
+    strategy_rows: list[dict[str, Any]],
+    valid_pairs: list[dict[str, Any]],
+    low_pairs: list[dict[str, Any]],
+    correlation_matrix_available: bool,
+    min_overlap: int,
+) -> dict[str, Any]:
+    alpha_rows = [
+        row for row in strategy_rows
+        if row.get("alpha_source") and int(row.get("sample_count") or 0) >= min_overlap
+    ]
+    has_alpha_pair = len(alpha_rows) >= 2
+    low_pair_count = len(low_pairs)
+    baseline_established = bool(correlation_matrix_available and has_alpha_pair and low_pair_count >= 1)
+    reason = "low_correlation_pair_available" if baseline_established else "operator_acceptance_required"
+    if not correlation_matrix_available:
+        reason = "correlation_matrix_unavailable"
+    elif not has_alpha_pair:
+        reason = "fewer_than_two_alpha_strategies_with_min_overlap"
+    return {
+        "baseline_established": baseline_established,
+        "correlation_matrix_available": correlation_matrix_available,
+        "alpha_strategy_count_with_min_overlap": len(alpha_rows),
+        "min_overlap": min_overlap,
+        "low_correlation_pair_count": low_pair_count,
+        "low_abs_correlation_threshold": LOW_ABS_CORRELATION_THRESHOLD,
+        "operator_review_required": not baseline_established,
+        "operator_acceptance_supported": True,
+        "reason": reason,
+        "execution_authority": "none",
+        "target_weight_mutation": "none",
+    }
 
 
 def _effective_independent_count(

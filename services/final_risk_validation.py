@@ -14,6 +14,7 @@ from services.execution_policy import (
     evaluate_policy,
     get_role,
 )
+from services.mutation_ownership import REGIME_CONSTRAINT_MUTATION_TYPE
 
 
 ALLOWED_POST_RISK_MUTATIONS = {
@@ -24,6 +25,7 @@ ALLOWED_POST_RISK_MUTATIONS = {
     "decay_risk_auto_reduce",
     "emergency_reduce_only",
     "execution_buy_delta_throttle",
+    REGIME_CONSTRAINT_MUTATION_TYPE,
 }
 
 CONDITIONAL_POST_RISK_MUTATIONS = {

@@ -21,6 +21,8 @@ VALID_EVENT_TYPES = {
 }
 
 DEFAULT_RECONCILIATION_TOLERANCE = 0.01
+DEFAULT_RECONCILIATION_MAX_AGE_MINUTES = 30
+RECONCILIATION_TERMINAL_EVENTS = {"reconciled", "reconciliation_drift"}
 
 
 def build_command_lifecycle_event(
@@ -196,6 +198,66 @@ async def load_command_lifecycle(command_id: str) -> list[dict[str, Any]]:
     return [_event_to_dict(row) for row in rows]
 
 
+def build_reconciliation_lag_report(
+    *,
+    commands: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    now: datetime | None = None,
+    max_age_minutes: int = DEFAULT_RECONCILIATION_MAX_AGE_MINUTES,
+) -> dict[str, Any]:
+    """Report accepted commands that are not yet reconciled after a threshold."""
+    checked_at = _strip_tz(now or datetime.now(UTC))
+    threshold = max(int(max_age_minutes or DEFAULT_RECONCILIATION_MAX_AGE_MINUTES), 1)
+    events_by_command: dict[str, list[dict[str, Any]]] = {}
+    for event in events or []:
+        command_id = str(event.get("command_id") or "").strip()
+        if command_id:
+            events_by_command.setdefault(command_id, []).append(event)
+
+    rows: list[dict[str, Any]] = []
+    for command in commands or []:
+        command_id = str(command.get("command_id") or "").strip()
+        if not command_id:
+            continue
+        if str(command.get("command_type") or "").strip() not in {"weight_adjustment", ""}:
+            continue
+        if str(command.get("qc_status") or "").lower().strip() != "accepted":
+            continue
+        accepted_at = _datetime_from_any(command.get("qc_ack_at") or command.get("executed_at"))
+        if accepted_at is None:
+            continue
+        lifecycle = events_by_command.get(command_id, [])
+        terminal = _latest_event_of_type(lifecycle, RECONCILIATION_TERMINAL_EVENTS)
+        if terminal:
+            continue
+        latest = _latest_event(lifecycle)
+        age_minutes = max((checked_at - accepted_at).total_seconds() / 60.0, 0.0)
+        status = "overdue" if age_minutes >= threshold else "pending"
+        rows.append({
+            "command_id": command_id,
+            "analysis_id": command.get("analysis_id"),
+            "qc_status": command.get("qc_status"),
+            "accepted_at": accepted_at.isoformat(),
+            "age_minutes": round(age_minutes, 1),
+            "max_age_minutes": threshold,
+            "status": status,
+            "latest_event_type": latest.get("event_type") if latest else None,
+            "latest_event_status": latest.get("event_status") if latest else None,
+            "reason": "accepted_without_reconciled_event",
+        })
+    rows.sort(key=lambda row: (row["status"] != "overdue", -float(row["age_minutes"])))
+    return {
+        "contract_version": "command_reconciliation_lag_v1",
+        "checked_at": checked_at.isoformat(),
+        "max_age_minutes": threshold,
+        "accepted_without_reconciled_count": len(rows),
+        "overdue_count": sum(1 for row in rows if row["status"] == "overdue"),
+        "pending_count": sum(1 for row in rows if row["status"] == "pending"),
+        "rows": rows,
+        "execution_effect": "diagnostic_only",
+    }
+
+
 def _event_to_dict(row) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -208,6 +270,23 @@ def _event_to_dict(row) -> dict[str, Any]:
         "reason": row.reason,
         "payload": row.payload or {},
     }
+
+
+def _latest_event(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not events:
+        return None
+    return max(
+        events,
+        key=lambda event: _datetime_from_any(event.get("event_time")) or datetime.min,
+    )
+
+
+def _latest_event_of_type(events: list[dict[str, Any]], event_types: set[str]) -> dict[str, Any] | None:
+    matching = [
+        event for event in events or []
+        if str(event.get("event_type") or "").strip() in event_types
+    ]
+    return _latest_event(matching)
 
 
 def _order_summary_from_response(response: dict[str, Any]) -> dict[str, Any]:
@@ -225,6 +304,14 @@ def _account_state_from_response(response: dict[str, Any]) -> dict[str, Any]:
 
 def _event_time_from_response(response: dict[str, Any]) -> datetime | None:
     value = response.get("qc_timestamp") or response.get("timestamp_utc")
+    return _datetime_from_any(value)
+
+
+def _datetime_from_any(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return _strip_tz(value)
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()

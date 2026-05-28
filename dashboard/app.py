@@ -35,6 +35,7 @@ from db.models import (
     AgentStepLog,
     AlphaValidationRun,
     CommandLifecycleEvent,
+    DeferredExecutionLedger,
     CronRunLog,
     ExecutionLog,
     PerformanceAttribution,
@@ -45,6 +46,7 @@ from db.session import AsyncSessionLocal
 from services.operational_health import build_operational_health_snapshot
 from services.playground import _recent_snapshot_row_limit
 from services.evidence_cap_calibration import load_evidence_cap_calibration_report
+from services.command_lifecycle import build_reconciliation_lag_report
 
 DATA_QUALITY_AUDIT_NAME = "qc_yfinance_feature_parity"
 
@@ -464,6 +466,22 @@ async def _execution_control_status(latest_analysis: dict[str, Any]) -> dict[str
                     .limit(20)
                 )
             ).scalars().all()
+            accepted_commands = (
+                await db.execute(
+                    select(ExecutionLog)
+                    .where(ExecutionLog.command_type == "weight_adjustment")
+                    .where(ExecutionLog.qc_status == "accepted")
+                    .order_by(desc(func.coalesce(ExecutionLog.qc_ack_at, ExecutionLog.executed_at)))
+                    .limit(50)
+                )
+            ).scalars().all()
+            deferred_rows = (
+                await db.execute(
+                    select(DeferredExecutionLedger)
+                    .order_by(desc(DeferredExecutionLedger.created_at), desc(DeferredExecutionLedger.id))
+                    .limit(50)
+                )
+            ).scalars().all()
     except Exception as exc:
         return {
             "available": False,
@@ -473,15 +491,34 @@ async def _execution_control_status(latest_analysis: dict[str, Any]) -> dict[str
             "latest_account_snapshot": {},
             "recent_command_events": [],
             "recent_commands": [],
+            "deferred_execution": {},
+            "reconciliation_lag": {},
         }
 
+    deferred_rows_compact = [_compact_deferred_execution_row(row) for row in deferred_rows]
+    open_deferred = [row for row in deferred_rows_compact if row.get("status") == "open"]
+    accepted_command_rows = [_compact_execution_row(row) for row in accepted_commands]
+    lifecycle_rows = [_compact_lifecycle_event(row) for row in lifecycle_events]
     return {
         "available": True,
         "account_state_guard": latest_analysis.get("account_state_guard") or {},
         "auto_pause": latest_analysis.get("auto_pause") or {},
         "latest_account_snapshot": _compact_account_state_snapshot(snapshot),
-        "recent_command_events": [_compact_lifecycle_event(row) for row in lifecycle_events],
+        "recent_command_events": lifecycle_rows,
         "recent_commands": [_compact_execution_row(row) for row in recent_commands],
+        "reconciliation_lag": build_reconciliation_lag_report(
+            commands=accepted_command_rows,
+            events=lifecycle_rows,
+            max_age_minutes=30,
+        ),
+        "deferred_execution": {
+            "available": True,
+            "open_count": len(open_deferred),
+            "open_buy_delta": round(sum(max(float(row.get("remaining_delta") or 0.0), 0.0) for row in open_deferred), 6),
+            "open_sell_delta": round(sum(abs(min(float(row.get("remaining_delta") or 0.0), 0.0)) for row in open_deferred), 6),
+            "open_tickers": sorted({str(row.get("ticker") or "") for row in open_deferred if row.get("ticker")}),
+            "recent_rows": deferred_rows_compact,
+        },
     }
 
 
@@ -1130,6 +1167,9 @@ def _compact_strategy_evidence(strategies: dict[str, Any]) -> dict[str, Any]:
         if isinstance(strategies.get("strategy_diversity"), dict)
         else {}
     )
+    strategy_independence = _compact_strategy_independence(
+        strategies.get("strategy_independence") if isinstance(strategies.get("strategy_independence"), dict) else {}
+    )
     card_rows: list[dict[str, Any]] = []
     strategy_rows: list[dict[str, Any]] = []
     for row in strategy_results:
@@ -1184,10 +1224,15 @@ def _compact_strategy_evidence(strategies: dict[str, Any]) -> dict[str, Any]:
         "card_count": len(card_rows),
         "evidence_summary": summary,
         "strategy_diversity": strategy_diversity,
+        "strategy_independence": strategy_independence,
         "evidence_vote_summary": strategies.get("evidence_vote_summary") or {},
         "evidence_cap_observe": evidence_cap_observe,
         "diversity_family_rows": strategy_diversity.get("family_rows") or [],
         "diversity_strategy_rows": strategy_diversity.get("strategy_rows") or [],
+        "independence_pair_rows": strategy_independence.get("pair_rows") or [],
+        "independence_low_correlation_pairs": strategy_independence.get("low_correlation_pairs") or [],
+        "independence_high_correlation_pairs": strategy_independence.get("high_correlation_pairs") or [],
+        "independence_family_rows": strategy_independence.get("family_correlation_rows") or [],
         "strategy_rows": strategy_rows,
         "evidence_card_rows": card_rows,
         "mapping_warning_rows": _evidence_mapping_warning_rows(card_rows),
@@ -1201,6 +1246,49 @@ def _strategy_evidence_dashboard_status(evidence: dict[str, Any]) -> dict[str, A
     if not evidence:
         return {"available": False, "reason": "strategy evidence unavailable"}
     return evidence
+
+
+def _compact_strategy_independence(raw: dict[str, Any]) -> dict[str, Any]:
+    if not raw:
+        return {
+            "available": False,
+            "reason": "strategy independence unavailable",
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+            "pair_rows": [],
+            "low_correlation_pairs": [],
+            "high_correlation_pairs": [],
+            "family_correlation_rows": [],
+        }
+    baseline = raw.get("baseline_review") if isinstance(raw.get("baseline_review"), dict) else {}
+    return {
+        "available": True,
+        "contract_version": raw.get("contract_version"),
+        "status": raw.get("status"),
+        "min_overlap": raw.get("min_overlap"),
+        "strategy_count": raw.get("strategy_count"),
+        "alpha_strategy_count": raw.get("alpha_strategy_count"),
+        "effective_independent_alpha_count": raw.get("effective_independent_alpha_count"),
+        "avg_positive_correlation": _json_safe_number(raw.get("avg_positive_correlation")),
+        "avg_abs_correlation": _json_safe_number(raw.get("avg_abs_correlation")),
+        "avg_alpha_positive_correlation": _json_safe_number(raw.get("avg_alpha_positive_correlation")),
+        "baseline_established": baseline.get("baseline_established"),
+        "operator_review_required": baseline.get("operator_review_required"),
+        "operator_acceptance_supported": baseline.get("operator_acceptance_supported"),
+        "baseline_reason": baseline.get("reason"),
+        "correlation_matrix_available": baseline.get("correlation_matrix_available"),
+        "low_correlation_pair_count": baseline.get("low_correlation_pair_count"),
+        "low_abs_correlation_threshold": baseline.get("low_abs_correlation_threshold"),
+        "high_correlation_pair_count": len(raw.get("high_correlation_pairs") or []),
+        "inverse_correlation_pair_count": len(raw.get("inverse_correlation_pairs") or []),
+        "warnings": raw.get("warnings") or [],
+        "execution_authority": raw.get("execution_authority"),
+        "target_weight_mutation": raw.get("target_weight_mutation"),
+        "pair_rows": raw.get("pair_rows") or [],
+        "low_correlation_pairs": raw.get("low_correlation_pairs") or [],
+        "high_correlation_pairs": raw.get("high_correlation_pairs") or [],
+        "family_correlation_rows": raw.get("family_correlation_rows") or [],
+    }
 
 
 def _compact_evidence_card(card: dict[str, Any], *, fallback_strategy: str) -> dict[str, Any]:
@@ -1895,6 +1983,32 @@ def _compact_execution_row(row: Any) -> dict[str, Any]:
     }
 
 
+def _compact_deferred_execution_row(row: Any) -> dict[str, Any]:
+    review = row.review_payload if isinstance(row.review_payload, dict) else {}
+    return {
+        "created_at": _iso(row.created_at),
+        "updated_at": _iso(row.updated_at),
+        "resolved_at": _iso(row.resolved_at),
+        "deferred_id": row.deferred_id,
+        "analysis_id": row.analysis_id,
+        "command_id": row.command_id,
+        "status": row.status,
+        "side": row.side,
+        "ticker": row.ticker,
+        "original_delta": _json_safe_number(row.original_delta),
+        "remaining_delta": _json_safe_number(row.remaining_delta),
+        "current_weight": _json_safe_number(row.current_weight),
+        "desired_weight": _json_safe_number(row.desired_weight),
+        "staged_weight": _json_safe_number(row.staged_weight),
+        "latest_current_weight": _json_safe_number(row.latest_current_weight),
+        "latest_desired_weight": _json_safe_number(row.latest_desired_weight),
+        "latest_staged_weight": _json_safe_number(row.latest_staged_weight),
+        "reason": row.reason,
+        "resolution_reason": row.resolution_reason or review.get("reason"),
+        "review_count": row.review_count,
+    }
+
+
 def _enrich_position_explanations_from_ledger(
     explanations: list[dict[str, Any]],
     ledger: dict[str, Any],
@@ -2225,14 +2339,20 @@ def _render_strategy_evidence(evidence: dict[str, Any]) -> str:
         "execution_authority": diversity.get("execution_authority"),
     }
     evidence_cap = evidence.get("evidence_cap_observe") or {}
+    independence = evidence.get("strategy_independence") or {}
     return f"""
       <div class="grid">
         <article class="card"><h3>Overview</h3>{_render_kv(overview)}</article>
         <article class="card"><h3>Evidence Summary</h3>{_render_kv(summary)}</article>
         <article class="card"><h3>Conviction Display Contract</h3>{_render_kv(conviction_note)}</article>
         <article class="card"><h3>Strategy Diversity</h3>{_render_kv(diversity_note)}</article>
+        <article class="card"><h3>Strategy Independence Baseline</h3>{_render_kv(independence, keys=["status", "baseline_established", "operator_review_required", "baseline_reason", "correlation_matrix_available", "strategy_count", "alpha_strategy_count", "effective_independent_alpha_count", "low_correlation_pair_count", "low_abs_correlation_threshold", "high_correlation_pair_count", "avg_alpha_positive_correlation", "execution_authority"])}</article>
         <article class="card"><h3>Evidence Cap Observe</h3>{_render_kv(evidence_cap, keys=["available", "execution_effect", "ticker_count", "degraded_ticker_count", "would_clip_count", "mapping_error_count", "top_degraded_tickers"])}</article>
       </div>
+      <h3>Low-Correlation Strategy Pairs</h3>{_render_table(evidence.get("independence_low_correlation_pairs") or [], ["left", "right", "left_family", "right_family", "same_family", "overlap", "correlation", "abs_correlation", "status"])}
+      <h3>High-Correlation Strategy Pairs</h3>{_render_table(evidence.get("independence_high_correlation_pairs") or [], ["left", "right", "left_family", "right_family", "same_family", "overlap", "correlation", "abs_correlation", "status"])}
+      <h3>Strategy Correlation Pair Rows</h3>{_render_table(evidence.get("independence_pair_rows") or [], ["left", "right", "left_family", "right_family", "same_family", "overlap", "correlation", "abs_correlation", "status"])}
+      <h3>Strategy Family Correlation Rows</h3>{_render_table(evidence.get("independence_family_rows") or [], ["left_family", "right_family", "pair_count", "available_pair_count", "avg_correlation", "avg_positive_correlation", "max_abs_correlation"])}
       <h3>Evidence Cap Observe Rows</h3>{_render_table(evidence_cap.get("rows") or [], ["ticker", "static_cap", "evidence_adjusted_cap", "cap_reduction", "current_or_target_weight", "would_clip", "would_clip_to", "coverage_ratio", "evidence_quality_multiplier", "voted_count", "watch_count", "abstain_count", "mapping_error_count", "main_abstain_reason", "conviction_status", "conviction_discount", "history_days", "history_discount", "execution_effect"])}
       <h3>Evidence Mapping Error Dedupe Rows</h3>{_render_table(evidence_cap.get("mapping_error_rows") or [], ["ticker", "strategy", "reason_code", "reason", "dedupe_key", "alert_class"])}
       <h3>Strategies</h3>{_render_table(evidence.get("strategy_rows") or [], ["strategy", "raw_family", "canonical_family", "alpha_source", "data_ready", "can_influence_allocation", "suggested_use", "confidence_score", "selected_tickers", "evidence_contract_version", "cards_generated", "missing_mapping_count", "fallback_count", "mapping_error_count", "watch_vote_count", "abstain_count", "actions", "vote_statuses", "conviction_statuses", "reason_codes", "walk_forward_level", "walk_forward_pass_rate", "turnover"])}
@@ -2432,6 +2552,7 @@ def _render_strategy_regime_gap_analysis(analysis: dict[str, Any]) -> str:
       <h3>Regime Coverage Rows</h3>{_render_table(analysis.get("regime_rows") or [], ["regime", "coverage_status", "calibrated_profile_count", "calibrated_families", "expected_families", "missing_expected_families", "hit_rate", "avg_excess_vs_spy", "ic", "total_n"])}
       <h3>Family Coverage Rows</h3>{_render_table(analysis.get("family_rows") or [], ["family", "calibrated_profile_count", "covered_regimes", "weak_regimes", "hit_rate", "avg_excess_vs_spy", "ic", "total_n"])}
       <h3>Weak Family / Regime Rows</h3>{_render_table(analysis.get("weak_family_regime_rows") or [], ["family", "regime", "profile_count", "hit_rate", "avg_excess_vs_spy", "ic", "total_n", "reasons"])}
+      <h3>Simultaneous Failure Regime Rows</h3>{_render_table(analysis.get("simultaneous_failure_regime_rows") or [], ["regime", "profile_count", "weak_profile_count", "families", "strategies", "hit_rate", "avg_excess_vs_spy", "ic", "reason"])}
       <h3>Research Queue</h3>{_render_table(analysis.get("research_queue") or [], ["priority", "regime", "suggested_family", "reason"])}
       <h3>Warnings</h3>{_render_list("", analysis.get("warnings") or [])}
     """
@@ -2509,16 +2630,22 @@ def _render_execution_control(control: dict[str, Any]) -> str:
     guard = control.get("account_state_guard") or {}
     auto_pause = control.get("auto_pause") or {}
     latest_snapshot = control.get("latest_account_snapshot") or {}
+    deferred = control.get("deferred_execution") or {}
+    reconciliation_lag = control.get("reconciliation_lag") or {}
     return f"""
       <div class="grid">
         <article class="card"><h3>Account State Guard</h3>{_render_kv(guard, keys=["mode", "status", "allowed", "would_block", "pipeline_enforcement", "pipeline_effect_status", "execution_effect", "primary_blockers", "warnings"])}</article>
         <article class="card"><h3>Auto Pause</h3>{_render_kv(auto_pause, keys=["mode", "status", "would_pause", "should_pause", "execution_effect", "primary_trigger", "reason"])}</article>
         <article class="card"><h3>Latest Account Snapshot</h3>{_render_kv(latest_snapshot, keys=["available", "recorded_at", "account_timestamp", "source_packet_type", "contract_version", "account_status", "data_status", "policy_version", "total_value", "cash_pct", "buying_power", "open_order_count", "has_open_orders", "is_market_open", "holdings_count", "target_count", "explicit_account_state"])}</article>
+        <article class="card"><h3>Deferred Execution Pressure</h3>{_render_kv(deferred, keys=["available", "open_count", "open_buy_delta", "open_sell_delta", "open_tickers"])}</article>
+        <article class="card"><h3>Reconciliation Lag</h3>{_render_kv(reconciliation_lag, keys=["accepted_without_reconciled_count", "overdue_count", "pending_count", "max_age_minutes", "execution_effect"])}</article>
       </div>
       <h3>Account Guard Checks</h3>{_render_table(guard.get("checks") or [], ["check", "pass", "actual", "threshold", "reason"])}
       <h3>Auto Pause Triggers</h3>{_render_table(auto_pause.get("triggers") or [], ["trigger", "triggered", "value", "threshold", "severity", "details"])}
       <h3>Recent QC Commands</h3>{_render_table(control.get("recent_commands") or [], ["executed_at", "command_id", "analysis_id", "command_type", "status", "qc_status", "qc_ack_at", "qc_rejection_reason", "policy_mismatch", "retry_count"])}
       <h3>Command Lifecycle Events</h3>{_render_table(control.get("recent_command_events") or [], ["event_time", "command_id", "analysis_id", "event_type", "event_status", "source", "reason", "qc_status", "policy_mismatch", "policy_version", "target_count", "payload_keys"])}
+      <h3>Accepted Commands Without Reconciliation</h3>{_render_table(reconciliation_lag.get("rows") or [], ["command_id", "analysis_id", "qc_status", "accepted_at", "age_minutes", "max_age_minutes", "status", "latest_event_type", "latest_event_status", "reason"])}
+      <h3>Deferred Execution Ledger</h3>{_render_table(deferred.get("recent_rows") or [], ["created_at", "updated_at", "resolved_at", "command_id", "analysis_id", "status", "side", "ticker", "original_delta", "remaining_delta", "current_weight", "desired_weight", "staged_weight", "latest_current_weight", "latest_desired_weight", "latest_staged_weight", "reason", "resolution_reason", "review_count"])}
     """
 
 

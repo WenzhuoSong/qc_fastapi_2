@@ -698,6 +698,48 @@ class SectorRotationTests(unittest.TestCase):
         self.assertNotIn("moderate_turnover", codes)
         self.assertEqual(confidence["momentum_lite_v1"]["turnover_penalty"], 0.0)
 
+    def test_low_coverage_partial_strategy_remains_data_ready_for_scorable_rows(self):
+        result = _run_one_strategy(
+            "momentum_lite_v1",
+            _with_yfinance_sources([
+                {
+                    "ticker": "SPY",
+                    "mom_20d": 0.02,
+                    "mom_60d": 0.05,
+                    "mom_252d": 0.12,
+                    "rsi_14": 55,
+                    "atr_pct": 0.011,
+                },
+                {
+                    "ticker": "QQQ",
+                    "mom_20d": 0.03,
+                    "mom_60d": None,
+                    "mom_252d": None,
+                    "rsi_14": 60,
+                    "atr_pct": 0.014,
+                },
+                {
+                    "ticker": "IWM",
+                    "mom_20d": 0.01,
+                    "mom_60d": None,
+                    "mom_252d": None,
+                    "rsi_14": 58,
+                    "atr_pct": 0.018,
+                },
+            ]),
+            {"regime": "trending_bull", "risk_params": {"max_single_position": 0.2}},
+            {"SPY": 0.0, "QQQ": 0.0, "IWM": 0.0, "CASH": 1.0},
+        )
+
+        self.assertTrue(result.data_ready)
+        self.assertEqual(result.score_status, "partially_scored")
+        self.assertEqual(result.scorable_ticker_count, 1)
+        self.assertEqual(result.data_readiness["partial_scoring_reason"], "scorable_coverage_below_min_required")
+        self.assertTrue(result.data_readiness["coverage_below_min_required"])
+        self.assertIn("QQQ", result.excluded_tickers)
+        self.assertIn("IWM", result.excluded_tickers)
+        self.assertIsNotNone(result.expected_turnover_pct)
+
     def test_bundle_consensus_conflict_does_not_leak_to_aligned_strategy_reasons(self):
         result = _run_one_strategy(
             "momentum_lite_v1",

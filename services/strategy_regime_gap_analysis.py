@@ -100,6 +100,7 @@ def build_strategy_regime_gap_analysis(
     regime_rows = _regime_rows(calibrated_alpha)
     family_rows = _family_rows(calibrated_alpha)
     weak_rows = _weak_family_regime_rows(calibrated_alpha)
+    simultaneous_failure_rows = _simultaneous_failure_rows(calibrated_alpha)
     actionable_families = sorted({
         row["canonical_family"]
         for row in calibrated_alpha
@@ -120,6 +121,7 @@ def build_strategy_regime_gap_analysis(
         uncovered_regimes=uncovered_regimes,
         weak_rows=weak_rows,
         momentum_overconcentration=momentum_overconcentration,
+        simultaneous_failure_rows=simultaneous_failure_rows,
     )
 
     status = "gap_detected" if warnings else "covered"
@@ -143,6 +145,7 @@ def build_strategy_regime_gap_analysis(
         "regime_rows": regime_rows,
         "family_rows": family_rows,
         "weak_family_regime_rows": weak_rows,
+        "simultaneous_failure_regime_rows": simultaneous_failure_rows,
         "research_queue": research_queue,
         "latest_alpha_validation": alpha_rows[0] if alpha_rows else {},
         "alpha_validation_sample_count": len(alpha_rows),
@@ -277,6 +280,32 @@ def _weak_family_regime_rows(calibrated_alpha: list[dict[str, Any]]) -> list[dic
     return out
 
 
+def _simultaneous_failure_rows(calibrated_alpha: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Identify regimes where every calibrated alpha profile is weak."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in calibrated_alpha:
+        grouped.setdefault(row["regime"], []).append(row)
+    out: list[dict[str, Any]] = []
+    for regime, items in sorted(grouped.items()):
+        if not items:
+            continue
+        weak_items = [row for row in items if _is_weak_profile(row)]
+        if len(weak_items) != len(items):
+            continue
+        out.append({
+            "regime": regime,
+            "profile_count": len(items),
+            "weak_profile_count": len(weak_items),
+            "families": sorted({row["canonical_family"] for row in items}),
+            "strategies": sorted({row["strategy_id"] for row in items}),
+            "hit_rate": _weighted_average(items, "hit_rate"),
+            "avg_excess_vs_spy": _weighted_average(items, "avg_excess_vs_spy"),
+            "ic": _weighted_average(items, "ic"),
+            "reason": "all_calibrated_alpha_profiles_weak_in_regime",
+        })
+    return out
+
+
 def _research_queue(
     *,
     regime_rows: list[dict[str, Any]],
@@ -327,12 +356,15 @@ def _warnings(
     uncovered_regimes: list[str],
     weak_rows: list[dict[str, Any]],
     momentum_overconcentration: bool,
+    simultaneous_failure_rows: list[dict[str, Any]],
 ) -> list[str]:
     warnings = []
     for regime in uncovered_regimes:
         warnings.append(f"missing_calibrated_regime_coverage:{regime}")
     for row in weak_rows:
         warnings.append(f"family_regime_degraded:{row['family']}:{row['regime']}")
+    for row in simultaneous_failure_rows:
+        warnings.append(f"all_strategies_fail_simultaneously:{row['regime']}")
     if momentum_overconcentration:
         warnings.append("momentum_only_actionable_alpha_family")
     return sorted(set(warnings))

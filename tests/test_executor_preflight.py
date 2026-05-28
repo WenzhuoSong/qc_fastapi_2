@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 
 from services.execution_preflight import (
+    _policy_alignment_ok,
     _policy_sync_ack_status,
     command_weight_delta_metrics,
     preflight_execution_weights,
@@ -34,17 +35,31 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn("final_policy_cap stage failed to enforce execution limits", text)
         self.assertIn("This is a system bug, not a business decision", text)
 
-    def test_executor_syncs_policy_before_setweights(self):
+    def test_executor_requires_account_guard_policy_alignment_before_setweights(self):
         text = Path("agents/executor.py").read_text()
-        sync_pos = text.index("tool_send_policy_sync")
+        alignment_pos = text.index("policy_alignment = policy_alignment_from_account_guard")
         send_pos = text.index("result = await tool_send_weight_command")
 
-        self.assertLess(sync_pos, send_pos)
-        self.assertIn("create_or_update_policy_sync_log", text)
-        self.assertIn("wait_for_qc_ack_detail(policy_sync_id", text)
-        self.assertIn("policy_sync_not_accepted", text)
-        self.assertIn("PolicySync failed before", text)
+        self.assertLess(alignment_pos, send_pos)
+        self.assertNotIn("tool_send_policy_sync", text)
+        self.assertNotIn("create_or_update_policy_sync_log", text)
+        self.assertNotIn("wait_for_qc_ack_detail(policy_sync_id", text)
+        self.assertIn("policy_alignment_not_confirmed", text)
+        self.assertIn("PolicySync recovery owns control-plane repair", text)
         self.assertIn("No command sent to QC", text)
+
+    def test_telegram_confirm_uses_policy_alignment_not_policy_sync(self):
+        text = Path("services/telegram_commands.py").read_text()
+        confirm_body = text[text.index("async def _cmd_confirm") : text.index("async def _load_manual_confirm_policy_alignment")]
+        alignment_pos = confirm_body.index("_load_manual_confirm_policy_alignment")
+        send_pos = confirm_body.index("result = await tool_send_weight_command")
+
+        self.assertLess(alignment_pos, send_pos)
+        self.assertNotIn("tool_send_policy_sync", confirm_body)
+        self.assertNotIn("create_or_update_policy_sync_log", confirm_body)
+        self.assertNotIn("wait_for_qc_ack_detail(policy_sync_id", confirm_body)
+        self.assertIn("No recent account state policy alignment", confirm_body)
+        self.assertIn("Wait for policy_sync_recovery to complete", confirm_body)
 
     def test_setweights_command_carries_policy_snapshot(self):
         text = Path("tools/qc_tools.py").read_text()
@@ -94,6 +109,11 @@ class ExecutorPreflightTests(unittest.TestCase):
             "accepted",
         )
         self.assertIsNone(_policy_sync_ack_status({"success": True}))
+
+    def test_policy_alignment_helper_accepts_account_guard_confirmation(self):
+        self.assertTrue(_policy_alignment_ok({"aligned": True, "source": "account_state_guard"}))
+        self.assertFalse(_policy_alignment_ok({"aligned": False}))
+        self.assertFalse(_policy_alignment_ok(None))
 
     def test_daily_execution_activity_excludes_preflight_and_qc_rejected_rows(self):
         text = Path("services/execution_log_store.py").read_text()

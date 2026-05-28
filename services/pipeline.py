@@ -73,11 +73,13 @@ from services.position_governance import apply_position_governance
 from services.execution_policy import policy_snapshot
 from services.final_execution_policy_cap import apply_final_execution_policy_cap
 from services.execution_throttle import apply_execution_throttle
+from services.deferred_execution_ledger import record_deferred_execution_plan
 from services.final_risk_validation import validate_final_execution_target
 from services.final_risk_validation_config import (
     default_final_risk_validation_config,
     resolve_final_risk_validation_mode,
 )
+from services.full_auto_safety import full_auto_safety_precondition_violations
 from services.account_state_guard import (
     account_state_guard_pipeline_effect,
     default_account_state_guard_config,
@@ -99,6 +101,10 @@ from services.transaction_cost_gate import (
 from services.evidence_cap_config import default_evidence_cap_config
 from services.portfolio_risk_diagnostic import load_portfolio_var_cvar_diagnostic
 from services.alpha_validation_persistence import persist_alpha_validation_run
+from services.mutation_ownership import (
+    REGIME_CONSTRAINT_MUTATION_TYPE,
+    legacy_mutation_classification_summary,
+)
 from services.empirical_profile_store import (
     build_empirical_profiles_from_feature_store,
     collect_empirical_profile_tickers,
@@ -342,10 +348,12 @@ def apply_regime_constraints(
             if base_weights.get(ticker, 0.0) == 0.0 and w > 0:
                 hard_cap = constraints.get("max_single_position", 0.15)
                 if w > hard_cap:
+                    released = max(float(w) - float(hard_cap), 0.0)
                     violations.append(
                         f"new_pos {ticker}: {w:.3f}→{hard_cap:.3f} (new pos blocked in {regime_result.get('regime')})"
                     )
                     working[ticker] = hard_cap
+                    working["CASH"] = round(working.get("CASH", 0.0) + released, 6)
 
     # 2. Equity weight cap
     max_equity = constraints.get("max_equity_weight", 1.0)
@@ -374,12 +382,33 @@ def apply_regime_constraints(
             f"CASH {working.get('CASH', 0.0):.2%}→{min_cash:.2%} (regime floor)"
         )
 
-    # Normalize
-    total = sum(working.values())
-    if total > 0:
-        working = {k: round(v / total, 6) for k, v in working.items()}
+    working = _normalize_regime_constraint_cash(working)
 
     return working, violations
+
+
+def _normalize_regime_constraint_cash(weights: dict[str, float]) -> dict[str, float]:
+    """Preserve tighten-only intent by assigning rounding residue to CASH."""
+    cleaned = {
+        str(ticker): round(max(float(weight or 0.0), 0.0), 6)
+        for ticker, weight in (weights or {}).items()
+    }
+    if not cleaned:
+        return cleaned
+    total = round(sum(cleaned.values()), 6)
+    diff = round(1.0 - total, 6)
+    if abs(diff) <= 1e-9:
+        return cleaned
+    cash_after = round(float(cleaned.get("CASH", 0.0) or 0.0) + diff, 6)
+    if cash_after >= -1e-9:
+        cleaned["CASH"] = max(cash_after, 0.0)
+        return cleaned
+    # This should not occur for tighten-only regime constraints. Fall back to
+    # proportional normalization and let final validation see any drift.
+    positive_total = sum(cleaned.values())
+    if positive_total <= 0:
+        return cleaned
+    return {ticker: round(weight / positive_total, 6) for ticker, weight in cleaned.items()}
 
 
 # ─────────────────────────────── Stage 4d: Disagreement Map ───────────────────────────────
@@ -528,6 +557,23 @@ async def _guard_and_config(trigger: str) -> dict | None:
     evidence_cap_config = default_evidence_cap_config(
         (evidence_cap_cfg.value if evidence_cap_cfg else {}) or {}
     )
+
+    full_auto_safety_violations = full_auto_safety_precondition_violations(
+        auth_mode=auth_mode,
+        account_state_guard_config=account_state_guard_config,
+        final_risk_validation_config=final_risk_validation_config,
+        auto_pause_config=auto_pause_config,
+    )
+    if full_auto_safety_violations:
+        message = (
+            "⛔ FULL_AUTO configuration rejected before pipeline execution\n"
+            "FULL_AUTO requires code-enforced safety layers, not observe-only diagnostics.\n"
+            + "\n".join(f"- {item}" for item in full_auto_safety_violations)
+            + "\nDowngrade to SEMI_AUTO or fix configuration."
+        )
+        logger.error("[pipeline] FULL_AUTO safety preconditions failed: %s", full_auto_safety_violations)
+        await tool_send_telegram({"text": message})
+        return None
 
     params_key = f"strategy_{active_name}_params"
     async with AsyncSessionLocal() as db:
@@ -1526,6 +1572,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     risk_out = await run_risk_manager_async(
         pipeline_context, brief, quant_baseline, synthesizer_out
     )
+    risk_out["legacy_mutation_classification"] = legacy_mutation_classification_summary()
     if pipeline_context.get("account_state_guard"):
         risk_out["account_state_guard"] = pipeline_context.get("account_state_guard")
     if pipeline_context.get("auto_pause"):
@@ -1655,6 +1702,15 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         )
         risk_out["target_weights"] = clipped
         if regime_violations:
+            risk_out.setdefault("post_risk_mutation_types", []).append(REGIME_CONSTRAINT_MUTATION_TYPE)
+            risk_out["regime_constraint"] = {
+                "owner": "post_risk_tighten_only",
+                "mutation_type": REGIME_CONSTRAINT_MUTATION_TYPE,
+                "target_weight_mutation": "tighten_only",
+                "violations": regime_violations,
+                "target_weights_before": target_from_risk,
+                "target_weights_after": clipped,
+            }
             logger.warning(
                 f"[Stage6→7] Regime constraint clipped {len(regime_violations)} items:\n"
                 + "\n".join(regime_violations)
@@ -1662,7 +1718,13 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             await _save_step_log(
                 analysis_id, "6b_regime_constraint", "regime_enforcement",
                 input_data={"regime": regime_result.get("regime"), "target_weights_raw": target_from_risk},
-                output_data={"target_weights_clipped": clipped, "violations": regime_violations},
+                output_data={
+                    "target_weights_clipped": clipped,
+                    "violations": regime_violations,
+                    "mutation_type": REGIME_CONSTRAINT_MUTATION_TYPE,
+                    "owner": "post_risk_tighten_only",
+                    "target_weight_mutation": "tighten_only",
+                },
                 duration_ms=0,
             )
         else:
@@ -2335,6 +2397,24 @@ async def _apply_execution_throttle(
         config=pipeline_context.get("execution_command_config") or {},
     )
     risk_out["execution_throttle"] = throttle
+    try:
+        ledger = await record_deferred_execution_plan(
+            analysis_id=analysis_id,
+            command_id=f"analysis_{analysis_id}",
+            throttle=throttle,
+        )
+        risk_out["deferred_execution_ledger"] = ledger
+        throttle["deferred_execution_ledger"] = ledger
+    except Exception as exc:
+        ledger = {
+            "contract_version": "v1",
+            "execution_effect": "diagnostic_only",
+            "status": "failed",
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
+        risk_out["deferred_execution_ledger"] = ledger
+        throttle["deferred_execution_ledger"] = ledger
+        logger.warning("[DEFERRED_EXECUTION_LEDGER] failed to persist deferred plan: %s", exc)
     if throttle.get("applied"):
         staged = throttle.get("staged_target_weights") or {}
         risk_out["target_weights"] = staged

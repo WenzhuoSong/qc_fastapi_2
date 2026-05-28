@@ -60,6 +60,9 @@ class EvidenceCapCalibrationTest(unittest.TestCase):
         self.assertAlmostEqual(report["observe_summary"]["would_clip_rate"], 2 / 24, places=6)
         self.assertEqual(report["young_etf_summary"]["cap_range_status"], "within_expected_range")
         self.assertTrue(report["recommended_config"]["young_etf_cap_within_expected_range"])
+        self.assertIn("calibration_generated_at", report["recommended_config"])
+        self.assertEqual(report["recommended_config"]["max_calibration_age_days"], 7.0)
+        self.assertTrue(report["recommended_config"]["require_fresh_calibration"])
 
     def test_keeps_observe_when_data_is_insufficient_or_rejections_are_high(self):
         report = build_evidence_cap_calibration_report(

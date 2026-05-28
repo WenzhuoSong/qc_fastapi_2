@@ -8,18 +8,21 @@ from datetime import datetime, timedelta
 from db.session         import AsyncSessionLocal
 from db.queries         import get_system_config, upsert_system_config, get_latest_portfolio
 from tools.db_tools     import tool_verify_approval_token
-from tools.qc_tools     import tool_send_policy_sync, tool_send_weight_command
+from tools.qc_tools     import tool_send_weight_command
 from tools.notify_tools import tool_send_telegram
 from services.proposal  import load_pending_proposal, mark_proposal_done
 from services.pc_promotion_config import default_pc_promotion_config, format_pc_promotion_config
-from services.execution_ack_tracker import wait_for_qc_ack_detail
 from services.execution_log_store import (
-    create_or_update_policy_sync_log,
     create_or_update_submitted_log,
     record_preflight_block,
 )
 from services.execution_policy import policy_snapshot
 from services.execution_preflight import preflight_execution_command, preflight_execution_weights
+from services.account_state_guard import default_account_state_guard_config, load_latest_account_state_guard
+from services.policy_alignment import (
+    default_manual_confirm_policy_alignment_config,
+    policy_alignment_from_account_guard,
+)
 from config             import get_settings
 
 logger   = logging.getLogger("qc_fastapi_2.tg_cmd")
@@ -76,35 +79,25 @@ async def _cmd_confirm() -> str:
         return f"❌ Execution preflight blocked: {weight_preflight.get('policy_evaluation', {}).get('violations')}"
 
     policy = policy_snapshot()
-    policy_sync_id = f"{command_id}_policy"
-    await create_or_update_policy_sync_log(
-        command_id=policy_sync_id,
-        analysis_id=analysis_id,
-        policy_version=policy.get("version"),
-        policy_payload=policy,
-        status="pending_send",
-        qc_status="pending",
+    _account_guard, policy_alignment = await _load_manual_confirm_policy_alignment(
+        expected_policy_version=str(policy.get("version") or "")
     )
-    policy_sync = await tool_send_policy_sync({"command_id": policy_sync_id, "payload": policy})
-    await create_or_update_policy_sync_log(
-        command_id=policy_sync_id,
-        analysis_id=analysis_id,
-        policy_version=policy.get("version"),
-        policy_payload=policy,
-        qc_response=policy_sync.get("response"),
-        status="sent" if policy_sync.get("success") else "failed",
-        qc_status="submitted" if policy_sync.get("success") else "not_sent",
-    )
-    if not policy_sync.get("success"):
-        return f"❌ PolicySync failed: {policy_sync.get('error', 'unknown')}"
-    policy_sync_ack = await wait_for_qc_ack_detail(policy_sync_id, timeout_seconds=15)
-    policy_sync["ack"] = policy_sync_ack
-    policy_sync["ack_status"] = policy_sync_ack.get("qc_status")
-    if policy_sync_ack.get("qc_status") != "accepted":
+    policy_sync = None
+    if not policy_alignment.get("aligned"):
+        age = policy_alignment.get("age_seconds")
+        max_age = policy_alignment.get("max_age_seconds")
+        if age is None or not policy_alignment.get("age_ok"):
+            age_text = "unknown" if age is None else f"{float(age):.0f}s"
+            return (
+                "❌ No recent account state policy alignment. "
+                f"latest_age={age_text}, max_age={float(max_age or 0):.0f}s. "
+                "Wait for the next pipeline/account-state refresh before confirming."
+            )
         return (
-            "❌ PolicySync not accepted. "
-            f"status={policy_sync_ack.get('qc_status')} "
-            f"reason={policy_sync_ack.get('qc_rejection_reason') or 'unknown'}"
+            "❌ Policy version is not aligned. "
+            f"expected={policy_alignment.get('expected_policy_version')} "
+            f"actual={policy_alignment.get('actual_policy_version')}. "
+            "Wait for policy_sync_recovery to complete before confirming."
         )
     command_preflight = await preflight_execution_command(
         command_id=command_id or "",
@@ -113,6 +106,7 @@ async def _cmd_confirm() -> str:
         current_weights=final_validation.get("current_weights") or {},
         policy_version=policy.get("version"),
         policy_sync_result=policy_sync,
+        policy_alignment_result=policy_alignment,
         config={},
     )
     if not command_preflight.get("allowed"):
@@ -146,6 +140,33 @@ async def _cmd_confirm() -> str:
         await mark_proposal_done(pending.get("analysis_id"), "executed_user_confirmed")
         return "✅ Execution confirmed."
     return f"❌ Execution failed: {result.get('error')}"
+
+
+async def _load_manual_confirm_policy_alignment(*, expected_policy_version: str) -> tuple[dict, dict]:
+    async with AsyncSessionLocal() as db:
+        account_guard_cfg = await get_system_config(db, "account_state_guard_config")
+        alignment_cfg = await get_system_config(db, "manual_confirm_policy_alignment_config")
+
+    guard_config = default_account_state_guard_config((account_guard_cfg.value if account_guard_cfg else {}) or {})
+    guard_config["expected_policy_version"] = expected_policy_version
+    manual_config = default_manual_confirm_policy_alignment_config(
+        (alignment_cfg.value if alignment_cfg else {}) or {}
+    )
+    if not manual_config.get("enabled", True):
+        return {}, {
+            "source": "manual_confirm_policy_alignment_config",
+            "aligned": True,
+            "bypass": True,
+            "max_age_seconds": manual_config.get("max_age_seconds"),
+        }
+
+    account_guard = await load_latest_account_state_guard(config=guard_config)
+    policy_alignment = policy_alignment_from_account_guard(
+        account_guard,
+        expected_policy_version=expected_policy_version,
+        max_age_seconds=float(manual_config.get("max_age_seconds") or 300),
+    )
+    return account_guard, policy_alignment
 
 
 async def _cmd_confirm_circuit_override() -> str:

@@ -154,6 +154,42 @@ class StrategyRegimeGapAnalysisTests(unittest.TestCase):
         self.assertEqual(summary["profile_count"], 0)
         self.assertEqual(summary["execution_authority"], "none")
 
+    def test_flags_regime_where_all_calibrated_profiles_are_weak(self):
+        summary = build_strategy_regime_gap_analysis(
+            profiles=[
+                profile(
+                    "momentum_lite_v1",
+                    "high_vol",
+                    ticker="SPY",
+                    hit_rate=0.40,
+                    avg_excess_vs_spy=-0.01,
+                ),
+                profile(
+                    "mean_reversion_lite",
+                    "high_vol",
+                    ticker="QQQ",
+                    hit_rate=0.43,
+                    ic=-0.02,
+                ),
+                profile(
+                    "low_vol_factor",
+                    "defensive",
+                    ticker="BSV",
+                    hit_rate=0.60,
+                    avg_excess_vs_spy=0.01,
+                    ic=0.05,
+                ),
+            ],
+            alpha_validation_runs=[],
+            as_of_date=date(2026, 5, 25),
+        )
+
+        rows = summary["simultaneous_failure_regime_rows"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["regime"], "high_vol")
+        self.assertEqual(rows[0]["reason"], "all_calibrated_alpha_profiles_weak_in_regime")
+        self.assertIn("all_strategies_fail_simultaneously:high_vol", summary["warnings"])
+
 
 if __name__ == "__main__":
     unittest.main()

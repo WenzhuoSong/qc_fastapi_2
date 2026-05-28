@@ -389,6 +389,38 @@ class CommandLifecycleEvent(Base):
     created_at      = Column(DateTime, nullable=False, default=func.now())
 
 
+class DeferredExecutionLedger(Base):
+    __tablename__ = "deferred_execution_ledger"
+    __table_args__ = (
+        UniqueConstraint("deferred_id", name="uq_deferred_execution_ledger_id"),
+    )
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    deferred_id     = Column(String(96), nullable=False, index=True)
+    analysis_id     = Column(BigInteger, ForeignKey("agent_analysis.id"), index=True)
+    command_id      = Column(String(64), index=True)
+    source          = Column(String(40), nullable=False, default="execution_throttle")
+    status          = Column(String(40), nullable=False, default="open", index=True)
+    side            = Column(String(10), nullable=False)
+    ticker          = Column(String(20), nullable=False, index=True)
+    original_delta  = Column(Float, nullable=False)
+    remaining_delta = Column(Float, nullable=False)
+    current_weight  = Column(Float)
+    desired_weight  = Column(Float)
+    staged_weight   = Column(Float)
+    latest_current_weight = Column(Float)
+    latest_desired_weight = Column(Float)
+    latest_staged_weight  = Column(Float)
+    reason          = Column(Text)
+    resolution_reason = Column(Text)
+    review_count    = Column(Integer, nullable=False, default=0)
+    raw_payload     = Column(JSONB)
+    review_payload  = Column(JSONB)
+    resolved_at     = Column(DateTime)
+    created_at      = Column(DateTime, nullable=False, default=func.now())
+    updated_at      = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+
 class CronRunLog(Base):
     __tablename__ = "cron_run_log"
 

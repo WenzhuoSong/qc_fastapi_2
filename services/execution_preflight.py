@@ -36,6 +36,7 @@ async def preflight_execution_command(
     current_weights: dict[str, Any] | None,
     policy_version: str | None,
     policy_sync_result: dict[str, Any] | None,
+    policy_alignment_result: dict[str, Any] | None = None,
     config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return command-level hard blocks before SetWeights is sent to QC."""
@@ -51,6 +52,10 @@ async def preflight_execution_command(
     submission_state = await command_submission_state(command_id=command_id, analysis_id=analysis_id)
     today = await summarize_today_execution_activity()
     policy_sync_ack_status = _policy_sync_ack_status(policy_sync_result)
+    policy_transport_ok = (
+        (bool((policy_sync_result or {}).get("success")) and policy_sync_ack_status == "accepted")
+        or _policy_alignment_ok(policy_alignment_result)
+    )
 
     checks: dict[str, dict[str, Any]] = {
         "command_id_present": {
@@ -78,10 +83,14 @@ async def preflight_execution_command(
             "actual": policy_version,
             "threshold": "FastAPI policy_version required in command payload",
         },
-        "policy_sync_success": {
-            "pass": bool((policy_sync_result or {}).get("success")) and policy_sync_ack_status == "accepted",
-            "actual": policy_sync_result,
-            "threshold": "QC PolicySync ACK accepted required before SetWeights",
+        "policy_alignment_confirmed": {
+            "pass": policy_transport_ok,
+            "actual": {
+                "policy_sync": policy_sync_result,
+                "policy_sync_ack_status": policy_sync_ack_status,
+                "policy_alignment": policy_alignment_result,
+            },
+            "threshold": "account_state_guard policy alignment or accepted control-plane PolicySync required before SetWeights",
         },
         "daily_command_count_ok": {
             "pass": int(today.get("command_count") or 0) < int(cfg["max_daily_commands"]),
@@ -152,6 +161,12 @@ def _policy_sync_ack_status(policy_sync_result: dict[str, Any] | None) -> str | 
         value = ack.get("qc_status")
         return str(value).lower().strip() if value else None
     return None
+
+
+def _policy_alignment_ok(policy_alignment_result: dict[str, Any] | None) -> bool:
+    if not isinstance(policy_alignment_result, dict):
+        return False
+    return bool(policy_alignment_result.get("aligned"))
 
 
 def _command_config(config: dict[str, Any] | None) -> dict[str, Any]:

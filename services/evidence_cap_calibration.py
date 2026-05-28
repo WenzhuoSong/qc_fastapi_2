@@ -11,6 +11,7 @@ from statistics import median
 from typing import Any, Iterable
 
 from services.evidence_cap_config import (
+    DEFAULT_MAX_CALIBRATION_AGE_DAYS,
     DEFAULT_MAX_WOULD_CLIP_RATE,
     DEFAULT_MIN_MULTIPLIER,
     DEFAULT_MIN_OBSERVE_CYCLES,
@@ -82,6 +83,9 @@ def build_evidence_cap_calibration_report(
         "observe_cycles": observe_summary["observe_cycles"],
         "max_would_clip_rate": float(cfg.get("max_would_clip_rate") or DEFAULT_MAX_WOULD_CLIP_RATE),
         "would_clip_rate": observe_summary["would_clip_rate"],
+        "calibration_generated_at": now.isoformat(),
+        "max_calibration_age_days": float(cfg.get("max_calibration_age_days") or DEFAULT_MAX_CALIBRATION_AGE_DAYS),
+        "require_fresh_calibration": True,
         "min_multiplier": recommended_min_multiplier,
         **recommended_weights,
         "enforcement_criteria_met": bool(readiness["criteria_met"]),

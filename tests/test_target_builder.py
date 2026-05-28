@@ -1,5 +1,6 @@
 import inspect
 import unittest
+from datetime import UTC, datetime
 
 from services.target_builder import (
     ALLOWED_EVIDENCE_FIELDS,
@@ -286,6 +287,7 @@ class TargetBuilderTest(unittest.TestCase):
                     "min_observe_cycles": 10,
                     "would_clip_rate": 0.20,
                     "max_would_clip_rate": 0.30,
+                    "calibration_generated_at": datetime.now(UTC).isoformat(),
                 },
                 "evidence_cap_diagnostics": {
                     "DRAM": {
@@ -309,6 +311,7 @@ class TargetBuilderTest(unittest.TestCase):
         self.assertEqual(shadow["configured_mode"], "gated")
         self.assertEqual(shadow["effective_mode"], "gated")
         self.assertEqual(shadow["execution_effect"], "tighten_only")
+        self.assertTrue(shadow["calibration_freshness"]["fresh"])
         self.assertEqual(shadow["target_weight_mutation"], "tighten_only")
         self.assertEqual(shadow["applied_count"], 1)
         self.assertAlmostEqual(shadow["cash_raised_by_evidence_cap"], 0.0088)
@@ -331,6 +334,7 @@ class TargetBuilderTest(unittest.TestCase):
                     "mode": "gated",
                     "observe_cycles": 10,
                     "would_clip_rate": 0.10,
+                    "calibration_generated_at": datetime.now(UTC).isoformat(),
                 },
                 "evidence_cap_diagnostics": {
                     "DRAM": {
@@ -363,6 +367,7 @@ class TargetBuilderTest(unittest.TestCase):
                     "min_observe_cycles": 10,
                     "would_clip_rate": 0.20,
                     "max_would_clip_rate": 0.30,
+                    "calibration_generated_at": datetime.now(UTC).isoformat(),
                 },
                 "evidence_cap_diagnostics": {
                     "DRAM": {

@@ -92,7 +92,11 @@ def build_strategy_input(
     scorable_count = len(scorable_rows)
     coverage = (scorable_count / candidate_count) if candidate_count else 0.0
     min_coverage = float(getattr(strategy, "min_required_coverage", 0.70) or 0.70)
-    coverage_ready = coverage >= min_coverage
+    coverage_below_min_required = (
+        bool(candidate_count)
+        and bool(scorable_count)
+        and coverage < min_coverage
+    )
 
     if not candidate_rows:
         status = "not_scored"
@@ -101,12 +105,22 @@ def build_strategy_input(
         status = "not_scored"
         not_scored_reason = "no_scorable_tickers"
     elif excluded:
-        status = "partially_scored" if coverage_ready else "not_scored"
-        not_scored_reason = None if coverage_ready else "scorable_coverage_below_min_required"
+        status = "partially_scored"
+        not_scored_reason = None
     else:
         status = "scored"
         not_scored_reason = None
 
+    partial_scoring_reason = (
+        "scorable_coverage_below_min_required"
+        if coverage_below_min_required
+        else ("excluded_tickers_isolated" if excluded and scorable_count else None)
+    )
+    selection_policy = (
+        "partial_scoring_with_ticker_isolation"
+        if scorable_count
+        else "not_scored_until_any_ticker_scorable"
+    )
     readiness = {
         "ready": status in {"scored", "partially_scored"},
         "status": status,
@@ -115,6 +129,10 @@ def build_strategy_input(
         "excluded_ticker_count": len(excluded),
         "coverage": round(coverage, 4),
         "min_required_coverage": min_coverage,
+        "coverage_below_min_required": coverage_below_min_required,
+        "coverage_shortfall": round(max(min_coverage - coverage, 0.0), 4),
+        "partial_scoring_reason": partial_scoring_reason,
+        "selection_policy": selection_policy,
         "excluded_tickers": excluded,
         "exclusion_counts": _exclusion_counts(excluded),
         "not_scored_reason": not_scored_reason,

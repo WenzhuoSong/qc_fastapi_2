@@ -135,6 +135,65 @@ class PlaygroundFeatureMergeTests(unittest.TestCase):
         self.assertIn("DRAM", result.excluded_tickers)
         self.assertEqual(result.readiness_summary["exclusion_counts"]["insufficient_history"], 2)
 
+    def test_low_coverage_still_partial_scores_scorable_rows(self):
+        strategy = get_strategy("momentum_lite_v1")
+        feature_matrix = {
+            "SPY": _valid_momentum_feature("SPY", 0.02, 0.06, 0.18),
+            "DRAM": {
+                "ticker": "DRAM",
+                "source": "yfinance",
+                "trading_date": "2026-05-27",
+                "close_price": 52.0,
+                "return_20d": 0.62,
+                "return_60d": None,
+                "return_252d": None,
+                "rsi_14": 74.0,
+                "atr_pct": 0.057,
+            },
+            "NEW1": {
+                "ticker": "NEW1",
+                "source": "yfinance",
+                "trading_date": "2026-05-27",
+                "close_price": 20.0,
+                "return_20d": 0.10,
+                "return_60d": None,
+                "return_252d": None,
+                "rsi_14": 55.0,
+                "atr_pct": 0.030,
+            },
+            "NEW2": {
+                "ticker": "NEW2",
+                "source": "yfinance",
+                "trading_date": "2026-05-27",
+                "close_price": 30.0,
+                "return_20d": 0.08,
+                "return_60d": None,
+                "return_252d": None,
+                "rsi_14": 52.0,
+                "atr_pct": 0.028,
+            },
+        }
+
+        result = build_strategy_input(
+            strategy=strategy,
+            live_rows=[{"ticker": ticker} for ticker in feature_matrix],
+            feature_matrix=feature_matrix,
+            as_of=date(2026, 5, 28),
+        )
+
+        self.assertEqual(result.status, "partially_scored")
+        self.assertTrue(result.can_score)
+        self.assertEqual([row["ticker"] for row in result.scorable_rows], ["SPY"])
+        self.assertIsNone(result.not_scored_reason)
+        self.assertTrue(result.readiness_summary["ready"])
+        self.assertTrue(result.readiness_summary["coverage_below_min_required"])
+        self.assertEqual(
+            result.readiness_summary["partial_scoring_reason"],
+            "scorable_coverage_below_min_required",
+        )
+        self.assertGreater(result.readiness_summary["coverage_shortfall"], 0.0)
+        self.assertEqual(result.readiness_summary["selection_policy"], "partial_scoring_with_ticker_isolation")
+
 
 if __name__ == "__main__":
     unittest.main()

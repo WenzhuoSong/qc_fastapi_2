@@ -1,7 +1,11 @@
 from datetime import UTC, datetime
 import unittest
 
-from services.command_lifecycle import build_command_lifecycle_event, build_command_reconciliation_events
+from services.command_lifecycle import (
+    build_command_lifecycle_event,
+    build_command_reconciliation_events,
+    build_reconciliation_lag_report,
+)
 
 
 class CommandLifecycleTests(unittest.TestCase):
@@ -103,6 +107,88 @@ class CommandLifecycleTests(unittest.TestCase):
         )
 
         self.assertEqual(events[0]["event_type"], "reconciled")
+
+    def test_reconciliation_lag_report_flags_accepted_without_reconciled_event(self):
+        report = build_reconciliation_lag_report(
+            now=datetime(2026, 5, 28, 12, 45),
+            max_age_minutes=30,
+            commands=[
+                {
+                    "command_id": "analysis_1",
+                    "analysis_id": 1,
+                    "command_type": "weight_adjustment",
+                    "qc_status": "accepted",
+                    "qc_ack_at": datetime(2026, 5, 28, 12, 0),
+                },
+                {
+                    "command_id": "analysis_2",
+                    "analysis_id": 2,
+                    "command_type": "weight_adjustment",
+                    "qc_status": "accepted",
+                    "qc_ack_at": datetime(2026, 5, 28, 12, 35),
+                },
+                {
+                    "command_id": "analysis_3",
+                    "analysis_id": 3,
+                    "command_type": "policy_sync",
+                    "qc_status": "accepted",
+                    "qc_ack_at": datetime(2026, 5, 28, 11, 0),
+                },
+            ],
+            events=[
+                {
+                    "command_id": "analysis_2",
+                    "event_type": "qc_accepted",
+                    "event_status": "accepted",
+                    "event_time": datetime(2026, 5, 28, 12, 35),
+                },
+            ],
+        )
+
+        self.assertEqual(report["accepted_without_reconciled_count"], 2)
+        self.assertEqual(report["overdue_count"], 1)
+        self.assertEqual(report["pending_count"], 1)
+        self.assertEqual(report["rows"][0]["command_id"], "analysis_1")
+        self.assertEqual(report["rows"][0]["status"], "overdue")
+
+    def test_reconciliation_lag_report_excludes_reconciled_or_drift_commands(self):
+        report = build_reconciliation_lag_report(
+            now=datetime(2026, 5, 28, 12, 45),
+            max_age_minutes=30,
+            commands=[
+                {
+                    "command_id": "analysis_1",
+                    "analysis_id": 1,
+                    "command_type": "weight_adjustment",
+                    "qc_status": "accepted",
+                    "qc_ack_at": datetime(2026, 5, 28, 12, 0),
+                },
+                {
+                    "command_id": "analysis_2",
+                    "analysis_id": 2,
+                    "command_type": "weight_adjustment",
+                    "qc_status": "accepted",
+                    "qc_ack_at": datetime(2026, 5, 28, 11, 0),
+                },
+            ],
+            events=[
+                {
+                    "command_id": "analysis_1",
+                    "event_type": "reconciled",
+                    "event_status": "reconciled",
+                    "event_time": datetime(2026, 5, 28, 12, 1),
+                },
+                {
+                    "command_id": "analysis_2",
+                    "event_type": "reconciliation_drift",
+                    "event_status": "drift",
+                    "event_time": datetime(2026, 5, 28, 11, 1),
+                },
+            ],
+        )
+
+        self.assertEqual(report["accepted_without_reconciled_count"], 0)
+        self.assertEqual(report["rows"], [])
 
 
 if __name__ == "__main__":
