@@ -18,8 +18,12 @@ def construction_input_for_target_builder(
     weights = payload.get("target_weights") if isinstance(payload, dict) else None
     base = {
         "mode": mode,
+        "configured_mode": mode,
+        "effective_mode": "deterministic_target_builder",
         "gate_status": gate.get("status"),
         "gate_eligible": bool(gate.get("eligible")),
+        "gate_blockers": _as_string_list(gate.get("blockers")),
+        "gate_reason": gate.get("reason"),
         "construction_weights": None,
         "construction_source": None,
         "construction_participated": False,
@@ -40,9 +44,19 @@ def construction_input_for_target_builder(
     )
     return {
         **base,
+        "effective_mode": "portfolio_construction_gated",
         "construction_weights": weights,
         "construction_source": str(source),
         "construction_participated": True,
         "execution_effect": "target_builder_input",
         "blocked_reason": None,
     }
+
+
+def _as_string_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item)]
+    text = str(value)
+    return [text] if text else []

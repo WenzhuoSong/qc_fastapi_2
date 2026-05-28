@@ -99,6 +99,49 @@ class CommunicatorScorecardTest(unittest.TestCase):
                         },
                     },
                     "strategies": {
+                        "evidence_cap_diagnostics": {
+                            "DRAM": {
+                                "static_cap": 0.05,
+                                "evidence_adjusted_cap": 0.0212,
+                                "current_or_target_weight": 0.03,
+                                "would_clip": True,
+                                "coverage_ratio": 0.5,
+                                "voted_count": 1,
+                                "abstain_count": 1,
+                                "mapping_error_count": 0,
+                                "conviction_status": "early_signal",
+                            }
+                        },
+                        "evidence_vote_summary": {
+                            "DRAM": {
+                                "voted_count": 1,
+                                "abstain_count": 1,
+                                "mapping_error_count": 0,
+                                "abstain_reasons": [
+                                    {
+                                        "strategy": "momentum_lite_v1",
+                                        "reason": "insufficient_history",
+                                        "fields": ["mom_252d"],
+                                    }
+                                ],
+                            }
+                        },
+                        "strategy_results": [
+                            {
+                                "strategy_name": "momentum_lite_v1",
+                                "evidence_cards": [
+                                    {
+                                        "ticker": "DRAM",
+                                        "strategy": "momentum_lite_v1",
+                                        "vote_status": "mapping_error",
+                                        "vote_diagnostics": {
+                                            "reason_code": "missing_compatibility_mapping",
+                                            "dedupe_key": "momentum_lite_v1:DRAM:missing_compatibility_mapping",
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
                         "execution_gateway": {
                             "final_permission": "human_required",
                             "primary_reason": "regime_consensus_mismatch",
@@ -171,6 +214,9 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertEqual(payload["execution_gateway"]["final_permission"], "human_required")
         self.assertEqual(payload["strategy_certification"]["items"][0]["status"], "research_supported")
         self.assertEqual(payload["data_quality_detail"]["feature_authority_counts"]["daily_research"], 20)
+        self.assertEqual(payload["evidence_cap_observe"]["would_clip_count"], 1)
+        self.assertEqual(payload["evidence_cap_observe"]["rows"][0]["ticker"], "DRAM")
+        self.assertEqual(payload["evidence_cap_observe"]["mapping_error_rows"][0]["reason_code"], "missing_compatibility_mapping")
         self.assertEqual(
             payload["strategy_use_enforcement"]["violations"][0],
             "strategy_advisory_only:max_delta:SPY 60.00%->53.00%",
@@ -258,6 +304,30 @@ class CommunicatorScorecardTest(unittest.TestCase):
                         "execution_permission": "advisory",
                     },
                 },
+                "evidence_cap_observe": {
+                    "available": True,
+                    "execution_effect": "diagnostic_only",
+                    "degraded_ticker_count": 1,
+                    "would_clip_count": 1,
+                    "mapping_error_count": 1,
+                    "rows": [
+                        {
+                            "ticker": "DRAM",
+                            "static_cap": 0.05,
+                            "evidence_adjusted_cap": 0.0212,
+                            "voted_count": 1,
+                            "abstain_count": 1,
+                            "main_abstain_reason": "insufficient_history:mom_252d",
+                        }
+                    ],
+                    "mapping_error_rows": [
+                        {
+                            "ticker": "DRAM",
+                            "strategy": "momentum_lite_v1",
+                            "reason_code": "missing_compatibility_mapping",
+                        }
+                    ],
+                },
                 "knowledge_resolution": {
                     "conflicts": [
                         {
@@ -330,6 +400,11 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("Style clipping", text)
         self.assertIn("style_new_position_blocked:XLF", text)
         self.assertIn("Strategy-use clipping", text)
+        self.assertIn("Evidence cap observe", text)
+        self.assertIn("diagnostic_only", text)
+        self.assertIn("DRAM cap 5.0%->2.1%", text)
+        self.assertIn("reason=insufficient_history:mom_252d", text)
+        self.assertIn("mapping_error: DRAM:momentum_lite_v1:missing_compatibility_mapping", text)
         self.assertIn("historical=strong", text)
         self.assertIn("execution=insufficient_data", text)
         self.assertIn("permission=advisory", text)

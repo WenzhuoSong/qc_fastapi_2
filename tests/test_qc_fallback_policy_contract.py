@@ -39,6 +39,9 @@ class QCFallbackPolicyContractTest(unittest.TestCase):
         self.assertIn('"version": "sprint8a_fallback"', text)
         self.assertIn('target == "PolicySync"', text)
         self.assertIn("_apply_inline_policy(data)", text)
+        self.assertIn("_policy_payload_from_command(data)", text)
+        self.assertIn('self._get_field(data, "payload_json", None)', text)
+        self.assertIn('self._field_as_policy_dict(data, "roles")', text)
         self.assertIn('"policy_source={self._policy_source}', text)
         self.assertIn('"policy_version={self._execution_policy.get', text)
         self.assertIn("[POLICY] Synced from FastAPI version=", text)
@@ -73,7 +76,8 @@ class QCFallbackPolicyContractTest(unittest.TestCase):
     def test_qc_policy_sync_ack_path_is_no_throw_for_none_values(self):
         text = QC_FILE.read_text()
 
-        self.assertIn("payload = self._dict_from_qc_object(self._get_field(data, \"payload\", {}) or {})", text)
+        self.assertIn("payload = self._policy_payload_from_command(data)", text)
+        self.assertIn('self._get_field(data, "payload_json", None)', text)
         self.assertIn('if raw is None:', text)
         self.assertIn("orders = self.transactions.get_open_orders()", text)
         self.assertIn("return len(list(orders or []))", text)

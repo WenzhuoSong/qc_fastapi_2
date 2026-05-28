@@ -122,12 +122,32 @@ class PolicySyncRecoveryTests(unittest.TestCase):
                 "attempt_count": 1,
                 "consecutive_mismatch_cycles": 1,
                 "last_qc_status": "rejected",
+                "last_sync_protocol_version": "v2_payload_json",
             },
             execution_policy_version="sprint8a",
         )
 
         self.assertEqual(result["status"], "unrecoverable")
         self.assertEqual(result["reason"], "policy_sync_rejected")
+
+    def test_old_protocol_rejection_can_retry_after_protocol_upgrade(self):
+        result = evaluate_policy_sync_recovery(
+            account_guard_result=_guard(blockers=["policy_version_mismatch"], observed="sprint8a_fallback"),
+            recovery_state={
+                "status": "unrecoverable",
+                "attempt_count": 1,
+                "consecutive_mismatch_cycles": 1,
+                "last_qc_status": "rejected",
+                "last_qc_rejection_reason": "policy_sync_missing_roles_or_caps",
+                "last_sync_protocol_version": "v1_nested_payload",
+            },
+            execution_policy_version="sprint8a",
+            config={"sync_protocol_version": "v2_payload_json"},
+        )
+
+        self.assertEqual(result["status"], "recoverable")
+        self.assertEqual(result["action"], "send_sync")
+        self.assertEqual(result["next_state"]["attempt_count"], 2)
 
     def test_recovery_state_cleared_on_policy_restore(self):
         result = evaluate_policy_sync_recovery(
@@ -163,6 +183,7 @@ class PolicySyncRecoveryTests(unittest.TestCase):
 
         self.assertEqual(cfg["max_recovery_attempts"], 1)
         self.assertEqual(cfg["max_consecutive_mismatch_cycles"], 5)
+        self.assertEqual(cfg["sync_protocol_version"], "v2_payload_json")
 
 
 def _guard(

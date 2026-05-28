@@ -54,6 +54,15 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn('"policy_version": policy_version', text)
         self.assertIn('"policy": policy', text)
 
+    def test_policy_sync_command_has_json_fallback_contract(self):
+        text = Path("tools/qc_tools.py").read_text()
+
+        self.assertIn("POLICY_SYNC_PROTOCOL_VERSION", text)
+        self.assertIn("build_policy_sync_command_payload", text)
+        self.assertIn('"payload_json": json.dumps', text)
+        self.assertIn('"roles": safe_payload.get("roles") or {}', text)
+        self.assertIn('"caps": safe_payload.get("caps") or {}', text)
+
     def test_executor_requires_final_risk_validation_before_qc_command(self):
         text = Path("agents/executor.py").read_text()
         final_pos = text.index("Final risk validation missing or failed")

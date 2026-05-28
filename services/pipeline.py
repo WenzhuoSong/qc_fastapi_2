@@ -74,7 +74,10 @@ from services.execution_policy import policy_snapshot
 from services.final_execution_policy_cap import apply_final_execution_policy_cap
 from services.execution_throttle import apply_execution_throttle
 from services.final_risk_validation import validate_final_execution_target
-from services.final_risk_validation_config import default_final_risk_validation_config
+from services.final_risk_validation_config import (
+    default_final_risk_validation_config,
+    resolve_final_risk_validation_mode,
+)
 from services.account_state_guard import (
     account_state_guard_pipeline_effect,
     default_account_state_guard_config,
@@ -93,6 +96,7 @@ from services.transaction_cost_gate import (
     default_transaction_cost_gate_config,
     evaluate_transaction_cost_gate,
 )
+from services.evidence_cap_config import default_evidence_cap_config
 from services.portfolio_risk_diagnostic import load_portfolio_var_cvar_diagnostic
 from services.alpha_validation_persistence import persist_alpha_validation_run
 from services.empirical_profile_store import (
@@ -464,6 +468,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         auto_pause_cfg    = await get_system_config(db, "auto_pause_config")
         policy_sync_recovery_cfg = await get_system_config(db, "policy_sync_recovery_config")
         transaction_cost_cfg = await get_system_config(db, "transaction_cost_gate_config")
+        evidence_cap_cfg = await get_system_config(db, "evidence_cap_config")
         override_cfg    = await get_system_config(db, "circuit_override")
         alert_cfg       = await get_system_config(db, "circuit_pause_alert")
 
@@ -520,6 +525,9 @@ async def _guard_and_config(trigger: str) -> dict | None:
     transaction_cost_gate_config = default_transaction_cost_gate_config(
         (transaction_cost_cfg.value if transaction_cost_cfg else {}) or {}
     )
+    evidence_cap_config = default_evidence_cap_config(
+        (evidence_cap_cfg.value if evidence_cap_cfg else {}) or {}
+    )
 
     params_key = f"strategy_{active_name}_params"
     async with AsyncSessionLocal() as db:
@@ -548,6 +556,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "auto_pause_config": auto_pause_config,
         "policy_sync_recovery_config": policy_sync_recovery_config,
         "transaction_cost_gate_config": transaction_cost_gate_config,
+        "evidence_cap_config": evidence_cap_config,
     }
 
 
@@ -871,7 +880,10 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     playground_bundle = None
     try:
         playground_brief = {**brief, "risk_params": pipeline_context.get("risk_params", {})}
-        playground_bundle_obj = await run_playground(playground_brief)
+        playground_bundle_obj = await run_playground(
+            playground_brief,
+            evidence_cap_config=pipeline_context.get("evidence_cap_config") or {},
+        )
         playground_bundle = playground_bundle_obj.to_dict()
         await _save_step_log(
             analysis_id, "2c_playground", "strategy_playground",
@@ -973,6 +985,9 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     brief["news_evidence"] = news_evidence
     brief["decision_style"] = decision_style
     pipeline_context["evidence_bundle"] = evidence_bundle
+    pipeline_context["evidence_cap_diagnostics"] = (
+        (evidence_bundle.get("strategies") or {}).get("evidence_cap_diagnostics") or {}
+    )
     pipeline_context["feature_provenance"] = brief.get("feature_provenance") or {}
     pipeline_context["market_scorecard"] = market_scorecard
     pipeline_context["news_evidence"] = news_evidence
@@ -1465,6 +1480,9 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                     "max_turnover": (market_scorecard or {}).get("max_turnover_per_cycle"),
                     "max_single_delta": (market_scorecard or {}).get("max_adjustment_from_base"),
                     "hedge_intent": hedge_intent,
+                    "portfolio_construction_gate": construction_input,
+                    "evidence_cap_diagnostics": pipeline_context.get("evidence_cap_diagnostics") or {},
+                    "evidence_cap_config": pipeline_context.get("evidence_cap_config") or {},
                 },
                 mode="target_builder_gated",
             ).to_dict()
@@ -1512,6 +1530,8 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         risk_out["account_state_guard"] = pipeline_context.get("account_state_guard")
     if pipeline_context.get("auto_pause"):
         risk_out["auto_pause"] = pipeline_context.get("auto_pause")
+    if pipeline_context.get("evidence_cap_diagnostics"):
+        risk_out["evidence_cap_diagnostics"] = pipeline_context.get("evidence_cap_diagnostics")
     if pipeline_context.get("portfolio_construction_shadow"):
         risk_out["portfolio_construction_shadow"] = pipeline_context.get("portfolio_construction_shadow")
     if pipeline_context.get("portfolio_construction_candidate"):
@@ -1873,6 +1893,8 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                     "max_turnover": (market_scorecard or {}).get("max_turnover_per_cycle"),
                     "max_single_delta": (market_scorecard or {}).get("max_adjustment_from_base"),
                     "hedge_intent": pipeline_context.get("hedge_intent"),
+                    "evidence_cap_diagnostics": pipeline_context.get("evidence_cap_diagnostics") or {},
+                    "evidence_cap_config": pipeline_context.get("evidence_cap_config") or {},
                 },
                 mode="target_builder_shadow",
             ).to_dict()
@@ -2416,8 +2438,14 @@ async def _apply_final_risk_validation(
             "approval_source": risk_out.get("approval_source"),
         },
         policy_context=policy_context,
-        mode=final_validation_config.get("mode", "observe"),
+        mode=resolve_final_risk_validation_mode(
+            final_validation_config,
+            auth_mode=str(pipeline_context.get("auth_mode") or ""),
+        ),
     )
+    validation["configured_mode"] = final_validation_config.get("mode", "observe")
+    validation["effective_mode"] = validation.get("mode")
+    validation["auth_mode"] = str(pipeline_context.get("auth_mode") or "")
     risk_out["final_validation"] = validation
     if not validation.get("approved"):
         risk_out["approved"] = False

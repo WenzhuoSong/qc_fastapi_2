@@ -18,6 +18,7 @@ DEFAULT_POLICY_SYNC_RECOVERY_CONFIG: dict[str, Any] = {
     "max_consecutive_mismatch_cycles": 5,
     "fire_and_forget": True,
     "expected_policy_version_source": "execution_policy",
+    "sync_protocol_version": "v2_payload_json",
 }
 
 RECOVERABLE_BLOCKER = "policy_version_mismatch"
@@ -39,6 +40,8 @@ def default_policy_sync_recovery_config(config: dict[str, Any] | None = None) ->
     merged["fire_and_forget"] = bool(merged.get("fire_and_forget", True))
     source = str(merged.get("expected_policy_version_source") or "execution_policy").strip()
     merged["expected_policy_version_source"] = source or "execution_policy"
+    protocol = str(merged.get("sync_protocol_version") or "v2_payload_json").strip()
+    merged["sync_protocol_version"] = protocol or "v2_payload_json"
     return merged
 
 
@@ -125,7 +128,7 @@ def evaluate_policy_sync_recovery(
             blockers=blockers,
         )
 
-    if _last_sync_rejected(state):
+    if _last_sync_rejected(state, cfg):
         reason = "policy_sync_rejected"
         return _decision(
             status="unrecoverable",
@@ -236,6 +239,7 @@ async def run_policy_sync_recovery(
                 "last_sync_command_id": command_id,
                 "last_attempted_at": now.isoformat(),
                 "last_result": "pending_send",
+                "last_sync_protocol_version": decision["config"].get("sync_protocol_version"),
             }
             await locked.set_state(in_progress)
             decision["next_state"] = in_progress
@@ -263,6 +267,7 @@ async def run_policy_sync_recovery(
         "last_error": None if result.get("success") else str(result.get("error") or "policy_sync_send_failed"),
         "last_response": result.get("response") or {},
         "last_attempt_finished_at": finished_at.isoformat(),
+        "last_sync_protocol_version": decision["config"].get("sync_protocol_version"),
     }
     await store_policy_sync_recovery_state(final_state)
     return {
@@ -447,7 +452,11 @@ def _observed_policy_version(guard: dict[str, Any]) -> str:
     return str(snapshot.get("policy_version") or "").strip()
 
 
-def _last_sync_rejected(state: dict[str, Any]) -> bool:
+def _last_sync_rejected(state: dict[str, Any], config: dict[str, Any]) -> bool:
+    current_protocol = str((config or {}).get("sync_protocol_version") or "").strip()
+    state_protocol = str((state or {}).get("last_sync_protocol_version") or "").strip()
+    if current_protocol and state_protocol != current_protocol:
+        return False
     return str((state or {}).get("last_qc_status") or "").lower().strip() == "rejected"
 
 

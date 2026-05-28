@@ -130,6 +130,21 @@ class EvidenceBundleTest(unittest.TestCase):
                 "rows": [{"ticker": "SPY", "liquidity_bucket": "highly_liquid"}],
                 "low_liquidity_tickers": [],
             },
+            "evidence_vote_summary": {
+                "DRAM": {
+                    "voted_count": 1,
+                    "eligible_strategy_count": 2,
+                    "coverage_ratio": 0.5,
+                },
+            },
+            "evidence_cap_diagnostics": {
+                "DRAM": {
+                    "static_cap": 0.05,
+                    "evidence_adjusted_cap": 0.0212,
+                    "would_clip": True,
+                    "execution_effect": "diagnostic_only",
+                },
+            },
         }
 
         bundle = build_evidence_bundle(
@@ -214,6 +229,11 @@ class EvidenceBundleTest(unittest.TestCase):
             bundle["strategies"]["liquidity_proxy_diagnostics"]["execution_authority"],
             "none",
         )
+        self.assertEqual(
+            bundle["strategies"]["evidence_vote_summary"]["DRAM"]["coverage_ratio"],
+            0.5,
+        )
+        self.assertTrue(bundle["strategies"]["evidence_cap_diagnostics"]["DRAM"]["would_clip"])
         self.assertEqual(bundle["strategies"]["strategy_use_summary"]["actionable_count"], 1)
         self.assertEqual(bundle["strategies"]["evidence_summary"]["historical_evidence"], "strong")
         self.assertEqual(bundle["strategies"]["evidence_summary"]["execution_permission"], "advisory")

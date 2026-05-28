@@ -44,6 +44,7 @@ from db.models import (
 from db.session import AsyncSessionLocal
 from services.operational_health import build_operational_health_snapshot
 from services.playground import _recent_snapshot_row_limit
+from services.evidence_cap_calibration import load_evidence_cap_calibration_report
 
 DATA_QUALITY_AUDIT_NAME = "qc_yfinance_feature_parity"
 
@@ -103,6 +104,9 @@ async def build_dashboard_summary() -> dict[str, Any]:
     strategy_evidence = _strategy_evidence_dashboard_status(
         latest_analysis.get("strategy_evidence") or {}
     )
+    evidence_cap_calibration = await _evidence_cap_calibration_dashboard(
+        config.get("evidence_cap_config") or {}
+    )
     live_signal_conviction = await _live_signal_conviction_dashboard()
     performance_attribution = await _performance_attribution_dashboard()
     portfolio_risk_diagnostic = latest_analysis.get("portfolio_risk_diagnostic") or {}
@@ -121,6 +125,7 @@ async def build_dashboard_summary() -> dict[str, Any]:
         "portfolio_construction_objective": pc_objective,
         "portfolio_construction_readiness": pc_readiness,
         "strategy_evidence": strategy_evidence,
+        "evidence_cap_calibration": evidence_cap_calibration,
         "live_signal_conviction": live_signal_conviction,
         "performance_attribution": performance_attribution,
         "portfolio_risk_diagnostic": portfolio_risk_diagnostic,
@@ -654,6 +659,33 @@ async def _strategy_promotion_recommendations_dashboard() -> dict[str, Any]:
         }
 
 
+async def _evidence_cap_calibration_dashboard(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Load read-only evidence cap calibration diagnostics."""
+    try:
+        async with AsyncSessionLocal() as db:
+            return await load_evidence_cap_calibration_report(
+                db,
+                current_config=config or {},
+            )
+    except Exception as exc:
+        return {
+            "contract_version": "evidence_cap_calibration_v1",
+            "status": "unavailable",
+            "reason": f"{type(exc).__name__}: {exc}",
+            "recommendation_only": True,
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+            "observe_summary": {},
+            "young_etf_summary": {},
+            "conviction_summary": {},
+            "execution_feedback": {},
+            "gated_readiness": {},
+            "recommended_config": {},
+            "recommended_vote_thresholds": {},
+            "warnings": [],
+        }
+
+
 async def _dashboard_config() -> dict[str, Any]:
     async with AsyncSessionLocal() as db:
         playground = (
@@ -671,10 +703,16 @@ async def _dashboard_config() -> dict[str, Any]:
                 select(SystemConfig).where(SystemConfig.key == "portfolio_construction_promotion_config").limit(1)
             )
         ).scalar_one_or_none()
+        evidence_cap = (
+            await db.execute(
+                select(SystemConfig).where(SystemConfig.key == "evidence_cap_config").limit(1)
+            )
+        ).scalar_one_or_none()
     return {
         "playground_config": (playground.value if playground else {}) or {},
         "circuit_state": (circuit.value if circuit else {}) or {},
         "portfolio_construction_promotion_config": (pc_promotion.value if pc_promotion else {}) or {},
+        "evidence_cap_config": (evidence_cap.value if evidence_cap else {}) or {},
     }
 
 
@@ -1117,7 +1155,11 @@ def _compact_strategy_evidence(strategies: dict[str, Any]) -> dict[str, Any]:
             "cards_generated": summary.get("cards_generated", len(cards)),
             "missing_mapping_count": summary.get("missing_mapping_count"),
             "fallback_count": summary.get("fallback_count"),
+            "mapping_error_count": summary.get("mapping_error_count"),
+            "watch_vote_count": summary.get("watch_vote_count"),
+            "abstain_count": summary.get("abstain_count"),
             "actions": summary.get("actions") or {},
+            "vote_statuses": summary.get("vote_statuses") or {},
             "conviction_statuses": summary.get("conviction_statuses") or {},
             "reason_codes": row.get("reason_codes") or [],
             "walk_forward_level": row.get("walk_forward_level"),
@@ -1126,6 +1168,11 @@ def _compact_strategy_evidence(strategies: dict[str, Any]) -> dict[str, Any]:
         })
 
     summary = _evidence_card_summary(card_rows, strategies.get("evidence_summary") or {})
+    evidence_cap_observe = _compact_evidence_cap_observe(
+        cap_diagnostics=strategies.get("evidence_cap_diagnostics") or {},
+        vote_summary=strategies.get("evidence_vote_summary") or {},
+        card_rows=card_rows,
+    )
     return {
         "available": bool(strategy_results),
         "playground_available": strategies.get("playground_available"),
@@ -1137,6 +1184,8 @@ def _compact_strategy_evidence(strategies: dict[str, Any]) -> dict[str, Any]:
         "card_count": len(card_rows),
         "evidence_summary": summary,
         "strategy_diversity": strategy_diversity,
+        "evidence_vote_summary": strategies.get("evidence_vote_summary") or {},
+        "evidence_cap_observe": evidence_cap_observe,
         "diversity_family_rows": strategy_diversity.get("family_rows") or [],
         "diversity_strategy_rows": strategy_diversity.get("strategy_rows") or [],
         "strategy_rows": strategy_rows,
@@ -1158,6 +1207,7 @@ def _compact_evidence_card(card: dict[str, Any], *, fallback_strategy: str) -> d
     diagnostics = card.get("diagnostics") if isinstance(card.get("diagnostics"), dict) else {}
     threshold = diagnostics.get("threshold") if isinstance(diagnostics.get("threshold"), dict) else {}
     conviction_diag = diagnostics.get("conviction") if isinstance(diagnostics.get("conviction"), dict) else {}
+    vote_diag = card.get("vote_diagnostics") if isinstance(card.get("vote_diagnostics"), dict) else {}
     conviction = _json_safe_number(card.get("conviction"))
     conviction_n = int(_json_safe_number(card.get("conviction_n")) or 0)
     return {
@@ -1181,6 +1231,8 @@ def _compact_evidence_card(card: dict[str, Any], *, fallback_strategy: str) -> d
         "risk_budget_cost": _json_safe_number(card.get("risk_budget_cost")),
         "branch": card.get("branch"),
         "reason": card.get("reason"),
+        "vote_status": card.get("vote_status") or "voted",
+        "abstain_reason": card.get("abstain_reason"),
         "mapping_role": diagnostics.get("mapping_role"),
         "threshold_gte": threshold.get("gte"),
         "threshold_lt": threshold.get("lt"),
@@ -1189,6 +1241,10 @@ def _compact_evidence_card(card: dict[str, Any], *, fallback_strategy: str) -> d
         "max_weight_multiplier": diagnostics.get("max_weight_multiplier"),
         "missing_safety_fields": diagnostics.get("missing_safety_fields") or [],
         "allowed_actions": diagnostics.get("allowed_actions") or [],
+        "vote_reason_code": vote_diag.get("reason_code"),
+        "vote_dedupe_key": vote_diag.get("dedupe_key"),
+        "vote_alert_class": vote_diag.get("alert_class"),
+        "vote_missing_fields": vote_diag.get("missing_fields") or [],
         "effective_confidence_rule": conviction_diag.get("effective_confidence_rule"),
         "conviction_shadow_only": conviction_diag.get("shadow_only"),
     }
@@ -1202,10 +1258,125 @@ def _evidence_card_summary(cards: list[dict[str, Any]], fallback_summary: dict[s
         "cards_generated": len(cards),
         "missing_mapping_count": sum(1 for row in cards if "missing_compatibility_mapping" in str(row.get("reason") or "")),
         "fallback_count": len(warning_rows),
+        "mapping_error_count": sum(1 for row in cards if row.get("vote_status") == "mapping_error"),
+        "watch_vote_count": sum(1 for row in cards if row.get("vote_status") == "watch"),
+        "abstain_count": sum(1 for row in cards if row.get("vote_status") == "abstain"),
         "actions": actions or fallback_summary.get("actions") or {},
+        "vote_statuses": _count_map(cards, "vote_status") or fallback_summary.get("vote_statuses") or {},
         "conviction_statuses": conviction_statuses or fallback_summary.get("conviction_statuses") or {},
         "max_weight_by_action": _max_weight_by_action(cards),
     }
+
+
+def _compact_evidence_cap_observe(
+    *,
+    cap_diagnostics: dict[str, Any],
+    vote_summary: dict[str, Any],
+    card_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not cap_diagnostics:
+        return {
+            "available": False,
+            "reason": "evidence cap diagnostics unavailable",
+            "execution_effect": "diagnostic_only",
+            "rows": [],
+            "mapping_error_rows": [],
+        }
+
+    rows: list[dict[str, Any]] = []
+    for ticker, raw in cap_diagnostics.items():
+        if not isinstance(raw, dict):
+            continue
+        clean_ticker = str(raw.get("ticker") or ticker or "").upper().strip()
+        if not clean_ticker:
+            continue
+        votes = vote_summary.get(clean_ticker) if isinstance(vote_summary, dict) else {}
+        if not isinstance(votes, dict):
+            votes = {}
+        static_cap = _json_safe_number(raw.get("static_cap")) or 0.0
+        adjusted_cap = _json_safe_number(raw.get("evidence_adjusted_cap")) or 0.0
+        current_or_target = _json_safe_number(raw.get("current_or_target_weight")) or 0.0
+        cap_reduction = max(static_cap - adjusted_cap, 0.0)
+        rows.append({
+            "ticker": clean_ticker,
+            "static_cap": round(static_cap, 6),
+            "evidence_adjusted_cap": round(adjusted_cap, 6),
+            "cap_reduction": round(cap_reduction, 6),
+            "current_or_target_weight": round(current_or_target, 6),
+            "would_clip": bool(raw.get("would_clip")),
+            "would_clip_to": raw.get("would_clip_to"),
+            "coverage_ratio": _json_safe_number(raw.get("coverage_ratio")),
+            "evidence_quality_multiplier": _json_safe_number(raw.get("evidence_quality_multiplier")),
+            "conviction_status": raw.get("conviction_status"),
+            "conviction_discount": _json_safe_number(raw.get("conviction_discount")),
+            "history_days": raw.get("history_days"),
+            "history_discount": _json_safe_number(raw.get("history_discount")),
+            "voted_count": raw.get("voted_count", votes.get("voted_count")),
+            "watch_count": votes.get("watch_count"),
+            "abstain_count": raw.get("abstain_count", votes.get("abstain_count")),
+            "mapping_error_count": raw.get("mapping_error_count", votes.get("mapping_error_count")),
+            "main_abstain_reason": _main_abstain_reason(votes.get("abstain_reasons") or []),
+            "execution_effect": raw.get("execution_effect") or "diagnostic_only",
+        })
+
+    rows.sort(
+        key=lambda item: (
+            not bool(item.get("would_clip")),
+            -float(item.get("cap_reduction") or 0.0),
+            str(item.get("ticker") or ""),
+        )
+    )
+    mapping_error_rows = _evidence_mapping_error_rows(card_rows)
+    return {
+        "available": True,
+        "contract_version": "evidence_cap_observe_dashboard_v1",
+        "execution_effect": "diagnostic_only",
+        "ticker_count": len(rows),
+        "degraded_ticker_count": sum(1 for row in rows if float(row.get("cap_reduction") or 0.0) > 0),
+        "would_clip_count": sum(1 for row in rows if row.get("would_clip")),
+        "mapping_error_count": len(mapping_error_rows),
+        "top_degraded_tickers": [row.get("ticker") for row in rows if float(row.get("cap_reduction") or 0.0) > 0],
+        "rows": rows,
+        "mapping_error_rows": mapping_error_rows,
+    }
+
+
+def _main_abstain_reason(rows: list[dict[str, Any]]) -> str | None:
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        reason = str(row.get("reason") or "").strip()
+        fields = [str(field) for field in row.get("fields") or [] if str(field)]
+        if reason and fields:
+            return f"{reason}:{','.join(fields)}"
+        if reason:
+            return reason
+    return None
+
+
+def _evidence_mapping_error_rows(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for card in cards:
+        if str(card.get("vote_status") or "") != "mapping_error":
+            continue
+        key = str(
+            card.get("vote_dedupe_key")
+            or f"{card.get('strategy')}:{card.get('ticker')}:{card.get('vote_reason_code')}"
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "ticker": card.get("ticker"),
+            "strategy": card.get("strategy"),
+            "reason_code": card.get("vote_reason_code"),
+            "reason": card.get("reason"),
+            "dedupe_key": key,
+            "alert_class": card.get("vote_alert_class"),
+        })
+    rows.sort(key=lambda item: (str(item.get("ticker") or ""), str(item.get("strategy") or "")))
+    return rows
 
 
 def _evidence_mapping_warning_rows(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1285,6 +1456,13 @@ def _count_map(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
         name = str(row.get(key) or "unknown")
         counts[name] = counts.get(name, 0) + 1
     return dict(sorted(counts.items()))
+
+
+def _dict_rows(values: dict[str, Any], key_label: str, value_label: str) -> list[dict[str, Any]]:
+    return [
+        {key_label: key, value_label: value}
+        for key, value in sorted((values or {}).items(), key=lambda item: str(item[0]))
+    ]
 
 
 def _max_weight_by_action(cards: list[dict[str, Any]]) -> dict[str, float]:
@@ -1867,6 +2045,11 @@ def render_dashboard(summary: dict[str, Any]) -> str:
     </section>
 
     <section>
+      <h2>Evidence Cap Calibration</h2>
+      {_render_evidence_cap_calibration(summary.get("evidence_cap_calibration") or {})}
+    </section>
+
+    <section>
       <h2>Live Signal Conviction</h2>
       {_render_live_signal_conviction(summary.get("live_signal_conviction") or {})}
     </section>
@@ -2041,21 +2224,64 @@ def _render_strategy_evidence(evidence: dict[str, Any]) -> str:
         "warnings": diversity.get("warnings") or [],
         "execution_authority": diversity.get("execution_authority"),
     }
+    evidence_cap = evidence.get("evidence_cap_observe") or {}
     return f"""
       <div class="grid">
         <article class="card"><h3>Overview</h3>{_render_kv(overview)}</article>
         <article class="card"><h3>Evidence Summary</h3>{_render_kv(summary)}</article>
         <article class="card"><h3>Conviction Display Contract</h3>{_render_kv(conviction_note)}</article>
         <article class="card"><h3>Strategy Diversity</h3>{_render_kv(diversity_note)}</article>
+        <article class="card"><h3>Evidence Cap Observe</h3>{_render_kv(evidence_cap, keys=["available", "execution_effect", "ticker_count", "degraded_ticker_count", "would_clip_count", "mapping_error_count", "top_degraded_tickers"])}</article>
       </div>
-      <h3>Strategies</h3>{_render_table(evidence.get("strategy_rows") or [], ["strategy", "raw_family", "canonical_family", "alpha_source", "data_ready", "can_influence_allocation", "suggested_use", "confidence_score", "selected_tickers", "evidence_contract_version", "cards_generated", "missing_mapping_count", "fallback_count", "actions", "conviction_statuses", "reason_codes", "walk_forward_level", "walk_forward_pass_rate", "turnover"])}
+      <h3>Evidence Cap Observe Rows</h3>{_render_table(evidence_cap.get("rows") or [], ["ticker", "static_cap", "evidence_adjusted_cap", "cap_reduction", "current_or_target_weight", "would_clip", "would_clip_to", "coverage_ratio", "evidence_quality_multiplier", "voted_count", "watch_count", "abstain_count", "mapping_error_count", "main_abstain_reason", "conviction_status", "conviction_discount", "history_days", "history_discount", "execution_effect"])}
+      <h3>Evidence Mapping Error Dedupe Rows</h3>{_render_table(evidence_cap.get("mapping_error_rows") or [], ["ticker", "strategy", "reason_code", "reason", "dedupe_key", "alert_class"])}
+      <h3>Strategies</h3>{_render_table(evidence.get("strategy_rows") or [], ["strategy", "raw_family", "canonical_family", "alpha_source", "data_ready", "can_influence_allocation", "suggested_use", "confidence_score", "selected_tickers", "evidence_contract_version", "cards_generated", "missing_mapping_count", "fallback_count", "mapping_error_count", "watch_vote_count", "abstain_count", "actions", "vote_statuses", "conviction_statuses", "reason_codes", "walk_forward_level", "walk_forward_pass_rate", "turnover"])}
       <h3>Strategy Family Rows</h3>{_render_table(evidence.get("diversity_family_rows") or [], ["family", "strategy_count", "alpha_source_strategy_count", "actionable_strategy_count", "actionable_alpha_strategy_count", "independent_alpha_counted", "strategy_names", "actionable_alpha_strategy_names", "suggested_uses"])}
       <h3>Strategy Diversity Rows</h3>{_render_table(evidence.get("diversity_strategy_rows") or [], ["strategy_name", "raw_family", "canonical_family", "alpha_source", "suggested_use", "actionable", "confidence_score", "data_ready", "can_influence_allocation"])}
-      <h3>EvidenceCards</h3>{_render_table(evidence.get("evidence_card_rows") or [], ["strategy", "ticker", "role", "action", "signal_type", "horizon", "confidence", "conviction_display", "conviction_status", "conviction_source_bucket", "conviction_n", "effective_confidence", "raw_score", "normalized_score", "max_reasonable_weight", "risk_budget_cost", "branch", "reason", "mapping_role", "weight_formula", "base_cap", "max_weight_multiplier", "effective_confidence_rule", "conviction_shadow_only"])}
+      <h3>EvidenceCards</h3>{_render_table(evidence.get("evidence_card_rows") or [], ["strategy", "ticker", "role", "action", "vote_status", "abstain_reason", "signal_type", "horizon", "confidence", "conviction_display", "conviction_status", "conviction_source_bucket", "conviction_n", "effective_confidence", "raw_score", "normalized_score", "max_reasonable_weight", "risk_budget_cost", "branch", "reason", "vote_reason_code", "vote_dedupe_key", "vote_alert_class", "vote_missing_fields", "mapping_role", "weight_formula", "base_cap", "max_weight_multiplier", "effective_confidence_rule", "conviction_shadow_only"])}
       <h3>Mapping And Safety Warnings</h3>{_render_table(evidence.get("mapping_warning_rows") or [], ["strategy", "ticker", "role", "action", "reason", "missing_safety_fields", "allowed_actions", "conviction_status", "conviction_n"])}
       <h3>Role / Action Summary</h3>{_render_table(evidence.get("role_action_rows") or [], ["role", "action", "count", "avg_confidence", "max_reasonable_weight_max", "tickers"])}
       <h3>Conviction Status Summary</h3>{_render_table(evidence.get("conviction_status_rows") or [], ["status", "count"])}
       <h3>Warnings</h3>{_render_list("", evidence.get("warnings") or [])}
+    """
+
+
+def _render_evidence_cap_calibration(calibration: dict[str, Any]) -> str:
+    if not calibration:
+        return "<p>No evidence cap calibration report available.</p>"
+    overview = {
+        "contract_version": calibration.get("contract_version"),
+        "status": calibration.get("status"),
+        "recommendation_only": calibration.get("recommendation_only"),
+        "execution_authority": calibration.get("execution_authority"),
+        "target_weight_mutation": calibration.get("target_weight_mutation"),
+        "operator_action": calibration.get("operator_action"),
+        "latest_conviction_profile_date": calibration.get("latest_conviction_profile_date"),
+        "warnings": calibration.get("warnings") or [],
+    }
+    readiness = calibration.get("gated_readiness") or {}
+    recommended_config = calibration.get("recommended_config") or {}
+    observe = calibration.get("observe_summary") or {}
+    young = calibration.get("young_etf_summary") or {}
+    conviction = calibration.get("conviction_summary") or {}
+    execution = calibration.get("execution_feedback") or {}
+    thresholds = calibration.get("recommended_vote_thresholds") or {}
+    threshold_rows = [
+        {"action": action, **(rule if isinstance(rule, dict) else {"rule": rule})}
+        for action, rule in thresholds.items()
+    ]
+    return f"""
+      <div class="grid">
+        <article class="card"><h3>Overview</h3>{_render_kv(overview)}</article>
+        <article class="card"><h3>Gated Readiness</h3>{_render_kv(readiness, keys=["criteria_met", "gate_blockers", "observe_cycles", "min_observe_cycles", "would_clip_rate", "max_would_clip_rate", "rejection_rate", "requires_operator_approval"])}</article>
+        <article class="card"><h3>Recommended Config</h3>{_render_kv(recommended_config, keys=["mode", "min_observe_cycles", "observe_cycles", "max_would_clip_rate", "would_clip_rate", "min_multiplier", "coverage_weight", "conviction_weight", "history_weight", "enforcement_criteria_met", "young_etf_cap_within_expected_range"])}</article>
+        <article class="card"><h3>Observe Summary</h3>{_render_kv(observe, keys=["observe_cycles", "cap_row_count", "would_clip_count", "would_clip_rate", "degraded_ticker_count", "mapping_error_count", "median_multiplier", "median_evidence_adjusted_cap", "top_would_clip_tickers"])}</article>
+        <article class="card"><h3>Young ETF Summary</h3>{_render_kv(young, keys=["history_threshold_days", "expected_cap_range", "row_count", "would_clip_count", "would_clip_rate", "median_evidence_adjusted_cap", "cap_range_status", "top_young_tickers"])}</article>
+        <article class="card"><h3>Conviction / Execution</h3>{_render_kv({"profile_count": conviction.get("profile_count"), "meaningful_profile_ratio": conviction.get("meaningful_profile_ratio"), "median_n": conviction.get("median_n"), "event_count": execution.get("event_count"), "rejection_rate": execution.get("rejection_rate"), "top_rejection_reasons": execution.get("top_rejection_reasons")})}</article>
+      </div>
+      <h3>Recommended Vote Thresholds</h3>{_render_table(threshold_rows, ["action", "min_voted_count", "or_single_conviction_status", "min_confidence", "requires_regime"])}
+      <h3>Conviction Status Counts</h3>{_render_table(_dict_rows(conviction.get("status_counts") or {}, "status", "count"), ["status", "count"])}
+      <h3>Conviction Source Counts</h3>{_render_table(_dict_rows(conviction.get("source_counts") or {}, "source_bucket", "count"), ["source_bucket", "count"])}
     """
 
 

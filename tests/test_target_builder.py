@@ -59,13 +59,29 @@ class TargetBuilderTest(unittest.TestCase):
             decision_style={},
             position_governance={"position_decisions": []},
             validated_advisory=[],
-            constraints={},
+            constraints={
+                "portfolio_construction_gate": {
+                    "configured_mode": "gated",
+                    "effective_mode": "deterministic_target_builder",
+                    "gate_status": "blocked",
+                    "gate_eligible": False,
+                    "blocked_reason": "promotion_gate_not_eligible",
+                    "gate_blockers": ["insufficient_cycles"],
+                }
+            },
             mode="target_builder_gated",
         ).to_dict()
 
         self.assertEqual(out["diagnostics"]["mode"], "target_builder_gated")
         self.assertFalse(out["diagnostics"]["raw_llm_adjusted_weights_consumed"])
         self.assertFalse(out["diagnostics"]["construction_participated"])
+        self.assertEqual(out["diagnostics"]["target_construction_source"], "deterministic_target_builder")
+        self.assertEqual(out["diagnostics"]["portfolio_construction_configured_mode"], "gated")
+        self.assertEqual(out["diagnostics"]["portfolio_construction_effective_mode"], "deterministic_target_builder")
+        self.assertEqual(out["diagnostics"]["portfolio_construction_gate_status"], "blocked")
+        self.assertFalse(out["diagnostics"]["portfolio_construction_gate_eligible"])
+        self.assertEqual(out["diagnostics"]["portfolio_construction_blocked_reason"], "promotion_gate_not_eligible")
+        self.assertEqual(out["diagnostics"]["portfolio_construction_gate_blockers"], ["insufficient_cycles"])
         self.assertIsNone(out["per_ticker"]["QQQ"]["construction_weight"])
 
     def test_conviction_fields_are_visible_but_not_consumed(self):
@@ -182,6 +198,207 @@ class TargetBuilderTest(unittest.TestCase):
         self.assertAlmostEqual(out["target_weights"]["CASH"], 0.925)
         self.assertGreater(out["diagnostics"]["cash_raised_by_policy_cap"], 0)
         self.assertTrue(out["diagnostics"]["policy_cap_events"])
+
+    def test_evidence_cap_shadow_records_would_apply_without_clipping(self):
+        out = build_target_weights(
+            base_weights={"DRAM": 0.03, "CASH": 0.97},
+            current_weights={"DRAM": 0.01, "CASH": 0.99},
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[],
+            constraints={
+                "evidence_cap_diagnostics": {
+                    "DRAM": {
+                        "static_cap": 0.05,
+                        "evidence_adjusted_cap": 0.0212,
+                        "would_clip": True,
+                        "coverage_ratio": 0.5,
+                        "evidence_quality_multiplier": 0.424,
+                        "conviction_status": "early_signal",
+                        "history_days": 55,
+                        "voted_count": 1,
+                        "abstain_count": 1,
+                        "mapping_error_count": 0,
+                    }
+                }
+            },
+            mode="target_builder_gated",
+        ).to_dict()
+
+        self.assertEqual(out["target_weights"]["DRAM"], 0.03)
+        shadow = out["diagnostics"]["evidence_cap_shadow"]
+        self.assertTrue(shadow["enabled"])
+        self.assertEqual(shadow["configured_mode"], "observe")
+        self.assertEqual(shadow["effective_mode"], "observe")
+        self.assertEqual(shadow["execution_effect"], "diagnostic_only")
+        self.assertEqual(shadow["target_weight_mutation"], "none")
+        self.assertEqual(shadow["would_apply_count"], 1)
+        self.assertEqual(shadow["applied_count"], 0)
+        self.assertEqual(shadow["rows"][0]["ticker"], "DRAM")
+        self.assertTrue(shadow["rows"][0]["would_apply_cap"])
+        self.assertFalse(shadow["rows"][0]["applied_cap"])
+        self.assertEqual(shadow["rows"][0]["would_clip_to"], 0.0212)
+        self.assertEqual(out["per_ticker"]["DRAM"]["evidence_cap_shadow"]["evidence_adjusted_cap"], 0.0212)
+
+    def test_evidence_cap_gated_falls_back_to_observe_when_criteria_not_met(self):
+        out = build_target_weights(
+            base_weights={"DRAM": 0.03, "CASH": 0.97},
+            current_weights={"DRAM": 0.01, "CASH": 0.99},
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[],
+            constraints={
+                "evidence_cap_config": {"mode": "gated"},
+                "evidence_cap_diagnostics": {
+                    "DRAM": {
+                        "static_cap": 0.05,
+                        "evidence_adjusted_cap": 0.0212,
+                        "would_clip": True,
+                    }
+                },
+            },
+            mode="target_builder_gated",
+        ).to_dict()
+
+        self.assertEqual(out["target_weights"]["DRAM"], 0.03)
+        shadow = out["diagnostics"]["evidence_cap_shadow"]
+        self.assertEqual(shadow["configured_mode"], "gated")
+        self.assertEqual(shadow["effective_mode"], "observe")
+        self.assertEqual(shadow["blocked_reason"], "enforcement_criteria_not_met")
+        self.assertIn("insufficient_observe_cycles", shadow["gate_blockers"])
+        self.assertEqual(shadow["applied_count"], 0)
+        self.assertFalse(shadow["rows"][0]["applied_cap"])
+
+    def test_evidence_cap_gated_clips_and_releases_to_cash_when_criteria_met(self):
+        out = build_target_weights(
+            base_weights={"DRAM": 0.03, "CASH": 0.97},
+            current_weights={"DRAM": 0.01, "CASH": 0.99},
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[],
+            constraints={
+                "evidence_cap_config": {
+                    "mode": "gated",
+                    "observe_cycles": 12,
+                    "min_observe_cycles": 10,
+                    "would_clip_rate": 0.20,
+                    "max_would_clip_rate": 0.30,
+                },
+                "evidence_cap_diagnostics": {
+                    "DRAM": {
+                        "static_cap": 0.05,
+                        "evidence_adjusted_cap": 0.0212,
+                        "would_clip": True,
+                        "coverage_ratio": 0.5,
+                        "evidence_quality_multiplier": 0.424,
+                        "conviction_status": "early_signal",
+                        "history_days": 55,
+                    }
+                },
+            },
+            mode="target_builder_gated",
+        ).to_dict()
+
+        self.assertEqual(out["target_weights"]["DRAM"], 0.0212)
+        self.assertAlmostEqual(out["target_weights"]["CASH"], 0.9788)
+        self.assertTrue(any(item.startswith("evidence_cap:") for item in out["violations"]))
+        shadow = out["diagnostics"]["evidence_cap_shadow"]
+        self.assertEqual(shadow["configured_mode"], "gated")
+        self.assertEqual(shadow["effective_mode"], "gated")
+        self.assertEqual(shadow["execution_effect"], "tighten_only")
+        self.assertEqual(shadow["target_weight_mutation"], "tighten_only")
+        self.assertEqual(shadow["applied_count"], 1)
+        self.assertAlmostEqual(shadow["cash_raised_by_evidence_cap"], 0.0088)
+        self.assertTrue(shadow["rows"][0]["applied_cap"])
+        self.assertEqual(shadow["rows"][0]["target_before_cap"], 0.03)
+        self.assertEqual(shadow["rows"][0]["target_after_cap"], 0.0212)
+        self.assertIn("evidence_cap", out["per_ticker"]["DRAM"]["changed_by"])
+        self.assertTrue(out["per_ticker"]["DRAM"]["evidence_cap_shadow"]["applied_cap"])
+
+    def test_evidence_cap_does_not_raise_above_static_cap(self):
+        out = build_target_weights(
+            base_weights={"DRAM": 0.05, "CASH": 0.95},
+            current_weights={"DRAM": 0.02, "CASH": 0.98},
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[],
+            constraints={
+                "evidence_cap_config": {
+                    "mode": "gated",
+                    "observe_cycles": 10,
+                    "would_clip_rate": 0.10,
+                },
+                "evidence_cap_diagnostics": {
+                    "DRAM": {
+                        "static_cap": 0.03,
+                        "evidence_adjusted_cap": 0.04,
+                        "would_clip": False,
+                    }
+                },
+            },
+            mode="target_builder_gated",
+        ).to_dict()
+
+        self.assertEqual(out["target_weights"]["DRAM"], 0.03)
+        shadow = out["diagnostics"]["evidence_cap_shadow"]
+        self.assertEqual(shadow["rows"][0]["evidence_enforcement_cap"], 0.03)
+        self.assertTrue(shadow["rows"][0]["applied_cap"])
+
+    def test_evidence_cap_gated_does_not_clip_in_target_builder_shadow_mode(self):
+        out = build_target_weights(
+            base_weights={"DRAM": 0.03, "CASH": 0.97},
+            current_weights={"DRAM": 0.01, "CASH": 0.99},
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[],
+            constraints={
+                "evidence_cap_config": {
+                    "mode": "gated",
+                    "observe_cycles": 12,
+                    "min_observe_cycles": 10,
+                    "would_clip_rate": 0.20,
+                    "max_would_clip_rate": 0.30,
+                },
+                "evidence_cap_diagnostics": {
+                    "DRAM": {
+                        "static_cap": 0.05,
+                        "evidence_adjusted_cap": 0.0212,
+                        "would_clip": True,
+                    }
+                },
+            },
+            mode="target_builder_shadow",
+        ).to_dict()
+
+        self.assertEqual(out["target_weights"]["DRAM"], 0.03)
+        shadow = out["diagnostics"]["evidence_cap_shadow"]
+        self.assertEqual(shadow["configured_mode"], "gated")
+        self.assertEqual(shadow["effective_mode"], "observe")
+        self.assertEqual(shadow["blocked_reason"], "target_builder_shadow_no_execution_authority")
+        self.assertEqual(shadow["applied_count"], 0)
+        self.assertEqual(shadow["target_weight_mutation"], "none")
+        self.assertFalse(shadow["rows"][0]["applied_cap"])
+
+    def test_evidence_cap_shadow_disabled_without_input(self):
+        out = build_target_weights(
+            base_weights={"SPY": 0.10, "CASH": 0.90},
+            current_weights={"SPY": 0.10, "CASH": 0.90},
+            market_scorecard={},
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[],
+            constraints={},
+        ).to_dict()
+
+        shadow = out["diagnostics"]["evidence_cap_shadow"]
+        self.assertFalse(shadow["enabled"])
+        self.assertEqual(shadow["would_apply_count"], 0)
+        self.assertEqual(shadow["rows"], [])
 
     def test_hedge_intent_overlay_trims_before_adding_hedge(self):
         out = build_target_weights(

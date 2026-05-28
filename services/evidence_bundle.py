@@ -170,6 +170,8 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
             "strategy_independence": empty_strategy_independence_summary("no_recent_playground_result"),
             "etf_decay_diagnostics": empty_etf_decay_diagnostics("no_recent_playground_result"),
             "liquidity_proxy_diagnostics": empty_liquidity_proxy_diagnostics("no_recent_playground_result"),
+            "evidence_vote_summary": {},
+            "evidence_cap_diagnostics": {},
             "turnover_warnings": [],
             "data_quality": "missing",
             "evidence_summary": {
@@ -239,6 +241,8 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
         "strategy_independence": strategy_independence,
         "etf_decay_diagnostics": etf_decay_diagnostics,
         "liquidity_proxy_diagnostics": liquidity_proxy_diagnostics,
+        "evidence_vote_summary": playground.get("evidence_vote_summary") or {},
+        "evidence_cap_diagnostics": playground.get("evidence_cap_diagnostics") or {},
         "turnover_warnings": turnover_warnings,
         "data_quality": data_quality,
         "warnings": _unique([str(item) for item in warnings] + turnover_warnings),

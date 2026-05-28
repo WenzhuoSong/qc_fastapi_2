@@ -36,6 +36,7 @@ Hard format:
 - Include market scorecard condition, permission, data quality, and any clipping/blocking details when present
 - Include feature source summary when present, especially live_state/research/fallback/stale details
 - Include strategy-use evidence and strategy-use clipping/blocking details when present
+- Include evidence cap observe diagnostics when present; make clear they are diagnostic-only
 - Include news bias/confidence, analysis style, trade style, and style clipping/blocking details when present
 - Do not invent numbers — only repeat fields you are given
 - No graphical characters beyond emoji
@@ -236,6 +237,15 @@ def _build_payload(
             "pre_clip": strategy_use_enforcement.get("target_weights_pre_strategy_use_clip") or {},
             "post_clip": strategy_use_enforcement.get("target_weights_post_strategy_use_clip") or {},
         },
+        "evidence_cap_observe": _compact_evidence_cap_observe(
+            cap_diagnostics=(
+                risk_out.get("evidence_cap_diagnostics")
+                or strategies.get("evidence_cap_diagnostics")
+                or {}
+            ),
+            vote_summary=strategies.get("evidence_vote_summary") or {},
+            strategy_results=strategies.get("strategy_results") or [],
+        ),
         "execution_gateway": strategies.get("execution_gateway") or {},
         "strategy_certification": _compact_strategy_certification(
             strategies.get("strategy_certification") or {}
@@ -291,6 +301,7 @@ def _fallback_template(p: dict) -> str:
     proposal_shaping = p.get("proposal_shaping") or {}
     style_enforcement = p.get("style_enforcement") or {}
     strategy_use_enforcement = p.get("strategy_use_enforcement") or {}
+    evidence_cap_observe = p.get("evidence_cap_observe") or {}
     execution_gateway = p.get("execution_gateway") or {}
     strategy_certification = p.get("strategy_certification") or {}
     knowledge_resolution = p.get("knowledge_resolution") or {}
@@ -328,6 +339,7 @@ def _fallback_template(p: dict) -> str:
     proposal_shaping_line = _format_proposal_shaping_line(proposal_shaping)
     style_enforcement_line = _format_style_enforcement_line(style_enforcement)
     strategy_use_line = _format_strategy_use_enforcement_line(strategy_use_enforcement)
+    evidence_cap_line = _format_evidence_cap_observe_line(evidence_cap_observe)
     execution_gateway_line = _format_execution_gateway_line(execution_gateway)
     strategy_certification_line = _format_strategy_certification_line(strategy_certification)
     knowledge_line = _format_knowledge_resolution_line(knowledge_resolution)
@@ -355,6 +367,7 @@ def _fallback_template(p: dict) -> str:
             f"{enforcement_line}"
             f"{style_enforcement_line}"
             f"{strategy_use_line}"
+            f"{evidence_cap_line}"
             f"{execution_gateway_line}"
             f"{strategy_certification_line}"
             f"{knowledge_line}"
@@ -402,6 +415,7 @@ def _fallback_template(p: dict) -> str:
         f"{enforcement_line}"
         f"{style_enforcement_line}"
         f"{strategy_use_line}"
+        f"{evidence_cap_line}"
         f"{execution_gateway_line}"
         f"{strategy_certification_line}"
         f"{knowledge_line}"
@@ -637,6 +651,153 @@ def _format_strategy_use_enforcement_line(enforcement: dict) -> str:
         + "\n".join(lines)
         + "\n\n"
     )
+
+
+def _compact_evidence_cap_observe(
+    *,
+    cap_diagnostics: dict,
+    vote_summary: dict,
+    strategy_results: list,
+) -> dict:
+    if not cap_diagnostics:
+        return {}
+    rows = []
+    for ticker, raw in cap_diagnostics.items():
+        if not isinstance(raw, dict):
+            continue
+        clean_ticker = str(raw.get("ticker") or ticker or "").upper().strip()
+        if not clean_ticker:
+            continue
+        votes = vote_summary.get(clean_ticker) if isinstance(vote_summary, dict) else {}
+        if not isinstance(votes, dict):
+            votes = {}
+        static_cap = _float_or_zero(raw.get("static_cap"))
+        adjusted_cap = _float_or_zero(raw.get("evidence_adjusted_cap"))
+        cap_reduction = max(static_cap - adjusted_cap, 0.0)
+        row = {
+            "ticker": clean_ticker,
+            "static_cap": static_cap,
+            "evidence_adjusted_cap": adjusted_cap,
+            "cap_reduction": cap_reduction,
+            "current_or_target_weight": _float_or_zero(raw.get("current_or_target_weight")),
+            "would_clip": bool(raw.get("would_clip")),
+            "coverage_ratio": _float_or_zero(raw.get("coverage_ratio")),
+            "voted_count": int(raw.get("voted_count", votes.get("voted_count")) or 0),
+            "abstain_count": int(raw.get("abstain_count", votes.get("abstain_count")) or 0),
+            "mapping_error_count": int(raw.get("mapping_error_count", votes.get("mapping_error_count")) or 0),
+            "conviction_status": raw.get("conviction_status"),
+            "history_days": raw.get("history_days"),
+            "main_abstain_reason": _first_abstain_reason(votes.get("abstain_reasons") or []),
+        }
+        rows.append(row)
+    rows.sort(
+        key=lambda item: (
+            not bool(item.get("would_clip")),
+            -float(item.get("cap_reduction") or 0.0),
+            str(item.get("ticker") or ""),
+        )
+    )
+    meaningful_rows = [
+        row for row in rows
+        if row.get("would_clip")
+        or float(row.get("cap_reduction") or 0.0) >= 0.005
+        or int(row.get("mapping_error_count") or 0) > 0
+    ]
+    mapping_errors = _evidence_mapping_error_display_rows(strategy_results)
+    return {
+        "available": True,
+        "execution_effect": "diagnostic_only",
+        "ticker_count": len(rows),
+        "degraded_ticker_count": sum(1 for row in rows if float(row.get("cap_reduction") or 0.0) > 0.0),
+        "would_clip_count": sum(1 for row in rows if row.get("would_clip")),
+        "mapping_error_count": len(mapping_errors),
+        "rows": meaningful_rows[:3],
+        "mapping_error_rows": mapping_errors[:3],
+    }
+
+
+def _format_evidence_cap_observe_line(observe: dict) -> str:
+    if not observe or not observe.get("available"):
+        return ""
+    rows = observe.get("rows") or []
+    mapping_errors = observe.get("mapping_error_rows") or []
+    if not rows and not mapping_errors:
+        return ""
+    lines = [
+        "<b>Evidence cap observe</b>",
+        (
+            f"  diagnostic_only | degraded={int(observe.get('degraded_ticker_count') or 0)} "
+            f"| would_clip={int(observe.get('would_clip_count') or 0)} "
+            f"| mapping_error={int(observe.get('mapping_error_count') or 0)}"
+        ),
+    ]
+    for row in rows[:3]:
+        reason = row.get("main_abstain_reason") or row.get("conviction_status") or "n/a"
+        lines.append(
+            f"  {row.get('ticker')} cap {_format_pct(row.get('static_cap'))}->{_format_pct(row.get('evidence_adjusted_cap'))} "
+            f"| voted={int(row.get('voted_count') or 0)} "
+            f"| abstain={int(row.get('abstain_count') or 0)} "
+            f"| reason={reason}"
+        )
+    if mapping_errors:
+        shown = "; ".join(
+            f"{row.get('ticker')}:{row.get('strategy')}:{row.get('reason_code')}"
+            for row in mapping_errors[:3]
+        )
+        lines.append(f"  mapping_error: {shown}")
+    return "\n".join(lines) + "\n\n"
+
+
+def _evidence_mapping_error_display_rows(strategy_results: list) -> list[dict]:
+    rows = []
+    seen = set()
+    for strategy in strategy_results or []:
+        if not isinstance(strategy, dict):
+            continue
+        strategy_name = strategy.get("strategy_name")
+        for card in strategy.get("evidence_cards") or []:
+            if not isinstance(card, dict) or str(card.get("vote_status") or "") != "mapping_error":
+                continue
+            vote_diag = card.get("vote_diagnostics") if isinstance(card.get("vote_diagnostics"), dict) else {}
+            key = str(
+                vote_diag.get("dedupe_key")
+                or f"{card.get('strategy') or strategy_name}:{card.get('ticker')}:{vote_diag.get('reason_code')}"
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({
+                "ticker": card.get("ticker"),
+                "strategy": card.get("strategy") or strategy_name,
+                "reason_code": vote_diag.get("reason_code"),
+                "dedupe_key": key,
+            })
+    rows.sort(key=lambda row: (str(row.get("ticker") or ""), str(row.get("strategy") or "")))
+    return rows
+
+
+def _first_abstain_reason(rows: list) -> str | None:
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        reason = str(row.get("reason") or "").strip()
+        fields = [str(field) for field in row.get("fields") or [] if str(field)]
+        if reason and fields:
+            return f"{reason}:{','.join(fields)}"
+        if reason:
+            return reason
+    return None
+
+
+def _format_pct(value) -> str:
+    return f"{_float_or_zero(value):.1%}"
+
+
+def _float_or_zero(value) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _format_execution_gateway_line(gateway: dict) -> str:

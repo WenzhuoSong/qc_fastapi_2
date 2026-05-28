@@ -48,6 +48,12 @@ class _ConvictionOverlay:
 
 @dataclass
 class EvidenceCard:
+    """ETF-aware strategy evidence.
+
+    `action` describes what the strategy says. `vote_status` describes whether
+    that statement has downstream aggregation voting rights.
+    """
+
     ticker: str
     strategy: str
     strategy_version: str
@@ -67,6 +73,9 @@ class EvidenceCard:
     conviction_source_bucket: str | None = None
     conviction_n: int = 0
     effective_confidence: float = 0.0
+    vote_status: str = "voted"
+    abstain_reason: str | None = None
+    vote_diagnostics: dict[str, Any] = field(default_factory=dict)
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -114,13 +123,25 @@ def build_evidence_cards(
 def summarize_evidence_cards(cards: list[EvidenceCard | dict[str, Any]]) -> dict[str, Any]:
     rows = [card.to_dict() if isinstance(card, EvidenceCard) else dict(card) for card in cards]
     actions: dict[str, int] = {}
+    vote_statuses: dict[str, int] = {}
     fallback_count = 0
     missing_mapping_count = 0
+    mapping_error_count = 0
+    watch_vote_count = 0
+    abstain_count = 0
     max_weight_by_action: dict[str, float] = {}
     conviction_statuses: dict[str, int] = {}
     for row in rows:
         action = str(row.get("action") or "unknown")
         actions[action] = actions.get(action, 0) + 1
+        vote_status = str(row.get("vote_status") or "voted")
+        vote_statuses[vote_status] = vote_statuses.get(vote_status, 0) + 1
+        if vote_status == "mapping_error":
+            mapping_error_count += 1
+        if vote_status == "watch":
+            watch_vote_count += 1
+        if vote_status == "abstain":
+            abstain_count += 1
         reason = str(row.get("reason") or "")
         if "fallback" in reason or "missing_" in reason or "not_allowed" in reason:
             fallback_count += 1
@@ -136,7 +157,11 @@ def summarize_evidence_cards(cards: list[EvidenceCard | dict[str, Any]]) -> dict
         "cards_generated": len(rows),
         "missing_mapping_count": missing_mapping_count,
         "fallback_count": fallback_count,
+        "mapping_error_count": mapping_error_count,
+        "watch_vote_count": watch_vote_count,
+        "abstain_count": abstain_count,
         "actions": dict(sorted(actions.items())),
+        "vote_statuses": dict(sorted(vote_statuses.items())),
         "max_weight_by_action": dict(sorted(max_weight_by_action.items())),
         "conviction_statuses": dict(sorted(conviction_statuses.items())),
     }
@@ -268,6 +293,7 @@ def _build_one_card(
     reason = "mapped_by_compatibility_threshold"
     if conviction.reason_code:
         reason = f"{reason};{conviction.reason_code}"
+    vote_status = _vote_status_for_success(action=action, diagnostics=diagnostics)
     return EvidenceCard(
         ticker=ticker,
         strategy=strategy.name,
@@ -288,6 +314,15 @@ def _build_one_card(
         conviction_source_bucket=conviction.source_bucket,
         conviction_n=conviction.n,
         effective_confidence=conviction.effective_confidence,
+        vote_status=vote_status,
+        abstain_reason=None,
+        vote_diagnostics=_vote_diagnostics(
+            strategy=strategy.name,
+            ticker=ticker,
+            reason_code="unknown_weight_formula" if diagnostics.get("unknown_weight_formula") else None,
+            vote_status=vote_status,
+            mapping_role=mapping.get("role"),
+        ),
         diagnostics=diagnostics,
     )
 
@@ -305,6 +340,7 @@ def _fallback_card(
     normalized_score = _clamp(raw_score if raw_score is not None else 0.0)
     ticker = str(scored.ticker or "").upper().strip()
     role = str((asset or {}).get("role") or (asset or {}).get("asset_class") or "unknown")
+    vote_status = _fallback_vote_status(reason)
     return EvidenceCard(
         ticker=ticker,
         strategy=strategy.name,
@@ -325,6 +361,18 @@ def _fallback_card(
         conviction_source_bucket=None,
         conviction_n=0,
         effective_confidence=0.0,
+        vote_status=vote_status,
+        abstain_reason=None,
+        vote_diagnostics=_vote_diagnostics(
+            strategy=strategy.name,
+            ticker=ticker,
+            reason_code=reason.split(":", 1)[0],
+            vote_status=vote_status,
+            missing_fields=diagnostics.get("missing_safety_fields") or [],
+            mapping_role=diagnostics.get("mapping_role"),
+            requested_action=diagnostics.get("requested_action"),
+            allowed_actions=diagnostics.get("allowed_actions") or [],
+        ),
         diagnostics=diagnostics,
     )
 
@@ -540,6 +588,54 @@ def _missing_value(value: Any) -> bool:
     if isinstance(value, (list, tuple, set, dict)):
         return not value
     return False
+
+
+def _vote_status_for_success(*, action: str, diagnostics: dict[str, Any]) -> str:
+    if diagnostics.get("unknown_weight_formula"):
+        return "mapping_error"
+    if action in {"watch", "avoid", "neutral"}:
+        return "watch"
+    return "voted"
+
+
+def _fallback_vote_status(reason: str) -> str:
+    reason_code = str(reason or "").split(":", 1)[0]
+    if reason_code in {
+        "missing_asset_profile",
+        "missing_strategy_profile",
+        "missing_compatibility_mapping",
+        "missing_required_safety_field",
+    }:
+        return "mapping_error"
+    return "watch"
+
+
+def _vote_diagnostics(
+    *,
+    strategy: str,
+    ticker: str,
+    reason_code: str | None,
+    vote_status: str,
+    missing_fields: list[Any] | None = None,
+    mapping_role: Any = None,
+    requested_action: Any = None,
+    allowed_actions: list[Any] | None = None,
+    data_age_days: int | None = None,
+    history_days: int | None = None,
+) -> dict[str, Any]:
+    clean_reason = str(reason_code or "").strip() or None
+    alert_class = "knowledge_mapping_error" if vote_status == "mapping_error" else None
+    return {
+        "reason_code": clean_reason,
+        "missing_fields": [str(item) for item in (missing_fields or []) if str(item)],
+        "mapping_role": str(mapping_role) if mapping_role is not None else None,
+        "requested_action": str(requested_action) if requested_action is not None else None,
+        "allowed_actions": sorted(str(item) for item in (allowed_actions or []) if str(item)),
+        "data_age_days": data_age_days,
+        "history_days": history_days,
+        "dedupe_key": f"{strategy}:{ticker}:{clean_reason}" if alert_class and clean_reason else None,
+        "alert_class": alert_class,
+    }
 
 
 def _mode_cap(value: Any, mode: str) -> float:

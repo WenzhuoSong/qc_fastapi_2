@@ -41,6 +41,12 @@ from services.strategy_evidence import (
     build_evidence_cards,
     summarize_evidence_cards,
 )
+from services.evidence_vote_aggregation import (
+    aggregate_etf_evidence,
+    evidence_cards_from_strategy_results,
+    input_builder_exclusions_from_strategy_results,
+)
+from services.evidence_quality_cap import evaluate_evidence_quality_caps
 from services.strategy_feature_contract import build_strategy_feature_contract
 from services.strategy_input_builder import build_strategy_input
 from services.strategy_independence import (
@@ -132,6 +138,8 @@ class PlaygroundBundle:
     strategy_independence: dict[str, Any] = field(default_factory=dict)
     etf_decay_diagnostics: dict[str, Any] = field(default_factory=dict)
     liquidity_proxy_diagnostics: dict[str, Any] = field(default_factory=dict)
+    evidence_vote_summary: dict[str, Any] = field(default_factory=dict)
+    evidence_cap_diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -143,6 +151,7 @@ async def run_playground(
     brief: dict[str, Any],
     strategy_names: list[str] | None = None,
     include_historical: bool = True,
+    evidence_cap_config: dict[str, Any] | None = None,
 ) -> PlaygroundBundle:
     holdings = brief.get("holdings") or []
     holdings, enrichment = await _ensure_playground_features(holdings, strategy_names)
@@ -224,6 +233,13 @@ async def run_playground(
             data_gaps.append(f"yfinance historical replay unavailable: {type(exc).__name__}")
 
     consensus_weights = compute_consensus_weights(results)
+    evidence_vote_summary = _build_evidence_vote_summary(results)
+    evidence_cap_diagnostics = _build_evidence_cap_diagnostics(
+        results,
+        evidence_vote_summary=evidence_vote_summary,
+        reference_weights=consensus_weights,
+        config=evidence_cap_config,
+    )
     strategy_confidence = _compute_strategy_confidence(
         results,
         {},
@@ -260,6 +276,8 @@ async def run_playground(
         strategy_independence=strategy_independence,
         etf_decay_diagnostics=etf_decay_diagnostics,
         liquidity_proxy_diagnostics=liquidity_proxy_diagnostics,
+        evidence_vote_summary=evidence_vote_summary,
+        evidence_cap_diagnostics=evidence_cap_diagnostics,
     )
 
 
@@ -685,6 +703,30 @@ def _build_strategy_evidence_cards(
     except Exception as exc:
         logger.warning("[playground] evidence card generation failed for %s: %s", strategy.name, exc)
         return []
+
+
+def _build_evidence_vote_summary(results: list[StrategyResult]) -> dict[str, Any]:
+    """Build observe-only ETF vote aggregation diagnostics."""
+    return aggregate_etf_evidence(
+        evidence_cards=evidence_cards_from_strategy_results(results),
+        input_builder_exclusions=input_builder_exclusions_from_strategy_results(results),
+    )
+
+
+def _build_evidence_cap_diagnostics(
+    results: list[StrategyResult],
+    *,
+    evidence_vote_summary: dict[str, Any],
+    reference_weights: dict[str, float],
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build observe-only evidence-adjusted cap diagnostics."""
+    return evaluate_evidence_quality_caps(
+        vote_summary=evidence_vote_summary,
+        evidence_cards=evidence_cards_from_strategy_results(results),
+        current_or_target_weights=reference_weights,
+        config=config,
+    )
 
 
 async def _load_strategy_memory_feedback(

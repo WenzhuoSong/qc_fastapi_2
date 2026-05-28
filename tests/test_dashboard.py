@@ -131,6 +131,14 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Role / Action Summary", source)
         self.assertIn("Conviction Status Summary", source)
         self.assertIn("Conviction Display Contract", source)
+        self.assertIn("Evidence Cap Observe", source)
+        self.assertIn("Evidence Cap Observe Rows", source)
+        self.assertIn("Evidence Mapping Error Dedupe Rows", source)
+        self.assertIn("def _compact_evidence_cap_observe", source)
+        self.assertIn('"evidence_cap_observe": evidence_cap_observe', source)
+        self.assertIn('"vote_status": card.get("vote_status")', source)
+        self.assertIn('"vote_dedupe_key": vote_diag.get("dedupe_key")', source)
+        self.assertIn('"main_abstain_reason": _main_abstain_reason', source)
         self.assertIn('"conviction_display": _format_conviction_display(conviction)', source)
         self.assertIn('"conviction_status": card.get("conviction_status")', source)
         self.assertIn('"conviction_source_bucket": card.get("conviction_source_bucket")', source)
@@ -259,6 +267,20 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("default_transaction_cost_gate_config", pipeline_source)
         self.assertIn('"6cc_transaction_cost_gate"', pipeline_source)
         self.assertIn('"transaction_cost_gate_config": transaction_cost_gate_config', pipeline_source)
+
+    def test_dashboard_surfaces_evidence_cap_calibration(self):
+        source = Path("dashboard/app.py").read_text()
+
+        self.assertIn("load_evidence_cap_calibration_report", source)
+        self.assertIn("def _evidence_cap_calibration_dashboard", source)
+        self.assertIn("def _render_evidence_cap_calibration", source)
+        self.assertIn('"evidence_cap_calibration": evidence_cap_calibration', source)
+        self.assertIn("Evidence Cap Calibration", source)
+        self.assertIn("Recommended Config", source)
+        self.assertIn("Recommended Vote Thresholds", source)
+        self.assertIn('"recommendation_only": True', source)
+        self.assertIn('"execution_authority": "none"', source)
+        self.assertIn('"target_weight_mutation": "none"', source)
 
     def test_dashboard_surfaces_portfolio_risk_diagnostic(self):
         source = Path("dashboard/app.py").read_text()

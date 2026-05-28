@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from services.knowledge_base import build_knowledge_context
-from services.strategy_evidence import build_evidence_cards
+from services.strategy_evidence import build_evidence_cards, summarize_evidence_cards
 from strategies import ScoredTicker, get_strategy
 
 
@@ -109,6 +109,9 @@ class StrategyEvidenceTest(unittest.TestCase):
         )
 
         self.assertEqual(cards[0].action, "increase")
+        self.assertEqual(cards[0].vote_status, "voted")
+        self.assertIsNone(cards[0].abstain_reason)
+        self.assertEqual(cards[0].vote_diagnostics["alert_class"], None)
         self.assertEqual(cards[0].signal_type, "risk_on_amplifier")
         self.assertEqual(cards[0].max_reasonable_weight, 0.08)
 
@@ -140,6 +143,12 @@ class StrategyEvidenceTest(unittest.TestCase):
         )
 
         self.assertEqual(cards[0].action, "watch")
+        self.assertEqual(cards[0].vote_status, "mapping_error")
+        self.assertEqual(cards[0].vote_diagnostics["alert_class"], "knowledge_mapping_error")
+        self.assertEqual(
+            cards[0].vote_diagnostics["dedupe_key"],
+            "momentum_lite_v1:SPY:missing_compatibility_mapping",
+        )
         self.assertEqual(cards[0].max_reasonable_weight, 0.0)
         self.assertIn("missing_compatibility_mapping", cards[0].reason)
 
@@ -279,8 +288,61 @@ class StrategyEvidenceTest(unittest.TestCase):
         )
 
         self.assertEqual(cards[0].action, "watch")
+        self.assertEqual(cards[0].vote_status, "watch")
+        self.assertIsNone(cards[0].vote_diagnostics["alert_class"])
         self.assertEqual(cards[0].max_reasonable_weight, 0.0)
         self.assertIn("action_not_allowed_by_asset_profile", cards[0].reason)
+
+    def test_watch_threshold_is_watch_vote_status_without_replacing_action(self):
+        strategy = get_strategy("leveraged_etf_momentum_allocator")
+        cards = build_evidence_cards(
+            strategy=strategy,
+            scored=_scored(TQQQ=0.20),
+            knowledge_context=_leveraged_context(["TQQQ"]),
+            mode="semi_auto",
+        )
+
+        self.assertEqual(cards[0].action, "neutral")
+        self.assertEqual(cards[0].vote_status, "watch")
+        self.assertEqual(cards[0].signal_type, "no_signal")
+        self.assertIsNone(cards[0].vote_diagnostics["dedupe_key"])
+
+    def test_summary_counts_vote_statuses(self):
+        strategy = get_strategy("leveraged_etf_momentum_allocator")
+        voted = build_evidence_cards(
+            strategy=strategy,
+            scored=_scored(TQQQ=0.80),
+            knowledge_context=_leveraged_context(["TQQQ"]),
+            mode="semi_auto",
+        )[0]
+        watch = build_evidence_cards(
+            strategy=strategy,
+            scored=_scored(TQQQ=0.20),
+            knowledge_context=_leveraged_context(["TQQQ"]),
+            mode="semi_auto",
+        )[0]
+        mapping_error_strategy = get_strategy("momentum_lite_v1")
+        mapping_error = build_evidence_cards(
+            strategy=mapping_error_strategy,
+            scored=_scored(SPY=0.8),
+            knowledge_context=build_knowledge_context(
+                tickers=["SPY"],
+                strategy_names=["momentum_lite_v1"],
+                regime="trending_bull",
+            ),
+        )[0]
+
+        summary = summarize_evidence_cards([voted, watch, mapping_error])
+
+        self.assertEqual(summary["vote_statuses"], {
+            "mapping_error": 1,
+            "voted": 1,
+            "watch": 1,
+        })
+        self.assertEqual(summary["mapping_error_count"], 1)
+        self.assertEqual(summary["watch_vote_count"], 1)
+        self.assertEqual(summary["abstain_count"], 0)
+        self.assertEqual(summary["cards_generated"], 3)
 
     def test_full_auto_uvxy_cap_is_not_above_semi_auto(self):
         strategy = get_strategy("leveraged_etf_momentum_allocator")

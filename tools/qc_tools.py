@@ -14,6 +14,8 @@ from services.execution_policy import policy_snapshot
 logger   = logging.getLogger("qc_fastapi_2.qc")
 settings = get_settings()
 
+POLICY_SYNC_PROTOCOL_VERSION = "v2_payload_json"
+
 
 def _qc_auth_headers() -> dict:
     """QC API 使用 HMAC-SHA256 签名。"""
@@ -94,12 +96,7 @@ async def tool_send_policy_sync(inp: dict | None = None) -> dict:
     command_id = inp.get("command_id") or f"policy_sync_{int(time.time())}"
     payload = inp.get("payload") or policy_snapshot()
     url = f"{settings.qc_api_url}/live/commands/create"
-
-    command_payload = {
-        "target": "PolicySync",
-        "command_id": command_id,
-        "payload": payload,
-    }
+    command_payload = build_policy_sync_command_payload(command_id, payload)
     body = {
         "projectId": int(settings.qc_project_id),
         "command": command_payload,
@@ -122,6 +119,8 @@ async def tool_send_policy_sync(inp: dict | None = None) -> dict:
                         "response": resp_json,
                         "command_id": command_id,
                         "policy_version": payload.get("version"),
+                        "protocol_version": POLICY_SYNC_PROTOCOL_VERSION,
+                        "command_payload": command_payload,
                     }
                 logger.warning("QC API %s: %s (attempt %s)", resp.status_code, resp.text, attempt)
             except Exception as e:
@@ -129,6 +128,27 @@ async def tool_send_policy_sync(inp: dict | None = None) -> dict:
                 await asyncio.sleep(2 ** attempt)
 
     return {"success": False, "error": "QC API unreachable after 3 attempts"}
+
+
+def build_policy_sync_command_payload(command_id: str, payload: dict) -> dict:
+    """Build a QC-friendly PolicySync command with redundant policy encodings.
+
+    QC live commands may arrive as .NET dictionaries where nested mapping
+    objects are awkward to enumerate. Keep the original nested payload for the
+    normal path, but include a JSON string and top-level policy fields so QC can
+    recover without guessing.
+    """
+    safe_payload = payload or {}
+    return {
+        "target": "PolicySync",
+        "command_id": command_id,
+        "payload": safe_payload,
+        "payload_json": json.dumps(safe_payload, sort_keys=True, separators=(",", ":")),
+        "version": safe_payload.get("version"),
+        "roles": safe_payload.get("roles") or {},
+        "caps": safe_payload.get("caps") or {},
+        "protocol_version": POLICY_SYNC_PROTOCOL_VERSION,
+    }
 
 
 async def tool_emergency_liquidate(_input: dict) -> dict:

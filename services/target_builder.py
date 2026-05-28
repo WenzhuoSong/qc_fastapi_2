@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from services.evidence_cap_config import default_evidence_cap_config, resolve_evidence_cap_mode
 from services.execution_policy import apply_policy_caps, evaluate_policy, policy_snapshot
 
 
@@ -68,12 +69,22 @@ def build_target_weights(
     style = decision_style or {}
     governance = position_governance or {}
     cfg = constraints or {}
+    pc_gate = cfg.get("portfolio_construction_gate") if isinstance(cfg.get("portfolio_construction_gate"), dict) else {}
+    evidence_cap_diagnostics = (
+        cfg.get("evidence_cap_diagnostics")
+        if isinstance(cfg.get("evidence_cap_diagnostics"), dict)
+        else {}
+    )
+    evidence_cap_config = default_evidence_cap_config(
+        cfg.get("evidence_cap_config") if isinstance(cfg.get("evidence_cap_config"), dict) else {}
+    )
     forbidden_evidence_fields_seen = _forbidden_evidence_fields_seen(governance)
 
     decisions = _decisions_by_ticker(governance)
     advisory = _advisory_by_ticker(validated_advisory or governance.get("advisory_overrides") or [])
     starting_weights = construction if construction_participated else base
     start_source = str(construction_source or "base_weights").strip() if construction_participated else "base_weights"
+    clean_mode = _target_builder_mode(mode)
     tickers = sorted((set(base) | set(construction) | set(current) | set(decisions)) - {"CASH"})
     permission = str(scorecard.get("investment_permission") or "")
     no_add = permission in NO_ADD_PERMISSIONS or bool(scorecard.get("require_human_confirmation"))
@@ -92,6 +103,7 @@ def build_target_weights(
         "hedge_intent_overlay",
         "turnover_clip",
         "normalization",
+        "evidence_cap_shadow_or_gate",
     ]
 
     for ticker in tickers:
@@ -207,6 +219,18 @@ def build_target_weights(
     if cash_raised > 0:
         capped_targets["CASH"] = float(capped_targets.get("CASH", 0.0) or 0.0) + cash_raised
     normalized = _normalize_cash_first(capped_targets)
+    evidence_cap_gate = _apply_evidence_cap_gate(
+        evidence_cap_diagnostics=evidence_cap_diagnostics,
+        target_weights=normalized,
+        per_ticker=per_ticker,
+        evidence_cap_config=evidence_cap_config,
+        allow_enforcement=clean_mode == "target_builder_gated",
+    )
+    normalized = evidence_cap_gate["target_weights"]
+    evidence_cap_shadow = evidence_cap_gate["diagnostics"]
+    evidence_cap_applied_tickers = set(evidence_cap_gate.get("applied_tickers") or [])
+    if evidence_cap_shadow.get("applied_count"):
+        violations.append(f"evidence_cap:{int(evidence_cap_shadow.get('applied_count') or 0)}")
     policy_evaluation = evaluate_policy(
         weights=normalized,
         current_weights=current,
@@ -231,11 +255,12 @@ def build_target_weights(
             row.setdefault("changed_by", []).append("turnover_clip")
         if ticker in cap_event_tickers and pre_target is not None and abs(final_target - pre_target) > 1e-9:
             row.setdefault("changed_by", []).append("policy_cap")
+        if ticker in evidence_cap_applied_tickers:
+            row.setdefault("changed_by", []).append("evidence_cap")
         row["changed_by"] = _unique(row.get("changed_by") or [])
         row["final_target"] = final_target
 
     turnover_after = _turnover(normalized, current)
-    clean_mode = _target_builder_mode(mode)
     return TargetBuildResult(
         target_weights=normalized,
         target_build_steps=steps,
@@ -258,10 +283,17 @@ def build_target_weights(
             "target_start_source": start_source,
             "construction_participated": construction_participated,
             "construction_source": str(construction_source or "").strip() or None,
+            "portfolio_construction_configured_mode": pc_gate.get("configured_mode") or pc_gate.get("mode"),
+            "portfolio_construction_effective_mode": pc_gate.get("effective_mode"),
+            "portfolio_construction_gate_status": pc_gate.get("gate_status"),
+            "portfolio_construction_gate_eligible": pc_gate.get("gate_eligible"),
+            "portfolio_construction_blocked_reason": pc_gate.get("blocked_reason"),
+            "portfolio_construction_gate_blockers": _string_list(pc_gate.get("gate_blockers")),
             "policy_version": policy_snapshot()["version"],
             "policy_evaluation": policy_evaluation,
             "policy_cap_events": cap_events,
             "cash_raised_by_policy_cap": cash_raised,
+            "evidence_cap_shadow": evidence_cap_shadow,
             "hedge_intent": hedge_overlay["diagnostics"],
             "ticker_count": len(per_ticker),
             "allowed_evidence_fields": sorted(ALLOWED_EVIDENCE_FIELDS),
@@ -412,6 +444,175 @@ def _validated_advisory_delta(row: dict[str, Any] | None) -> float:
     return round(after - before, 6)
 
 
+def _apply_evidence_cap_gate(
+    *,
+    evidence_cap_diagnostics: dict[str, Any],
+    target_weights: dict[str, float],
+    per_ticker: dict[str, dict[str, Any]],
+    evidence_cap_config: dict[str, Any],
+    allow_enforcement: bool,
+) -> dict[str, Any]:
+    gate = resolve_evidence_cap_mode(evidence_cap_config)
+    if not allow_enforcement and gate.get("effective_mode") == "gated":
+        blockers = list(gate.get("gate_blockers") or [])
+        blockers.append("target_builder_shadow_no_execution_authority")
+        gate = {
+            **gate,
+            "effective_mode": "observe",
+            "blocked_reason": "target_builder_shadow_no_execution_authority",
+            "gate_blockers": _unique(blockers),
+            "execution_effect": "diagnostic_only",
+        }
+    if not evidence_cap_diagnostics:
+        return {
+            "target_weights": target_weights,
+            "applied_tickers": [],
+            "diagnostics": {
+                "enabled": False,
+                "configured_mode": gate.get("configured_mode"),
+                "effective_mode": gate.get("effective_mode"),
+                "criteria_met": gate.get("criteria_met"),
+                "blocked_reason": gate.get("blocked_reason"),
+                "gate_blockers": gate.get("gate_blockers") or [],
+                "execution_effect": gate.get("execution_effect"),
+                "target_weight_mutation": "none",
+                "would_apply_count": 0,
+                "applied_count": 0,
+                "rows": [],
+            },
+        }
+
+    if gate.get("effective_mode") == "off":
+        return {
+            "target_weights": target_weights,
+            "applied_tickers": [],
+            "diagnostics": {
+                "enabled": False,
+                "configured_mode": gate.get("configured_mode"),
+                "effective_mode": "off",
+                "criteria_met": gate.get("criteria_met"),
+                "blocked_reason": gate.get("blocked_reason"),
+                "gate_blockers": gate.get("gate_blockers") or [],
+                "execution_effect": "none",
+                "target_weight_mutation": "none",
+                "input_schema": "pipeline_context.evidence_cap_diagnostics",
+                "would_apply_count": 0,
+                "applied_count": 0,
+                "rows": [],
+            },
+        }
+
+    out_weights = dict(target_weights)
+    rows: list[dict[str, Any]] = []
+    released_to_cash = 0.0
+    applied_tickers: list[str] = []
+    for ticker, raw in sorted(evidence_cap_diagnostics.items()):
+        if not isinstance(raw, dict):
+            continue
+        clean_ticker = str(raw.get("ticker") or ticker or "").upper().strip()
+        if not clean_ticker or clean_ticker == "CASH":
+            continue
+        adjusted_cap = _optional_float(raw.get("evidence_adjusted_cap"))
+        static_cap = _optional_float(raw.get("static_cap"))
+        target_before = round(float(out_weights.get(clean_ticker, 0.0) or 0.0), 6)
+        enforcement_cap = _evidence_enforcement_cap(adjusted_cap=adjusted_cap, static_cap=static_cap)
+        would_apply = (
+            enforcement_cap is not None
+            and target_before > max(float(enforcement_cap), 0.0) + 1e-12
+        )
+        applied = bool(gate.get("effective_mode") == "gated" and would_apply)
+        target_after = target_before
+        if applied and enforcement_cap is not None:
+            target_after = round(max(float(enforcement_cap), 0.0), 6)
+            out_weights[clean_ticker] = target_after
+            released_to_cash += max(target_before - target_after, 0.0)
+            applied_tickers.append(clean_ticker)
+        row = {
+            "ticker": clean_ticker,
+            "target_weight": target_before,
+            "target_before_cap": target_before,
+            "target_after_cap": target_after,
+            "static_cap": round(float(static_cap), 6) if static_cap is not None else None,
+            "evidence_adjusted_cap": round(float(adjusted_cap), 6) if adjusted_cap is not None else None,
+            "evidence_enforcement_cap": (
+                round(float(enforcement_cap), 6) if enforcement_cap is not None else None
+            ),
+            "would_apply_cap": bool(would_apply),
+            "would_clip_to": round(float(enforcement_cap), 6) if would_apply and enforcement_cap is not None else None,
+            "applied_cap": applied,
+            "input_would_clip": bool(raw.get("would_clip")),
+            "coverage_ratio": _optional_round(raw.get("coverage_ratio")),
+            "evidence_quality_multiplier": _optional_round(raw.get("evidence_quality_multiplier")),
+            "conviction_status": raw.get("conviction_status"),
+            "history_days": raw.get("history_days"),
+            "voted_count": raw.get("voted_count"),
+            "abstain_count": raw.get("abstain_count"),
+            "mapping_error_count": raw.get("mapping_error_count"),
+            "source": "pipeline_context.evidence_cap_diagnostics",
+            "configured_mode": gate.get("configured_mode"),
+            "effective_mode": gate.get("effective_mode"),
+            "blocked_reason": gate.get("blocked_reason"),
+            "execution_effect": gate.get("execution_effect"),
+        }
+        rows.append(row)
+        if clean_ticker in per_ticker:
+            per_ticker[clean_ticker]["evidence_cap_shadow"] = {
+                "would_apply_cap": bool(would_apply),
+                "evidence_adjusted_cap": row["evidence_adjusted_cap"],
+                "would_clip_to": row["would_clip_to"],
+                "applied_cap": applied,
+                "target_before_cap": target_before,
+                "target_after_cap": target_after,
+                "effective_mode": gate.get("effective_mode"),
+            }
+
+    if released_to_cash > 0.0:
+        out_weights["CASH"] = float(out_weights.get("CASH", 0.0) or 0.0) + released_to_cash
+        out_weights = _normalize_cash_first(out_weights)
+
+    rows.sort(
+        key=lambda item: (
+            not bool(item.get("would_apply_cap")),
+            not bool(item.get("applied_cap")),
+            -float(item.get("target_before_cap") or 0.0),
+            str(item.get("ticker") or ""),
+        )
+    )
+    return {
+        "target_weights": out_weights,
+        "applied_tickers": applied_tickers,
+        "diagnostics": {
+            "enabled": True,
+            "configured_mode": gate.get("configured_mode"),
+            "effective_mode": gate.get("effective_mode"),
+            "criteria_met": gate.get("criteria_met"),
+            "blocked_reason": gate.get("blocked_reason"),
+            "gate_blockers": gate.get("gate_blockers") or [],
+            "observe_cycles": gate.get("observe_cycles"),
+            "min_observe_cycles": gate.get("min_observe_cycles"),
+            "would_clip_rate": gate.get("would_clip_rate"),
+            "max_would_clip_rate": gate.get("max_would_clip_rate"),
+            "min_multiplier": gate.get("min_multiplier"),
+            "execution_effect": gate.get("execution_effect"),
+            "target_weight_mutation": "tighten_only" if applied_tickers else "none",
+            "input_schema": "pipeline_context.evidence_cap_diagnostics",
+            "would_apply_count": sum(1 for row in rows if row.get("would_apply_cap")),
+            "applied_count": len(applied_tickers),
+            "cash_raised_by_evidence_cap": round(released_to_cash, 6),
+            "rows": rows,
+        },
+    }
+
+
+def _evidence_enforcement_cap(*, adjusted_cap: float | None, static_cap: float | None) -> float | None:
+    if adjusted_cap is None:
+        return None
+    candidates = [max(float(adjusted_cap), 0.0)]
+    if static_cap is not None:
+        candidates.append(max(float(static_cap), 0.0))
+    return min(candidates)
+
+
 def _effective_single_delta(
     scorecard: dict[str, Any],
     style: dict[str, Any],
@@ -488,6 +689,15 @@ def _turnover(target: dict[str, Any], current: dict[str, Any]) -> float:
     ) / 2.0
 
 
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item)]
+    text = str(value)
+    return [text] if text else []
+
+
 def _clean_weights(raw: dict[str, Any] | None) -> dict[str, float]:
     out: dict[str, float] = {}
     for ticker, value in (raw or {}).items():
@@ -506,6 +716,11 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _optional_round(value: Any) -> float | None:
+    parsed = _optional_float(value)
+    return round(parsed, 6) if parsed is not None else None
 
 
 def _target_builder_mode(mode: str) -> str:
