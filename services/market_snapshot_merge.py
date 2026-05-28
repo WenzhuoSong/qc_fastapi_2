@@ -10,7 +10,7 @@ from services.feature_authority import (
     canonical_field_name,
     legacy_debug_namespace,
 )
-from services.feature_authority_mode import AUDIT_ONLY, LEGACY_OVERLAY, YFINANCE_RESEARCH, normalize_feature_authority_mode
+from services.feature_authority_mode import YFINANCE_RESEARCH, normalize_feature_authority_mode
 from services.feature_provenance import (
     annotate_snapshot_row_provenance,
     merge_feature_sources,
@@ -53,13 +53,6 @@ def merge_market_snapshots(
 ) -> dict[str, Any]:
     """Merge live heartbeat state with QC EOD audit and yfinance research fields."""
     mode = normalize_feature_authority_mode(mode)
-    if mode == LEGACY_OVERLAY:
-        return _with_mode(_merge_legacy_overlay(heartbeat, feature_snapshot), mode)
-    if mode == AUDIT_ONLY:
-        active = _merge_legacy_overlay(heartbeat, feature_snapshot)
-        shadow = _merge_yfinance_research(heartbeat, feature_snapshot, yfinance_feature_map)
-        active["feature_authority_audit"] = _build_shadow_audit(active, shadow)
-        return _with_mode(active, mode)
     return _with_mode(_merge_yfinance_research(heartbeat, feature_snapshot, yfinance_feature_map), mode)
 
 
@@ -137,99 +130,9 @@ def _merge_yfinance_research(
     return merged
 
 
-def _merge_legacy_overlay(
-    heartbeat: dict[str, Any],
-    feature_snapshot: dict[str, Any],
-) -> dict[str, Any]:
-    """Previous overlay behavior: QC daily row first, heartbeat row wins."""
-    merged = dict(heartbeat)
-    heartbeat_as_of = heartbeat.get("timestamp_utc") or heartbeat.get("received_at") or heartbeat.get("trading_date")
-    heartbeat_trading_date = heartbeat.get("trading_date") or heartbeat_as_of
-    feature_as_of = feature_snapshot.get("timestamp_utc") or feature_snapshot.get("received_at") or feature_snapshot.get("trading_date")
-    feature_trading_date = feature_snapshot.get("trading_date") or feature_as_of
-    feature_rows = feature_snapshot.get("features") or feature_snapshot.get("holdings") or []
-    features_by_ticker = {
-        (row.get("ticker") or "").upper().strip(): annotate_snapshot_row_provenance(
-            row,
-            source="qc_daily_snapshot",
-            as_of=feature_as_of,
-            trading_date=feature_trading_date,
-        )
-        for row in feature_rows
-        if row.get("ticker")
-    }
-
-    enriched_holdings = []
-    for row in heartbeat.get("holdings") or []:
-        ticker = (row.get("ticker") or "").upper().strip()
-        feature_row = features_by_ticker.get(ticker) or {}
-        live_row = annotate_snapshot_row_provenance(
-            row,
-            source="qc_heartbeat",
-            as_of=heartbeat_as_of,
-            trading_date=heartbeat_trading_date,
-        )
-        merged_row = {**feature_row, **live_row}
-        merged_row["feature_sources"] = merge_feature_sources(feature_row, live_row)
-        enriched_holdings.append({key: value for key, value in merged_row.items() if value is not None})
-
-    heartbeat_tickers = {
-        (row.get("ticker") or "").upper().strip()
-        for row in heartbeat.get("holdings") or []
-    }
-    for ticker, feature_row in sorted(features_by_ticker.items()):
-        if ticker and ticker not in heartbeat_tickers:
-            enriched_holdings.append(feature_row)
-
-    merged["holdings"] = enriched_holdings
-    merged["latest_feature_snapshot_at"] = feature_snapshot.get("timestamp_utc")
-    merged["schema_capabilities"] = _schema_capabilities(
-        heartbeat,
-        has_yfinance=False,
-        has_qc_daily=bool(features_by_ticker),
-    )
-    return merged
-
-
 def _with_mode(snapshot: dict[str, Any], mode: str) -> dict[str, Any]:
     snapshot["feature_authority_mode"] = mode
     return snapshot
-
-
-def _build_shadow_audit(active: dict[str, Any], shadow: dict[str, Any]) -> dict[str, Any]:
-    active_by_ticker = {
-        (row.get("ticker") or "").upper().strip(): row
-        for row in active.get("holdings") or []
-        if row.get("ticker")
-    }
-    shadow_by_ticker = {
-        (row.get("ticker") or "").upper().strip(): row
-        for row in shadow.get("holdings") or []
-        if row.get("ticker")
-    }
-    fields = sorted(DAILY_RESEARCH_FIELDS | {"legacy_qc_indicators"})
-    diffs = []
-    for ticker in sorted(set(active_by_ticker) | set(shadow_by_ticker)):
-        active_row = active_by_ticker.get(ticker) or {}
-        shadow_row = shadow_by_ticker.get(ticker) or {}
-        for field in fields:
-            if active_row.get(field) == shadow_row.get(field):
-                continue
-            if active_row.get(field) is None and shadow_row.get(field) is None:
-                continue
-            diffs.append({
-                "ticker": ticker,
-                "field": field,
-                "active": active_row.get(field),
-                "shadow": shadow_row.get(field),
-            })
-    return {
-        "active_mode": AUDIT_ONLY,
-        "shadow_mode": YFINANCE_RESEARCH,
-        "diff_count": len(diffs),
-        "sample_diffs": diffs[:25],
-        "stale_yfinance_tickers": shadow.get("stale_yfinance_tickers") or [],
-    }
 
 
 def _merge_ticker_rows(

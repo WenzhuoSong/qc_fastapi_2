@@ -12,8 +12,7 @@ from tools.qc_tools     import tool_send_policy_sync, tool_send_weight_command
 from tools.notify_tools import tool_send_telegram
 from services.proposal  import load_pending_proposal, mark_proposal_done
 from services.feature_authority_mode import (
-    VALID_FEATURE_AUTHORITY_MODES,
-    feature_authority_rollback_config,
+    YFINANCE_RESEARCH,
     normalize_feature_authority_mode,
 )
 from services.pc_promotion_config import default_pc_promotion_config, format_pc_promotion_config
@@ -259,8 +258,7 @@ async def _cmd_config(text: str) -> str:
       /config
       /config position_manager_config max_new_buys_per_cycle 2
       /config pm max_turnover_per_cycle 0.25
-      /config feature_authority_mode yfinance_research
-      /config feature_authority_mode rollback
+      /config feature_authority_mode
     """
     allowed_keys = {
         "max_new_buys_per_cycle",
@@ -275,35 +273,19 @@ async def _cmd_config(text: str) -> str:
     if len(parts) == 1:
         async with AsyncSessionLocal() as db:
             cfg = await get_system_config(db, "position_manager_config")
-            mode_cfg = await get_system_config(db, "feature_authority_mode")
         current = (cfg.value if cfg else {}) or {}
         rows = [f"{k}: {current.get(k)}" for k in sorted(allowed_keys)]
-        mode = normalize_feature_authority_mode(mode_cfg.value if mode_cfg else None)
         return (
             "⚙️ position_manager_config\n"
             + "\n".join(rows)
-            + f"\n\nfeature_authority_mode: {mode}"
+            + f"\n\nfeature_authority_mode: {YFINANCE_RESEARCH} (fixed)"
         )
 
     if len(parts) == 3 and parts[1] == "feature_authority_mode":
-        if parts[2].strip().lower() == "rollback":
-            async with AsyncSessionLocal() as db:
-                current_cfg = await get_system_config(db, "feature_authority_mode")
-                rollback_value = feature_authority_rollback_config(
-                    previous_mode=current_cfg.value if current_cfg else None,
-                    reason="telegram_rollback",
-                )
-                await upsert_system_config(db, "feature_authority_mode", rollback_value, "telegram_config")
-            return (
-                "✅ Rolled back feature_authority_mode = legacy_overlay\n"
-                "Audit reports and provenance fields are preserved; no database rollback was performed."
-            )
         mode = normalize_feature_authority_mode(parts[2])
-        if parts[2].strip().lower() not in VALID_FEATURE_AUTHORITY_MODES:
-            return "❌ Invalid feature_authority_mode. Allowed: " + ", ".join(sorted(VALID_FEATURE_AUTHORITY_MODES | {"rollback"}))
-        async with AsyncSessionLocal() as db:
-            await upsert_system_config(db, "feature_authority_mode", {"value": mode}, "telegram_config")
-        return f"✅ Updated feature_authority_mode = {mode}"
+        if mode != YFINANCE_RESEARCH:
+            return "❌ feature_authority_mode is fixed to yfinance_research; legacy/audit modes were removed."
+        return f"✅ feature_authority_mode is already fixed to {mode}"
 
     async with AsyncSessionLocal() as db:
         cfg = await get_system_config(db, "position_manager_config")
@@ -312,9 +294,9 @@ async def _cmd_config(text: str) -> str:
     if len(parts) != 4 or parts[1] not in ("pm", "position_manager_config"):
         return (
             "Usage: /config pm <key> <value>\n"
-            "Or: /config feature_authority_mode <mode>\n"
+            "Or: /config feature_authority_mode yfinance_research\n"
             "Allowed PM keys: " + ", ".join(sorted(allowed_keys)) + "\n"
-            "Allowed feature modes: " + ", ".join(sorted(VALID_FEATURE_AUTHORITY_MODES | {"rollback"}))
+            "Feature authority mode is fixed to yfinance_research."
         )
 
     key = parts[2]

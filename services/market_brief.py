@@ -24,10 +24,8 @@ from typing import Any
 from sqlalchemy import desc, select
 
 from constants import RISK_ON_SECTORS, RISK_OFF_SECTORS
-from db.queries import get_system_config
 from db.models import MacroNewsCache, QCSnapshot, TickerNewsLibrary
 from db.session import AsyncSessionLocal
-from services.feature_authority_mode import normalize_feature_authority_mode
 from services.feature_provenance import summarize_feature_provenance
 from services.macro_regime_builder import build_deterministic_macro_regime
 from services.market_feature_store import latest_feature_map
@@ -157,8 +155,6 @@ async def _read_latest_market_snapshot() -> dict | None:
 
         heartbeat_payload = (heartbeat_row.raw_payload or {}) if heartbeat_row else {}
         feature_payload = (feature_row.raw_payload or {}) if feature_row else {}
-        mode_cfg = await get_system_config(db, "feature_authority_mode")
-        feature_authority_mode = normalize_feature_authority_mode(mode_cfg.value if mode_cfg else None)
         tickers = _snapshot_tickers(heartbeat_payload) | _snapshot_tickers(feature_payload)
         yfinance_features = await latest_feature_map(
             db,
@@ -170,8 +166,8 @@ async def _read_latest_market_snapshot() -> dict | None:
     if not heartbeat_payload and not feature_payload and not yfinance_features:
         return None
     if not heartbeat_payload:
-        return merge_market_snapshots({}, feature_payload, yfinance_features, mode=feature_authority_mode)
-    return merge_market_snapshots(heartbeat_payload, feature_payload, yfinance_features, mode=feature_authority_mode)
+        return merge_market_snapshots({}, feature_payload, yfinance_features)
+    return merge_market_snapshots(heartbeat_payload, feature_payload, yfinance_features)
 
 
 def _snapshot_tickers(snapshot: dict[str, Any]) -> set[str]:
