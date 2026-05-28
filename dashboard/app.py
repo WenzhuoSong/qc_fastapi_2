@@ -2604,6 +2604,7 @@ def _render_strategy_evidence(evidence: dict[str, Any]) -> str:
         reason = evidence.get("reason") or "No ETF / Strategy Evidence available."
         return f"<p class=\"muted\">{escape(str(reason))}</p>"
     summary = evidence.get("evidence_summary") or {}
+    independence = evidence.get("strategy_independence") or {}
     overview = {
         "playground_available": evidence.get("playground_available"),
         "generated_at": evidence.get("generated_at"),
@@ -2629,7 +2630,6 @@ def _render_strategy_evidence(evidence: dict[str, Any]) -> str:
         "execution_authority": diversity.get("execution_authority"),
     }
     evidence_cap = evidence.get("evidence_cap_observe") or {}
-    independence = evidence.get("strategy_independence") or {}
     return f"""
       <div class="grid">
         <article class="card"><h3>Overview</h3>{_render_kv(overview)}</article>

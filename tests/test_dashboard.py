@@ -172,6 +172,13 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('"diversity_family_rows": strategy_diversity.get("family_rows") or []', source)
         self.assertIn('"canonical_family": row.get("canonical_family")', source)
         self.assertIn('"alpha_source": row.get("alpha_source")', source)
+        render_start = source.index("def _render_strategy_evidence")
+        render_end = source.index("def _render_live_signal_conviction")
+        render_source = source[render_start:render_end]
+        self.assertLess(
+            render_source.index('independence = evidence.get("strategy_independence") or {}'),
+            render_source.index('"alpha_strategy_count": independence.get("alpha_strategy_count")'),
+        )
 
     def test_dashboard_surfaces_live_signal_conviction(self):
         source = Path("dashboard/app.py").read_text()

@@ -56,6 +56,7 @@ QC live algorithm
   -> strategy input builder and playground diagnostics
   -> evidence bundle and evidence cards
   -> alpha validation / conviction / attribution diagnostics
+  -> AlphaDecisionProfile / AlphaDecisionPolicy interpretation
   -> LLM research review
   -> deterministic target_builder
   -> risk_manager validation
@@ -228,6 +229,7 @@ Important persisted objects include:
 | Frozen signals | Immutable daily strategy signals |
 | Signal outcomes | Forward-return labels attached after horizons mature |
 | Conviction profiles | Historical/live/combined strategy reliability summaries |
+| Alpha decision profiles | Strategy/family/regime/epoch decision evidence after statistical, attribution, cost, and independence adjustment |
 | Execution log | High-level command state and preflight result |
 | Command lifecycle events | Detailed command event chain |
 | Deferred execution ledger | Deferred delta tracking after throttle clipping |
@@ -691,9 +693,25 @@ They should always be shown with:
 A conviction number without sample count and status is not sufficient for
 professional review.
 
+The system now distinguishes operational readiness from statistical maturity.
+The legacy/operational label `calibrated` is diagnostic only. It is not by
+itself a promotion or allocation gate.
+
+Decision-facing maturity is based on conservative statistical tiers:
+
+| Sample Count | Statistical Status | Decision Meaning |
+|---:|---|---|
+| 0-29 | insufficient | no positive promotion credit |
+| 30-99 | early_signal | monitoring only, not proof |
+| 100-299 | indicative | can support advisory promotion if other checks pass |
+| 300+ | statistically_meaningful | can receive full statistical credit if other checks pass |
+
+This prevents 30 live samples from being treated as statistically proven alpha.
+
 ### 12.4 Statistical Independence
 
-The system now diagnoses strategy independence.
+The system now diagnoses and consumes strategy independence in the alpha
+decision loop.
 
 This matters because multiple strategy names may still express the same
 momentum factor. Professional review should distinguish:
@@ -703,6 +721,11 @@ momentum factor. Professional review should distinguish:
 
 Correlation matrix, regime gap analysis, and promotion/degradation diagnostics
 help prevent strategy diversity from being only cosmetic.
+
+High positive correlation reduces duplicate decision credit through a
+redundancy multiplier. Low or negative correlation is treated differently:
+negative correlation may be useful diversifier evidence, but still requires its
+own outcome validation.
 
 ### 12.5 Performance Attribution
 
@@ -715,6 +738,90 @@ Attribution attempts to decompose results into:
 
 This is essential for deciding whether returns come from actual edge or simply
 from market exposure.
+
+Attribution now feeds promotion and degradation recommendations. A strategy
+with positive gross return but negative residual alpha should not be promoted
+without explicit operator review or override.
+
+The system still needs enough live and historical samples for attribution to be
+meaningful. Attribution model quality remains an important review item because
+an incomplete factor model can mislabel factor exposure as residual alpha.
+
+### 12.6 Alpha Decision Profiles
+
+`AlphaDecisionProfile` is the canonical read-only object that combines:
+
+- statistical status and sample count
+- residual alpha status
+- cost-adjusted edge using the IBKR proxy
+- independence cluster and redundancy multiplier
+- regime and strategy family
+- construction epoch
+- decision status and decision multiplier
+
+It has no execution authority:
+
+```text
+execution_authority = none
+target_weight_mutation = none
+```
+
+The profile answers:
+
+```text
+After beta/factor attribution, duplicate strategy correlation, and estimated
+costs, does this strategy/family/regime still appear to have positive edge?
+```
+
+`construction_epoch_id` separates evidence generated under materially different
+construction or policy contexts.
+
+Epoch triggers:
+
+- Portfolio Construction mode change, such as shadow -> candidate -> gated
+- material Portfolio Construction objective change
+- execution policy version change
+- operator manual reset
+
+Cross-epoch policy:
+
+- old epoch data is retained as historical prior
+- old epoch data must not be merged into new-epoch live-paper conviction
+- new-epoch live-paper conviction starts from the epoch boundary
+- cross-epoch evidence must be labeled as historical prior requiring live
+  confirmation
+
+### 12.7 Alpha Decision Policy
+
+`AlphaDecisionPolicy` is the deterministic interpreter for alpha decision
+evidence.
+
+Modes:
+
+| Mode | Meaning |
+|---|---|
+| observe | records would-affect diagnostics only |
+| recommendation | affects promotion/degradation recommendations only |
+| gated | allows approved decision multipliers to affect PC/strategy allocation credit |
+
+Gated mode requires explicit config, observe evidence, and operator review. It
+does not authorize direct execution and does not bypass target_builder, risk
+validation, preflight, or QC validation.
+
+The current canonical alpha decision loop is:
+
+```text
+strategy signal
+  -> frozen signal / outcome
+  -> conviction profile
+  -> attribution and residual alpha
+  -> cost-adjusted edge
+  -> independence adjustment
+  -> AlphaDecisionProfile
+  -> AlphaDecisionPolicy
+  -> recommendation / PC diagnostics
+  -> target_builder only if gated and approved
+```
 
 ## 13. LLM Research and Review
 
@@ -774,6 +881,7 @@ Portfolio Construction attempts to improve target structure under constraints.
 Current focus:
 
 - signal-weighted effective N
+- independence-adjusted net signal effective N
 - factor concentration control
 - turnover budget
 - role/policy caps
@@ -790,15 +898,27 @@ Current focus:
 
 ### 14.3 Objective Caveat
 
-PC is currently more of a structural optimizer than a full expected-return /
-variance optimizer.
+PC now reports both a structural objective and an alpha-decision-adjusted
+objective.
 
 That means:
 
 - it can improve diversification and concentration
 - it can control turnover
-- it should not be mistaken for proof of alpha
-- it depends heavily on signal quality and conviction inputs
+- it can show whether apparent diversification comes from independent strategy
+  evidence or correlated duplicate signals
+- it should still not be mistaken for proof of alpha
+- it depends heavily on the quality of signal, attribution, cost, and
+  independence inputs
+
+The alpha-aware objective is currently:
+
+```text
+maximize independence_adjusted_net_signal_effective_N
+```
+
+subject to policy caps, evidence caps, turnover budget, factor concentration,
+cost-aware weak-signal constraints, and cluster exposure diagnostics.
 
 ### 14.4 Relationship to Target Builder
 
@@ -806,6 +926,27 @@ PC does not directly execute trades.
 
 If PC is allowed to influence execution, it must do so through target_builder,
 which remains the owner of final target construction.
+
+### 14.5 Alpha Decision Relationship
+
+PC consumes alpha decision context as diagnostics and, only when explicitly
+allowed by `AlphaDecisionPolicy`, as allocation credit.
+
+PC must report:
+
+- raw objective value
+- independence-adjusted objective value
+- raw strategy count
+- effective independent strategy count
+- cluster concentration
+- gross edge
+- IBKR estimated cost
+- cost-adjusted edge
+- decision multiplier
+- before/after diagnostics
+
+Even in gated mode, PC does not send orders and does not mutate final targets
+outside target_builder ownership.
 
 ## 15. Target Builder
 
@@ -825,6 +966,8 @@ Inputs can include:
 - market scorecard
 - strategy evidence
 - ETF evidence cards
+- alpha decision profiles
+- alpha decision policy context
 - evidence caps
 - portfolio construction candidate
 - position governance output
@@ -1152,6 +1295,11 @@ Important panels include:
 - performance attribution
 - strategy independence
 - regime gap analysis
+- Alpha Decision Policy
+- Alpha Decision Review Surface
+- AlphaDecisionProfile table
+- raw strategy count versus effective independent alpha count
+- net alpha / IBKR cost proxy view
 - deferred execution ledger
 
 ### 23.2 Telegram Role
@@ -1188,6 +1336,11 @@ A professional review should be able to answer:
 - Who constructed the final weights?
 - Which risk checks passed?
 - Which mutations occurred after risk validation?
+- Which alpha decision profile supported or weakened the strategy?
+- Was the recommendation based on statistical status, residual alpha,
+  independence, and net cost?
+- Did PC use raw structural diversification or alpha-decision-adjusted
+  diagnostics?
 - Was final validation blocking or observe?
 - What was throttled or deferred?
 - What command was sent?
@@ -1207,6 +1360,7 @@ Scheduled jobs may include:
 - daily signal validation refresh
 - signal outcome labeling
 - conviction profile refresh
+- alpha decision profile refresh
 - performance attribution refresh
 - health monitor heartbeat
 - dashboard data refresh
@@ -1302,6 +1456,7 @@ Expected behavior:
 | yfinance feature refresh | Data jobs | No | No | Indirectly | Research features only |
 | StrategyInputBuilder | FastAPI services | No | No | No | Produces scorable/excluded universe |
 | Evidence cards | FastAPI services | No | No | No | Strategy evidence and vote status |
+| AlphaDecisionProfile / Policy | FastAPI services | No | No | No | Interprets alpha maturity, residual alpha, cost, and independence; can affect recommendation/PC credit only by config |
 | LLM agents | Agents | No | No | No | Advisory/explanatory only |
 | Portfolio Construction | FastAPI services | Candidate only | No direct execution | No | Must flow through target_builder |
 | Target Builder | FastAPI services | Yes | Yes, within ownership | No | Only executable target constructor |
@@ -1325,27 +1480,33 @@ The system is strong in:
 - auto pause and circuit concepts
 - selective per-ticker strategy readiness
 - evidence cards and abstain semantics
-- alpha validation diagnostics
-- statistical independence visibility
-- performance attribution foundation
+- alpha decision profiles and deterministic policy interpretation
+- statistical independence consumption in recommendation/PC diagnostics
+- performance attribution feeding promotion/degradation recommendations
+- IBKR cost proxy visible in net-edge review
+- dashboard Alpha Decision Review Surface
 
 These make the system more professional than a typical single-script trading
 bot. It is not simply "generate a signal and trade."
 
 ## 28. Current Known Weaknesses and Watch Items
 
-The remaining major risks are not primarily execution mechanics. They are:
+The remaining major risks are not primarily execution mechanics. They are
+alpha evidence quality, data accumulation, and model validation:
 
 1. Alpha quality and statistical independence.
-   Many strategies may still express related momentum or relative-strength
-   factors.
+   The system now penalizes duplicate correlated signals, but that does not
+   create independent alpha. It only prevents duplicate credit. The actual
+   strategy pool still needs enough truly independent sources.
 
 2. Conviction sample size.
-   Early live samples should not be overinterpreted as statistically meaningful
-   edge.
+   Early live samples no longer receive full decision credit, but they still
+   need time to accumulate into statistically meaningful evidence.
 
 3. Portfolio Construction objective maturity.
-   PC is still more structural than full expected-return optimization.
+   PC now reports alpha-decision-adjusted diagnostics, but it is still not a
+   full expected-return / covariance optimizer and should not be interpreted as
+   alpha proof.
 
 4. Fill and reconciliation detail.
    Command lifecycle is strong pre-submit and ACK-side, but richer fill and
@@ -1355,14 +1516,28 @@ The remaining major risks are not primarily execution mechanics. They are:
    Since runtime automatic PolicySync is disabled, QC compiled policy must be
    kept aligned through deployment and CI checks.
 
-6. Cost and execution timing.
-   IBKR-style cost proxy is visible, but cost is mostly diagnostic unless
-   explicitly promoted into blocking or optimization logic.
+6. Cost model maturity.
+   IBKR-style cost proxy is visible and consumed in alpha decision review, but
+   it is still a proxy until fill-level calibration is mature.
 
 7. Data degradation visibility.
    yfinance and QC feature roles are now clearer, but dashboards must continue
    to distinguish mature ETF feature failure from young ETF insufficient
    history.
+
+8. Attribution model quality.
+   Promotion/degradation now consumes residual alpha, so the attribution model
+   itself must be periodically reviewed for omitted factors, unstable beta, and
+   regime-specific weakness.
+
+   Minimum validation checklist:
+
+   - residual returns should not show obvious non-random structure
+   - residual autocorrelation should be low
+   - residuals should not strongly correlate with known omitted factors such as
+     size, value, rates, volatility, or broad momentum
+   - regime-specific beta should be reasonably stable within each regime
+   - attribution rows should carry an explicit model version
 
 ## 29. Professional Review Checklist
 
@@ -1379,26 +1554,28 @@ A reviewer should inspect the system in this order:
 9. Strategy input readiness and abstain matrix.
 10. Evidence cards and mapping errors.
 11. Evidence cap observe/gated mode and calibration freshness.
-12. Strategy conviction sample count and status.
-13. Strategy independence and regime gap diagnostics.
-14. Portfolio Construction objective diagnostics.
-15. Target builder output and target construction mode.
-16. Risk manager validation.
-17. Position manager post-risk mutations.
-18. Final risk validation result.
-19. Execution throttle and deferred execution ledger.
-20. Execution preflight result.
-21. Command lifecycle after submission.
-22. QC accept/reject reason.
-23. Post-command account snapshot reconciliation.
+12. Strategy conviction sample count and statistical status.
+13. AlphaDecisionProfile status, residual alpha, cost-adjusted edge, epoch,
+    independence cluster, and redundancy multiplier.
+14. Effective independent alpha count and regime gap diagnostics.
+15. AlphaDecisionPolicy mode and gated blockers.
+16. Portfolio Construction raw versus alpha-decision-adjusted objective diagnostics.
+17. Target builder output and target construction mode.
+18. Risk manager validation.
+19. Position manager post-risk mutations.
+20. Final risk validation result.
+21. Execution throttle and deferred execution ledger.
+22. Execution preflight result.
+23. Command lifecycle after submission.
+24. QC accept/reject reason.
+25. Post-command account snapshot reconciliation.
 
 ## 30. One-Sentence System Description
 
 This system collects live account truth from QC, research features from
 yfinance, and contextual evidence from news; then it runs deterministic
-strategy, evidence, risk, and execution gates with LLMs limited to advisory
-review, constructs final targets only through target_builder, validates them
-through multiple FastAPI hard gates, sends commands only after preflight, and
-requires QC to independently validate every executable command before orders
-can affect the account.
-
+strategy, alpha-decision, evidence, risk, and execution gates with LLMs limited
+to advisory review, constructs final targets only through target_builder,
+validates them through multiple FastAPI hard gates, sends commands only after
+preflight, and requires QC to independently validate every executable command
+before orders can affect the account.
