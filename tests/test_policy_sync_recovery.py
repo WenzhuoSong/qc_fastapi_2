@@ -11,9 +11,10 @@ from services.policy_sync_recovery import (
 class PolicySyncRecoveryTests(unittest.TestCase):
     def test_recoverable_policy_mismatch_sends_sync(self):
         result = evaluate_policy_sync_recovery(
-            account_guard_result=_guard(blockers=["policy_version_mismatch"], observed="sprint8a_fallback"),
+            account_guard_result=_guard(blockers=["policy_version_mismatch"], observed="sprint8b"),
             recovery_state={},
             execution_policy_version="sprint8a",
+            config={"enabled": True},
             now=datetime(2026, 5, 27, 15, 0, 0),
         )
 
@@ -25,7 +26,7 @@ class PolicySyncRecoveryTests(unittest.TestCase):
 
     def test_waiting_cycle_does_not_send_duplicate_sync(self):
         result = evaluate_policy_sync_recovery(
-            account_guard_result=_guard(blockers=["policy_version_mismatch"], observed="sprint8a_fallback"),
+            account_guard_result=_guard(blockers=["policy_version_mismatch"], observed="sprint8b"),
             recovery_state={
                 "status": "pending_confirmation",
                 "last_sync_command_id": "policy_recovery_x",
@@ -33,6 +34,7 @@ class PolicySyncRecoveryTests(unittest.TestCase):
                 "consecutive_mismatch_cycles": 1,
             },
             execution_policy_version="sprint8a",
+            config={"enabled": True},
             now=datetime(2026, 5, 27, 15, 15, 0),
         )
 
@@ -43,13 +45,14 @@ class PolicySyncRecoveryTests(unittest.TestCase):
 
     def test_send_failed_state_retries_until_attempt_limit(self):
         result = evaluate_policy_sync_recovery(
-            account_guard_result=_guard(blockers=["policy_version_mismatch"], observed="sprint8a_fallback"),
+            account_guard_result=_guard(blockers=["policy_version_mismatch"], observed="sprint8b"),
             recovery_state={
                 "status": "send_failed",
                 "attempt_count": 1,
                 "consecutive_mismatch_cycles": 1,
             },
             execution_policy_version="sprint8a",
+            config={"enabled": True},
         )
 
         self.assertEqual(result["action"], "send_sync")
@@ -57,13 +60,14 @@ class PolicySyncRecoveryTests(unittest.TestCase):
 
     def test_attempt_limit_becomes_unrecoverable(self):
         result = evaluate_policy_sync_recovery(
-            account_guard_result=_guard(blockers=["policy_version_mismatch"], observed="sprint8a_fallback"),
+            account_guard_result=_guard(blockers=["policy_version_mismatch"], observed="sprint8b"),
             recovery_state={
                 "status": "send_failed",
                 "attempt_count": 3,
                 "consecutive_mismatch_cycles": 2,
             },
             execution_policy_version="sprint8a",
+            config={"enabled": True},
         )
 
         self.assertEqual(result["status"], "unrecoverable")
@@ -71,13 +75,14 @@ class PolicySyncRecoveryTests(unittest.TestCase):
 
     def test_cycle_limit_becomes_unrecoverable(self):
         result = evaluate_policy_sync_recovery(
-            account_guard_result=_guard(blockers=["policy_version_mismatch"], observed="sprint8a_fallback"),
+            account_guard_result=_guard(blockers=["policy_version_mismatch"], observed="sprint8b"),
             recovery_state={
                 "status": "pending_confirmation",
                 "attempt_count": 1,
                 "consecutive_mismatch_cycles": 4,
             },
             execution_policy_version="sprint8a",
+            config={"enabled": True},
         )
 
         self.assertEqual(result["status"], "unrecoverable")
@@ -90,11 +95,12 @@ class PolicySyncRecoveryTests(unittest.TestCase):
                     "account_state_snapshot_stale_or_missing_time",
                     "policy_version_mismatch",
                 ],
-                observed="sprint8a_fallback",
+                observed="sprint8b",
                 snapshot_fresh=False,
             ),
             recovery_state={},
             execution_policy_version="sprint8a",
+            config={"enabled": True},
         )
 
         self.assertEqual(result["status"], "unrecoverable")
@@ -104,11 +110,12 @@ class PolicySyncRecoveryTests(unittest.TestCase):
         result = evaluate_policy_sync_recovery(
             account_guard_result=_guard(
                 blockers=["policy_version_mismatch"],
-                observed="sprint8a_fallback",
+                observed="sprint8b",
                 no_open_orders=False,
             ),
             recovery_state={},
             execution_policy_version="sprint8a",
+            config={"enabled": True},
         )
 
         self.assertEqual(result["status"], "unrecoverable")
@@ -116,7 +123,7 @@ class PolicySyncRecoveryTests(unittest.TestCase):
 
     def test_qc_rejected_sync_is_unrecoverable(self):
         result = evaluate_policy_sync_recovery(
-            account_guard_result=_guard(blockers=["policy_version_mismatch"], observed="sprint8a_fallback"),
+            account_guard_result=_guard(blockers=["policy_version_mismatch"], observed="sprint8b"),
             recovery_state={
                 "status": "pending_confirmation",
                 "attempt_count": 1,
@@ -125,6 +132,7 @@ class PolicySyncRecoveryTests(unittest.TestCase):
                 "last_sync_protocol_version": "v2_payload_json",
             },
             execution_policy_version="sprint8a",
+            config={"enabled": True},
         )
 
         self.assertEqual(result["status"], "unrecoverable")
@@ -132,7 +140,7 @@ class PolicySyncRecoveryTests(unittest.TestCase):
 
     def test_old_protocol_rejection_can_retry_after_protocol_upgrade(self):
         result = evaluate_policy_sync_recovery(
-            account_guard_result=_guard(blockers=["policy_version_mismatch"], observed="sprint8a_fallback"),
+            account_guard_result=_guard(blockers=["policy_version_mismatch"], observed="sprint8b"),
             recovery_state={
                 "status": "unrecoverable",
                 "attempt_count": 1,
@@ -142,7 +150,7 @@ class PolicySyncRecoveryTests(unittest.TestCase):
                 "last_sync_protocol_version": "v1_nested_payload",
             },
             execution_policy_version="sprint8a",
-            config={"sync_protocol_version": "v2_payload_json"},
+            config={"enabled": True, "sync_protocol_version": "v2_payload_json"},
         )
 
         self.assertEqual(result["status"], "recoverable")
@@ -158,6 +166,7 @@ class PolicySyncRecoveryTests(unittest.TestCase):
                 "consecutive_mismatch_cycles": 3,
             },
             execution_policy_version="sprint8a",
+            config={"enabled": True},
         )
 
         self.assertEqual(result["status"], "recovered")
@@ -181,9 +190,22 @@ class PolicySyncRecoveryTests(unittest.TestCase):
             "max_consecutive_mismatch_cycles": "bad",
         })
 
+        self.assertFalse(cfg["enabled"])
         self.assertEqual(cfg["max_recovery_attempts"], 1)
         self.assertEqual(cfg["max_consecutive_mismatch_cycles"], 5)
         self.assertEqual(cfg["sync_protocol_version"], "v2_payload_json")
+
+    def test_default_disabled_does_not_send_policy_sync(self):
+        result = evaluate_policy_sync_recovery(
+            account_guard_result=_guard(blockers=["policy_version_mismatch"], observed="sprint8b"),
+            recovery_state={},
+            execution_policy_version="sprint8a",
+        )
+
+        self.assertEqual(result["status"], "disabled")
+        self.assertEqual(result["action"], "none")
+        self.assertEqual(result["reason"], "policy_sync_recovery_disabled")
+        self.assertFalse(result["trading_blocked"])
 
 
 def _guard(

@@ -91,7 +91,7 @@ async def tool_send_weight_command(inp: dict) -> dict:
 
 
 async def tool_send_policy_sync(inp: dict | None = None) -> dict:
-    """Sync FastAPI execution policy to QC while QC keeps its fallback policy."""
+    """Manually sync FastAPI execution policy to QC for diagnostics/recovery."""
     inp = inp or {}
     command_id = inp.get("command_id") or f"policy_sync_{int(time.time())}"
     payload = inp.get("payload") or policy_snapshot()

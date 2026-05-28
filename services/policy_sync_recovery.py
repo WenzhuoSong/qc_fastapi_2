@@ -1,7 +1,9 @@
-"""Control-plane recovery for FastAPI/QC execution policy drift.
+"""Manual/diagnostic recovery for FastAPI/QC execution policy drift.
 
-PolicySync is intentionally treated as a control-plane command: it may repair
-policy drift, but it must never allow SetWeights in the same pipeline cycle.
+Runtime trading should rely on the QC compiled policy matching FastAPI via
+deployment/CI. PolicySync remains available as an explicit diagnostic tool, but
+automatic recovery is disabled by default and must never allow SetWeights in
+the same pipeline cycle.
 """
 from __future__ import annotations
 
@@ -13,7 +15,7 @@ POLICY_SYNC_RECOVERY_CONFIG_KEY = "policy_sync_recovery_config"
 POLICY_SYNC_RECOVERY_STATE_KEY = "policy_sync_recovery_state"
 
 DEFAULT_POLICY_SYNC_RECOVERY_CONFIG: dict[str, Any] = {
-    "enabled": True,
+    "enabled": False,
     "max_recovery_attempts": 3,
     "max_consecutive_mismatch_cycles": 5,
     "fire_and_forget": True,
@@ -215,7 +217,7 @@ async def run_policy_sync_recovery(
     sender: PolicySyncSender | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Evaluate and, when safe, send PolicySync without waiting for QC ACK."""
+    """Evaluate and, when explicitly enabled, send PolicySync without waiting for QC ACK."""
     from services.execution_policy import policy_snapshot
 
     policy = policy_snapshot()

@@ -177,7 +177,7 @@ async def run_executor_async(
                 f"actual={policy_alignment.get('actual_policy_version')} "
                 f"guard_status={policy_alignment.get('guard_status')} "
                 f"blockers={policy_alignment.get('guard_blockers')}\n"
-                "No command sent to QC. PolicySync recovery owns control-plane repair."
+                "No command sent to QC. Deploy/sync the QC compiled policy before trading."
             )
         })
         return {

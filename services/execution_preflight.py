@@ -52,10 +52,7 @@ async def preflight_execution_command(
     submission_state = await command_submission_state(command_id=command_id, analysis_id=analysis_id)
     today = await summarize_today_execution_activity()
     policy_sync_ack_status = _policy_sync_ack_status(policy_sync_result)
-    policy_transport_ok = (
-        (bool((policy_sync_result or {}).get("success")) and policy_sync_ack_status == "accepted")
-        or _policy_alignment_ok(policy_alignment_result)
-    )
+    policy_transport_ok = _policy_alignment_ok(policy_alignment_result)
 
     checks: dict[str, dict[str, Any]] = {
         "command_id_present": {
@@ -90,7 +87,7 @@ async def preflight_execution_command(
                 "policy_sync_ack_status": policy_sync_ack_status,
                 "policy_alignment": policy_alignment_result,
             },
-            "threshold": "account_state_guard policy alignment or accepted control-plane PolicySync required before SetWeights",
+            "threshold": "recent account_state_guard policy alignment required before SetWeights",
         },
         "daily_command_count_ok": {
             "pass": int(today.get("command_count") or 0) < int(cfg["max_daily_commands"]),

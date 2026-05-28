@@ -97,7 +97,7 @@ async def _cmd_confirm() -> str:
             "❌ Policy version is not aligned. "
             f"expected={policy_alignment.get('expected_policy_version')} "
             f"actual={policy_alignment.get('actual_policy_version')}. "
-            "Wait for policy_sync_recovery to complete before confirming."
+            "Deploy/sync the QC compiled policy before confirming."
         )
     command_preflight = await preflight_execution_command(
         command_id=command_id or "",

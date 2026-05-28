@@ -45,7 +45,7 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertNotIn("create_or_update_policy_sync_log", text)
         self.assertNotIn("wait_for_qc_ack_detail(policy_sync_id", text)
         self.assertIn("policy_alignment_not_confirmed", text)
-        self.assertIn("PolicySync recovery owns control-plane repair", text)
+        self.assertIn("Deploy/sync the QC compiled policy before trading", text)
         self.assertIn("No command sent to QC", text)
 
     def test_telegram_confirm_uses_policy_alignment_not_policy_sync(self):
@@ -59,7 +59,7 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertNotIn("create_or_update_policy_sync_log", confirm_body)
         self.assertNotIn("wait_for_qc_ack_detail(policy_sync_id", confirm_body)
         self.assertIn("No recent account state policy alignment", confirm_body)
-        self.assertIn("Wait for policy_sync_recovery to complete", confirm_body)
+        self.assertIn("Deploy/sync the QC compiled policy before confirming", confirm_body)
 
     def test_setweights_command_carries_policy_snapshot(self):
         text = Path("tools/qc_tools.py").read_text()

@@ -33,7 +33,7 @@ def policy_alignment_from_account_guard(
     """Return policy alignment from an account_state_guard result.
 
     This is intentionally a read-only assertion. It never sends PolicySync.
-    PolicySync repair belongs to the control-plane recovery stage.
+    Runtime repair belongs to deployment/CI; PolicySync is manual/diagnostic.
     """
     guard = account_guard or {}
     checks = guard.get("checks") if isinstance(guard.get("checks"), dict) else {}

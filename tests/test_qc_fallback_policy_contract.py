@@ -36,7 +36,8 @@ class QCFallbackPolicyContractTest(unittest.TestCase):
     def test_qc_fallback_policy_sync_and_version_are_deployed(self):
         text = QC_FILE.read_text()
 
-        self.assertIn('"version": "sprint8a_fallback"', text)
+        self.assertIn('"version": "sprint8a"', text)
+        self.assertIn('self._policy_source = "compiled_fallback"', text)
         self.assertIn('target == "PolicySync"', text)
         self.assertIn("_apply_inline_policy(data)", text)
         self.assertIn("_policy_payload_from_command(data)", text)

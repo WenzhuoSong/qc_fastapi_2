@@ -12,7 +12,7 @@ Most major safety modules now exist:
 
 - deterministic execution policy
 - account state guard
-- policy sync recovery
+- policy alignment guard and manual PolicySync diagnostics
 - auto pause
 - final risk validation
 - execution throttle
@@ -33,7 +33,7 @@ The current engineering direction is:
 
 Previously, the system had two PolicySync paths:
 
-1. `policy_sync_recovery` in the pipeline control plane.
+1. automatic `policy_sync_recovery` in the pipeline control plane.
 2. `executor` sending PolicySync again immediately before SetWeights.
 
 This violated the intended control-plane/data-plane separation and could reintroduce policy-sync deadlocks.
@@ -43,7 +43,7 @@ Current state:
 - `agents/executor.py` no longer sends PolicySync before SetWeights.
 - The executor now asserts that `account_state_guard` has already confirmed policy version alignment.
 - If alignment is not confirmed, executor refuses to send a trade command.
-- PolicySync repair is owned by `services/policy_sync_recovery.py`.
+- Runtime policy repair is no longer automatic. QC uses its compiled policy, CI/tests verify it matches FastAPI, and `services/policy_sync_recovery.py` remains available only as an explicitly enabled diagnostic/manual tool.
 
 Relevant files:
 
@@ -58,11 +58,9 @@ The old preflight check was named `policy_sync_success` and required same-cycle 
 Current state:
 
 - The check is now `policy_alignment_confirmed`.
-- It accepts either:
-  - legacy accepted PolicySync ACK, or
-  - account guard policy alignment confirmation.
+- It accepts account guard policy alignment confirmation.
 
-This keeps backward compatibility while making the new control-plane model authoritative.
+This makes recent QC account-state policy alignment authoritative before SetWeights.
 
 Relevant file:
 
@@ -264,7 +262,7 @@ Major safety layers now include:
 
 - `execution_policy.evaluate_policy`
 - `account_state_guard`
-- `policy_sync_recovery`
+- policy alignment guard
 - `auto_pause`
 - `execution_throttle`
 - `final_risk_validation`
@@ -275,7 +273,7 @@ Current positive state:
 
 - FULL_AUTO now requires blocking account guard, blocking final validation, and active auto-pause.
 - Executor no longer repairs PolicySync itself.
-- Policy mismatch recovery is handled as a control-plane process.
+- Policy mismatch blocks execution and requires QC compiled-policy deployment/sync evidence; automatic PolicySync recovery is disabled by default.
 - Execution throttle can clip buy delta to canary limits.
 - Transaction cost diagnostics are visible.
 
@@ -287,15 +285,17 @@ Remaining concern:
 
 ## Remaining Risk Register
 
-### Resolved P0: Telegram Manual Confirm Same-Cycle PolicySync
+### Resolved P0: Runtime PolicySync Removed From Automatic Trading
 
-The FULL_AUTO executor path and `/confirm` path no longer send same-cycle PolicySync before SetWeights.
+The FULL_AUTO executor path and `/confirm` path no longer send same-cycle PolicySync before SetWeights. Automatic PolicySync recovery is also disabled by default.
 
 Current behavior:
 
 - `/confirm` requires recent account guard policy alignment.
-- If not aligned, it returns a message instructing the operator to wait for policy recovery.
+- If not aligned, it returns a message instructing the operator to deploy/sync the QC compiled policy.
 - It does not call `tool_send_policy_sync`.
+- `policy_sync_recovery_config.enabled` defaults to false.
+- QC fallback/compiled policy reports the same version as FastAPI when the compiled roles/caps are compatible.
 
 The word "recent" must be concrete and testable:
 
@@ -313,6 +313,8 @@ Relevant files:
 
 - `services/telegram_commands.py`
 - `services/policy_alignment.py`
+- `services/policy_sync_recovery.py`
+- `quantconnect_files/test1.py`
 
 ### Resolved P1: Old Mutation Paths Need Ownership Review
 
@@ -548,13 +550,14 @@ uv run python -m unittest \
   tests.test_execution_throttle \
   tests.test_command_lifecycle \
   tests.test_strategy_independence \
-  tests.test_strategy_regime_gap_analysis
+  tests.test_strategy_regime_gap_analysis \
+  tests.test_qc_fallback_policy_contract
 ```
 
 Result:
 
 ```text
-Ran 181 tests
+Ran 190 tests
 OK
 ```
 
@@ -568,6 +571,7 @@ uv run python -m py_compile \
   services/pipeline.py \
   services/policy_alignment.py \
   services/telegram_commands.py \
+  tools/qc_tools.py \
   services/strategy_input_builder.py \
   services/evidence_cap_config.py \
   services/evidence_cap_calibration.py \
@@ -586,7 +590,9 @@ uv run python -m py_compile \
   tests/test_mutation_ownership.py \
   tests/test_strategy_independence.py \
   tests/test_strategy_regime_gap_analysis.py \
-  tests/test_dashboard.py
+  tests/test_dashboard.py \
+  tests/test_qc_fallback_policy_contract.py \
+  ../quantconnect_files/test1.py
 ```
 
 Result:
@@ -689,7 +695,7 @@ Relevant files:
 
 This cleanup phase is complete against the current engineering criteria:
 
-- PolicySync has only one automated owner: `policy_sync_recovery`. Completed.
+- PolicySync has no automatic trading-chain owner; it is manual/diagnostic only. Completed.
 - FULL_AUTO cannot run with observe-only safety layers. Completed.
 - Every post-risk mutation has an owner and mutation type. Completed.
 - Missing strategy data never becomes a zero score. Completed.
