@@ -11,10 +11,6 @@ from tools.db_tools     import tool_verify_approval_token
 from tools.qc_tools     import tool_send_policy_sync, tool_send_weight_command
 from tools.notify_tools import tool_send_telegram
 from services.proposal  import load_pending_proposal, mark_proposal_done
-from services.feature_authority_mode import (
-    YFINANCE_RESEARCH,
-    normalize_feature_authority_mode,
-)
 from services.pc_promotion_config import default_pc_promotion_config, format_pc_promotion_config
 from services.execution_ack_tracker import wait_for_qc_ack_detail
 from services.execution_log_store import (
@@ -258,7 +254,6 @@ async def _cmd_config(text: str) -> str:
       /config
       /config position_manager_config max_new_buys_per_cycle 2
       /config pm max_turnover_per_cycle 0.25
-      /config feature_authority_mode
     """
     allowed_keys = {
         "max_new_buys_per_cycle",
@@ -275,17 +270,7 @@ async def _cmd_config(text: str) -> str:
             cfg = await get_system_config(db, "position_manager_config")
         current = (cfg.value if cfg else {}) or {}
         rows = [f"{k}: {current.get(k)}" for k in sorted(allowed_keys)]
-        return (
-            "⚙️ position_manager_config\n"
-            + "\n".join(rows)
-            + f"\n\nfeature_authority_mode: {YFINANCE_RESEARCH} (fixed)"
-        )
-
-    if len(parts) == 3 and parts[1] == "feature_authority_mode":
-        mode = normalize_feature_authority_mode(parts[2])
-        if mode != YFINANCE_RESEARCH:
-            return "❌ feature_authority_mode is fixed to yfinance_research; legacy/audit modes were removed."
-        return f"✅ feature_authority_mode is already fixed to {mode}"
+        return "⚙️ position_manager_config\n" + "\n".join(rows)
 
     async with AsyncSessionLocal() as db:
         cfg = await get_system_config(db, "position_manager_config")
@@ -294,9 +279,7 @@ async def _cmd_config(text: str) -> str:
     if len(parts) != 4 or parts[1] not in ("pm", "position_manager_config"):
         return (
             "Usage: /config pm <key> <value>\n"
-            "Or: /config feature_authority_mode yfinance_research\n"
-            "Allowed PM keys: " + ", ".join(sorted(allowed_keys)) + "\n"
-            "Feature authority mode is fixed to yfinance_research."
+            "Allowed PM keys: " + ", ".join(sorted(allowed_keys))
         )
 
     key = parts[2]

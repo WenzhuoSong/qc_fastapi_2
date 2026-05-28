@@ -648,54 +648,16 @@ tests/test_qc_yfinance_feature_audit.py
 - `market_daily_features`
 - 旧 feature_sources
 
-### 8.2 灰度开关
+### 8.2 当前运行状态
 
-建议增加配置：
+迁移已完成，运行时 daily research authority 固定为 `yfinance_research`：
 
-```text
-feature_authority_mode:
-  legacy_overlay       # 当前行为
-  yfinance_research    # 新行为，推荐默认
-  audit_only           # 只记录差异，不影响下游
-```
+- yfinance 是 daily research 字段的 authoritative source。
+- QC daily snapshot 只作为 audit / fallback source。
+- QC heartbeat 只作为 live account state / intraday state source。
+- 旧 QC 指标只进入 `legacy_qc_indicators`，不覆盖 canonical research fields。
 
-开发初期默认：
-
-```text
-audit_only
-```
-
-通过测试和 dashboard 确认后切到：
-
-```text
-yfinance_research
-```
-
-### 8.3 回滚策略
-
-如果新 merge 影响 pipeline：
-
-1. 切回 `legacy_overlay`。
-2. 保留 audit report。
-3. 不回滚数据库。
-4. 不删除新 provenance 字段。
-
-运行时回滚命令：
-
-```text
-/config feature_authority_mode rollback
-```
-
-该命令只写入：
-
-```text
-system_config.feature_authority_mode.value = "legacy_overlay"
-system_config.feature_authority_mode.rollback.preserve_audit_report = true
-system_config.feature_authority_mode.rollback.no_database_rollback = true
-system_config.feature_authority_mode.rollback.preserve_provenance_fields = true
-```
-
-不执行 destructive migration，不清空 `data_quality_audit`，不回写历史 `qc_snapshots.raw_payload` 或 `market_daily_features.raw_payload`。
+旧灰度模式和运行时回滚命令已经移除，避免下游重新进入混合语义。
 
 ---
 

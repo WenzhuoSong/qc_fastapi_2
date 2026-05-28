@@ -4,41 +4,6 @@ from services.market_snapshot_merge import merge_market_snapshots
 
 
 class MarketSnapshotMergeTests(unittest.TestCase):
-    def test_removed_audit_only_mode_falls_forward_to_yfinance_research(self):
-        heartbeat = {
-            "packet_type": "heartbeat",
-            "holdings": [{"ticker": "XLK", "weight_current": 0.2, "mom_60d": 99.0}],
-        }
-        qc_daily = {
-            "packet_type": "daily_feature_snapshot",
-            "features": [{"ticker": "XLK", "mom_60d": 0.08}],
-        }
-        yfinance = {
-            "XLK": {"ticker": "XLK", "return_60d": 0.06, "trading_date": "2026-05-14"}
-        }
-
-        merged = merge_market_snapshots(heartbeat, qc_daily, yfinance, mode="audit_only")
-        xlk = merged["holdings"][0]
-
-        self.assertEqual(merged["feature_authority_mode"], "yfinance_research")
-        self.assertEqual(xlk["return_60d"], 0.06)
-        self.assertNotIn("mom_60d", xlk)
-        self.assertNotIn("feature_authority_audit", merged)
-
-    def test_removed_legacy_overlay_mode_falls_forward_to_yfinance_research(self):
-        merged = merge_market_snapshots(
-            {"packet_type": "heartbeat", "holdings": [{"ticker": "SPY", "mom_60d": 99.0}]},
-            {"packet_type": "daily_feature_snapshot", "features": [{"ticker": "SPY", "mom_60d": 0.07}]},
-            {"SPY": {"ticker": "SPY", "return_60d": 0.05, "trading_date": "2026-05-14"}},
-            mode="legacy_overlay",
-        )
-
-        spy = merged["holdings"][0]
-        self.assertEqual(merged["feature_authority_mode"], "yfinance_research")
-        self.assertEqual(spy["return_60d"], 0.05)
-        self.assertNotIn("mom_60d", spy)
-        self.assertNotIn("feature_authority_audit", merged)
-
     def test_yfinance_research_overrides_qc_legacy_and_live_state_wins(self):
         heartbeat = {
             "packet_type": "heartbeat",

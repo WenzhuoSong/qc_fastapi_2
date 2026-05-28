@@ -47,8 +47,8 @@ def _load_sector_rotation_exports():
         strategies = importlib.import_module("strategies")
         universe_policy = importlib.import_module("services.universe_policy")
         return {
-            "_merge_market_snapshots": market_snapshot_merge._merge_market_snapshots,
-            "_normalize_feature_snapshot": market_snapshot_merge._normalize_feature_snapshot,
+            "merge_market_snapshots": market_snapshot_merge.merge_market_snapshots,
+            "normalize_feature_snapshot": market_snapshot_merge.normalize_feature_snapshot,
             "_brief_from_snapshot": playground._brief_from_snapshot,
             "_compute_strategy_confidence": playground._compute_strategy_confidence,
             "_build_playground_evidence_summary": playground._build_playground_evidence_summary,
@@ -172,7 +172,7 @@ class SectorRotationTests(unittest.TestCase):
             ],
         }
 
-        merged = _merge_market_snapshots(heartbeat, feature_snapshot)
+        merged = merge_market_snapshots(heartbeat, feature_snapshot)
 
         xlk = next(row for row in merged["holdings"] if row["ticker"] == "XLK")
         self.assertEqual(xlk["weight_current"], 0.2)
@@ -187,7 +187,7 @@ class SectorRotationTests(unittest.TestCase):
     def test_feature_snapshot_can_stand_alone_as_holdings(self):
         payload = {"features": [{"ticker": "XLK", "mom_60d": 0.08}]}
 
-        normalized = _normalize_feature_snapshot(payload)
+        normalized = normalize_feature_snapshot(payload)
 
         self.assertEqual(normalized["holdings"][0]["ticker"], "XLK")
         self.assertEqual(normalized["holdings"][0]["return_60d"], 0.08)
@@ -225,7 +225,7 @@ class SectorRotationTests(unittest.TestCase):
             }
         }
 
-        merged = _merge_market_snapshots(heartbeat, feature_snapshot, yfinance)
+        merged = merge_market_snapshots(heartbeat, feature_snapshot, yfinance)
         xlk = merged["holdings"][0]
 
         self.assertEqual(xlk["weight_current"], 0.2)
@@ -254,7 +254,7 @@ class SectorRotationTests(unittest.TestCase):
             }
         }
 
-        merged = _merge_market_snapshots(heartbeat, {}, yfinance)
+        merged = merge_market_snapshots(heartbeat, {}, yfinance)
         spy = merged["holdings"][0]
 
         self.assertEqual(spy["weight_current"], 0.1)
@@ -272,7 +272,7 @@ class SectorRotationTests(unittest.TestCase):
             "holdings": [{"ticker": "SPY", "price": 630.0, "weight_current": 0.1}],
         }
 
-        merged = _merge_market_snapshots(heartbeat, {}, {})
+        merged = merge_market_snapshots(heartbeat, {}, {})
         spy = merged["holdings"][0]
 
         self.assertEqual(merged["schema_capabilities"]["heartbeat_schema_version"], "1.4")
@@ -286,7 +286,7 @@ class SectorRotationTests(unittest.TestCase):
             "holdings": [{"ticker": "SPY", "weight_current": 0.1}],
         }
 
-        merged = _merge_market_snapshots(heartbeat, {}, {})
+        merged = merge_market_snapshots(heartbeat, {}, {})
 
         self.assertEqual(merged["schema_capabilities"]["heartbeat_schema_version"], "legacy")
         self.assertEqual(merged["schema_capabilities"]["intraday_live_state"], "unavailable")

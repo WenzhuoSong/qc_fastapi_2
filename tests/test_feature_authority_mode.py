@@ -17,10 +17,8 @@ class FeatureAuthorityModeTests(unittest.TestCase):
         self.assertEqual(normalize_feature_authority_mode({"mode": YFINANCE_RESEARCH}), YFINANCE_RESEARCH)
         self.assertEqual(normalize_feature_authority_mode("yfinance_research"), YFINANCE_RESEARCH)
 
-    def test_removed_modes_fall_back_to_yfinance_research(self):
+    def test_invalid_mode_falls_back_to_yfinance_research(self):
         self.assertEqual(normalize_feature_authority_mode("surprise"), YFINANCE_RESEARCH)
-        self.assertEqual(normalize_feature_authority_mode("audit_only"), YFINANCE_RESEARCH)
-        self.assertEqual(normalize_feature_authority_mode({"value": "legacy_overlay"}), YFINANCE_RESEARCH)
 
 
 if __name__ == "__main__":

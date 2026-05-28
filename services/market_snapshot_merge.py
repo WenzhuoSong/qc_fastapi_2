@@ -213,8 +213,3 @@ def _schema_capabilities(heartbeat: dict[str, Any], *, has_yfinance: bool, has_q
 
 def _is_stale_yfinance_row(row: dict[str, Any]) -> bool:
     return bool(row.get("is_stale")) or str(row.get("data_quality_flag") or "").lower() == "stale"
-
-
-# Backward-compatible aliases for existing focused tests/imports.
-_normalize_feature_snapshot = normalize_feature_snapshot
-_merge_market_snapshots = merge_market_snapshots
