@@ -42,7 +42,9 @@ def _load_sector_rotation_exports():
     ):
         market_snapshot_merge = importlib.import_module("services.market_snapshot_merge")
         playground = importlib.import_module("services.playground")
+        strategy_input_builder = importlib.import_module("services.strategy_input_builder")
         sector_rotation = importlib.import_module("services.sector_rotation")
+        strategies = importlib.import_module("strategies")
         universe_policy = importlib.import_module("services.universe_policy")
         return {
             "_merge_market_snapshots": market_snapshot_merge._merge_market_snapshots,
@@ -55,13 +57,14 @@ def _load_sector_rotation_exports():
             "_feature_rows_to_snapshots": playground._feature_rows_to_snapshots,
             "_format_evidence_summary": playground._format_evidence_summary,
             "_format_strategy_confidence_summary": playground._format_strategy_confidence_summary,
-            "_insufficient_history_gap_notes": playground._insufficient_history_gap_notes,
             "_max_drawdown": playground._max_drawdown,
-            "_merge_feature_map": playground._merge_feature_map,
             "_recent_snapshot_row_limit": playground._recent_snapshot_row_limit,
             "_replay_metric_reliability": playground._replay_metric_reliability,
             "_run_one_strategy": playground._run_one_strategy,
+            "build_strategy_input": strategy_input_builder.build_strategy_input,
+            "ExclusionReason": strategy_input_builder.ExclusionReason,
             "compute_consensus_weights": playground.compute_consensus_weights,
+            "get_strategy": strategies.get_strategy,
             "PlaygroundBundle": playground.PlaygroundBundle,
             "detect_sector_rotation": sector_rotation.detect_sector_rotation,
             "format_rotation_for_prompt": sector_rotation.format_rotation_for_prompt,
@@ -340,10 +343,18 @@ class SectorRotationTests(unittest.TestCase):
                 "return_60d": 0.06,
                 "return_252d": 0.18,
                 "hist_vol_20d": 0.01,
+                "rsi_14": 55.0,
+                "atr_pct": 0.012,
             }
         }
 
-        enriched = _merge_feature_map(holdings, feature_map)
+        result = build_strategy_input(
+            strategy=get_strategy("momentum_lite_v1"),
+            live_rows=holdings,
+            feature_matrix=feature_map,
+            as_of=date(2026, 5, 14),
+        )
+        enriched = result.scorable_rows
 
         self.assertEqual(enriched[0]["mom_20d"], 0.02)
         self.assertEqual(enriched[0]["mom_60d"], 0.06)
@@ -354,38 +365,57 @@ class SectorRotationTests(unittest.TestCase):
         self.assertEqual(enriched[0]["feature_sources"][0]["canonical_aliases"]["mom_60d"], "return_60d")
 
     def test_young_etf_missing_long_momentum_reports_insufficient_history(self):
-        notes = _insufficient_history_gap_notes(
-            [
-                {
+        result = build_strategy_input(
+            strategy=get_strategy("momentum_lite_v1"),
+            live_rows=[{"ticker": "DRAM"}],
+            feature_matrix={
+                "DRAM": {
                     "ticker": "DRAM",
+                    "source": "yfinance",
+                    "trading_date": "2026-05-27",
                     "close_price": 52.0,
-                    "mom_20d": 0.12,
-                    "mom_60d": None,
-                    "mom_252d": None,
+                    "return_20d": 0.12,
+                    "return_60d": None,
+                    "return_252d": None,
+                    "rsi_14": 70.0,
+                    "atr_pct": 0.05,
                 }
-            ],
-            {"DRAM": ["mom_60d", "mom_252d"]},
+            },
+            as_of=date(2026, 5, 28),
         )
 
-        self.assertEqual(len(notes), 1)
-        self.assertIn("DRAM has price data", notes[0])
-        self.assertIn("requires up to 252 trading days", notes[0])
+        self.assertEqual(result.status, "not_scored")
+        reasons = result.excluded_tickers["DRAM"]
+        self.assertTrue(any(
+            reason["type"] == ExclusionReason.INSUFFICIENT_HISTORY.value
+            and reason["field"] == "mom_60d"
+            and reason["required_days"] == 60
+            for reason in reasons
+        ))
+        self.assertTrue(any(
+            reason["type"] == ExclusionReason.INSUFFICIENT_HISTORY.value
+            and reason["field"] == "mom_252d"
+            and reason["required_days"] == 252
+            for reason in reasons
+        ))
 
     def test_replay_metrics_suppress_sharpe_until_enough_samples(self):
         snapshots = []
         for i in range(3):
             snapshots.append({
                 "packet_type": "daily_feature_snapshot",
-                "features": [
+                "features": _with_yfinance_sources([
                     {
                         "ticker": "SPY",
                         "mom_20d": 0.02,
                         "mom_60d": 0.03,
                         "mom_252d": 0.10,
                         "hist_vol_20d": 0.01,
+                        "rsi_14": 55.0,
+                        "atr_pct": 0.012,
                         "daily_return_pct": 0.001,
                     }
-                ],
+                ]),
                 "portfolio": {},
             })
 
@@ -629,7 +659,7 @@ class SectorRotationTests(unittest.TestCase):
         self.assertIn("high_turnover", reason_line)
         self.assertLess(reason_line.index("consensus_regime_conflict"), reason_line.index("historical_strong"))
 
-    def test_data_not_ready_cash_fallback_turnover_is_not_strategy_turnover(self):
+    def test_data_not_ready_not_scored_does_not_emit_cash_strategy_turnover(self):
         result = _run_one_strategy(
             "momentum_lite_v1",
             _with_yfinance_sources([
@@ -646,11 +676,13 @@ class SectorRotationTests(unittest.TestCase):
         )
 
         self.assertFalse(result.data_ready)
+        self.assertEqual(result.score_status, "not_scored")
+        self.assertIsNone(result.weights)
         self.assertIsNone(result.expected_turnover_pct)
-        self.assertEqual(result.turnover_status, "cash_fallback_not_actionable")
-        self.assertAlmostEqual(result.diagnostic_turnover_pct, 0.50)
+        self.assertEqual(result.turnover_status, "not_scored")
+        self.assertIsNone(result.diagnostic_turnover_pct)
         self.assertIsNone(result.risk_profile["turnover"])
-        self.assertAlmostEqual(result.risk_profile["fallback_cash_turnover"], 0.50)
+        self.assertIsNone(result.risk_profile["fallback_cash_turnover"])
 
         confidence = _compute_strategy_confidence(
             [result],
@@ -662,7 +694,7 @@ class SectorRotationTests(unittest.TestCase):
         codes = confidence["momentum_lite_v1"]["reason_codes"]
 
         self.assertIn("data_not_ready", codes)
-        self.assertIn("turnover_not_applicable_data_fallback", codes)
+        self.assertIn("turnover_not_applicable_not_scored", codes)
         self.assertNotIn("moderate_turnover", codes)
         self.assertEqual(confidence["momentum_lite_v1"]["turnover_penalty"], 0.0)
 

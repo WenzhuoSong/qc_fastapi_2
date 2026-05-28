@@ -279,7 +279,7 @@ def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
         data_ready = bool(item.get("data_ready"))
         turnover_status = str(risk_profile.get("turnover_status") or item.get("turnover_status") or "")
         turnover = None
-        if data_ready and turnover_status != "cash_fallback_not_actionable":
+        if data_ready and turnover_status != "not_scored":
             turnover = _to_float(
                 risk_profile.get("turnover"),
                 _to_float(item.get("expected_turnover_pct"), _to_float(metrics.get("avg_turnover"))),

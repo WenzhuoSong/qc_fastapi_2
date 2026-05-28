@@ -42,6 +42,7 @@ from services.strategy_evidence import (
     summarize_evidence_cards,
 )
 from services.strategy_feature_contract import build_strategy_feature_contract
+from services.strategy_input_builder import build_strategy_input
 from services.strategy_independence import (
     build_strategy_independence_diagnostics_from_snapshots,
     empty_strategy_independence_summary,
@@ -85,13 +86,14 @@ class StrategyResult:
     strategy_version: str
     description: str
     strategy_card: dict[str, Any]
-    weights: dict[str, float]
+    weights: dict[str, float] | None
     score_breakdown: list[dict[str, Any]]
     selected_tickers: list[str]
     expected_turnover_pct: float | None
     estimated_cost_pct: float | None
     diagnostic_turnover_pct: float | None
     turnover_status: str
+    score_status: str
     regime_fit: str
     data_ready: bool
     data_readiness: dict[str, Any]
@@ -104,6 +106,9 @@ class StrategyResult:
     evidence_contract_version: str = EVIDENCE_CONTRACT_VERSION
     evidence_cards: list[dict[str, Any]] = field(default_factory=list)
     evidence_summary: dict[str, Any] = field(default_factory=dict)
+    scorable_ticker_count: int = 0
+    excluded_tickers: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    not_scored_reason: str | None = None
 
 
 @dataclass
@@ -141,6 +146,7 @@ async def run_playground(
 ) -> PlaygroundBundle:
     holdings = brief.get("holdings") or []
     holdings, enrichment = await _ensure_playground_features(holdings, strategy_names)
+    feature_matrix = enrichment.get("feature_matrix") or {}
     portfolio = brief.get("portfolio") or {}
     current_weights = brief.get("current_weights") or _extract_current_weights(holdings)
     sector_rotation = brief.get("sector_rotation") or detect_sector_rotation(holdings)
@@ -176,6 +182,7 @@ async def run_playground(
             current_weights,
             memory_feedback=memory_feedback.get(name),
             conviction_profiles=conviction_profiles,
+            feature_matrix=feature_matrix,
         )
         for name in names
     ]
@@ -395,59 +402,34 @@ async def _ensure_playground_features(
     strategy_names: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
-    Ensure strategy-required fields exist before comparison.
+    Preload daily research features once. This function is read-only.
 
-    1. Enrich missing fields from market_daily_features, preferring yfinance.
-    2. If still missing, fetch yfinance immediately and persist it.
-    3. Return enriched holdings plus transparent data-gap/source notes.
+    Strategy-specific readiness and ticker exclusions are handled by
+    StrategyInputBuilder; playground should not fetch or write yfinance rows.
     """
     clean_holdings = _rows_with_strategy_universe(holdings, strategy_names or DEFAULT_PLAYGROUND_STRATEGIES)
     tickers = sorted({(row.get("ticker") or "").upper().strip() for row in clean_holdings if row.get("ticker")})
     if not tickers:
-        return clean_holdings, {"data_gaps": ["no tradable research tickers after universe filtering"]}
-
-    required_fields = _required_fields_for_strategies(strategy_names or DEFAULT_PLAYGROUND_STRATEGIES)
-    missing_before = _missing_required_by_ticker(clean_holdings, required_fields)
-    if not any(missing_before.values()):
-        return clean_holdings, {"data_gaps": []}
+        return clean_holdings, {
+            "data_gaps": ["no tradable research tickers after universe filtering"],
+            "feature_matrix": {},
+        }
 
     data_gaps: list[str] = []
-    enriched = clean_holdings
+    feature_matrix: dict[str, dict[str, Any]] = {}
 
     try:
         from services.market_feature_store import latest_feature_map
         async with AsyncSessionLocal() as db:
-            feature_map = await latest_feature_map(db, tickers=tickers, source="yfinance", max_age_days=14)
-        enriched = _merge_feature_map(enriched, feature_map)
+            feature_matrix = await latest_feature_map(db, tickers=tickers, source="yfinance", max_age_days=14)
     except Exception as exc:
         logger.warning("[playground] yfinance feature-store enrichment failed: %s", exc)
         data_gaps.append(f"yfinance feature-store enrichment failed: {type(exc).__name__}")
 
-    missing_after_store = _missing_required_by_ticker(enriched, required_fields)
-    tickers_to_fetch = [ticker for ticker, fields in missing_after_store.items() if fields]
-    if tickers_to_fetch:
-        try:
-            from services.market_feature_store import upsert_market_daily_features
-            from services.yfinance_backfill import fetch_yfinance_feature_rows
-            fetched_rows = fetch_yfinance_feature_rows(tickers_to_fetch, lookback_days=420)
-            latest_rows = _latest_rows_by_ticker(fetched_rows)
-            if latest_rows:
-                async with AsyncSessionLocal() as db:
-                    await upsert_market_daily_features(db, fetched_rows, source="yfinance")
-                enriched = _merge_feature_map(enriched, latest_rows)
-        except Exception as exc:
-            logger.warning("[playground] immediate yfinance enrichment failed: %s", exc)
-            data_gaps.append(f"immediate yfinance enrichment failed: {type(exc).__name__}")
+    if not feature_matrix:
+        data_gaps.append("no yfinance daily research features available for playground universe")
 
-    missing_after = _missing_required_by_ticker(enriched, required_fields)
-    still_missing = {ticker: fields for ticker, fields in missing_after.items() if fields}
-    if still_missing:
-        data_gaps.extend(_insufficient_history_gap_notes(enriched, still_missing))
-        data_gaps.append(f"strategy-required fields still missing after yfinance enrichment: {still_missing}")
-    else:
-        data_gaps.append("missing strategy fields filled from yfinance research feature layer")
-
-    return enriched, {"data_gaps": data_gaps}
+    return clean_holdings, {"data_gaps": data_gaps, "feature_matrix": feature_matrix}
 
 
 async def _load_strategy_validation_summary() -> dict[str, Any]:
@@ -584,22 +566,40 @@ def _run_one_strategy(
     current_weights: dict[str, float],
     memory_feedback: dict[str, Any] | None = None,
     conviction_profiles: list[dict[str, Any]] | None = None,
+    feature_matrix: dict[str, dict[str, Any]] | None = None,
 ) -> StrategyResult:
     strategy = get_strategy(name)
-    readiness = strategy.data_readiness(holdings)
-    feature_contract = build_strategy_feature_contract(strategy, holdings)
-    can_score = bool(readiness.get("ready") and feature_contract.get("can_influence_allocation"))
+    strategy_input = build_strategy_input(
+        strategy=strategy,
+        live_rows=holdings,
+        feature_matrix=feature_matrix or {},
+        as_of=datetime.utcnow().date(),
+    )
+    scoring_rows = strategy_input.scorable_rows
+    readiness = strategy_input.readiness_summary
+    feature_contract = build_strategy_feature_contract(strategy, scoring_rows)
+    can_score = bool(strategy_input.can_score and feature_contract.get("can_influence_allocation"))
     if can_score:
-        scored = strategy.score(holdings, context)
-        weights = strategy.optimize(scored, context)
+        scored = strategy.score(scoring_rows, context)
+        weights = strategy.optimize(scored, context) if scored else None
     else:
         scored = []
-        weights = {"CASH": 1.0}
-    actions = compute_rebalance_actions(weights, current_weights, threshold=1e-9)
-    turnover = _turnover(weights, current_weights)
-    expected_turnover = round(turnover, 6) if can_score else None
-    estimated_cost = estimate_cost_pct(actions) if can_score else None
-    turnover_status = "actionable" if can_score else "cash_fallback_not_actionable"
+        weights = None
+    if can_score and weights:
+        actions = compute_rebalance_actions(weights, current_weights, threshold=1e-9)
+        turnover = _turnover(weights, current_weights)
+        expected_turnover = round(turnover, 6)
+        estimated_cost = estimate_cost_pct(actions)
+        turnover_status = "actionable"
+        score_status = strategy_input.status
+        not_scored_reason = None
+    else:
+        turnover = None
+        expected_turnover = None
+        estimated_cost = None
+        turnover_status = "not_scored"
+        score_status = "not_scored"
+        not_scored_reason = strategy_input.not_scored_reason or "strategy_returned_no_scores"
     score_breakdown = [_score_to_dict(item) for item in scored]
     evidence_cards = _build_strategy_evidence_cards(
         strategy=strategy,
@@ -614,19 +614,28 @@ def _run_one_strategy(
         strategy_card=strategy.strategy_card(),
         weights=weights,
         score_breakdown=score_breakdown,
-        selected_tickers=[ticker for ticker, weight in weights.items() if ticker != "CASH" and weight > 0.01],
+        selected_tickers=[
+            ticker for ticker, weight in (weights or {}).items()
+            if ticker != "CASH" and weight > 0.01
+        ],
         expected_turnover_pct=expected_turnover,
         estimated_cost_pct=estimated_cost,
-        diagnostic_turnover_pct=round(turnover, 6),
+        diagnostic_turnover_pct=round(turnover, 6) if turnover is not None else None,
         turnover_status=turnover_status,
+        score_status=score_status,
         regime_fit=_strategy_regime_fit(name, context.get("regime", "")),
-        data_ready=can_score,
+        data_ready=can_score and bool(weights),
         data_readiness={
             **readiness,
             "requirements": strategy.data_requirements(),
         },
-        feature_contract=feature_contract,
-        data_quality=_build_data_quality(readiness, holdings, strategy.required_fields),
+        feature_contract={
+            **feature_contract,
+            "input_status": strategy_input.status,
+            "excluded_tickers": strategy_input.excluded_tickers,
+            "field_provenance": strategy_input.field_provenance,
+        },
+        data_quality=_build_data_quality(readiness, scoring_rows, strategy.required_fields),
         risk_profile=_build_risk_profile(
             weights,
             expected_turnover,
@@ -642,6 +651,9 @@ def _run_one_strategy(
         evidence_contract_version=EVIDENCE_CONTRACT_VERSION,
         evidence_cards=evidence_cards,
         evidence_summary=summarize_evidence_cards(evidence_cards),
+        scorable_ticker_count=int(readiness.get("scorable_ticker_count") or 0),
+        excluded_tickers=strategy_input.excluded_tickers,
+        not_scored_reason=not_scored_reason,
     )
 
 
@@ -754,140 +766,6 @@ def _rows_with_strategy_universe(
     return rows
 
 
-def _missing_required_by_ticker(
-    holdings: list[dict[str, Any]],
-    required_fields: set[str],
-) -> dict[str, list[str]]:
-    if not required_fields:
-        return {}
-    out: dict[str, list[str]] = {}
-    for row in holdings:
-        ticker = (row.get("ticker") or "").upper().strip()
-        if not ticker:
-            continue
-        missing = [field for field in sorted(required_fields) if row.get(field) is None]
-        if missing:
-            out[ticker] = missing
-    return out
-
-
-def _merge_feature_map(
-    holdings: list[dict[str, Any]],
-    feature_map: dict[str, dict[str, Any]],
-) -> list[dict[str, Any]]:
-    if not feature_map:
-        return holdings
-    enriched: list[dict[str, Any]] = []
-    for row in holdings:
-        ticker = (row.get("ticker") or "").upper().strip()
-        feature = feature_map.get(ticker) or {}
-        mapped = _feature_row_to_holding_fields(feature)
-        merged = dict(row)
-        filled_fields: list[str] = []
-        for key, value in mapped.items():
-            if value is not None and merged.get(key) is None:
-                merged[key] = value
-                filled_fields.append(key)
-        if filled_fields:
-            source = feature.get("source", "yfinance")
-            sources = list(merged.get("feature_sources") or [])
-            sources.append({
-                "source": source,
-                "filled_fields": sorted(filled_fields),
-                "authority_by_field": {
-                    field: authority_for_field(field, source).value
-                    for field in sorted(filled_fields)
-                },
-                "canonical_aliases": {
-                    field: canonical_field_name(field)
-                    for field in sorted(filled_fields)
-                    if canonical_field_name(field) != field
-                },
-                "trading_date": feature.get("trading_date"),
-            })
-            merged["feature_sources"] = sources
-        enriched.append(merged)
-    return enriched
-
-
-LONG_LOOKBACK_REQUIRED_DAYS = {
-    "mom_60d": 60,
-    "return_60d": 60,
-    "mom_252d": 252,
-    "return_252d": 252,
-    "sma_200": 200,
-}
-
-
-def _insufficient_history_gap_notes(
-    holdings: list[dict[str, Any]],
-    missing_by_ticker: dict[str, list[str]],
-) -> list[str]:
-    """Explain young ETFs separately from true feature-fetch failures."""
-    by_ticker = {
-        (row.get("ticker") or "").upper().strip(): row
-        for row in holdings
-        if (row.get("ticker") or "").upper().strip()
-    }
-    notes: list[str] = []
-    for ticker, fields in sorted(missing_by_ticker.items()):
-        long_fields = [field for field in fields if field in LONG_LOOKBACK_REQUIRED_DAYS]
-        if not long_fields:
-            continue
-        row = by_ticker.get(ticker) or {}
-        has_price_data = any(
-            row.get(field) is not None
-            for field in ("close_price", "price", "return_1d", "return_5d", "mom_20d", "hist_vol_20d")
-        )
-        if not has_price_data:
-            continue
-        required_days = max(LONG_LOOKBACK_REQUIRED_DAYS[field] for field in long_fields)
-        notes.append(
-            f"{ticker} has price data but insufficient listed history for "
-            f"{','.join(sorted(long_fields))}; requires up to {required_days} trading days"
-        )
-    return notes
-
-
-def _feature_row_to_holding_fields(feature: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "price": feature.get("close_price") or feature.get("adj_close_price"),
-        "close_price": feature.get("close_price") or feature.get("adj_close_price"),
-        "open_price": feature.get("open_price"),
-        "high_price": feature.get("high_price"),
-        "low_price": feature.get("low_price"),
-        "volume": feature.get("volume"),
-        "dollar_volume": feature.get("dollar_volume"),
-        "daily_return_pct": feature.get("return_1d"),
-        "return_1d": feature.get("return_1d"),
-        "return_5d": feature.get("return_5d"),
-        "mom_20d": feature.get("return_20d"),
-        "mom_60d": feature.get("return_60d"),
-        "mom_252d": feature.get("return_252d"),
-        "sma_20": feature.get("sma_20"),
-        "sma_50": feature.get("sma_50"),
-        "sma_200": feature.get("sma_200"),
-        "hist_vol_20d": feature.get("hist_vol_20d"),
-        "rsi_10": feature.get("rsi_10"),
-        "rsi_14": feature.get("rsi_14"),
-        "atr_pct": feature.get("atr_pct"),
-        "bb_position": feature.get("bb_position"),
-        "beta_vs_spy": feature.get("beta_vs_spy"),
-    }
-
-
-def _latest_rows_by_ticker(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    latest: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        ticker = (row.get("ticker") or "").upper().strip()
-        if not ticker:
-            continue
-        current = latest.get(ticker)
-        if current is None or str(row.get("trading_date")) > str(current.get("trading_date")):
-            latest[ticker] = row
-    return latest
-
-
 def _build_data_quality(
     readiness: dict[str, Any],
     holdings: list[dict[str, Any]],
@@ -905,6 +783,8 @@ def _build_data_quality(
         "ready": bool(readiness.get("ready")),
         "coverage": readiness.get("coverage"),
         "missing_fields": readiness.get("missing_fields") or [],
+        "excluded_tickers": readiness.get("excluded_tickers") or {},
+        "exclusion_counts": readiness.get("exclusion_counts") or {},
         "field_coverage": readiness.get("field_coverage") or {},
         "filled_by_source": {
             source: sorted(fields)
@@ -916,13 +796,14 @@ def _build_data_quality(
 
 
 def _build_risk_profile(
-    weights: dict[str, float],
+    weights: dict[str, float] | None,
     turnover: float | None,
     estimated_cost: float | None,
     *,
     diagnostic_turnover: float | None = None,
     turnover_status: str = "actionable",
 ) -> dict[str, Any]:
+    weights = weights or {}
     non_cash = {ticker: float(weight) for ticker, weight in weights.items() if ticker != "CASH" and weight > 0}
     max_single = max(non_cash.values()) if non_cash else 0.0
     concentration = "low"
@@ -933,11 +814,7 @@ def _build_risk_profile(
     return {
         "turnover": round(turnover, 6) if turnover is not None else None,
         "diagnostic_turnover": round(diagnostic_turnover, 6) if diagnostic_turnover is not None else None,
-        "fallback_cash_turnover": (
-            round(diagnostic_turnover, 6)
-            if turnover_status == "cash_fallback_not_actionable" and diagnostic_turnover is not None
-            else None
-        ),
+        "fallback_cash_turnover": None,
         "turnover_status": turnover_status,
         "estimated_cost": estimated_cost,
         "position_count": len(non_cash),
@@ -950,18 +827,26 @@ def _build_risk_profile(
 def _build_agent_interpretation(
     strategy,
     scored: list[ScoredTicker],
-    weights: dict[str, float],
+    weights: dict[str, float] | None,
     context: dict[str, Any],
     readiness: dict[str, Any],
     feature_contract: dict[str, Any] | None = None,
     memory_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    weights = weights or {}
     selected = [ticker for ticker, weight in weights.items() if ticker != "CASH" and weight > 0.01]
     top_scores = [item.ticker for item in scored[:3]]
     contract = feature_contract or {}
     if not readiness.get("ready") or not contract.get("can_influence_allocation", True):
         verdict = contract.get("verdict") or "not_data_ready"
-        what = f"The strategy is not data-ready ({verdict}) and should not influence allocation."
+        reason = readiness.get("not_scored_reason") or verdict
+        what = f"The strategy was not scored ({reason}) and should not influence allocation."
+    elif readiness.get("status") == "partially_scored" and selected:
+        excluded_count = int(readiness.get("excluded_ticker_count") or 0)
+        what = (
+            f"The strategy favors {', '.join(selected[:5])} after isolating "
+            f"{excluded_count} ticker(s) with input issues."
+        )
     elif selected:
         what = f"The strategy favors {', '.join(selected[:5])} based on its {strategy.family} logic."
     else:
@@ -1020,11 +905,11 @@ def _strategy_invalidation_hint(family: str, regime: str | None) -> str:
 
 def compute_weight_divergence(results: list[StrategyResult], top_n: int = 10) -> list[dict[str, Any]]:
     ready_results = [result for result in results if result.data_ready]
-    tickers = sorted({ticker for result in ready_results for ticker in result.weights if ticker != "CASH"})
+    tickers = sorted({ticker for result in ready_results for ticker in (result.weights or {}) if ticker != "CASH"})
     rows: list[dict[str, Any]] = []
     for ticker in tickers:
         weights = {
-            result.strategy_name: float(result.weights.get(ticker, 0.0))
+            result.strategy_name: float((result.weights or {}).get(ticker, 0.0))
             for result in ready_results
         }
         vals = list(weights.values())
@@ -1043,7 +928,7 @@ def compute_consensus_weights(results: list[StrategyResult]) -> dict[str, float]
     ready_results = [result for result in results if result.data_ready]
     if not ready_results:
         return {"CASH": 1.0}
-    tickers = sorted({ticker for result in ready_results for ticker in result.weights})
+    tickers = sorted({ticker for result in ready_results for ticker in (result.weights or {})})
     strategy_multipliers = {
         result.strategy_name: max(0.0, float((result.memory_feedback or {}).get("discount_multiplier") or 1.0))
         for result in ready_results
@@ -1054,7 +939,7 @@ def compute_consensus_weights(results: list[StrategyResult]) -> dict[str, float]
         multiplier_total = float(len(ready_results))
     averaged = {
         ticker: sum(
-            float(result.weights.get(ticker, 0.0)) * strategy_multipliers[result.strategy_name]
+            float((result.weights or {}).get(ticker, 0.0)) * strategy_multipliers[result.strategy_name]
             for result in ready_results
         ) / multiplier_total
         for ticker in tickers
@@ -1088,7 +973,7 @@ def _compute_strategy_confidence(
         walk_forward_score = _walk_forward_evidence_score(walk_forward)
         turnover_penalty = _turnover_penalty(result.expected_turnover_pct)
         data_penalty = 0.20 if not result.data_ready else 0.0
-        strategy_conflict = bool(_detect_strategy_regime_conflicts(regime, result.weights))
+        strategy_conflict = bool(_detect_strategy_regime_conflicts(regime, result.weights or {}))
         if walk_forward:
             confidence_score = max(
                 0.0,
@@ -1133,7 +1018,7 @@ def _compute_strategy_confidence(
             "regime_fit": result.regime_fit,
             "consensus_conflict": consensus_conflict,
             "strategy_regime_conflict": strategy_conflict,
-            "defensive_weight": round(_defensive_exposure(result.weights)["weight"], 4),
+            "defensive_weight": round(_defensive_exposure(result.weights or {})["weight"], 4),
             "reason_codes": _strategy_confidence_reason_codes(
                 result,
                 hist,
@@ -1223,8 +1108,8 @@ def _strategy_confidence_notes(
         notes.append(f"walk_forward={walk_forward.get('level', 'unknown')}")
     if result.expected_turnover_pct is not None and result.expected_turnover_pct > 0.50:
         notes.append("high_turnover")
-    elif result.expected_turnover_pct is None and result.turnover_status == "cash_fallback_not_actionable":
-        notes.append("turnover_not_applicable_data_fallback")
+    elif result.expected_turnover_pct is None and result.turnover_status == "not_scored":
+        notes.append("turnover_not_applicable_not_scored")
     if strategy_conflict:
         notes.append("strategy_weights_conflict_with_regime")
     return notes
@@ -1246,6 +1131,8 @@ def _strategy_confidence_reason_codes(
 
     if not result.data_ready:
         codes.append("data_not_ready")
+    elif result.score_status == "partially_scored":
+        codes.append("partial_universe_excluded")
     if hist_level == "high" and hist_samples >= MIN_REPLAY_SAMPLES_FOR_STRONG_EVIDENCE:
         codes.append("historical_strong")
     elif hist_level in {"medium", "insufficient"}:
@@ -1273,8 +1160,8 @@ def _strategy_confidence_reason_codes(
         codes.extend(str(code) for code in walk_forward.get("reason_codes") or [])
     else:
         codes.append("walk_forward_missing")
-    if result.expected_turnover_pct is None and result.turnover_status == "cash_fallback_not_actionable":
-        codes.append("turnover_not_applicable_data_fallback")
+    if result.expected_turnover_pct is None and result.turnover_status == "not_scored":
+        codes.append("turnover_not_applicable_not_scored")
     elif result.expected_turnover_pct is not None and result.expected_turnover_pct > 0.50:
         codes.append("high_turnover")
     elif result.expected_turnover_pct is not None and result.expected_turnover_pct > 0.20:
@@ -1642,7 +1529,9 @@ def _compute_replay_metrics(
                 "growth_regime_label": macro_regime_context.get("growth_regime_label"),
             }
             result = _run_one_strategy(name, holdings, context, previous_weights.get(name, {}))
-            weights = result.weights
+            weights = result.weights or {}
+            if not weights:
+                continue
             prev = previous_weights.get(name)
             if prev is not None:
                 turnovers.append(_turnover(weights, prev))
@@ -1831,7 +1720,9 @@ def _strategy_forward_returns_for_snapshots(
                 context,
                 previous_weights.get(name, {}),
             )
-            weights = result.weights
+            weights = result.weights or {}
+            if not weights:
+                continue
             previous_weights[name] = weights
             returns_by_strategy.setdefault(name, []).append(
                 sum(float(weights.get(ticker, 0.0)) * ret for ticker, ret in next_returns.items())
@@ -2131,9 +2022,11 @@ def _format_strategy_confidence_summary(bundle: PlaygroundBundle, limit: int = 4
         live_samples = int(row.get("live_samples") or 0)
         hist_samples = int(row.get("historical_samples") or 0)
         current_turnover = _format_pct(result.expected_turnover_pct if result else None)
-        fallback_turnover = ""
-        if result and result.expected_turnover_pct is None and result.turnover_status == "cash_fallback_not_actionable":
-            fallback_turnover = f", cash_fallback_turnover={_format_pct(result.diagnostic_turnover_pct)}"
+        input_scope = ""
+        if result and result.score_status == "partially_scored":
+            input_scope = f", scorable={result.scorable_ticker_count}, excluded={len(result.excluded_tickers)}"
+        elif result and result.score_status == "not_scored":
+            input_scope = f", not_scored={escape(str(result.not_scored_reason or 'unknown'))}"
         hist_turnover = _format_pct(metrics.get("avg_turnover"))
         sharpe = metrics.get("sharpe")
         sharpe_text = f"{float(sharpe):.2f}" if sharpe is not None else "n/a"
@@ -2142,7 +2035,7 @@ def _format_strategy_confidence_summary(bundle: PlaygroundBundle, limit: int = 4
             f"- {escape(name)}: use={escape(str(row.get('suggested_use') or 'unknown'))}, "
             f"confidence={confidence_score}, hist={escape(str(historical))}/{hist_samples}, "
             f"live_samples={live_samples}, sharpe={sharpe_text}, "
-            f"current_turnover={current_turnover}, hist_avg_turnover={hist_turnover}{fallback_turnover}"
+            f"current_turnover={current_turnover}, hist_avg_turnover={hist_turnover}{input_scope}"
         )
         if codes:
             lines.append(f"  reasons={escape(codes)}")
