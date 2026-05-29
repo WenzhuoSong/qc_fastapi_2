@@ -12,7 +12,7 @@ import json
 import logging
 import math
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from html import escape
 from typing import Any
 
@@ -512,7 +512,7 @@ async def _load_latest_conviction_profiles_for_evidence(limit: int = 5000) -> li
 
 
 async def generate_playground_report(bundle: PlaygroundBundle) -> str:
-    data = bundle.to_dict()
+    data = _compact_bundle_for_llm(bundle)
     if not bundle.strategies:
         return "🧪 <b>Playground Sandbox</b>\nNo QC snapshots available, skipped."
 
@@ -577,6 +577,209 @@ async def generate_playground_report(bundle: PlaygroundBundle) -> str:
         return _fallback_report(bundle, error=str(exc))
 
 
+def _compact_bundle_for_llm(bundle: PlaygroundBundle) -> dict[str, Any]:
+    """Return a bounded report payload for the playground LLM reviewer."""
+    return {
+        "generated_at": bundle.generated_at,
+        "regime_label": bundle.regime_label,
+        "regime_confidence": bundle.regime_confidence,
+        "snapshot_count": bundle.snapshot_count,
+        "historical_snapshot_count": bundle.historical_snapshot_count,
+        "consensus_top10": _top_weight_rows(bundle.consensus_weights, limit=10),
+        "evidence_summary": bundle.evidence_summary,
+        "strategy_confidence": bundle.strategy_confidence,
+        "strategies": [_compact_strategy_result_for_llm(row) for row in bundle.strategies],
+        "replay_metrics": _compact_metrics_map(bundle.replay_metrics),
+        "historical_replay_metrics": _compact_metrics_map(bundle.historical_replay_metrics),
+        "walk_forward_validation": _compact_walk_forward_for_llm(bundle.walk_forward_validation or {}),
+        "validation_summary": _compact_validation_summary_for_llm(bundle.validation_summary),
+        "strategy_independence": _compact_strategy_independence_for_llm(bundle.strategy_independence),
+        "evidence_vote_summary": _compact_vote_summary_for_llm(bundle.evidence_vote_summary),
+        "evidence_cap_diagnostics": _compact_evidence_cap_for_llm(bundle.evidence_cap_diagnostics),
+        "largest_divergences": bundle.divergence_map[:10],
+        "data_gaps": list(bundle.data_gaps or [])[:12],
+    }
+
+
+def _compact_strategy_result_for_llm(result: StrategyResult) -> dict[str, Any]:
+    readiness = result.data_readiness or {}
+    risk = result.risk_profile or {}
+    memory = result.memory_feedback or {}
+    interpretation = result.agent_interpretation or {}
+    return {
+        "strategy_name": result.strategy_name,
+        "strategy_version": result.strategy_version,
+        "description": result.description,
+        "family": (result.strategy_card or {}).get("family"),
+        "alpha_source": (result.strategy_card or {}).get("alpha_source"),
+        "regime_fit": result.regime_fit,
+        "data_ready": result.data_ready,
+        "score_status": result.score_status,
+        "not_scored_reason": result.not_scored_reason,
+        "selected_tickers": result.selected_tickers,
+        "expected_turnover_pct": result.expected_turnover_pct,
+        "estimated_cost_pct": result.estimated_cost_pct,
+        "diagnostic_turnover_pct": result.diagnostic_turnover_pct,
+        "scorable_ticker_count": result.scorable_ticker_count,
+        "excluded_ticker_count": len(result.excluded_tickers or {}),
+        "readiness": {
+            "status": readiness.get("status"),
+            "candidate_ticker_count": readiness.get("candidate_ticker_count"),
+            "scorable_ticker_count": readiness.get("scorable_ticker_count"),
+            "excluded_ticker_count": readiness.get("excluded_ticker_count"),
+            "coverage": readiness.get("coverage"),
+            "exclusion_counts": readiness.get("exclusion_counts") or {},
+        },
+        "risk_profile": {
+            "turnover": risk.get("turnover"),
+            "estimated_cost_pct": risk.get("estimated_cost_pct"),
+            "turnover_status": risk.get("turnover_status"),
+            "warnings": (risk.get("warnings") or [])[:5],
+        },
+        "memory_feedback": {
+            "discount_multiplier": memory.get("discount_multiplier"),
+            "advisory_note": memory.get("advisory_note"),
+            "sample_count": memory.get("sample_count"),
+        },
+        "agent_interpretation": {
+            "core_signal": interpretation.get("core_signal"),
+            "regime_fit": interpretation.get("regime_fit"),
+            "failure_modes": (interpretation.get("failure_modes") or [])[:5],
+            "downstream_use": interpretation.get("downstream_use"),
+        },
+        "top_scores": result.score_breakdown[:8],
+        "evidence_summary": result.evidence_summary,
+        "evidence_cards": [
+            _compact_evidence_card_for_llm(card)
+            for card in (result.evidence_cards or [])[:8]
+        ],
+    }
+
+
+def _compact_evidence_card_for_llm(card: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ticker": card.get("ticker"),
+        "role": card.get("role"),
+        "action": card.get("action"),
+        "vote_status": card.get("vote_status"),
+        "abstain_reason": card.get("abstain_reason"),
+        "confidence": card.get("confidence"),
+        "conviction": card.get("conviction"),
+        "conviction_status": card.get("conviction_status"),
+        "max_reasonable_weight": card.get("max_reasonable_weight"),
+        "risk_budget_cost": card.get("risk_budget_cost"),
+        "reason": card.get("reason"),
+    }
+
+
+def _compact_metrics_map(metrics: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    compact: dict[str, dict[str, Any]] = {}
+    for name, row in (metrics or {}).items():
+        reliability = row.get("metric_reliability") or {}
+        compact[name] = {
+            "avg_turnover": row.get("avg_turnover"),
+            "max_turnover": row.get("max_turnover"),
+            "avg_position_count": row.get("avg_position_count"),
+            "avg_cash_weight": row.get("avg_cash_weight"),
+            "sharpe": row.get("sharpe"),
+            "ic": row.get("ic"),
+            "hit_rate": row.get("hit_rate"),
+            "max_drawdown_pct": row.get("max_drawdown_pct"),
+            "n_forward_return_samples": row.get("n_forward_return_samples"),
+            "n_ic_samples": row.get("n_ic_samples"),
+            "metric_reliability": {
+                "level": reliability.get("level"),
+                "sample_count": reliability.get("sample_count"),
+                "ic_sample_count": reliability.get("ic_sample_count"),
+                "strategy_ready_samples": reliability.get("strategy_ready_samples"),
+                "reasons": (reliability.get("reasons") or [])[:5],
+            },
+            "top_signal_leaders": (row.get("top_signal_leaders") or [])[:5],
+            "selection_guardrail": row.get("selection_guardrail"),
+        }
+    return compact
+
+
+def _compact_walk_forward_for_llm(validation: dict[str, Any]) -> dict[str, Any]:
+    items = validation.get("items") or {}
+    return {
+        "contract_version": validation.get("contract_version"),
+        "items": {
+            name: {
+                "level": row.get("level"),
+                "valid_fold_count": row.get("valid_fold_count"),
+                "pass_rate": row.get("pass_rate"),
+                "stability_score": row.get("stability_score"),
+                "reason_codes": row.get("reason_codes") or [],
+            }
+            for name, row in items.items()
+            if isinstance(row, dict)
+        },
+    }
+
+
+def _compact_validation_summary_for_llm(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "signals_today": summary.get("signals_today"),
+        "outcomes_today": summary.get("outcomes_today"),
+        "pending_mature": summary.get("pending_mature"),
+        "profiles": summary.get("profiles") or {},
+        "warnings": (summary.get("warnings") or [])[:8],
+    }
+
+
+def _compact_strategy_independence_for_llm(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": summary.get("status"),
+        "strategy_count": summary.get("strategy_count"),
+        "alpha_strategy_count": summary.get("alpha_strategy_count"),
+        "effective_independent_alpha_count": summary.get("effective_independent_alpha_count"),
+        "high_correlation_pair_count": summary.get("high_correlation_pair_count"),
+        "low_correlation_pair_count": summary.get("low_correlation_pair_count"),
+        "warnings": (summary.get("warnings") or [])[:8],
+    }
+
+
+def _compact_vote_summary_for_llm(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ticker_count": summary.get("ticker_count"),
+        "voted_count": summary.get("voted_count"),
+        "abstain_count": summary.get("abstain_count"),
+        "watch_count": summary.get("watch_count"),
+        "mapping_error_count": summary.get("mapping_error_count"),
+        "warnings": (summary.get("warnings") or [])[:8],
+    }
+
+
+def _compact_evidence_cap_for_llm(summary: dict[str, Any]) -> dict[str, Any]:
+    rows = [
+        row for row in (summary.get("rows") or [])
+        if isinstance(row, dict)
+    ]
+    rows = sorted(rows, key=lambda row: float(row.get("cap_reduction") or 0.0), reverse=True)
+    return {
+        "available": summary.get("available"),
+        "execution_effect": summary.get("execution_effect"),
+        "ticker_count": summary.get("ticker_count"),
+        "degraded_ticker_count": summary.get("degraded_ticker_count"),
+        "would_clip_count": summary.get("would_clip_count"),
+        "mapping_error_count": summary.get("mapping_error_count"),
+        "top_degraded_rows": rows[:10],
+        "warnings": (summary.get("warnings") or [])[:8],
+    }
+
+
+def _top_weight_rows(weights: dict[str, float], *, limit: int) -> list[dict[str, Any]]:
+    return [
+        {"ticker": ticker, "weight": round(float(weight or 0.0), 6)}
+        for ticker, weight in sorted(
+            (weights or {}).items(),
+            key=lambda item: float(item[1] or 0.0),
+            reverse=True,
+        )[:limit]
+    ]
+
+
 def _run_one_strategy(
     name: str,
     holdings: list[dict],
@@ -585,17 +788,22 @@ def _run_one_strategy(
     memory_feedback: dict[str, Any] | None = None,
     conviction_profiles: list[dict[str, Any]] | None = None,
     feature_matrix: dict[str, dict[str, Any]] | None = None,
+    as_of_date: date | None = None,
 ) -> StrategyResult:
     strategy = get_strategy(name)
     strategy_input = build_strategy_input(
         strategy=strategy,
         live_rows=holdings,
         feature_matrix=feature_matrix or {},
-        as_of=datetime.utcnow().date(),
+        as_of=as_of_date or datetime.utcnow().date(),
     )
     scoring_rows = strategy_input.scorable_rows
     readiness = strategy_input.readiness_summary
-    feature_contract = build_strategy_feature_contract(strategy, scoring_rows)
+    feature_contract = build_strategy_feature_contract(
+        strategy,
+        scoring_rows,
+        as_of=as_of_date or datetime.utcnow().date(),
+    )
     can_score = bool(strategy_input.can_score and feature_contract.get("can_influence_allocation"))
     if can_score:
         scored = strategy.score(scoring_rows, context)
@@ -1548,6 +1756,7 @@ def _compute_replay_metrics(
         ic_values: list[float] = []
 
         for idx, snapshot in enumerate(snapshots):
+            snapshot_date = _snapshot_as_of_date(snapshot)
             brief = _brief_from_snapshot(snapshot)
             holdings = _rows_for_strategy_snapshot(snapshot, name)
             if not holdings:
@@ -1570,7 +1779,13 @@ def _compute_replay_metrics(
                 "inflation_regime_label": macro_regime_context.get("inflation_regime_label"),
                 "growth_regime_label": macro_regime_context.get("growth_regime_label"),
             }
-            result = _run_one_strategy(name, holdings, context, previous_weights.get(name, {}))
+            result = _run_one_strategy(
+                name,
+                holdings,
+                context,
+                previous_weights.get(name, {}),
+                as_of_date=snapshot_date,
+            )
             weights = result.weights or {}
             if not weights:
                 continue
@@ -1730,6 +1945,7 @@ def _strategy_forward_returns_for_snapshots(
     returns_by_strategy: dict[str, list[float]] = {name: [] for name in strategy_names}
     previous_weights: dict[str, dict[str, float]] = {}
     for idx, snapshot in enumerate(snapshots[:-1]):
+        snapshot_date = _snapshot_as_of_date(snapshot)
         brief = _brief_from_snapshot(snapshot)
         holdings = brief.get("holdings") or []
         if not holdings:
@@ -1761,6 +1977,7 @@ def _strategy_forward_returns_for_snapshots(
                 _rows_for_strategy_snapshot(snapshot, name),
                 context,
                 previous_weights.get(name, {}),
+                as_of_date=snapshot_date,
             )
             weights = result.weights or {}
             if not weights:
@@ -1782,6 +1999,32 @@ def _brief_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "sector_rotation": detect_sector_rotation(holdings),
         "macro_regime_context": build_deterministic_macro_regime(holdings),
     }
+
+
+def _snapshot_as_of_date(snapshot: dict[str, Any]) -> date:
+    for key in ("trading_date", "date", "timestamp_utc", "timestamp", "received_at"):
+        parsed = _date_from_value(snapshot.get(key))
+        if parsed:
+            return parsed
+    for row in _raw_snapshot_rows(snapshot):
+        for source_info in row.get("feature_sources") or []:
+            parsed = _date_from_value(source_info.get("trading_date"))
+            if parsed:
+                return parsed
+    return datetime.utcnow().date()
+
+
+def _date_from_value(value: Any) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
 
 
 def _snapshot_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:

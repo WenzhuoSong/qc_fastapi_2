@@ -53,6 +53,7 @@ def _load_sector_rotation_exports():
             "_compute_strategy_confidence": playground._compute_strategy_confidence,
             "_build_playground_evidence_summary": playground._build_playground_evidence_summary,
             "_compute_replay_metrics": playground._compute_replay_metrics,
+            "_compact_bundle_for_llm": playground._compact_bundle_for_llm,
             "_dedupe_market_snapshots": playground._dedupe_market_snapshots,
             "_feature_rows_to_snapshots": playground._feature_rows_to_snapshots,
             "_format_evidence_summary": playground._format_evidence_summary,
@@ -431,6 +432,44 @@ class SectorRotationTests(unittest.TestCase):
             "Do not select this strategy based on replay performance; sample size is insufficient.",
         )
         self.assertIn("suppressed", metrics["momentum_lite_v1"]["metric_notes"])
+
+    def test_historical_replay_uses_snapshot_date_for_staleness(self):
+        rows = []
+        start = date(2025, 1, 2)
+        for i in range(12):
+            rows.append(SimpleNamespace(
+                trading_date=date.fromordinal(start.toordinal() + i),
+                ticker="SPY",
+                open_price=100,
+                high_price=101,
+                low_price=99,
+                close_price=100 + i,
+                adj_close_price=100 + i,
+                volume=1000,
+                dollar_volume=100000,
+                return_1d=0.001,
+                return_5d=0.01,
+                return_20d=0.03,
+                return_60d=0.06,
+                return_252d=0.12,
+                sma_20=99,
+                sma_50=98,
+                sma_200=95,
+                hist_vol_20d=0.01,
+                rsi_14=55,
+                atr_pct=0.012,
+                bb_position=0.55,
+                beta_vs_spy=1.0,
+            ))
+
+        snapshots = _feature_rows_to_snapshots(rows)
+        metrics = _compute_replay_metrics(snapshots, ["momentum_lite_v1"])
+
+        self.assertEqual(metrics["momentum_lite_v1"]["n_forward_return_samples"], 11)
+        self.assertEqual(
+            metrics["momentum_lite_v1"]["metric_reliability"]["level"],
+            "medium",
+        )
 
     def test_yfinance_feature_rows_build_historical_replay_snapshots(self):
         rows = []
@@ -952,6 +991,51 @@ class SectorRotationTests(unittest.TestCase):
         self.assertEqual(strong.memory_feedback["discount_multiplier"], 1.0)
         self.assertEqual(weak.agent_interpretation["memory_discount_multiplier"], 0.5)
         self.assertAlmostEqual(sum(consensus.values()), 1.0, places=4)
+
+    def test_playground_llm_bundle_is_bounded(self):
+        noisy_cards = [
+            {"ticker": f"T{i}", "reason": "x" * 500, "confidence": 0.5}
+            for i in range(50)
+        ]
+        strategy = _run_one_strategy(
+            "momentum_lite_v1",
+            _with_yfinance_sources([
+                {
+                    "ticker": "SPY",
+                    "mom_20d": 0.02,
+                    "mom_60d": 0.05,
+                    "mom_252d": 0.12,
+                    "rsi_14": 55,
+                    "atr_pct": 0.011,
+                    "hist_vol_20d": 0.14,
+                },
+            ]),
+            {"regime": "trending_bull", "risk_params": {}},
+            {},
+        )
+        strategy.evidence_cards = noisy_cards
+        bundle = PlaygroundBundle(
+            generated_at="2026-05-29T00:00:00",
+            regime_label="trending_bull",
+            regime_confidence="low",
+            snapshot_count=21,
+            strategies=[strategy],
+            divergence_map=[{"ticker": f"T{i}", "spread": 0.2} for i in range(20)],
+            consensus_weights={f"T{i}": 0.01 for i in range(20)},
+            replay_metrics={},
+            historical_replay_metrics={},
+            historical_snapshot_count=289,
+            strategy_confidence={},
+            evidence_summary={},
+            data_gaps=[f"gap-{i}" for i in range(20)],
+        )
+
+        compact = _compact_bundle_for_llm(bundle)
+
+        self.assertEqual(len(compact["strategies"][0]["evidence_cards"]), 8)
+        self.assertEqual(len(compact["largest_divergences"]), 10)
+        self.assertEqual(len(compact["data_gaps"]), 12)
+        self.assertNotIn("feature_contract", compact["strategies"][0])
 
 
 if __name__ == "__main__":
