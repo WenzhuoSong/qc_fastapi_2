@@ -37,6 +37,58 @@ class AutoPauseTests(unittest.TestCase):
         self.assertEqual(result["status"], "pass")
         self.assertFalse(result["would_pause"])
 
+    def test_policy_sync_reject_does_not_count_as_trading_reject(self):
+        now = datetime(2026, 5, 24, 15, 0, 0)
+        result = evaluate_auto_pause_triggers(
+            execution_events=[
+                _event(
+                    "policy_recovery_1",
+                    "rejected",
+                    now - timedelta(minutes=1),
+                    "policy_sync_missing_roles_or_caps",
+                    command_type="policy_sync",
+                ),
+                _event("cmd_1", "rejected", now - timedelta(minutes=2), "policy_version_mismatch_with_buy"),
+            ],
+            account_state_guard=_clean_guard(),
+            config={"mode": "active"},
+            now=now,
+        )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertFalse(result["would_pause"])
+
+    def test_old_reject_does_not_count_as_fresh_consecutive_reject(self):
+        now = datetime(2026, 5, 24, 15, 0, 0)
+        result = evaluate_auto_pause_triggers(
+            execution_events=[
+                _event("cmd_2", "rejected", now - timedelta(minutes=10), "role cap"),
+                _event("cmd_1", "rejected", now - timedelta(hours=7), "single cap"),
+            ],
+            account_state_guard=_clean_guard(),
+            config={"mode": "active", "max_qc_reject_event_age_hours": 6},
+            now=now,
+        )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertFalse(result["would_pause"])
+
+    def test_not_sent_breaks_qc_reject_streak(self):
+        now = datetime(2026, 5, 24, 15, 0, 0)
+        result = evaluate_auto_pause_triggers(
+            execution_events=[
+                _event("cmd_3", "rejected", now - timedelta(minutes=1), "role cap"),
+                _event("cmd_2", "not_sent", now - timedelta(minutes=2), "fastapi_no_qc_command"),
+                _event("cmd_1", "rejected", now - timedelta(minutes=3), "single cap"),
+            ],
+            account_state_guard=_clean_guard(),
+            config={"mode": "active"},
+            now=now,
+        )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertFalse(result["would_pause"])
+
     def test_active_mode_should_pause_on_consecutive_rejects(self):
         now = datetime(2026, 5, 24, 15, 0, 0)
         result = evaluate_auto_pause_triggers(
@@ -149,9 +201,17 @@ class AutoPauseTests(unittest.TestCase):
         json.dumps(config)
 
 
-def _event(command_id: str, status: str, when: datetime, reason: str, qc_response: dict | None = None):
+def _event(
+    command_id: str,
+    status: str,
+    when: datetime,
+    reason: str,
+    qc_response: dict | None = None,
+    command_type: str = "weight_adjustment",
+):
     return {
         "command_id": command_id,
+        "command_type": command_type,
         "qc_status": status,
         "qc_ack_at": when.isoformat(),
         "executed_at": when.isoformat(),

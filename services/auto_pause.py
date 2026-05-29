@@ -9,6 +9,7 @@ DEFAULT_AUTO_PAUSE_CONFIG: dict[str, Any] = {
     "enabled": True,
     "mode": "observe",
     "auto_pause_after_consecutive_qc_rejects": 2,
+    "max_qc_reject_event_age_hours": 6,
     "policy_mismatch_alert_after_minutes": 5,
     "heartbeat_stale_pause_after_minutes": 5,
     "pause_on_account_state_guard_failure": True,
@@ -31,6 +32,10 @@ def default_auto_pause_config(config: dict[str, Any] | None = None) -> dict[str,
     merged["auto_pause_after_consecutive_qc_rejects"] = max(
         int(_number_or_default(merged.get("auto_pause_after_consecutive_qc_rejects"), 2)),
         1,
+    )
+    merged["max_qc_reject_event_age_hours"] = max(
+        float(_number_or_default(merged.get("max_qc_reject_event_age_hours"), 6)),
+        0.0,
     )
     merged["policy_mismatch_alert_after_minutes"] = max(
         float(_number_or_default(merged.get("policy_mismatch_alert_after_minutes"), 5)),
@@ -72,7 +77,7 @@ async def apply_auto_pause_if_needed(verdict: dict[str, Any]) -> bool:
     from db.session import AsyncSessionLocal
     from services.circuit_breaker import CircuitBreakerMonitor, CircuitState
 
-    reason = str(verdict.get("reason") or "auto_pause_triggered")
+    reason = _reason_with_evidence(verdict)
     primary_trigger = str(verdict.get("primary_trigger") or "auto_pause")
     monitor = CircuitBreakerMonitor()
     await monitor.update_circuit_state(
@@ -123,7 +128,7 @@ def evaluate_auto_pause_triggers(
 
     events = execution_events or []
     triggers = [
-        _consecutive_qc_rejects_trigger(events, cfg),
+        _consecutive_qc_rejects_trigger(events, cfg, now),
         _policy_mismatch_timeout_trigger(events, cfg, now, policy_sync_recovery),
         _policy_sync_recovery_exhausted_trigger(policy_sync_recovery or {}),
         _account_state_stale_trigger(account_state_guard or {}, cfg),
@@ -150,12 +155,26 @@ def evaluate_auto_pause_triggers(
     }
 
 
-def _consecutive_qc_rejects_trigger(events: list[dict[str, Any]], cfg: dict[str, Any]) -> dict[str, Any]:
+def _consecutive_qc_rejects_trigger(events: list[dict[str, Any]], cfg: dict[str, Any], now: datetime) -> dict[str, Any]:
     threshold = int(cfg["auto_pause_after_consecutive_qc_rejects"])
+    max_age_hours = float(cfg["max_qc_reject_event_age_hours"])
+    cutoff = now - timedelta(hours=max_age_hours) if max_age_hours > 0 else None
     count = 0
     evidence: list[dict[str, Any]] = []
     for event in events:
+        event_time = _parse_datetime(event.get("qc_ack_at") or event.get("executed_at"))
+        if cutoff and event_time and event_time < cutoff:
+            break
+        command_type = str(event.get("command_type") or "").lower().strip()
+        if command_type != "weight_adjustment":
+            continue
         status = str(event.get("qc_status") or "").lower().strip()
+        reason = str(event.get("qc_rejection_reason") or "").lower().strip()
+        if status in {"not_sent", "preflight_blocked"} or reason in {
+            "fastapi_no_qc_command",
+            "blocked_by_command_preflight",
+        }:
+            break
         if status == "rejected":
             count += 1
             evidence.append(_event_evidence(event))
@@ -299,6 +318,7 @@ async def _load_recent_execution_events(*, limit: int) -> list[dict[str, Any]]:
     return [
         {
             "command_id": row.command_id,
+            "command_type": row.command_type,
             "qc_status": row.qc_status,
             "qc_ack_at": _iso_or_none(row.qc_ack_at),
             "executed_at": _iso_or_none(row.executed_at),
@@ -321,6 +341,47 @@ def _primary_trigger(fired: list[dict[str, Any]]) -> dict[str, Any] | None:
         "account_state_guard_failure": 4,
     }
     return sorted(fired, key=lambda item: priority.get(str(item.get("name")), 99))[0]
+
+
+def _reason_with_evidence(verdict: dict[str, Any]) -> str:
+    base = str(verdict.get("reason") or "auto_pause_triggered")
+    primary = str(verdict.get("primary_trigger") or "auto_pause")
+    trigger_class = {
+        "consecutive_qc_rejects": "execution_risk",
+        "policy_mismatch_timeout": "control_plane",
+        "policy_sync_recovery_exhausted": "control_plane",
+        "account_state_stale": "account_risk",
+        "account_state_guard_failure": "account_risk",
+    }.get(primary, "technical")
+    evidence_lines: list[str] = []
+    for trigger in verdict.get("triggers") or []:
+        if trigger.get("name") != primary:
+            continue
+        for item in trigger.get("evidence") or []:
+            command_id = item.get("command_id")
+            if not command_id:
+                continue
+            event_time = _parse_datetime(item.get("qc_ack_at") or item.get("executed_at"))
+            age_hours = None
+            if event_time:
+                age_hours = max((_utcnow() - event_time).total_seconds() / 3600, 0.0)
+            age_text = f" age={age_hours:.1f}h" if age_hours is not None else ""
+            evidence_lines.append(
+                f"- {str(command_id)[:32]} type={item.get('command_type') or 'unknown'} "
+                f"status={item.get('qc_status') or 'unknown'}{age_text} "
+                f"reason={item.get('reason') or 'n/a'}"
+            )
+            if len(evidence_lines) >= 3:
+                break
+        break
+    if not evidence_lines:
+        return f"{base}\nTrigger class: {trigger_class}"
+    return (
+        f"{base}\n"
+        f"Trigger class: {trigger_class}\n"
+        "Evidence:\n"
+        + "\n".join(evidence_lines)
+    )
 
 
 def _recoverable_policy_sync_recovery(recovery: dict[str, Any] | None) -> bool:
@@ -346,6 +407,7 @@ def _event_evidence(event: dict[str, Any] | None) -> dict[str, Any]:
     response = event.get("qc_response") if isinstance(event.get("qc_response"), dict) else {}
     return {
         "command_id": event.get("command_id"),
+        "command_type": event.get("command_type"),
         "qc_status": event.get("qc_status"),
         "qc_ack_at": _iso_or_none(event.get("qc_ack_at")),
         "executed_at": _iso_or_none(event.get("executed_at")),
@@ -359,6 +421,7 @@ def _public_config(cfg: dict[str, Any]) -> dict[str, Any]:
     return {
         "mode": cfg.get("mode"),
         "auto_pause_after_consecutive_qc_rejects": cfg.get("auto_pause_after_consecutive_qc_rejects"),
+        "max_qc_reject_event_age_hours": cfg.get("max_qc_reject_event_age_hours"),
         "policy_mismatch_alert_after_minutes": cfg.get("policy_mismatch_alert_after_minutes"),
         "heartbeat_stale_pause_after_minutes": cfg.get("heartbeat_stale_pause_after_minutes"),
         "pause_on_account_state_guard_failure": cfg.get("pause_on_account_state_guard_failure"),

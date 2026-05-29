@@ -518,7 +518,8 @@ class CircuitBreakerMonitor:
                 tr = max(escalations, key=lambda t: t.value)  # worst trigger
                 return CircuitState.ALERT, tr.name, tr.details
 
-        # ALERT → DEFENSIVE: persistent alert OR any escalation fires (VIX > 40 or drawdown extreme)
+        # ALERT → DEFENSIVE or CLOSED. Keep this in one branch so the
+        # cooldown close path remains reachable after escalation checks.
         elif current == CircuitState.ALERT:
             persistent_tr = next((t for t in trigger_results if t.name == "persistent_alert" and t.triggered), None)
             if persistent_tr:
@@ -532,10 +533,15 @@ class CircuitBreakerMonitor:
                 if rej_tr and rej_tr.value > self.config.rejection_count_threshold + 2:
                     return CircuitState.DEFENSIVE, rej_tr.name, rej_tr.details
 
-        # ALERT → CLOSED: all triggers clear AND cooldown elapsed
-        elif current == CircuitState.ALERT:
-            all_cleared = all(t.direction == "clear" for t in trigger_results)
-            if all_cleared and clears:
+            # ALERT → CLOSED: no active escalation trigger remains and
+            # cooldown elapsed. `persistent_alert` reports direction="none"
+            # while ALERT is young, so requiring every trigger to be
+            # direction="clear" would keep ALERT sticky forever.
+            active_escalations = [
+                t for t in trigger_results
+                if t.triggered and t.direction == "escalate" and t.name != "persistent_alert"
+            ]
+            if not active_escalations and clears:
                 # Check cooldown
                 cfg = circuit_cfg.value if circuit_cfg else {}
                 updated_at_str = cfg.get("updated_at", "")
