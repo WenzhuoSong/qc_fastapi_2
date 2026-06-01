@@ -47,7 +47,17 @@ class QCFallbackPolicyContractTest(unittest.TestCase):
         self.assertIn('"policy_version={self._execution_policy.get', text)
         self.assertIn("[POLICY] Synced from FastAPI version=", text)
         self.assertIn("[POLICY] Inline SetWeights policy applied version=", text)
+        self.assertIn("[POLICY] Inline SetWeights policy ignored: missing roles/caps", text)
+        self.assertIn("[POLICY] Inline SetWeights policy ignored: version mismatch", text)
+        self.assertIn("[POLICY] Inline SetWeights policy ignored; ", text)
         self.assertIn("[POLICY] source=", text)
+
+    def test_qc_setweights_inline_policy_is_optional_when_version_aligned(self):
+        text = QC_FILE.read_text()
+
+        self.assertNotIn("invalid inline execution policy", text)
+        self.assertNotIn('self._send_ack(command_id, "rejected", reason)', text[text.index("elif not self._apply_inline_policy(data)") : text.index("self.log(\n                    f\"[POLICY] source=")])
+        self.assertIn("[POLICY] Inline SetWeights policy ignored; ", text)
 
     def test_qc_command_hardening_contract_is_deployed(self):
         text = QC_FILE.read_text()

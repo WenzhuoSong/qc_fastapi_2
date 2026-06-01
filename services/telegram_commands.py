@@ -125,7 +125,7 @@ async def _cmd_confirm() -> str:
         "weights": weights,
         "command_id": command_id,
         "analysis_id": analysis_id,
-        "policy": policy,
+        "policy_version": policy.get("version"),
     })
     if result.get("success"):
         await create_or_update_submitted_log(

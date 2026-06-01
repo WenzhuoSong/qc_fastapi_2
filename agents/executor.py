@@ -239,7 +239,7 @@ async def run_executor_async(
         "weights": weights,
         "command_id": command_id,
         "analysis_id": analysis_id,
-        "policy": policy,
+        "policy_version": policy_version,
     })
 
     if result.get("success"):

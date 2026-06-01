@@ -61,13 +61,12 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn("No recent account state policy alignment", confirm_body)
         self.assertIn("Deploy/sync the QC compiled policy before confirming", confirm_body)
 
-    def test_setweights_command_carries_policy_snapshot(self):
+    def test_setweights_command_carries_policy_version_only(self):
         text = Path("tools/qc_tools.py").read_text()
 
-        self.assertIn("policy = inp.get(\"policy\") or policy_snapshot()", text)
-        self.assertIn("policy_version = policy.get(\"version\")", text)
+        self.assertIn("policy_version = inp.get(\"policy_version\") or policy_snapshot().get(\"version\")", text)
         self.assertIn('"policy_version": policy_version', text)
-        self.assertIn('"policy": policy', text)
+        self.assertNotIn('"policy": policy', text)
 
     def test_policy_sync_command_has_json_fallback_contract(self):
         text = Path("tools/qc_tools.py").read_text()
