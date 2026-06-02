@@ -103,6 +103,7 @@ from services.transaction_cost_gate import (
     default_transaction_cost_gate_config,
     evaluate_transaction_cost_gate,
 )
+from services.weight_ops import normalize_cash_first
 from services.evidence_cap_config import default_evidence_cap_config
 from services.alpha_decision_policy import default_alpha_decision_policy_config
 from services.portfolio_risk_diagnostic import load_portfolio_var_cvar_diagnostic
@@ -219,26 +220,7 @@ def enforce_pm_constraints(
                 )
             clipped[ticker] = capped
 
-    non_cash = {
-        ticker: weight
-        for ticker, weight in clipped.items()
-        if ticker != "CASH" and weight > 1e-9
-    }
-    non_cash_total = sum(non_cash.values())
-    cash = max(float(clipped.get("CASH", 0.0) or 0.0), 0.0)
-    total = non_cash_total + cash
-    if total <= 0:
-        raise ValueError("enforce_pm_constraints: post-clip total weight is 0, data anomaly")
-
-    if non_cash_total > 1.0 + 1e-9:
-        scale = 1.0 / non_cash_total
-        non_cash = {ticker: weight * scale for ticker, weight in non_cash.items()}
-    normalized = {
-        ticker: round(weight, 6)
-        for ticker, weight in non_cash.items()
-        if weight > 1e-9
-    }
-    normalized["CASH"] = round(max(1.0 - sum(normalized.values()), 0.0), 6)
+    normalized, _ = normalize_cash_first(clipped)
 
     return normalized, clip_log
 
@@ -313,26 +295,7 @@ def enforce_pm_constraints_v2(
                 )
             clipped[ticker] = capped
 
-    non_cash = {
-        ticker: weight
-        for ticker, weight in clipped.items()
-        if ticker != "CASH" and weight > 1e-9
-    }
-    non_cash_total = sum(non_cash.values())
-    cash = max(float(clipped.get("CASH", 0.0) or 0.0), 0.0)
-    total = non_cash_total + cash
-    if total <= 0:
-        raise ValueError("enforce_pm_constraints_v2: post-clip total weight is 0")
-
-    if non_cash_total > 1.0 + 1e-9:
-        scale = 1.0 / non_cash_total
-        non_cash = {ticker: weight * scale for ticker, weight in non_cash.items()}
-    normalized = {
-        ticker: round(weight, 6)
-        for ticker, weight in non_cash.items()
-        if weight > 1e-9
-    }
-    normalized["CASH"] = round(max(1.0 - sum(normalized.values()), 0.0), 6)
+    normalized, _ = normalize_cash_first(clipped)
 
     return normalized, clip_log
 

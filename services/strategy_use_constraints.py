@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from services.weight_ops import normalize_cash_first
+
 
 def apply_strategy_use_constraints(
     *,
@@ -18,13 +20,13 @@ def apply_strategy_use_constraints(
 ) -> tuple[dict[str, float], list[str]]:
     strategies = strategy_evidence or {}
     if not strategies.get("playground_available"):
-        return _normalize(adjusted_weights), []
+        return normalize_cash_first(adjusted_weights)[0], []
 
     use_summary = strategies.get("strategy_use_summary") or {}
     primary = list(use_summary.get("primary") or [])
     advisory = list(use_summary.get("advisory") or [])
     if primary:
-        return _normalize(adjusted_weights), []
+        return normalize_cash_first(adjusted_weights)[0], []
 
     supported_tickers = _selected_tickers_for_uses(
         strategies.get("strategy_results") or [],
@@ -94,7 +96,7 @@ def _clip_to_strategy_permission(
                 work["CASH"] = available_cash - add_back
                 clip_log.append(f"{reason_prefix}:sell_delta:{ticker} {target:.2%}->{work[ticker]:.2%}")
 
-    return _normalize(work), clip_log
+    return normalize_cash_first(work)[0], clip_log
 
 
 def _selected_tickers_for_uses(
@@ -129,26 +131,3 @@ def _clean(weights: dict[str, Any] | None) -> dict[str, float]:
             out[clean_ticker] = 0.0
     return out
 
-
-def _normalize(weights: dict[str, Any] | None) -> dict[str, float]:
-    clean = _clean(weights)
-    non_cash = {
-        ticker: weight
-        for ticker, weight in clean.items()
-        if ticker != "CASH" and weight > 1e-9
-    }
-    non_cash_total = sum(non_cash.values())
-    cash = max(float(clean.get("CASH", 0.0) or 0.0), 0.0)
-    total = non_cash_total + cash
-    if total <= 0:
-        return {"CASH": 1.0}
-    if non_cash_total > 1.0 + 1e-9:
-        scale = 1.0 / non_cash_total
-        non_cash = {ticker: weight * scale for ticker, weight in non_cash.items()}
-    normalized = {
-        ticker: round(weight, 6)
-        for ticker, weight in non_cash.items()
-        if weight > 1e-9
-    }
-    normalized["CASH"] = round(max(1.0 - sum(normalized.values()), 0.0), 6)
-    return normalized
