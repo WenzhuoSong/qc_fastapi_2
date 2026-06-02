@@ -126,16 +126,17 @@ class ExecutionLifecycleTests(unittest.TestCase):
         self.assertEqual(result["status"], "reduce_only_override_allowed")
 
     def test_stale_active_execution_with_open_orders_alerts_operator(self):
+        now = datetime(2026, 6, 2, 11, 30)
         result = evaluate_stale_active_execution(
             {
                 "command_id": "analysis_1",
                 "status": "partial",
                 "open_order_count": 2,
                 "has_open_orders": True,
-                "started_at": (datetime.utcnow() - timedelta(minutes=90)).isoformat(),
+                "started_at": (now - timedelta(minutes=90)).isoformat(),
             },
             {"max_active_execution_minutes": 60, "auto_cancel_stale_open_orders": False},
-            now=datetime(2026, 6, 2, 11, 30),
+            now=now,
         )
 
         self.assertTrue(result["is_stale"])
@@ -145,16 +146,17 @@ class ExecutionLifecycleTests(unittest.TestCase):
         self.assertEqual(result["operator_action"], "check_dashboard_then_cancel_orders_if_orders_are_stuck")
 
     def test_stale_active_execution_without_open_orders_triggers_reconciliation(self):
+        now = datetime(2026, 6, 2, 10, 45)
         result = evaluate_stale_active_execution(
             {
                 "command_id": "analysis_1",
                 "status": "orders_submitted",
                 "open_order_count": 0,
                 "has_open_orders": False,
-                "started_at": datetime.utcnow().isoformat(),
+                "started_at": (now - timedelta(minutes=45)).isoformat(),
             },
             {"max_active_execution_minutes": 30},
-            now=datetime(2026, 6, 2, 10, 45),
+            now=now,
         )
 
         self.assertTrue(result["is_stale"])

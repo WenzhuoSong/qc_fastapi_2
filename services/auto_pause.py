@@ -1,10 +1,12 @@
 """Structured auto-pause triggers for execution trust failures."""
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from services.execution_lifecycle import ACTIVE_EXECUTION_CONTROL_REASONS
+from services.market_calendar import is_us_equity_trading_day, us_equity_holiday_name
 
 
 DEFAULT_AUTO_PAUSE_CONFIG: dict[str, Any] = {
@@ -14,9 +16,15 @@ DEFAULT_AUTO_PAUSE_CONFIG: dict[str, Any] = {
     "max_qc_reject_event_age_hours": 6,
     "policy_mismatch_alert_after_minutes": 5,
     "heartbeat_stale_pause_after_minutes": 5,
+    "suppress_account_stale_outside_strict_market": True,
     "pause_on_account_state_guard_failure": True,
     "execution_event_lookback": 10,
 }
+
+MARKET_TZ = ZoneInfo("America/New_York")
+MARKET_OPEN = time(9, 30)
+HEARTBEAT_STRICT_AFTER = time(10, 0)
+MARKET_CLOSE = time(16, 0)
 
 POLICY_MISMATCH_REASONS = {
     "policy_version_mismatch_with_buy",
@@ -46,6 +54,9 @@ def default_auto_pause_config(config: dict[str, Any] | None = None) -> dict[str,
     merged["heartbeat_stale_pause_after_minutes"] = max(
         float(_number_or_default(merged.get("heartbeat_stale_pause_after_minutes"), 5)),
         0.0,
+    )
+    merged["suppress_account_stale_outside_strict_market"] = bool(
+        merged.get("suppress_account_stale_outside_strict_market", True)
     )
     merged["execution_event_lookback"] = max(int(_number_or_default(merged.get("execution_event_lookback"), 10)), 1)
     return merged
@@ -133,8 +144,8 @@ def evaluate_auto_pause_triggers(
         _consecutive_qc_rejects_trigger(events, cfg, now),
         _policy_mismatch_timeout_trigger(events, cfg, now, policy_sync_recovery),
         _policy_sync_recovery_exhausted_trigger(policy_sync_recovery or {}),
-        _account_state_stale_trigger(account_state_guard or {}, cfg),
-        _account_state_guard_failure_trigger(account_state_guard or {}, cfg, policy_sync_recovery),
+        _account_state_stale_trigger(account_state_guard or {}, cfg, now),
+        _account_state_guard_failure_trigger(account_state_guard or {}, cfg, policy_sync_recovery, now),
     ]
     fired = [item for item in triggers if item["triggered"]]
     would_pause = bool(fired)
@@ -251,7 +262,7 @@ def _policy_sync_recovery_exhausted_trigger(policy_sync_recovery: dict[str, Any]
     }
 
 
-def _account_state_stale_trigger(account_guard: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+def _account_state_stale_trigger(account_guard: dict[str, Any], cfg: dict[str, Any], now: datetime) -> dict[str, Any]:
     threshold_minutes = float(cfg["heartbeat_stale_pause_after_minutes"])
     snapshot = account_guard.get("snapshot") if isinstance(account_guard.get("snapshot"), dict) else {}
     age_seconds = _number_or_none(snapshot.get("age_seconds"))
@@ -262,19 +273,23 @@ def _account_state_stale_trigger(account_guard: dict[str, Any], cfg: dict[str, A
     blockers = set(account_guard.get("blockers") or [])
     stale_by_blocker = bool(stale_blockers & blockers)
     stale_by_age = bool(age_seconds is not None and age_seconds >= threshold_minutes * 60)
-    triggered = stale_by_blocker or stale_by_age
+    raw_triggered = stale_by_blocker or stale_by_age
+    suppression = _account_stale_market_suppression(now, cfg)
+    triggered = raw_triggered and not suppression["suppressed"]
     return {
         "name": "account_state_stale",
         "triggered": triggered,
         "value": round((age_seconds or 0.0) / 60, 3),
         "threshold": threshold_minutes,
-        "severity": "high",
+        "severity": "warning" if raw_triggered and suppression["suppressed"] else "high",
         "details": (
             f"account state stale or missing: blockers={sorted(stale_blockers & blockers)}"
             if triggered
+            else f"account state stale suppressed: {suppression['reason']}"
+            if raw_triggered and suppression["suppressed"]
             else "account state freshness within tolerance"
         ),
-        "evidence": [{"snapshot": snapshot, "blockers": sorted(blockers)}],
+        "evidence": [{"snapshot": snapshot, "blockers": sorted(blockers), "market_suppression": suppression}],
     }
 
 
@@ -282,11 +297,28 @@ def _account_state_guard_failure_trigger(
     account_guard: dict[str, Any],
     cfg: dict[str, Any],
     policy_sync_recovery: dict[str, Any] | None,
+    now: datetime,
 ) -> dict[str, Any]:
     enabled = bool(cfg.get("pause_on_account_state_guard_failure", True))
     blockers = list(account_guard.get("blockers") or [])
     suppressed = _recoverable_policy_sync_recovery(policy_sync_recovery)
-    triggered = enabled and not suppressed and bool(account_guard.get("would_block")) and bool(blockers)
+    stale_only_blockers = {
+        "account_state_snapshot_stale_or_missing_time",
+        "missing_account_state_snapshot",
+    }
+    stale_market_suppression = _account_stale_market_suppression(now, cfg)
+    stale_only_suppressed = (
+        bool(blockers)
+        and set(blockers).issubset(stale_only_blockers)
+        and stale_market_suppression["suppressed"]
+    )
+    triggered = (
+        enabled
+        and not suppressed
+        and not stale_only_suppressed
+        and bool(account_guard.get("would_block"))
+        and bool(blockers)
+    )
     return {
         "name": "account_state_guard_failure",
         "triggered": triggered,
@@ -298,10 +330,37 @@ def _account_state_guard_failure_trigger(
             if triggered
             else "account_state_guard failure suppressed by policy_sync_recovery"
             if suppressed
+            else f"account_state_guard stale failure suppressed: {stale_market_suppression['reason']}"
+            if stale_only_suppressed
             else "account_state_guard did not report blocking failures"
         ),
-        "evidence": [{"status": account_guard.get("status"), "blockers": blockers, "policy_sync_recovery": policy_sync_recovery or {}}],
+        "evidence": [{
+            "status": account_guard.get("status"),
+            "blockers": blockers,
+            "policy_sync_recovery": policy_sync_recovery or {},
+            "market_suppression": stale_market_suppression,
+        }],
     }
+
+
+def _account_stale_market_suppression(now: datetime, cfg: dict[str, Any]) -> dict[str, Any]:
+    if not bool(cfg.get("suppress_account_stale_outside_strict_market", True)):
+        return {"suppressed": False, "reason": "disabled_by_config"}
+    market_now = _strip_tz(now).replace(tzinfo=UTC).astimezone(MARKET_TZ)
+    market_date = market_now.date()
+    market_time = market_now.time()
+    if not is_us_equity_trading_day(market_date):
+        holiday = us_equity_holiday_name(market_date)
+        return {
+            "suppressed": True,
+            "reason": f"market_closed:{holiday}" if holiday else "market_closed",
+            "market_time": market_now.isoformat(),
+        }
+    if market_time < MARKET_OPEN or market_time > MARKET_CLOSE:
+        return {"suppressed": True, "reason": "market_closed", "market_time": market_now.isoformat()}
+    if market_time < HEARTBEAT_STRICT_AFTER:
+        return {"suppressed": True, "reason": "opening_grace", "market_time": market_now.isoformat()}
+    return {"suppressed": False, "reason": "strict_market_hours", "market_time": market_now.isoformat()}
 
 
 async def _load_recent_execution_events(*, limit: int) -> list[dict[str, Any]]:

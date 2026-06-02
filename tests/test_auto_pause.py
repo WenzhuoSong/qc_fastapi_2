@@ -178,11 +178,30 @@ class AutoPauseTests(unittest.TestCase):
                 "blockers": ["account_state_snapshot_stale_or_missing_time"],
                 "snapshot": {"age_seconds": 600},
             },
-            now=datetime(2026, 5, 24, 15, 10, 0),
+            now=datetime(2026, 5, 26, 15, 10, 0),
         )
 
         self.assertTrue(result["would_pause"])
         self.assertEqual(result["primary_trigger"], "account_state_stale")
+
+    def test_account_state_stale_is_suppressed_before_strict_market_hours(self):
+        result = evaluate_auto_pause_triggers(
+            execution_events=[],
+            account_state_guard={
+                "status": "would_block",
+                "would_block": True,
+                "blockers": ["account_state_snapshot_stale_or_missing_time"],
+                "snapshot": {"age_seconds": 600},
+            },
+            config={"mode": "active"},
+            now=datetime(2026, 5, 26, 13, 3, 0),
+        )
+
+        self.assertFalse(result["would_pause"])
+        trigger = next(item for item in result["triggers"] if item["name"] == "account_state_stale")
+        self.assertFalse(trigger["triggered"])
+        self.assertEqual(trigger["severity"], "warning")
+        self.assertIn("market_closed", trigger["details"])
 
     def test_recoverable_policy_sync_recovery_suppresses_account_guard_pause(self):
         now = datetime(2026, 5, 24, 15, 10, 0)
