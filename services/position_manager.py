@@ -83,6 +83,7 @@ class PositionManager:
         holdings_meta: list[dict] | None = None,
         actual_daily_trades: int = 0,
         asset_profiles: dict[str, Any] | None = None,
+        min_hold_exempt_tickers: set[str] | None = None,
     ) -> PositionManagerOutput:
         constraints = constraints or PositionConstraints()
         current = _clean_weights(current_holdings)
@@ -93,10 +94,13 @@ class PositionManager:
         mutation_types: list[str] = []
         hold_days = _extract_hold_days(holdings_meta or [])
         profiles = asset_profiles or _load_asset_profiles_for_weights(target, current)
+        min_hold_exempt = _clean_ticker_set(min_hold_exempt_tickers)
 
         # Protect young positions from sells before applying buy/turnover caps.
         for ticker, cur_w in current.items():
             if ticker == "CASH" or cur_w <= self.trade_threshold:
+                continue
+            if ticker in min_hold_exempt:
                 continue
             tgt_w = target.get(ticker, 0.0)
             if tgt_w < cur_w - self.trade_threshold:
@@ -378,6 +382,7 @@ def apply_position_constraints(
     actual_daily_trades: int = 0,
     asset_profiles: dict[str, Any] | None = None,
 ) -> PositionManagerOutput:
+    cfg = config or {}
     constraints = PositionConstraints.from_config(config)
     return PositionManager().apply(
         target_weights,
@@ -386,6 +391,7 @@ def apply_position_constraints(
         holdings_meta,
         actual_daily_trades=actual_daily_trades,
         asset_profiles=asset_profiles,
+        min_hold_exempt_tickers=_clean_ticker_set(cfg.get("min_hold_exempt_tickers") or []),
     )
 
 
@@ -400,6 +406,18 @@ def _clean_weights(weights: dict[str, Any] | None) -> dict[str, float]:
         except (TypeError, ValueError):
             cleaned[key] = 0.0
     return cleaned
+
+
+def _clean_ticker_set(values: Any) -> set[str]:
+    if isinstance(values, str):
+        raw_values = [values]
+    else:
+        raw_values = list(values or [])
+    return {
+        str(value or "").upper().strip()
+        for value in raw_values
+        if str(value or "").strip()
+    }
 
 
 def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:

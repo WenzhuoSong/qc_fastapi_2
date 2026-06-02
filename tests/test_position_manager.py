@@ -121,6 +121,23 @@ class PositionManagerTest(unittest.TestCase):
         self.assertIn("defer_sell_due_to_min_hold_days", out.mutation_types)
         self.assertAlmostEqual(sum(out.adjusted_weights.values()), 1.0, places=4)
 
+    def test_min_hold_days_does_not_defer_exempt_risk_trim(self):
+        out = apply_position_constraints(
+            target_weights={"XLE": 0.09, "CASH": 0.91},
+            current_holdings={"XLE": 0.12, "CASH": 0.88},
+            config={
+                "min_hold_days": 2,
+                "min_hold_exempt_tickers": ["XLE"],
+                "max_single_trade_pct": 1.0,
+                "max_turnover_per_cycle": 1.0,
+            },
+            holdings_meta=[{"ticker": "XLE", "holding_days": 1}],
+        )
+
+        self.assertAlmostEqual(out.adjusted_weights["XLE"], 0.09, places=4)
+        self.assertFalse(any(v.startswith("min_hold_days:XLE") for v in out.violations))
+        self.assertNotIn("defer_sell_due_to_min_hold_days", out.mutation_types)
+
     def test_turnover_cap_scales_toward_current_weights(self):
         out = apply_position_constraints(
             target_weights={"AAA": 0.60, "CASH": 0.40},

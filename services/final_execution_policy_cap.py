@@ -17,7 +17,7 @@ def apply_final_execution_policy_cap(
     capped, cap_events, cash_raised = apply_policy_caps(pre_cap)
     if cash_raised > 0:
         capped["CASH"] = float(capped.get("CASH", 0.0) or 0.0) + cash_raised
-    capped = _normalize_weights(capped)
+    capped = _normalize_preserving_policy_caps(capped)
     policy_evaluation = evaluate_policy(weights=capped, current_weights=current_weights)
     rebalance_actions = compute_rebalance_actions(capped, current_weights or {}, rebalance_threshold)
     return {
@@ -37,7 +37,8 @@ def apply_final_execution_policy_cap(
     }
 
 
-def _normalize_weights(weights: dict[str, Any]) -> dict[str, float]:
+def _normalize_preserving_policy_caps(weights: dict[str, Any]) -> dict[str, float]:
+    """Normalize by adjusting CASH first so capped risk weights stay capped."""
     clean = {
         str(ticker).upper().strip(): max(float(weight or 0.0), 0.0)
         for ticker, weight in (weights or {}).items()
@@ -46,4 +47,27 @@ def _normalize_weights(weights: dict[str, Any]) -> dict[str, float]:
     total = sum(clean.values())
     if total <= 0:
         return {"CASH": 1.0}
-    return {ticker: round(weight / total, 6) for ticker, weight in clean.items() if weight > 1e-9}
+    cash = float(clean.get("CASH", 0.0) or 0.0)
+    if total < 1.0 - 1e-9:
+        clean["CASH"] = cash + (1.0 - total)
+    elif total > 1.0 + 1e-9:
+        excess = total - 1.0
+        if cash >= excess:
+            clean["CASH"] = cash - excess
+        else:
+            clean["CASH"] = 0.0
+            non_cash_total = sum(
+                weight for ticker, weight in clean.items()
+                if ticker != "CASH"
+            )
+            if non_cash_total <= 0:
+                return {"CASH": 1.0}
+            scale = 1.0 / non_cash_total
+            for ticker in list(clean):
+                if ticker != "CASH":
+                    clean[ticker] = clean[ticker] * scale
+    return {
+        ticker: round(weight, 6)
+        for ticker, weight in clean.items()
+        if weight > 1e-9
+    }
