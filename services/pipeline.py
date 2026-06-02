@@ -1862,6 +1862,11 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             hard_risks_map=brief.get("hard_risks_map") or {},
             critical_alerts=brief.get("critical_alerts") or [],
         )
+        turnover_exempt_tickers = _position_manager_turnover_exempt_tickers(
+            position_governance=risk_out.get("position_governance") or {},
+            hard_risks_map=brief.get("hard_risks_map") or {},
+            critical_alerts=brief.get("critical_alerts") or [],
+        )
         if min_hold_exempt_tickers:
             configured_exempt = {
                 str(ticker or "").upper().strip()
@@ -1870,6 +1875,15 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             }
             pm_config["min_hold_exempt_tickers"] = sorted(
                 configured_exempt | set(min_hold_exempt_tickers)
+            )
+        if turnover_exempt_tickers:
+            configured_turnover_exempt = {
+                str(ticker or "").upper().strip()
+                for ticker in pm_config.get("turnover_exempt_tickers") or []
+                if str(ticker or "").strip()
+            }
+            pm_config["turnover_exempt_tickers"] = sorted(
+                configured_turnover_exempt | set(turnover_exempt_tickers)
             )
         pm_out = apply_position_constraints(
             target_weights=target_before_pm,
@@ -2810,6 +2824,29 @@ def _position_manager_min_hold_exempt_tickers(
     tickers: set[str] = set()
     tickers.update(_hard_risk_tickers_from_governance(position_governance))
     tickers.update(_tickers_from_forced_trim_strings((position_governance or {}).get("forced_trims") or []))
+    tickers.update(
+        str(ticker or "").upper().strip()
+        for ticker, risk in (hard_risks_map or {}).items()
+        if ticker and risk
+    )
+    tickers.update(
+        str((row or {}).get("ticker") or "").upper().strip()
+        for row in critical_alerts or []
+        if str((row or {}).get("ticker") or "").strip()
+    )
+    return sorted(ticker for ticker in tickers if ticker)
+
+
+def _position_manager_turnover_exempt_tickers(
+    *,
+    position_governance: dict | None,
+    hard_risks_map: dict | None,
+    critical_alerts: list[dict] | None,
+) -> list[str]:
+    tickers: set[str] = set()
+    tickers.update(_hard_risk_tickers_from_governance(position_governance))
+    tickers.update(_tickers_from_forced_trim_strings((position_governance or {}).get("forced_trims") or []))
+    tickers.update(_scorecard_restricted_tickers(position_governance))
     tickers.update(
         str(ticker or "").upper().strip()
         for ticker, risk in (hard_risks_map or {}).items()

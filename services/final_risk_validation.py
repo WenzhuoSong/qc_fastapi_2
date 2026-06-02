@@ -114,10 +114,19 @@ def validate_final_execution_target(
     )
     conditional_mutation_violations = _conditional_mutation_violations(
         drift_rows=drift_rows,
+        risk_target=risk_target,
         final=final,
         current=current,
         restricted_tickers=_restricted_tickers(policy_ctx),
+        hard_risk_tickers={
+            str(ticker or "").upper().strip()
+            for ticker in policy_ctx.get("hard_risk_tickers") or []
+            if str(ticker or "").strip()
+        },
         affected_tickers=conditional_detail_tickers,
+        forced_trim_min_delta=(
+            _optional_float(policy_ctx.get("forced_trim_min_delta")) or 0.005
+        ),
     ) if conditional_mutation_types else []
     unsafe_untyped_drift = bool(drift_tickers and not mutation_types and not ledger_affected_tickers)
     incomplete_mutation_ledger = bool(drift_tickers and (missing_mutation_ledger_tickers or mutation_ledger_errors))
@@ -365,10 +374,13 @@ def _drift_rows(
 def _conditional_mutation_violations(
     *,
     drift_rows: list[dict[str, Any]],
+    risk_target: dict[str, float],
     final: dict[str, float],
     current: dict[str, float],
     restricted_tickers: set[str],
+    hard_risk_tickers: set[str],
     affected_tickers: set[str] | None = None,
+    forced_trim_min_delta: float = 0.005,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for drift in drift_rows:
@@ -380,6 +392,8 @@ def _conditional_mutation_violations(
         final_weight = float(final.get(ticker, 0.0) or 0.0)
         current_weight = float(current.get(ticker, 0.0) or 0.0)
         restricted = ticker in restricted_tickers
+        hard_risk = ticker in hard_risk_tickers
+        risk_approved_weight = float(risk_target.get(ticker, 0.0) or 0.0)
         if restricted and current_weight <= 1e-9 and final_weight > 1e-9:
             rows.append(
                 {
@@ -388,6 +402,17 @@ def _conditional_mutation_violations(
                     "final": round(final_weight, 6),
                 }
             )
+            continue
+        if restricted and final_weight > risk_approved_weight + 1e-9:
+            rows.append(
+                {
+                    "type": "conditional_reverses_risk_trim",
+                    "ticker": ticker,
+                    "risk_approved": round(risk_approved_weight, 6),
+                    "final": round(final_weight, 6),
+                }
+            )
+            continue
         if restricted and final_weight > current_weight + 1e-9:
             rows.append(
                 {
@@ -397,14 +422,32 @@ def _conditional_mutation_violations(
                     "final": round(final_weight, 6),
                 }
             )
+            continue
+        if hard_risk:
+            actual_trim = current_weight - final_weight
+            if actual_trim < forced_trim_min_delta - 1e-9:
+                rows.append(
+                    {
+                        "type": "hard_risk_trim_suppressed",
+                        "ticker": ticker,
+                        "current": round(current_weight, 6),
+                        "final": round(final_weight, 6),
+                        "actual_trim": round(actual_trim, 6),
+                        "min_trim": round(forced_trim_min_delta, 6),
+                    }
+                )
+                continue
         if restricted:
             rows.append(
                 {
-                    "type": "conditional_touches_restricted_ticker",
+                    "type": "conditional_reduces_restricted_ticker",
                     "ticker": ticker,
+                    "current": round(current_weight, 6),
+                    "final": round(final_weight, 6),
+                    "blocking": False,
                 }
             )
-    return rows
+    return [row for row in rows if row.get("blocking", True)]
 
 
 def _restricted_tickers(policy_ctx: dict[str, Any]) -> set[str]:

@@ -88,6 +88,7 @@ class PositionManager:
         actual_daily_trades: int = 0,
         asset_profiles: dict[str, Any] | None = None,
         min_hold_exempt_tickers: set[str] | None = None,
+        turnover_exempt_tickers: set[str] | None = None,
     ) -> PositionManagerOutput:
         constraints = constraints or PositionConstraints()
         current = _clean_weights(current_holdings)
@@ -101,6 +102,7 @@ class PositionManager:
         hold_days = _extract_hold_days(holdings_meta or [])
         profiles = asset_profiles or _load_asset_profiles_for_weights(target, current)
         min_hold_exempt = _clean_ticker_set(min_hold_exempt_tickers)
+        turnover_exempt = _clean_ticker_set(turnover_exempt_tickers)
 
         # Protect young positions from sells before applying buy/turnover caps.
         for ticker, cur_w in current.items():
@@ -162,7 +164,14 @@ class PositionManager:
         )
         target_before_turnover = dict(target)
         mutation_count_before_turnover = len(mutation_types)
-        target = self._cap_turnover(target, current, constraints, violations, mutation_types)
+        target = self._cap_turnover(
+            target,
+            current,
+            constraints,
+            violations,
+            mutation_types,
+            exempt_tickers=turnover_exempt,
+        )
         if (
             len(mutation_types) > mutation_count_before_turnover
             and "turnover_scale_toward_current" in mutation_types[mutation_count_before_turnover:]
@@ -418,17 +427,34 @@ class PositionManager:
         constraints: PositionConstraints,
         violations: list[str],
         mutation_types: list[str],
+        exempt_tickers: set[str] | None = None,
     ) -> dict[str, float]:
-        turnover = _turnover(target, current)
-        if turnover <= constraints.max_turnover_per_cycle + 1e-9:
+        exempt = _clean_ticker_set(exempt_tickers)
+        scalable_tickers = {
+            ticker
+            for ticker in set(target) | set(current)
+            if ticker != "CASH" and ticker not in exempt
+        }
+        scalable_deltas = [
+            float(target.get(ticker, 0.0)) - float(current.get(ticker, 0.0))
+            for ticker in scalable_tickers
+        ]
+        scalable_turnover = (
+            sum(abs(delta) for delta in scalable_deltas) + abs(sum(scalable_deltas))
+        ) / 2.0
+        if scalable_turnover <= constraints.max_turnover_per_cycle + 1e-9:
             return target
 
-        scale = constraints.max_turnover_per_cycle / turnover if turnover > 0 else 1.0
-        out: dict[str, float] = {}
-        for ticker in set(target) | set(current):
+        scale = constraints.max_turnover_per_cycle / scalable_turnover if scalable_turnover > 0 else 1.0
+        out: dict[str, float] = dict(target)
+        for ticker in scalable_tickers:
             out[ticker] = current.get(ticker, 0.0) + (target.get(ticker, 0.0) - current.get(ticker, 0.0)) * scale
+        protected_suffix = ""
+        if exempt:
+            protected_suffix = f"; protected_exempt={sorted(exempt)}"
         violations.append(
-            f"turnover_scaled:{turnover:.2%}->{constraints.max_turnover_per_cycle:.2%}"
+            f"turnover_scaled:{scalable_turnover:.2%}->{constraints.max_turnover_per_cycle:.2%}"
+            f"{protected_suffix}"
         )
         mutation_types.append("turnover_scale_toward_current")
         return out
@@ -524,6 +550,7 @@ def apply_position_constraints(
         actual_daily_trades=actual_daily_trades,
         asset_profiles=asset_profiles,
         min_hold_exempt_tickers=_clean_ticker_set(cfg.get("min_hold_exempt_tickers") or []),
+        turnover_exempt_tickers=_clean_ticker_set(cfg.get("turnover_exempt_tickers") or []),
     )
 
 

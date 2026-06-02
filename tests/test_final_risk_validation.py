@@ -134,6 +134,106 @@ class FinalRiskValidationTest(unittest.TestCase):
             "conditional_increases_restricted_ticker",
         )
 
+    def test_blocking_mode_allows_conditional_reduction_of_restricted_ticker(self):
+        out = validate_final_execution_target(
+            risk_approved_target={"QQQ": 0.1500, "CASH": 0.8500},
+            final_target={"QQQ": 0.1483, "CASH": 0.8517},
+            current_weights={"QQQ": 0.1606, "CASH": 0.8394},
+            policy_context={
+                "post_risk_mutation_types": ["turnover_scale_toward_current"],
+                "post_risk_mutation_ledgers": [
+                    {
+                        "mutations": [
+                            {
+                                "type": "turnover_scale_toward_current",
+                                "ticker": "QQQ",
+                                "before": 0.1500,
+                                "after": 0.1483,
+                                "reason": "turnover scaled but still reduced restricted ticker",
+                            }
+                        ]
+                    }
+                ],
+                "scorecard_restricted_tickers": ["QQQ"],
+                "material_drift_threshold": 0.001,
+                "require_human_confirmation_for_conditional_material_drift": False,
+            },
+            mode="blocking",
+        )
+
+        self.assertTrue(out["approved"], out)
+        self.assertEqual(out["conditional_mutation_violations"], [])
+        self.assertEqual(out["blocking_violations"], [])
+
+    def test_blocking_mode_rejects_conditional_reversal_of_restricted_trim(self):
+        out = validate_final_execution_target(
+            risk_approved_target={"QQQ": 0.1400, "CASH": 0.8600},
+            final_target={"QQQ": 0.1500, "CASH": 0.8500},
+            current_weights={"QQQ": 0.1606, "CASH": 0.8394},
+            policy_context={
+                "post_risk_mutation_types": ["turnover_scale_toward_current"],
+                "post_risk_mutation_ledgers": [
+                    {
+                        "mutations": [
+                            {
+                                "type": "turnover_scale_toward_current",
+                                "ticker": "QQQ",
+                                "before": 0.1400,
+                                "after": 0.1500,
+                                "reason": "turnover scaled restricted trim back up",
+                            }
+                        ]
+                    }
+                ],
+                "scorecard_restricted_tickers": ["QQQ"],
+                "material_drift_threshold": 0.001,
+                "require_human_confirmation_for_conditional_material_drift": False,
+            },
+            mode="blocking",
+        )
+
+        self.assertFalse(out["approved"])
+        self.assertIn("conditional_mutation_contract_violation", out["blocking_violations"])
+        self.assertEqual(
+            out["conditional_mutation_violations"][0]["type"],
+            "conditional_reverses_risk_trim",
+        )
+
+    def test_blocking_mode_rejects_hard_risk_trim_suppressed_below_minimum(self):
+        out = validate_final_execution_target(
+            risk_approved_target={"XLE": 0.1000, "CASH": 0.9000},
+            final_target={"XLE": 0.0990, "CASH": 0.9010},
+            current_weights={"XLE": 0.1000, "CASH": 0.9000},
+            policy_context={
+                "post_risk_mutation_types": ["turnover_scale_toward_current"],
+                "post_risk_mutation_ledgers": [
+                    {
+                        "mutations": [
+                            {
+                                "type": "turnover_scale_toward_current",
+                                "ticker": "XLE",
+                                "before": 0.1000,
+                                "after": 0.0990,
+                                "reason": "hard-risk trim almost fully suppressed",
+                            }
+                        ]
+                    }
+                ],
+                "hard_risk_tickers": ["XLE"],
+                "material_drift_threshold": 0.001,
+                "forced_trim_min_delta": 0.005,
+                "require_human_confirmation_for_conditional_material_drift": False,
+            },
+            mode="blocking",
+        )
+
+        self.assertFalse(out["approved"])
+        self.assertIn("conditional_mutation_contract_violation", out["blocking_violations"])
+        self.assertEqual(
+            out["conditional_mutation_violations"][0]["type"],
+            "hard_risk_trim_suppressed",
+        )
+
     def test_conditional_mutation_details_prevent_unrelated_restricted_drift_false_positive(self):
         out = validate_final_execution_target(
             risk_approved_target={"SPY": 0.20, "XLE": 0.10, "CASH": 0.70},

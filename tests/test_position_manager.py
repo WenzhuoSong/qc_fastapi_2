@@ -208,6 +208,25 @@ class PositionManagerTest(unittest.TestCase):
         self.assertAlmostEqual(ledger_row["before"], 0.6, places=6)
         self.assertAlmostEqual(ledger_row["after"], 0.2, places=6)
 
+    def test_turnover_cap_does_not_scale_exempt_forced_trim(self):
+        out = apply_position_constraints(
+            target_weights={"QQQ": 0.10, "XLE": 0.08, "CASH": 0.82},
+            current_holdings={"QQQ": 0.16, "XLE": 0.12, "CASH": 0.72},
+            config={
+                "max_single_trade_pct": 1.0,
+                "max_turnover_per_cycle": 0.04,
+                "max_daily_trades": 10,
+                "turnover_exempt_tickers": ["XLE"],
+            },
+        )
+
+        self.assertAlmostEqual(out.adjusted_weights["XLE"], 0.08, places=4)
+        self.assertTrue(any(v.startswith("turnover_scaled:") for v in out.violations))
+        self.assertTrue(any("protected_exempt" in v for v in out.violations))
+        self.assertIn("turnover_scale_toward_current", out.mutation_types)
+        self.assertIsNone(_find_ledger_mutation(out, "turnover_scale_toward_current", "XLE"))
+        self.assertIsNotNone(_find_ledger_mutation(out, "turnover_scale_toward_current", "QQQ"))
+
     def test_max_daily_trades_caps_extra_buys(self):
         out = apply_position_constraints(
             target_weights={"AAA": 0.10, "BBB": 0.09, "CCC": 0.08, "CASH": 0.73},
