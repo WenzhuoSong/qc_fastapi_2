@@ -3,6 +3,18 @@ from __future__ import annotations
 
 import asyncio
 
+QC_ACK_OBSERVED_STATUSES = {
+    "accepted",
+    "rejected",
+    "orders_submitted",
+    "partial",
+    "filled",
+    "reconciled",
+    "reconciliation_drift",
+    "failed_no_fill",
+    "superseded",
+}
+
 
 async def get_qc_status(command_id: str) -> str | None:
     from services.execution_log_store import get_qc_status as _get_qc_status
@@ -34,7 +46,7 @@ async def wait_for_qc_ack(command_id: str, timeout_seconds: int = 30) -> str:
     for _ in range(max(timeout_seconds, 0)):
         await asyncio.sleep(1)
         status = await get_qc_status(command_id)
-        if status in {"accepted", "rejected"}:
+        if status in QC_ACK_OBSERVED_STATUSES:
             return status
     await mark_timeout(command_id)
     return "timeout_no_ack"

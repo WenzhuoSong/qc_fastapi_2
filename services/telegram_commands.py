@@ -8,14 +8,17 @@ from datetime import datetime, timedelta
 from db.session         import AsyncSessionLocal
 from db.queries         import get_system_config, upsert_system_config, get_latest_portfolio
 from tools.db_tools     import tool_verify_approval_token
-from tools.qc_tools     import tool_send_weight_command
+from tools.qc_tools     import tool_send_cancel_orders_command, tool_send_weight_command
 from tools.notify_tools import tool_send_telegram
 from services.proposal  import load_pending_proposal, mark_proposal_done
 from services.pc_promotion_config import default_pc_promotion_config, format_pc_promotion_config
 from services.execution_log_store import (
     create_or_update_submitted_log,
+    force_reconcile_command,
+    record_cancel_orders_requested,
     record_preflight_block,
 )
+from services.execution_lifecycle import load_active_execution_command
 from services.execution_policy import policy_snapshot
 from services.execution_preflight import preflight_execution_command, preflight_execution_weights
 from services.account_state_guard import default_account_state_guard_config, load_latest_account_state_guard
@@ -54,7 +57,11 @@ async def handle_telegram_command(text: str, from_chat_id: str) -> str:
         return await _cmd_config(text)
     if cmd == "/pc_promotion":
         return await _cmd_pc_promotion(text)
-    return "Unknown command. Available: /confirm /skip /pause /status /reset_circuit /approve_strategy /skip_strategy /config /pc_promotion"
+    if cmd == "/force_reconcile":
+        return await _cmd_force_reconcile(text)
+    if cmd == "/cancel_orders":
+        return await _cmd_cancel_orders(text)
+    return "Unknown command. Available: /confirm /skip /pause /status /reset_circuit /approve_strategy /skip_strategy /config /pc_promotion /force_reconcile /cancel_orders"
 
 
 async def _cmd_confirm() -> str:
@@ -261,6 +268,60 @@ async def _cmd_reset_circuit() -> str:
     })
     logger.warning("[circuit_breaker] Circuit manually reset to CLOSED by human command")
     return "🟢 Circuit breaker reset to CLOSED. Pipeline will resume normal operation."
+
+
+async def _cmd_force_reconcile(text: str) -> str:
+    parts = text.strip().split()
+    if len(parts) != 2:
+        return "Usage: /force_reconcile <command_id>"
+    command_id = parts[1].strip()
+    result = await force_reconcile_command(
+        command_id=command_id,
+        operator="telegram",
+        reason="operator_force_reconcile",
+    )
+    if not result.get("success"):
+        return f"❌ Force reconcile failed: {result.get('error')}"
+    return (
+        f"✅ Force reconciled `{result.get('command_id')}`\n"
+        f"Status: {result.get('status')}\n"
+        f"Max drift: {float(result.get('max_abs_diff') or 0.0):.4%}\n"
+        f"Diff rows: {result.get('diff_count')}\n"
+        "Next cycle will use QC actual holdings as baseline."
+    )
+
+
+async def _cmd_cancel_orders(text: str) -> str:
+    parts = text.strip().split()
+    target_command_id = parts[1].strip() if len(parts) >= 2 else ""
+    active = None
+    if not target_command_id:
+        active = await load_active_execution_command()
+        target_command_id = str((active or {}).get("command_id") or "").strip()
+    if not target_command_id:
+        return "ℹ️ No active execution command found. Use /cancel_orders <command_id> if you know the command."
+
+    cancel_command_id = (
+        f"cancel_orders_{target_command_id}_{int(datetime.utcnow().timestamp())}"
+    )
+    result = await tool_send_cancel_orders_command({
+        "command_id": cancel_command_id,
+        "target_command_id": target_command_id,
+        "reason": "operator_cancel_orders",
+    })
+    await record_cancel_orders_requested(
+        active_command_id=target_command_id,
+        cancel_command_id=cancel_command_id,
+        operator="telegram",
+        qc_result=result,
+    )
+    if result.get("success"):
+        return (
+            f"🧯 CancelOrders sent for `{target_command_id}`\n"
+            f"Control command: `{cancel_command_id}`\n"
+            "Wait for QC heartbeat reconciliation before sending ordinary rebalance."
+        )
+    return f"❌ CancelOrders failed for `{target_command_id}`: {result.get('error')}"
 
 
 def _circuit_state_from_cfg(circuit_cfg) -> str:

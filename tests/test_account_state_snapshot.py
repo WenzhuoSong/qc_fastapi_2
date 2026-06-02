@@ -21,6 +21,10 @@ class AccountStateSnapshotTests(unittest.TestCase):
                     "open_order_count": 0,
                     "is_market_open": True,
                     "policy_version": "sprint8a",
+                    "last_command_id": "analysis_214",
+                    "active_command_id": "analysis_214",
+                    "active_execution_status": "orders_submitted",
+                    "processed_command_count": 12,
                     "holdings_weights": {"spy": 0.4, "QQQ": "0.35"},
                     "target_weights": {"SPY": 0.45},
                 },
@@ -39,8 +43,14 @@ class AccountStateSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["open_order_count"], 0)
         self.assertFalse(snapshot["has_open_orders"])
         self.assertTrue(snapshot["is_market_open"])
+        self.assertEqual(snapshot["last_command_id"], "analysis_214")
+        self.assertEqual(snapshot["active_command_id"], "analysis_214")
+        self.assertEqual(snapshot["active_execution_status"], "orders_submitted")
+        self.assertEqual(snapshot["processed_command_count"], 12)
         self.assertEqual(snapshot["holdings_weights"], {"SPY": 0.4, "QQQ": 0.35})
         self.assertEqual(snapshot["target_weights"], {"SPY": 0.45})
+        self.assertEqual(snapshot["raw_snapshot"]["last_command_id"], "analysis_214")
+        self.assertEqual(snapshot["raw_snapshot"]["active_command_id"], "analysis_214")
         self.assertEqual(snapshot["raw_snapshot"]["warnings"], [])
 
     def test_legacy_heartbeat_derives_account_state_without_blocking(self):

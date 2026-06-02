@@ -75,6 +75,18 @@ def build_account_state_snapshot(
         or _nested(payload, ("policy", "version"))
         or "unknown"
     )
+    last_command_id = _clean_optional_string(
+        explicit.get("last_command_id") or payload.get("last_command_id")
+    )
+    active_command_id = _clean_optional_string(
+        explicit.get("active_command_id") or payload.get("active_command_id")
+    )
+    active_execution_status = _clean_optional_string(
+        explicit.get("active_execution_status") or payload.get("active_execution_status")
+    )
+    processed_command_count = _int_or_none(
+        explicit.get("processed_command_count", payload.get("processed_command_count"))
+    )
 
     return {
         "contract_version": ACCOUNT_STATE_CONTRACT_VERSION,
@@ -92,6 +104,10 @@ def build_account_state_snapshot(
         "open_order_count": open_order_count,
         "has_open_orders": bool(has_open_orders) if has_open_orders is not None else None,
         "is_market_open": _bool_or_none(explicit.get("is_market_open", portfolio.get("is_market_open"))),
+        "last_command_id": last_command_id,
+        "active_command_id": active_command_id,
+        "active_execution_status": active_execution_status,
+        "processed_command_count": processed_command_count,
         "holdings_weights": holdings_weights,
         "target_weights": target_weights,
         "raw_snapshot": {
@@ -99,8 +115,10 @@ def build_account_state_snapshot(
             "explicit_account_state": bool(explicit),
             "timestamp_utc": timestamp,
             "policy_source": explicit.get("policy_source"),
-            "last_command_id": explicit.get("last_command_id"),
-            "processed_command_count": _int_or_none(explicit.get("processed_command_count")),
+            "last_command_id": last_command_id,
+            "active_command_id": active_command_id,
+            "active_execution_status": active_execution_status,
+            "processed_command_count": processed_command_count,
             "open_order_count": open_order_count,
             "has_open_orders": bool(has_open_orders) if has_open_orders is not None else None,
             "warnings": warnings,
@@ -175,6 +193,13 @@ def _bool_or_none(value: Any) -> bool | None:
         if lowered in {"false", "0", "no"}:
             return False
     return bool(value)
+
+
+def _clean_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _round_or_none(value: float | None, digits: int) -> float | None:

@@ -4,6 +4,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from services.execution_lifecycle import ACTIVE_EXECUTION_CONTROL_REASONS
+
 
 DEFAULT_AUTO_PAUSE_CONFIG: dict[str, Any] = {
     "enabled": True,
@@ -169,12 +171,15 @@ def _consecutive_qc_rejects_trigger(events: list[dict[str, Any]], cfg: dict[str,
         if command_type != "weight_adjustment":
             continue
         status = str(event.get("qc_status") or "").lower().strip()
-        reason = str(event.get("qc_rejection_reason") or "").lower().strip()
+        response = event.get("qc_response") if isinstance(event.get("qc_response"), dict) else {}
+        reason = str(event.get("qc_rejection_reason") or response.get("reason") or "").lower().strip()
         if status in {"not_sent", "preflight_blocked"} or reason in {
             "fastapi_no_qc_command",
             "blocked_by_command_preflight",
         }:
             break
+        if reason in ACTIVE_EXECUTION_CONTROL_REASONS:
+            continue
         if status == "rejected":
             count += 1
             evidence.append(_event_evidence(event))

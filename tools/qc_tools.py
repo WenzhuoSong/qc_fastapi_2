@@ -128,6 +128,50 @@ async def tool_send_policy_sync(inp: dict | None = None) -> dict:
     return {"success": False, "error": "QC API unreachable after 3 attempts"}
 
 
+async def tool_send_cancel_orders_command(inp: dict | None = None) -> dict:
+    """Ask QC to cancel currently open orders for an active execution."""
+    inp = inp or {}
+    command_id = inp.get("command_id") or f"cancel_orders_{int(time.time())}"
+    target_command_id = inp.get("target_command_id")
+    url = f"{settings.qc_api_url}/live/commands/create"
+    command_payload = {
+        "target": "CancelOrders",
+        "command_id": command_id,
+        "target_command_id": target_command_id,
+        "reason": inp.get("reason") or "operator_cancel_orders",
+    }
+    body = {
+        "projectId": int(settings.qc_project_id),
+        "command": command_payload,
+    }
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        for attempt in range(3):
+            try:
+                resp = await client.post(url, json=body, headers=_qc_auth_headers())
+                resp_json = resp.json() if resp.status_code == 200 else {}
+                if resp.status_code == 200 and resp_json.get("success", False):
+                    logger.warning(
+                        "CancelOrders sent: command_id=%s target_command_id=%s | qc_response=%s",
+                        command_id,
+                        target_command_id,
+                        resp_json,
+                    )
+                    return {
+                        "success": True,
+                        "response": resp_json,
+                        "command_id": command_id,
+                        "target_command_id": target_command_id,
+                        "command_payload": command_payload,
+                    }
+                logger.warning("QC CancelOrders API %s: %s (attempt %s)", resp.status_code, resp.text, attempt)
+            except Exception as e:
+                logger.error("QC cancel orders attempt %s: %s", attempt, e)
+                await asyncio.sleep(2 ** attempt)
+
+    return {"success": False, "error": "QC API unreachable after 3 attempts", "command_id": command_id}
+
+
 def build_policy_sync_command_payload(command_id: str, payload: dict) -> dict:
     """Build a QC-friendly PolicySync command with redundant policy encodings.
 

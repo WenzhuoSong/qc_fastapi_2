@@ -14,15 +14,35 @@ VALID_EVENT_TYPES = {
     "qc_rejected",
     "qc_timeout",
     "execution_result",
+    "orders_submitted",
     "filled",
     "partial",
+    "canceled",
+    "superseded",
     "reconciled",
     "reconciliation_drift",
+    "failed_no_fill",
+    "timeout_reconciled_no_execution",
+    "deferred_by_active_execution",
+    "force_reconciled_by_operator",
+    "cancel_orders_requested_by_operator",
 }
 
 DEFAULT_RECONCILIATION_TOLERANCE = 0.01
 DEFAULT_RECONCILIATION_MAX_AGE_MINUTES = 30
-RECONCILIATION_TERMINAL_EVENTS = {"reconciled", "reconciliation_drift"}
+RECONCILIATION_TERMINAL_EVENTS = {
+    "reconciled",
+    "reconciliation_drift",
+    "failed_no_fill",
+    "superseded",
+    "timeout_reconciled_no_execution",
+}
+RECONCILIATION_ACTIVE_QC_STATUSES = {
+    "accepted",
+    "orders_submitted",
+    "partial",
+    "timeout_no_ack",
+}
 
 
 def build_command_lifecycle_event(
@@ -110,6 +130,22 @@ def build_command_reconciliation_events(
     event_time = event_time or _event_time_from_response(response)
     events: list[dict[str, Any]] = []
 
+    if _orders_submitted_evidence(order_summary, response):
+        events.append(build_command_lifecycle_event(
+            command_id=command_id,
+            analysis_id=analysis_id,
+            event_type="orders_submitted",
+            event_status="orders_submitted",
+            source="qc",
+            reason="qc_ack_reports_orders_submitted",
+            payload={
+                "execution_state": response.get("execution_state"),
+                "order_summary": order_summary,
+                "account_state": _account_reconciliation_payload(account),
+            },
+            event_time=event_time,
+        ))
+
     partial_reason = _partial_reason(order_summary, account)
     if partial_reason:
         events.append(build_command_lifecycle_event(
@@ -133,6 +169,20 @@ def build_command_reconciliation_events(
             event_status="filled",
             source="qc",
             reason="qc_order_summary_reports_no_open_orders",
+            payload={
+                "order_summary": order_summary,
+                "account_state": _account_reconciliation_payload(account),
+            },
+            event_time=event_time,
+        ))
+    elif _failed_no_fill_evidence(order_summary, response, account):
+        events.append(build_command_lifecycle_event(
+            command_id=command_id,
+            analysis_id=analysis_id,
+            event_type="failed_no_fill",
+            event_status="failed_no_fill",
+            source="qc",
+            reason="qc_reports_command_completed_without_fills",
             payload={
                 "order_summary": order_summary,
                 "account_state": _account_reconciliation_payload(account),
@@ -166,7 +216,7 @@ def build_command_reconciliation_events(
             payload=payload,
             event_time=event_time,
         ))
-    elif diff["max_abs_diff"] > float(tolerance):
+    elif diff["max_abs_diff"] > float(tolerance) and not _has_open_orders(order_summary, account):
         events.append(build_command_lifecycle_event(
             command_id=command_id,
             analysis_id=analysis_id,
@@ -221,7 +271,7 @@ def build_reconciliation_lag_report(
             continue
         if str(command.get("command_type") or "").strip() not in {"weight_adjustment", ""}:
             continue
-        if str(command.get("qc_status") or "").lower().strip() != "accepted":
+        if str(command.get("qc_status") or "").lower().strip() not in RECONCILIATION_ACTIVE_QC_STATUSES:
             continue
         accepted_at = _datetime_from_any(command.get("qc_ack_at") or command.get("executed_at"))
         if accepted_at is None:
@@ -345,6 +395,39 @@ def _has_order_fill_evidence(order_summary: dict[str, Any]) -> bool:
     return bool((submitted and submitted > 0) or (action_count and action_count > 0)) and not _has_open_orders(order_summary, {})
 
 
+def _orders_submitted_evidence(order_summary: dict[str, Any], response: dict[str, Any]) -> bool:
+    execution_state = str(response.get("execution_state") or "").lower().strip()
+    if execution_state == "orders_submitted":
+        return True
+    submitted = _int_or_none(order_summary.get("submitted_order_count"))
+    action_count = _int_or_none(order_summary.get("action_count"))
+    return bool((submitted and submitted > 0) or (action_count and action_count > 0))
+
+
+def _failed_no_fill_evidence(
+    order_summary: dict[str, Any],
+    response: dict[str, Any],
+    account: dict[str, Any],
+) -> bool:
+    """Return true only when QC explicitly says the command completed with no fill."""
+    if _has_open_orders(order_summary, account):
+        return False
+    for source in (order_summary, response, account):
+        if not isinstance(source, dict):
+            continue
+        if _bool_or_none(source.get("failed_no_fill")) is True:
+            return True
+        status = str(
+            source.get("active_execution_status")
+            or source.get("execution_state")
+            or source.get("status")
+            or ""
+        ).lower().strip()
+        if status in {"failed_no_fill", "no_fill"}:
+            return True
+    return False
+
+
 def _has_open_orders(order_summary: dict[str, Any], account: dict[str, Any]) -> bool:
     for source in (order_summary, account):
         if not isinstance(source, dict):
@@ -399,6 +482,9 @@ def _account_reconciliation_payload(account: dict[str, Any]) -> dict[str, Any]:
         "open_order_count": account.get("open_order_count"),
         "has_open_orders": account.get("has_open_orders"),
         "last_command_id": account.get("last_command_id"),
+        "active_command_id": account.get("active_command_id"),
+        "active_execution_status": account.get("active_execution_status"),
+        "processed_command_count": account.get("processed_command_count"),
     }
 
 

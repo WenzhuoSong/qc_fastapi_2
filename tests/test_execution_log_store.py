@@ -1,6 +1,7 @@
 import importlib
 import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 
@@ -12,6 +13,7 @@ def _load_utcnow_db_naive():
 
     models = type(sys)("db.models")
     models.ExecutionLog = type("ExecutionLog", (), {})
+    models.AccountStateSnapshot = type("AccountStateSnapshot", (), {})
     models.CommandLifecycleEvent = type("CommandLifecycleEvent", (), {})
 
     session = type(sys)("db.session")
@@ -31,10 +33,12 @@ def _load_utcnow_db_naive():
             "services.command_lifecycle": lifecycle,
         },
     ):
-        return importlib.import_module("services.execution_log_store")._utcnow_db_naive
+        module = importlib.import_module("services.execution_log_store")
+        return module
 
 
-_utcnow_db_naive = _load_utcnow_db_naive()
+execution_log_store = _load_utcnow_db_naive()
+_utcnow_db_naive = execution_log_store._utcnow_db_naive
 
 
 class ExecutionLogStoreTests(unittest.TestCase):
@@ -42,6 +46,223 @@ class ExecutionLogStoreTests(unittest.TestCase):
         value = _utcnow_db_naive()
 
         self.assertIsNone(value.tzinfo)
+
+    def test_timeout_reconciliation_releases_unprocessed_command(self):
+        row = type("Row", (), {"command_id": "analysis_214"})()
+        snapshot = type(
+            "Snapshot",
+            (),
+            {
+                "id": 123,
+                "recorded_at": "2026-06-01 16:30:00",
+                "raw_snapshot": {"last_command_id": "", "processed_command_count": 0},
+                "target_weights": {},
+                "has_open_orders": False,
+                "open_order_count": 0,
+            },
+        )()
+
+        decision = execution_log_store._timeout_reconciliation_decision(row, snapshot)
+
+        self.assertEqual(decision["status"], "timeout_no_execution_confirmed")
+
+    def test_timeout_reconciliation_keeps_processed_command_pending(self):
+        row = type("Row", (), {"command_id": "analysis_214"})()
+        snapshot = type(
+            "Snapshot",
+            (),
+            {
+                "id": 123,
+                "recorded_at": "2026-06-01 16:30:00",
+                "raw_snapshot": {"last_command_id": "analysis_214"},
+                "target_weights": {"SPY": 0.1},
+                "has_open_orders": False,
+                "open_order_count": 0,
+            },
+        )()
+
+        decision = execution_log_store._timeout_reconciliation_decision(row, snapshot)
+
+        self.assertEqual(decision["status"], "pending")
+        self.assertEqual(decision["reason"], "account_snapshot_reports_command_processed")
+
+    def test_timeout_reconciliation_keeps_active_command_pending(self):
+        row = type("Row", (), {"command_id": "analysis_214"})()
+        snapshot = type(
+            "Snapshot",
+            (),
+            {
+                "id": 123,
+                "recorded_at": "2026-06-01 16:30:00",
+                "active_command_id": "analysis_214",
+                "raw_snapshot": {"last_command_id": "analysis_213"},
+                "target_weights": {"SPY": 0.1},
+                "has_open_orders": True,
+                "open_order_count": 1,
+            },
+        )()
+
+        decision = execution_log_store._timeout_reconciliation_decision(row, snapshot)
+
+        self.assertEqual(decision["status"], "pending")
+        self.assertEqual(decision["reason"], "account_snapshot_reports_command_processed")
+        self.assertEqual(decision["active_command_id"], "analysis_214")
+
+    def test_account_state_command_id_prefers_active_command(self):
+        command_id = execution_log_store._account_state_command_id(
+            {
+                "last_command_id": "analysis_213",
+                "active_command_id": "analysis_214",
+                "raw_snapshot": {"last_command_id": "analysis_212"},
+            }
+        )
+
+        self.assertEqual(command_id, "analysis_214")
+
+    def test_qc_status_from_reconciliation_event_types(self):
+        self.assertEqual(
+            execution_log_store._qc_status_from_reconciliation_event_types(
+                ["orders_submitted", "partial"],
+                "accepted",
+            ),
+            "partial",
+        )
+        self.assertEqual(
+            execution_log_store._qc_status_from_reconciliation_event_types(
+                ["reconciliation_drift"],
+                "partial",
+            ),
+            "reconciliation_drift",
+        )
+        self.assertEqual(
+            execution_log_store._qc_status_from_reconciliation_event_types([], "timeout_no_ack"),
+            "timeout_no_ack",
+        )
+
+    def test_heartbeat_reconciliation_response_forces_accepted_contract(self):
+        response = execution_log_store._qc_response_for_heartbeat_reconciliation(
+            {"status": "timeout_no_ack"},
+            {
+                "target_weights": {"SPY": 0.2},
+                "holdings_weights": {"SPY": 0.2},
+                "open_order_count": 0,
+                "has_open_orders": False,
+                "active_execution_status": "orders_submitted",
+            },
+        )
+
+        self.assertEqual(response["status"], "accepted")
+        self.assertEqual(response["actual_target_weights"]["SPY"], 0.2)
+        self.assertEqual(response["actual_holdings_weights"]["SPY"], 0.2)
+        self.assertEqual(response["order_summary"]["open_order_count_after"], 0)
+
+    def test_heartbeat_reconciliation_overrides_stale_ack_open_orders(self):
+        response = execution_log_store._qc_response_for_heartbeat_reconciliation(
+            {
+                "status": "accepted",
+                "order_summary": {"open_order_count_after": 3, "has_open_orders": True},
+            },
+            {
+                "target_weights": {"SPY": 0.2},
+                "holdings_weights": {"SPY": 0.2},
+                "open_order_count": 0,
+                "has_open_orders": False,
+            },
+        )
+
+        self.assertEqual(response["order_summary"]["open_order_count_after"], 0)
+        self.assertFalse(response["order_summary"]["has_open_orders"])
+
+    def test_superseded_lifecycle_payload_from_qc_response(self):
+        payload = execution_log_store._superseded_lifecycle_payload_from_qc_response(
+            "analysis_230",
+            {
+                "status": "accepted",
+                "reason": "reduce_only_override",
+                "superseded_command_id": "analysis_214",
+                "canceled_order_count": 3,
+                "order_summary": {"canceled_order_ids": [1, 2, 3]},
+            },
+        )
+
+        self.assertEqual(payload["command_id"], "analysis_214")
+        self.assertEqual(payload["reason"], "reduce_only_override")
+        self.assertEqual(payload["payload"]["superseded_by_command_id"], "analysis_230")
+        self.assertEqual(payload["payload"]["canceled_order_count"], 3)
+
+    def test_superseded_lifecycle_payload_ignores_missing_superseded_id(self):
+        payload = execution_log_store._superseded_lifecycle_payload_from_qc_response(
+            "analysis_230",
+            {"status": "accepted"},
+        )
+
+        self.assertIsNone(payload)
+
+    def test_qc_status_maps_to_lifecycle_event_types(self):
+        self.assertEqual(execution_log_store._event_type_for_qc_status("accepted"), "qc_accepted")
+        self.assertEqual(execution_log_store._event_type_for_qc_status("orders_submitted"), "orders_submitted")
+        self.assertEqual(execution_log_store._event_type_for_qc_status("partial"), "partial")
+        self.assertEqual(execution_log_store._event_type_for_qc_status("canceled"), "canceled")
+        self.assertEqual(
+            execution_log_store._event_type_for_qc_status("timeout_no_execution_confirmed"),
+            "timeout_reconciled_no_execution",
+        )
+
+    def test_qc_status_event_source_distinguishes_fastapi_timeouts(self):
+        self.assertEqual(execution_log_store._event_source_for_qc_status("partial"), "qc")
+        self.assertEqual(execution_log_store._event_source_for_qc_status("reconciled"), "qc")
+        self.assertEqual(execution_log_store._event_source_for_qc_status("timeout_no_ack"), "fastapi")
+
+    def test_daily_turnover_counts_active_lifecycle_statuses(self):
+        row = type(
+            "Row",
+            (),
+            {"command_type": "weight_adjustment", "status": "sent", "qc_status": "partial"},
+        )()
+
+        self.assertTrue(execution_log_store._counts_toward_daily_command(row))
+        self.assertTrue(execution_log_store._counts_toward_daily_turnover(row))
+
+    def test_active_execution_wait_status_does_not_count_toward_daily_caps(self):
+        row = type(
+            "Row",
+            (),
+            {
+                "command_type": "weight_adjustment",
+                "status": "deferred_by_active_execution",
+                "qc_status": "not_sent",
+            },
+        )()
+
+        self.assertFalse(execution_log_store._counts_toward_daily_command(row))
+        self.assertFalse(execution_log_store._counts_toward_daily_turnover(row))
+
+    def test_record_active_execution_wait_contract_exists(self):
+        text = Path("services/execution_log_store.py").read_text()
+
+        self.assertIn("async def record_active_execution_wait", text)
+        self.assertIn('"action_status": "deferred_by_active_execution"', text)
+        self.assertIn('row.qc_status = "not_sent"', text)
+        self.assertIn('event_type="deferred_by_active_execution"', text)
+
+    def test_operator_force_reconcile_and_cancel_request_contracts_exist(self):
+        text = Path("services/execution_log_store.py").read_text()
+
+        self.assertIn("async def force_reconcile_command", text)
+        self.assertIn('event_type="force_reconciled_by_operator"', text)
+        self.assertIn("actual_holdings_weights", text)
+        self.assertIn("async def record_cancel_orders_requested", text)
+        self.assertIn('event_type="cancel_orders_requested_by_operator"', text)
+        self.assertIn("operator_cancel_orders", text)
+
+    def test_force_reconcile_drift_helper_excludes_cash(self):
+        diff = execution_log_store._weight_diff_for_force_reconcile(
+            {"SPY": 0.2, "CASH": 0.8},
+            {"SPY": 0.1, "CASH": 0.9},
+        )
+
+        self.assertEqual(diff["max_abs_diff"], 0.1)
+        self.assertEqual(diff["diffs"][0]["ticker"], "SPY")
 
 
 if __name__ == "__main__":

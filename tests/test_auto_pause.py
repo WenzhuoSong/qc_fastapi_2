@@ -89,6 +89,43 @@ class AutoPauseTests(unittest.TestCase):
         self.assertEqual(result["status"], "pass")
         self.assertFalse(result["would_pause"])
 
+    def test_active_execution_reject_reasons_do_not_count_as_qc_rejects(self):
+        now = datetime(2026, 5, 24, 15, 0, 0)
+        result = evaluate_auto_pause_triggers(
+            execution_events=[
+                _event("cmd_3", "rejected", now - timedelta(minutes=1), "active_command_in_progress"),
+                _event("cmd_2", "rejected", now - timedelta(minutes=2), "already_in_progress"),
+                _event("cmd_1", "rejected", now - timedelta(minutes=3), "single cap"),
+            ],
+            account_state_guard=_clean_guard(),
+            config={"mode": "active"},
+            now=now,
+        )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertFalse(result["would_pause"])
+
+    def test_active_execution_reject_reason_in_qc_response_does_not_count(self):
+        now = datetime(2026, 5, 24, 15, 0, 0)
+        result = evaluate_auto_pause_triggers(
+            execution_events=[
+                _event(
+                    "cmd_2",
+                    "rejected",
+                    now - timedelta(minutes=1),
+                    "",
+                    qc_response={"reason": "reduce_only_override_candidate"},
+                ),
+                _event("cmd_1", "rejected", now - timedelta(minutes=2), "single cap"),
+            ],
+            account_state_guard=_clean_guard(),
+            config={"mode": "active"},
+            now=now,
+        )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertFalse(result["would_pause"])
+
     def test_active_mode_should_pause_on_consecutive_rejects(self):
         now = datetime(2026, 5, 24, 15, 0, 0)
         result = evaluate_auto_pause_triggers(

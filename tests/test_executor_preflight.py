@@ -48,6 +48,30 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn("Deploy/sync the QC compiled policy before trading", text)
         self.assertIn("No command sent to QC", text)
 
+    def test_executor_checks_active_execution_before_command_preflight_and_send(self):
+        text = Path("agents/executor.py").read_text()
+        active_pos = text.index("active_execution_gate = evaluate_active_execution_gate")
+        preflight_pos = text.index("command_preflight = await preflight_execution_command")
+        send_pos = text.index("result = await tool_send_weight_command")
+
+        self.assertLess(active_pos, preflight_pos)
+        self.assertLess(active_pos, send_pos)
+        self.assertIn("record_active_execution_wait", text)
+        self.assertIn('"execution_status": "deferred_by_active_execution"', text)
+        self.assertIn("active_execution_wait", text)
+        self.assertIn("Will resume after reconciliation", text)
+
+    def test_executor_telegram_distinguishes_async_qc_lifecycle_states(self):
+        text = Path("agents/executor.py").read_text()
+
+        self.assertIn("def _format_qc_lifecycle_ack_message", text)
+        self.assertIn("QC_OWNERSHIP_STATUSES", text)
+        self.assertIn("Accepted is not reconciled", text)
+        self.assertIn("QC submitted orders", text)
+        self.assertIn("Partial execution", text)
+        self.assertIn("Reconciliation drift", text)
+        self.assertIn("Lifecycle will reconcile from heartbeat", text)
+
     def test_telegram_confirm_uses_policy_alignment_not_policy_sync(self):
         text = Path("services/telegram_commands.py").read_text()
         confirm_body = text[text.index("async def _cmd_confirm") : text.index("async def _load_manual_confirm_policy_alignment")]
@@ -77,6 +101,14 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn('"roles": safe_payload.get("roles") or {}', text)
         self.assertIn('"caps": safe_payload.get("caps") or {}', text)
 
+    def test_cancel_orders_control_command_payload_exists(self):
+        text = Path("tools/qc_tools.py").read_text()
+
+        self.assertIn("async def tool_send_cancel_orders_command", text)
+        self.assertIn('"target": "CancelOrders"', text)
+        self.assertIn('"target_command_id": target_command_id', text)
+        self.assertIn('"reason": inp.get("reason") or "operator_cancel_orders"', text)
+
     def test_executor_requires_final_risk_validation_before_qc_command(self):
         text = Path("agents/executor.py").read_text()
         final_pos = text.index("Final risk validation missing or failed")
@@ -91,6 +123,27 @@ class ExecutorPreflightTests(unittest.TestCase):
         send_pos = text.index("result = await tool_send_weight_command")
 
         self.assertLess(final_pos, send_pos)
+
+    def test_telegram_operator_commands_for_async_execution_lifecycle_exist(self):
+        text = Path("services/telegram_commands.py").read_text()
+
+        self.assertIn('cmd == "/force_reconcile"', text)
+        self.assertIn('cmd == "/cancel_orders"', text)
+        self.assertIn("async def _cmd_force_reconcile", text)
+        self.assertIn("async def _cmd_cancel_orders", text)
+        self.assertIn("force_reconcile_command", text)
+        self.assertIn("tool_send_cancel_orders_command", text)
+        self.assertIn("record_cancel_orders_requested", text)
+        self.assertIn("Wait for QC heartbeat reconciliation", text)
+
+    def test_executor_active_execution_block_surfaces_stale_details(self):
+        text = Path("agents/executor.py").read_text()
+
+        self.assertIn("stale_active_execution", text)
+        self.assertIn("Stale active execution:", text)
+        self.assertIn("threshold=", text)
+        self.assertIn("operator_action", text)
+        self.assertIn("active_execution_gate.get('status')", text)
 
     def test_command_delta_metrics_split_buy_sell_and_gross_turnover(self):
         result = command_weight_delta_metrics(
@@ -117,8 +170,11 @@ class ExecutorPreflightTests(unittest.TestCase):
     def test_daily_execution_activity_excludes_preflight_and_qc_rejected_rows(self):
         text = Path("services/execution_log_store.py").read_text()
 
-        self.assertIn('qc_status in {"not_sent", "rejected"}', text)
-        self.assertIn('qc_status in {"submitted", "accepted", "timeout_no_ack"}', text)
+        self.assertIn('qc_status in {"not_sent", "rejected", "timeout_no_execution_confirmed"}', text)
+        self.assertIn('"orders_submitted"', text)
+        self.assertIn('"partial"', text)
+        self.assertIn('"reconciled"', text)
+        self.assertIn('"timeout_no_ack"', text)
         self.assertIn("if not _counts_toward_daily_turnover(row):", text)
 
     def test_executor_does_not_overwrite_duplicate_command_log(self):

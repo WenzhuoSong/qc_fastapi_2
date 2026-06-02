@@ -487,7 +487,12 @@ async def _execution_control_status(latest_analysis: dict[str, Any]) -> dict[str
                 await db.execute(
                     select(ExecutionLog)
                     .where(ExecutionLog.command_type == "weight_adjustment")
-                    .where(ExecutionLog.qc_status == "accepted")
+                    .where(ExecutionLog.qc_status.in_((
+                        "accepted",
+                        "orders_submitted",
+                        "partial",
+                        "timeout_no_ack",
+                    )))
                     .order_by(desc(func.coalesce(ExecutionLog.qc_ack_at, ExecutionLog.executed_at)))
                     .limit(50)
                 )
@@ -499,6 +504,30 @@ async def _execution_control_status(latest_analysis: dict[str, Any]) -> dict[str
                     .limit(50)
                 )
             ).scalars().all()
+            lifecycle_cfg = (
+                await db.execute(
+                    select(SystemConfig).where(SystemConfig.key == "execution_lifecycle_config").limit(1)
+                )
+            ).scalar_one_or_none()
+            active_command_id = _snapshot_active_command_id(snapshot)
+            active_command = None
+            active_command_events = []
+            if active_command_id:
+                active_command = (
+                    await db.execute(
+                        select(ExecutionLog)
+                        .where(ExecutionLog.command_id == active_command_id)
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                active_command_events = (
+                    await db.execute(
+                        select(CommandLifecycleEvent)
+                        .where(CommandLifecycleEvent.command_id == active_command_id)
+                        .order_by(desc(CommandLifecycleEvent.event_time), desc(CommandLifecycleEvent.id))
+                        .limit(20)
+                    )
+                ).scalars().all()
     except Exception as exc:
         return {
             "available": False,
@@ -508,6 +537,7 @@ async def _execution_control_status(latest_analysis: dict[str, Any]) -> dict[str
             "latest_account_snapshot": {},
             "recent_command_events": [],
             "recent_commands": [],
+            "active_execution": {},
             "deferred_execution": {},
             "reconciliation_lag": {},
         }
@@ -521,6 +551,12 @@ async def _execution_control_status(latest_analysis: dict[str, Any]) -> dict[str
         "account_state_guard": latest_analysis.get("account_state_guard") or {},
         "auto_pause": latest_analysis.get("auto_pause") or {},
         "latest_account_snapshot": _compact_account_state_snapshot(snapshot),
+        "active_execution": _compact_active_execution_panel(
+            snapshot=snapshot,
+            command_row=active_command,
+            lifecycle_events=active_command_events,
+            config=(lifecycle_cfg.value if lifecycle_cfg else {}) or {},
+        ),
         "recent_command_events": lifecycle_rows,
         "recent_commands": [_compact_execution_row(row) for row in recent_commands],
         "reconciliation_lag": build_reconciliation_lag_report(
@@ -987,12 +1023,18 @@ async def _dashboard_config() -> dict[str, Any]:
                 select(SystemConfig).where(SystemConfig.key == "alpha_decision_policy_config").limit(1)
             )
         ).scalar_one_or_none()
+        execution_lifecycle = (
+            await db.execute(
+                select(SystemConfig).where(SystemConfig.key == "execution_lifecycle_config").limit(1)
+            )
+        ).scalar_one_or_none()
     return {
         "playground_config": (playground.value if playground else {}) or {},
         "circuit_state": (circuit.value if circuit else {}) or {},
         "portfolio_construction_promotion_config": (pc_promotion.value if pc_promotion else {}) or {},
         "evidence_cap_config": (evidence_cap.value if evidence_cap else {}) or {},
         "alpha_decision_policy_config": (alpha_decision_policy.value if alpha_decision_policy else {}) or {},
+        "execution_lifecycle_config": (execution_lifecycle.value if execution_lifecycle else {}) or {},
     }
 
 
@@ -2209,6 +2251,10 @@ def _compact_account_state_snapshot(row: Any) -> dict[str, Any]:
         "open_order_count": row.open_order_count,
         "has_open_orders": row.has_open_orders,
         "is_market_open": row.is_market_open,
+        "last_command_id": getattr(row, "last_command_id", None) or raw.get("last_command_id"),
+        "active_command_id": getattr(row, "active_command_id", None) or raw.get("active_command_id"),
+        "active_execution_status": getattr(row, "active_execution_status", None) or raw.get("active_execution_status"),
+        "processed_command_count": getattr(row, "processed_command_count", None) or raw.get("processed_command_count"),
         "holdings_count": len(holdings),
         "target_count": len(targets),
         "explicit_account_state": raw.get("explicit_account_state"),
@@ -2216,11 +2262,184 @@ def _compact_account_state_snapshot(row: Any) -> dict[str, Any]:
     }
 
 
+def _snapshot_active_command_id(row: Any) -> str:
+    if not row:
+        return ""
+    raw = row.raw_snapshot if isinstance(getattr(row, "raw_snapshot", None), dict) else {}
+    for value in (
+        getattr(row, "active_command_id", None),
+        raw.get("active_command_id"),
+        getattr(row, "last_command_id", None),
+        raw.get("last_command_id"),
+    ):
+        command_id = str(value or "").strip()
+        if command_id:
+            return command_id
+    return ""
+
+
+def _compact_active_execution_panel(
+    *,
+    snapshot: Any,
+    command_row: Any,
+    lifecycle_events: list[Any],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    if not snapshot:
+        return {"available": False, "status": "no_account_snapshot"}
+    raw = snapshot.raw_snapshot if isinstance(getattr(snapshot, "raw_snapshot", None), dict) else {}
+    command_id = _snapshot_active_command_id(snapshot)
+    snapshot_status = str(
+        getattr(snapshot, "active_execution_status", None)
+        or raw.get("active_execution_status")
+        or ""
+    ).lower().strip()
+    qc_status = str(getattr(command_row, "qc_status", "") or "").lower().strip()
+    status = snapshot_status or qc_status or "idle"
+    open_order_count = getattr(snapshot, "open_order_count", None)
+    has_open_orders = bool(getattr(snapshot, "has_open_orders", False))
+    if open_order_count is not None:
+        try:
+            has_open_orders = has_open_orders or int(open_order_count or 0) > 0
+        except (TypeError, ValueError):
+            pass
+    active_statuses = {"accepted", "orders_submitted", "partial"}
+    is_active = bool(command_id) and (status in active_statuses or has_open_orders)
+    target_weights = snapshot.target_weights if isinstance(getattr(snapshot, "target_weights", None), dict) else {}
+    holdings_weights = snapshot.holdings_weights if isinstance(getattr(snapshot, "holdings_weights", None), dict) else {}
+    drift_rows = _target_actual_drift_rows(target_weights, holdings_weights)
+    order_summary = _latest_order_summary_from_lifecycle(lifecycle_events, command_row)
+    started_at = getattr(command_row, "qc_ack_at", None) or getattr(command_row, "executed_at", None)
+    allow_reduce_only = bool((config or {}).get("allow_reduce_only_override", True))
+    stale = _active_execution_stale_status(
+        {
+            "command_id": command_id,
+            "status": status,
+            "open_order_count": open_order_count,
+            "has_open_orders": has_open_orders,
+            "started_at": started_at,
+            "recorded_at": getattr(snapshot, "recorded_at", None),
+        },
+        config,
+    )
+    return {
+        "available": True,
+        "active": is_active,
+        "active_command_id": command_id or None,
+        "status": status,
+        "qc_status": qc_status or None,
+        "submitted_order_count": order_summary.get("submitted_order_count"),
+        "filled_order_count": order_summary.get("filled_order_count"),
+        "open_order_count": open_order_count if open_order_count is not None else order_summary.get("open_order_count_after"),
+        "has_open_orders": has_open_orders,
+        "started_at": _iso(started_at),
+        "elapsed_minutes": _elapsed_minutes(started_at),
+        "latest_snapshot_at": _iso(getattr(snapshot, "recorded_at", None)),
+        "target_count": len(target_weights),
+        "holding_count": len(holdings_weights),
+        "max_target_actual_drift": max((abs(float(row.get("diff") or 0.0)) for row in drift_rows), default=0.0),
+        "stale": stale.get("is_stale"),
+        "stale_reason": stale.get("reason"),
+        "stale_elapsed_minutes": stale.get("elapsed_minutes"),
+        "stale_threshold_minutes": stale.get("threshold_minutes"),
+        "stale_auto_action": stale.get("auto_action"),
+        "auto_cancel_stale_open_orders": stale.get("auto_cancel"),
+        "stale_operator_action": stale.get("operator_action"),
+        "can_ordinary_rebalance": not is_active,
+        "can_reduce_only": bool(is_active and allow_reduce_only),
+        "execution_contract": "accepted_is_not_reconciled",
+        "operator_note": _active_execution_operator_note(is_active, status, has_open_orders),
+        "drift_rows": drift_rows[:12],
+        "recent_event_rows": [_compact_lifecycle_event(row) for row in lifecycle_events],
+    }
+
+
+def _active_execution_stale_status(active: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from services.execution_lifecycle import evaluate_stale_active_execution
+
+        return evaluate_stale_active_execution(active, config)
+    except Exception as exc:
+        return {
+            "is_stale": False,
+            "reason": f"stale_check_unavailable:{type(exc).__name__}",
+            "auto_action": "none",
+            "auto_cancel": False,
+        }
+
+
+def _latest_order_summary_from_lifecycle(events: list[Any], command_row: Any) -> dict[str, Any]:
+    for event in events or []:
+        payload = event.payload if isinstance(getattr(event, "payload", None), dict) else {}
+        order_summary = payload.get("order_summary") if isinstance(payload.get("order_summary"), dict) else {}
+        if order_summary:
+            return order_summary
+    response = command_row.qc_response if command_row and isinstance(getattr(command_row, "qc_response", None), dict) else {}
+    return response.get("order_summary") if isinstance(response.get("order_summary"), dict) else {}
+
+
+def _target_actual_drift_rows(target_weights: dict[str, Any], holdings_weights: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for ticker in sorted((set(target_weights or {}) | set(holdings_weights or {})) - {"CASH"}):
+        target = _json_safe_number((target_weights or {}).get(ticker)) or 0.0
+        actual = _json_safe_number((holdings_weights or {}).get(ticker)) or 0.0
+        diff = round(actual - target, 6)
+        if abs(diff) <= 1e-9:
+            continue
+        rows.append({
+            "ticker": ticker,
+            "target": round(target, 6),
+            "actual": round(actual, 6),
+            "diff": diff,
+        })
+    rows.sort(key=lambda row: (-abs(float(row.get("diff") or 0.0)), str(row.get("ticker") or "")))
+    return rows
+
+
+def _elapsed_minutes(value: Any) -> float | None:
+    if not value:
+        return None
+    if not isinstance(value, datetime):
+        parsed = _datetime_from_text(str(value))
+        if parsed is None:
+            return None
+        value = parsed
+    if value.tzinfo is not None:
+        value = value.replace(tzinfo=None)
+    return round(max((datetime.utcnow() - value).total_seconds() / 60.0, 0.0), 1)
+
+
+def _datetime_from_text(text: str) -> datetime | None:
+    clean = str(text or "").strip()
+    if not clean:
+        return None
+    if clean.endswith("Z"):
+        clean = clean[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(clean)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        return parsed.replace(tzinfo=None)
+    return parsed
+
+
+def _active_execution_operator_note(is_active: bool, status: str, has_open_orders: bool) -> str:
+    if not is_active:
+        return "No active execution; ordinary rebalance may proceed if other gates pass."
+    if has_open_orders:
+        return "Active execution has open orders; ordinary rebalance should wait for reconciliation."
+    if status in {"accepted", "orders_submitted", "partial"}:
+        return "Command is non-terminal; wait for heartbeat reconciliation before ordinary rebalance."
+    return "Review command lifecycle before sending another ordinary rebalance."
+
+
 def _compact_lifecycle_event(row: Any) -> dict[str, Any]:
     payload = row.payload if isinstance(row.payload, dict) else {}
     response = payload.get("qc_response") if isinstance(payload.get("qc_response"), dict) else {}
     command_payload = payload.get("command_payload") if isinstance(payload.get("command_payload"), dict) else {}
     target_weights = command_payload.get("weights") if isinstance(command_payload.get("weights"), dict) else {}
+    order_summary = payload.get("order_summary") if isinstance(payload.get("order_summary"), dict) else {}
     return {
         "event_time": _iso(row.event_time),
         "command_id": row.command_id,
@@ -2230,6 +2449,12 @@ def _compact_lifecycle_event(row: Any) -> dict[str, Any]:
         "source": row.source,
         "reason": row.reason or payload.get("reason") or response.get("reason"),
         "qc_status": payload.get("qc_status") or response.get("status"),
+        "execution_state": payload.get("execution_state") or response.get("execution_state"),
+        "submitted_order_count": order_summary.get("submitted_order_count"),
+        "filled_order_count": order_summary.get("filled_order_count"),
+        "open_order_count": order_summary.get("open_order_count_after") or order_summary.get("open_order_count"),
+        "max_abs_diff": payload.get("max_abs_diff"),
+        "diff_count": len(payload.get("diffs") or []) if isinstance(payload.get("diffs"), list) else None,
         "policy_mismatch": response.get("policy_mismatch"),
         "policy_version": response.get("policy_version") or payload.get("policy_version"),
         "target_count": len(target_weights),
@@ -2239,6 +2464,7 @@ def _compact_lifecycle_event(row: Any) -> dict[str, Any]:
 
 def _compact_execution_row(row: Any) -> dict[str, Any]:
     response = row.qc_response if isinstance(row.qc_response, dict) else {}
+    order_summary = response.get("order_summary") if isinstance(response.get("order_summary"), dict) else {}
     return {
         "executed_at": _iso(row.executed_at),
         "command_id": row.command_id,
@@ -2248,6 +2474,13 @@ def _compact_execution_row(row: Any) -> dict[str, Any]:
         "qc_status": row.qc_status,
         "qc_ack_at": _iso(row.qc_ack_at),
         "qc_rejection_reason": row.qc_rejection_reason or response.get("reason"),
+        "execution_state": response.get("execution_state"),
+        "active_command_id": response.get("active_command_id"),
+        "submitted_order_count": order_summary.get("submitted_order_count"),
+        "filled_order_count": order_summary.get("filled_order_count"),
+        "open_order_count": order_summary.get("open_order_count_after") or order_summary.get("open_order_count"),
+        "superseded_command_id": response.get("superseded_command_id"),
+        "canceled_order_count": response.get("canceled_order_count"),
         "policy_mismatch": response.get("policy_mismatch"),
         "retry_count": row.retry_count,
     }
@@ -3029,20 +3262,24 @@ def _render_execution_control(control: dict[str, Any]) -> str:
     guard = control.get("account_state_guard") or {}
     auto_pause = control.get("auto_pause") or {}
     latest_snapshot = control.get("latest_account_snapshot") or {}
+    active_execution = control.get("active_execution") or {}
     deferred = control.get("deferred_execution") or {}
     reconciliation_lag = control.get("reconciliation_lag") or {}
     return f"""
       <div class="grid">
         <article class="card"><h3>Account State Guard</h3>{_render_kv(guard, keys=["mode", "status", "allowed", "would_block", "pipeline_enforcement", "pipeline_effect_status", "execution_effect", "primary_blockers", "warnings"])}</article>
         <article class="card"><h3>Auto Pause</h3>{_render_kv(auto_pause, keys=["mode", "status", "would_pause", "should_pause", "execution_effect", "primary_trigger", "reason"])}</article>
-        <article class="card"><h3>Latest Account Snapshot</h3>{_render_kv(latest_snapshot, keys=["available", "recorded_at", "account_timestamp", "source_packet_type", "contract_version", "account_status", "data_status", "policy_version", "total_value", "cash_pct", "buying_power", "open_order_count", "has_open_orders", "is_market_open", "holdings_count", "target_count", "explicit_account_state"])}</article>
+        <article class="card"><h3>Latest Account Snapshot</h3>{_render_kv(latest_snapshot, keys=["available", "recorded_at", "account_timestamp", "source_packet_type", "contract_version", "account_status", "data_status", "policy_version", "total_value", "cash_pct", "buying_power", "open_order_count", "has_open_orders", "is_market_open", "last_command_id", "active_command_id", "active_execution_status", "processed_command_count", "holdings_count", "target_count", "explicit_account_state"])}</article>
+        <article class="card"><h3>Active Execution</h3>{_render_kv(active_execution, keys=["available", "active", "active_command_id", "status", "qc_status", "submitted_order_count", "filled_order_count", "open_order_count", "has_open_orders", "started_at", "elapsed_minutes", "latest_snapshot_at", "max_target_actual_drift", "can_ordinary_rebalance", "can_reduce_only", "execution_contract", "operator_note"])}</article>
         <article class="card"><h3>Deferred Execution Pressure</h3>{_render_kv(deferred, keys=["available", "open_count", "open_buy_delta", "open_sell_delta", "open_tickers"])}</article>
         <article class="card"><h3>Reconciliation Lag</h3>{_render_kv(reconciliation_lag, keys=["accepted_without_reconciled_count", "overdue_count", "pending_count", "max_age_minutes", "execution_effect"])}</article>
       </div>
+      <h3>Active Execution Target vs Actual Drift</h3>{_render_table(active_execution.get("drift_rows") or [], ["ticker", "target", "actual", "diff"])}
+      <h3>Active Execution Events</h3>{_render_table(active_execution.get("recent_event_rows") or [], ["event_time", "command_id", "event_type", "event_status", "source", "reason", "execution_state", "submitted_order_count", "filled_order_count", "open_order_count", "max_abs_diff", "diff_count"])}
       <h3>Account Guard Checks</h3>{_render_table(guard.get("checks") or [], ["check", "pass", "actual", "threshold", "reason"])}
       <h3>Auto Pause Triggers</h3>{_render_table(auto_pause.get("triggers") or [], ["trigger", "triggered", "value", "threshold", "severity", "details"])}
-      <h3>Recent QC Commands</h3>{_render_table(control.get("recent_commands") or [], ["executed_at", "command_id", "analysis_id", "command_type", "status", "qc_status", "qc_ack_at", "qc_rejection_reason", "policy_mismatch", "retry_count"])}
-      <h3>Command Lifecycle Events</h3>{_render_table(control.get("recent_command_events") or [], ["event_time", "command_id", "analysis_id", "event_type", "event_status", "source", "reason", "qc_status", "policy_mismatch", "policy_version", "target_count", "payload_keys"])}
+      <h3>Recent QC Commands</h3>{_render_table(control.get("recent_commands") or [], ["executed_at", "command_id", "analysis_id", "command_type", "status", "qc_status", "execution_state", "qc_ack_at", "qc_rejection_reason", "active_command_id", "submitted_order_count", "filled_order_count", "open_order_count", "superseded_command_id", "canceled_order_count", "policy_mismatch", "retry_count"])}
+      <h3>Command Lifecycle Events</h3>{_render_table(control.get("recent_command_events") or [], ["event_time", "command_id", "analysis_id", "event_type", "event_status", "source", "reason", "qc_status", "execution_state", "submitted_order_count", "filled_order_count", "open_order_count", "max_abs_diff", "diff_count", "policy_mismatch", "policy_version", "target_count", "payload_keys"])}
       <h3>Accepted Commands Without Reconciliation</h3>{_render_table(reconciliation_lag.get("rows") or [], ["command_id", "analysis_id", "qc_status", "accepted_at", "age_minutes", "max_age_minutes", "status", "latest_event_type", "latest_event_status", "reason"])}
       <h3>Deferred Execution Ledger</h3>{_render_table(deferred.get("recent_rows") or [], ["created_at", "updated_at", "resolved_at", "command_id", "analysis_id", "status", "side", "ticker", "original_delta", "remaining_delta", "current_weight", "desired_weight", "staged_weight", "latest_current_weight", "latest_desired_weight", "latest_staged_weight", "reason", "resolution_reason", "review_count"])}
     """

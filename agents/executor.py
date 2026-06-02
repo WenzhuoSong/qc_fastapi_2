@@ -8,7 +8,12 @@ from services.execution_audit import build_execution_audit_payload
 from services.execution_ack_tracker import wait_for_qc_ack_detail
 from services.execution_log_store import (
     create_or_update_submitted_log,
+    record_active_execution_wait,
     record_preflight_block,
+)
+from services.execution_lifecycle import (
+    evaluate_active_execution_gate,
+    load_active_execution_command,
 )
 from services.execution_policy import policy_snapshot
 from services.execution_preflight import preflight_execution_command, preflight_execution_weights
@@ -20,6 +25,62 @@ logger = logging.getLogger("qc_fastapi_2.executor")
 
 def _command_label(command_id: str) -> str:
     return str(command_id or "unknown")
+
+
+QC_OWNERSHIP_STATUSES = {
+    "accepted",
+    "orders_submitted",
+    "partial",
+    "filled",
+    "reconciled",
+    "reconciliation_drift",
+    "failed_no_fill",
+    "superseded",
+}
+
+
+def _format_qc_lifecycle_ack_message(command_id: str, qc_ack: dict) -> str:
+    status = str((qc_ack or {}).get("qc_status") or "").lower().strip()
+    response = (qc_ack or {}).get("qc_response") if isinstance((qc_ack or {}).get("qc_response"), dict) else {}
+    order_summary = response.get("order_summary") if isinstance(response.get("order_summary"), dict) else {}
+    label = _command_label(command_id)
+    if status == "accepted":
+        return (
+            f"✅ QC accepted ownership `{label}`\n"
+            f"Execution state: {response.get('execution_state') or 'accepted'}\n"
+            "Accepted is not reconciled; awaiting fill/account reconciliation."
+        )
+    if status == "orders_submitted":
+        return (
+            f"📤 QC submitted orders `{label}`\n"
+            f"Orders submitted: {order_summary.get('submitted_order_count', 'n/a')}\n"
+            "Awaiting fills and heartbeat reconciliation."
+        )
+    if status == "partial":
+        return (
+            f"⏳ Partial execution `{label}`\n"
+            f"Filled: {order_summary.get('filled_order_count', 'n/a')}/"
+            f"{order_summary.get('submitted_order_count', 'n/a')} orders\n"
+            f"Open orders: {order_summary.get('open_order_count_after', order_summary.get('open_order_count', 'n/a'))}"
+        )
+    if status == "filled":
+        return f"✅ QC reports orders filled `{label}`\nAwaiting account reconciliation."
+    if status == "reconciled":
+        return f"✅ Reconciled `{label}`\nActual holdings match target within tolerance."
+    if status == "reconciliation_drift":
+        return (
+            f"⚠️ Reconciliation drift `{label}`\n"
+            "Actual holdings differ from target. Next cycle will use actual holdings as baseline."
+        )
+    if status == "failed_no_fill":
+        return f"⚠️ QC accepted `{label}` but reports no fill. Positions should be verified from account truth."
+    if status == "superseded":
+        return f"ℹ️ Command `{label}` was superseded by a later override."
+    return (
+        f"⚠️ QC ACK timeout `{label}`\n"
+        "No fast QC ownership confirmation within the wait window. "
+        "Lifecycle will reconcile from heartbeat; do not assume positions changed."
+    )
 
 
 async def run_executor_async(
@@ -194,6 +255,63 @@ async def run_executor_async(
             ),
         }
 
+    active_execution = await load_active_execution_command()
+    active_execution_gate = evaluate_active_execution_gate(
+        target_weights=weights,
+        active_execution=active_execution,
+        config=pipeline_context.get("execution_lifecycle_config") or {},
+    )
+    if active_execution_gate.get("would_defer"):
+        logger.warning(
+            "[executor] active execution gate %s | active=%s classification=%s",
+            active_execution_gate.get("status"),
+            active_execution_gate.get("active_command_id"),
+            active_execution_gate.get("classification"),
+        )
+    if not active_execution_gate.get("allowed"):
+        stale = active_execution_gate.get("stale_active_execution") or {}
+        stale_text = ""
+        if stale.get("is_stale"):
+            stale_text = (
+                "\nStale active execution: "
+                f"{stale.get('reason')} | elapsed={float(stale.get('elapsed_minutes') or 0):.1f}m "
+                f"threshold={stale.get('threshold_minutes')}m | action={stale.get('operator_action')}"
+            )
+        await record_active_execution_wait(
+            command_id=command_id,
+            analysis_id=analysis_id,
+            target_weights=weights,
+            active_execution_gate=active_execution_gate,
+            policy_version=policy_version,
+        )
+        await tool_send_telegram({
+            "text": (
+                f"⏳ Rebalance skipped: active command "
+                f"`{_command_label(active_execution_gate.get('active_command_id') or 'unknown')}` "
+                "still executing\n"
+                f"Open orders: {active_execution_gate.get('open_order_count')}\n"
+                f"Status: {active_execution_gate.get('status')} "
+                f"({active_execution_gate.get('classification')})\n"
+                "Will resume after reconciliation."
+                f"{stale_text}"
+            )
+        })
+        return {
+            "execution_status": "deferred_by_active_execution",
+            "command_id": command_id,
+            "active_execution_gate": active_execution_gate,
+            "policy_version": policy_version,
+            "policy_alignment": policy_alignment,
+            "execution_audit": build_execution_audit_payload(
+                action_status="skipped",
+                proposed_weights=desired_weights,
+                command_id=command_id,
+                rebalance_actions=risk_out.get("rebalance_actions") or [],
+                estimated_cost_pct=risk_out.get("estimated_cost_pct"),
+                reason="active_execution_wait",
+            ),
+        }
+
     command_preflight = await preflight_execution_command(
         command_id=command_id,
         analysis_id=analysis_id,
@@ -273,20 +391,15 @@ async def run_executor_async(
         await tool_send_telegram({"text": msg})
         qc_ack = await wait_for_qc_ack_detail(command_id)
         qc_status = qc_ack.get("qc_status")
-        if qc_status == "accepted":
-            await tool_send_telegram({"text": f"✅ QC accepted `{_command_label(command_id)}`"})
+        if qc_status in QC_OWNERSHIP_STATUSES:
+            await tool_send_telegram({"text": _format_qc_lifecycle_ack_message(command_id, qc_ack)})
         elif qc_status == "rejected":
             reason = qc_ack.get("qc_rejection_reason") or "unknown"
             await tool_send_telegram({
                 "text": f"❌ QC rejected `{_command_label(command_id)}`: {reason}. Positions unchanged."
             })
         else:
-            await tool_send_telegram({
-                "text": (
-                    f"⚠️ QC ACK timeout `{_command_label(command_id)}`\n"
-                    "No QC algorithm confirmation within 30s. Verify positions manually."
-                )
-            })
+            await tool_send_telegram({"text": _format_qc_lifecycle_ack_message(command_id, qc_ack)})
         return {
             "execution_status": "accepted" if qc_status == "accepted" else qc_status,
             "weights_sent": weights,
@@ -297,16 +410,17 @@ async def run_executor_async(
             "qc_ack": qc_ack,
             "policy_version": policy_version,
             "preflight": command_preflight,
+            "active_execution_gate": active_execution_gate,
             "policy_sync": policy_sync,
             "policy_alignment": policy_alignment,
             "execution_audit": build_execution_audit_payload(
-                action_status="accepted" if qc_status == "accepted" else "sent",
+                action_status="accepted" if qc_status in QC_OWNERSHIP_STATUSES else "sent",
                 proposed_weights=desired_weights,
                 sent_weights=weights,
                 command_id=result.get("command_id", command_id),
                 rebalance_actions=risk_out.get("rebalance_actions") or [],
                 estimated_cost_pct=risk_out.get("estimated_cost_pct"),
-                reason=None if qc_status == "accepted" else (qc_ack.get("qc_rejection_reason") or qc_status),
+                reason=None if qc_status in QC_OWNERSHIP_STATUSES else (qc_ack.get("qc_rejection_reason") or qc_status),
             ),
         }
 

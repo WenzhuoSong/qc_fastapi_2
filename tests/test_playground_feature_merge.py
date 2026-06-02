@@ -64,6 +64,7 @@ class PlaygroundFeatureMergeTests(unittest.TestCase):
         contract = build_strategy_feature_contract(
             strategy,
             result.scorable_rows,
+            as_of=date(2026, 5, 28),
         )
         self.assertEqual(contract["verdict"], "ready")
         self.assertEqual(contract["non_authoritative_required_fields"], [])

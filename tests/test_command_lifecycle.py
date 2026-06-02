@@ -52,9 +52,9 @@ class CommandLifecycleTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual([event["event_type"] for event in events], ["filled", "reconciled"])
-        self.assertEqual(events[1]["event_status"], "reconciled")
-        self.assertLessEqual(events[1]["payload"]["max_abs_diff"], 0.01)
+        self.assertEqual([event["event_type"] for event in events], ["orders_submitted", "filled", "reconciled"])
+        self.assertEqual(events[2]["event_status"], "reconciled")
+        self.assertLessEqual(events[2]["payload"]["max_abs_diff"], 0.01)
 
     def test_reconciliation_events_mark_partial_when_qc_reports_open_orders(self):
         events = build_command_reconciliation_events(
@@ -71,8 +71,25 @@ class CommandLifecycleTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(events[0]["event_type"], "partial")
-        self.assertEqual(events[0]["reason"], "qc_reports_open_orders_after_command")
+        self.assertEqual([event["event_type"] for event in events], ["orders_submitted", "partial"])
+        self.assertEqual(events[1]["reason"], "qc_reports_open_orders_after_command")
+
+    def test_open_orders_do_not_emit_terminal_reconciliation_drift(self):
+        events = build_command_reconciliation_events(
+            command_id="cmd_1",
+            command_payload={"sent_weights": {"SPY": 0.2}},
+            qc_response={
+                "status": "accepted",
+                "actual_target_weights": {"SPY": 0.2},
+                "actual_holdings_weights": {"SPY": 0.02},
+                "order_summary": {
+                    "submitted_order_count": 1,
+                    "open_order_count_after": 1,
+                },
+            },
+        )
+
+        self.assertEqual([event["event_type"] for event in events], ["orders_submitted", "partial"])
 
     def test_reconciliation_events_mark_drift_when_holdings_do_not_match(self):
         events = build_command_reconciliation_events(
@@ -108,6 +125,43 @@ class CommandLifecycleTests(unittest.TestCase):
 
         self.assertEqual(events[0]["event_type"], "reconciled")
 
+    def test_reconciliation_events_mark_orders_submitted_from_execution_state(self):
+        events = build_command_reconciliation_events(
+            command_id="cmd_1",
+            command_payload={"sent_weights": {"SPY": 0.2}},
+            qc_response={
+                "status": "accepted",
+                "execution_state": "orders_submitted",
+                "actual_target_weights": {"SPY": 0.2},
+                "order_summary": {
+                    "submitted_order_count": 1,
+                    "filled_order_count": 0,
+                    "open_order_count_after": 1,
+                },
+            },
+        )
+
+        self.assertEqual(events[0]["event_type"], "orders_submitted")
+        self.assertEqual(events[0]["event_status"], "orders_submitted")
+
+    def test_reconciliation_events_mark_failed_no_fill_when_qc_reports_it(self):
+        events = build_command_reconciliation_events(
+            command_id="cmd_1",
+            command_payload={"sent_weights": {"SPY": 0.2}},
+            qc_response={
+                "status": "accepted",
+                "execution_state": "failed_no_fill",
+                "order_summary": {
+                    "submitted_order_count": 0,
+                    "filled_order_count": 0,
+                    "open_order_count_after": 0,
+                },
+            },
+        )
+
+        self.assertEqual([event["event_type"] for event in events], ["failed_no_fill"])
+        self.assertEqual(events[0]["reason"], "qc_reports_command_completed_without_fills")
+
     def test_reconciliation_lag_report_flags_accepted_without_reconciled_event(self):
         report = build_reconciliation_lag_report(
             now=datetime(2026, 5, 28, 12, 45),
@@ -124,7 +178,7 @@ class CommandLifecycleTests(unittest.TestCase):
                     "command_id": "analysis_2",
                     "analysis_id": 2,
                     "command_type": "weight_adjustment",
-                    "qc_status": "accepted",
+                    "qc_status": "partial",
                     "qc_ack_at": datetime(2026, 5, 28, 12, 35),
                 },
                 {

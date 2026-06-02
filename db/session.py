@@ -87,12 +87,20 @@ async def init_db():
             open_order_count INTEGER,
             has_open_orders BOOLEAN,
             is_market_open BOOLEAN,
+            last_command_id VARCHAR(64),
+            active_command_id VARCHAR(64),
+            active_execution_status VARCHAR(32),
+            processed_command_count INTEGER DEFAULT 0,
             holdings_weights JSONB,
             target_weights JSONB,
             raw_snapshot JSONB NOT NULL,
             created_at TIMESTAMP NOT NULL DEFAULT now()
         )
         """,
+        "ALTER TABLE account_state_snapshots ADD COLUMN IF NOT EXISTS last_command_id VARCHAR(64)",
+        "ALTER TABLE account_state_snapshots ADD COLUMN IF NOT EXISTS active_command_id VARCHAR(64)",
+        "ALTER TABLE account_state_snapshots ADD COLUMN IF NOT EXISTS active_execution_status VARCHAR(32)",
+        "ALTER TABLE account_state_snapshots ADD COLUMN IF NOT EXISTS processed_command_count INTEGER DEFAULT 0",
         "CREATE INDEX IF NOT EXISTS idx_account_state_snapshots_qc_snapshot_id ON account_state_snapshots (qc_snapshot_id)",
         "CREATE INDEX IF NOT EXISTS idx_account_state_snapshots_recorded_at ON account_state_snapshots (recorded_at)",
         """

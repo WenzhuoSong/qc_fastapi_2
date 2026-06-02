@@ -94,6 +94,7 @@ from services.auto_pause import (
     default_auto_pause_config,
     load_auto_pause_verdict,
 )
+from services.execution_lifecycle import default_execution_lifecycle_config
 from services.policy_sync_recovery import (
     default_policy_sync_recovery_config,
     run_policy_sync_recovery,
@@ -500,6 +501,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         execution_command_cfg = await get_system_config(db, "execution_command_config")
         account_guard_cfg = await get_system_config(db, "account_state_guard_config")
         auto_pause_cfg    = await get_system_config(db, "auto_pause_config")
+        execution_lifecycle_cfg = await get_system_config(db, "execution_lifecycle_config")
         policy_sync_recovery_cfg = await get_system_config(db, "policy_sync_recovery_config")
         transaction_cost_cfg = await get_system_config(db, "transaction_cost_gate_config")
         evidence_cap_cfg = await get_system_config(db, "evidence_cap_config")
@@ -553,6 +555,9 @@ async def _guard_and_config(trigger: str) -> dict | None:
     account_state_guard_config["expected_policy_version"] = str(policy_snapshot().get("version") or "")
     auto_pause_config = default_auto_pause_config(
         (auto_pause_cfg.value if auto_pause_cfg else {}) or {}
+    )
+    execution_lifecycle_config = default_execution_lifecycle_config(
+        (execution_lifecycle_cfg.value if execution_lifecycle_cfg else {}) or {}
     )
     policy_sync_recovery_config = default_policy_sync_recovery_config(
         (policy_sync_recovery_cfg.value if policy_sync_recovery_cfg else {}) or {}
@@ -609,6 +614,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "execution_command_config": execution_command_config,
         "account_state_guard_config": account_state_guard_config,
         "auto_pause_config": auto_pause_config,
+        "execution_lifecycle_config": execution_lifecycle_config,
         "policy_sync_recovery_config": policy_sync_recovery_config,
         "transaction_cost_gate_config": transaction_cost_gate_config,
         "evidence_cap_config": evidence_cap_config,

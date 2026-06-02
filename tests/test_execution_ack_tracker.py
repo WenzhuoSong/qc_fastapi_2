@@ -27,6 +27,17 @@ class ExecutionAckTrackerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, "rejected")
         mark_timeout.assert_not_awaited()
 
+    async def test_returns_partial_as_observed_qc_ack(self):
+        with (
+            patch("services.execution_ack_tracker.asyncio.sleep", new=AsyncMock()),
+            patch("services.execution_ack_tracker.get_qc_status", new=AsyncMock(return_value="partial")),
+            patch("services.execution_ack_tracker.mark_timeout", new=AsyncMock()) as mark_timeout,
+        ):
+            status = await wait_for_qc_ack("analysis_1", timeout_seconds=2)
+
+        self.assertEqual(status, "partial")
+        mark_timeout.assert_not_awaited()
+
     async def test_marks_timeout_when_no_ack_arrives(self):
         with (
             patch("services.execution_ack_tracker.asyncio.sleep", new=AsyncMock()),
