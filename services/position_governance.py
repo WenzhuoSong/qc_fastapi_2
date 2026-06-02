@@ -15,6 +15,7 @@ from services.advisory_quality import build_advisory_quality_diagnostics
 from services.execution_policy import get_policy
 from services.group_contract import calc_primary_group_exposure, get_primary_group
 from services.thesis_scheduler import build_thesis_review_queue
+from services.weight_ops import normalize_cash_first
 
 
 @dataclass
@@ -329,7 +330,7 @@ def apply_position_governance(
             cfg=cfg,
         )
 
-    adjusted = _normalize_weights(work)
+    adjusted, _ = normalize_cash_first(work)
     manual_action_hints = _manual_action_hints(
         decisions=decisions,
         require_human=require_human,
@@ -1472,30 +1473,6 @@ def _clean_weights(weights: dict[str, Any] | None) -> dict[str, float]:
             out[key] = max(float(value or 0.0), 0.0)
         except (TypeError, ValueError):
             out[key] = 0.0
-    return out
-
-
-def _normalize_weights(weights: dict[str, Any] | None) -> dict[str, float]:
-    clean = _clean_weights(weights)
-    non_cash = {
-        ticker: weight
-        for ticker, weight in clean.items()
-        if ticker != "CASH" and weight > 1e-9
-    }
-    non_cash_total = sum(non_cash.values())
-    cash = max(float(clean.get("CASH", 0.0) or 0.0), 0.0)
-    total = non_cash_total + cash
-    if total <= 0:
-        return {"CASH": 1.0}
-    if non_cash_total > 1.0 + 1e-9:
-        scale = 1.0 / non_cash_total
-        non_cash = {ticker: weight * scale for ticker, weight in non_cash.items()}
-    out = {
-        ticker: round(weight, 6)
-        for ticker, weight in non_cash.items()
-        if weight > 1e-9
-    }
-    out["CASH"] = round(max(1.0 - sum(out.values()), 0.0), 6)
     return out
 
 

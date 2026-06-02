@@ -21,6 +21,7 @@ from db.models import HoldingsFactor, QCSnapshot, AlertLog
 from db.queries import upsert_alert
 from config import get_settings
 from services.mutation_ledger import MutationLedger
+from services.weight_ops import normalize_cash_first
 
 logger = logging.getLogger("qc_fastapi_2.position_manager")
 settings = get_settings()
@@ -188,7 +189,7 @@ class PositionManager:
                         reason="turnover scaled toward current portfolio",
                     )
 
-        adjusted = _normalize_weights(target)
+        adjusted, _ = normalize_cash_first(target)
         final_deltas = _weight_deltas(adjusted, current)
         new_buys = [
             t for t, d in final_deltas.items()
@@ -549,26 +550,6 @@ def _clean_ticker_set(values: Any) -> set[str]:
         for value in raw_values
         if str(value or "").strip()
     }
-
-
-def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
-    cleaned = _clean_weights(weights)
-    non_cash = {
-        ticker: weight
-        for ticker, weight in cleaned.items()
-        if ticker != "CASH" and weight > 0
-    }
-    non_cash_total = sum(non_cash.values())
-    cash = max(float(cleaned.get("CASH", 0.0) or 0.0), 0.0)
-    total = non_cash_total + cash
-    if total <= 0:
-        return {"CASH": 1.0}
-    if non_cash_total > 1.0 + 1e-9:
-        scale = 1.0 / non_cash_total
-        non_cash = {ticker: weight * scale for ticker, weight in non_cash.items()}
-    out = {ticker: round(weight, 4) for ticker, weight in non_cash.items() if weight > 0}
-    out["CASH"] = round(max(1.0 - sum(out.values()), 0.0), 4)
-    return out
 
 
 def _weight_deltas(target: dict[str, float], current: dict[str, float]) -> dict[str, float]:

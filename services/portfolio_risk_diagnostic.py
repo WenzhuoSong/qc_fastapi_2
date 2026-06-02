@@ -10,6 +10,7 @@ from math import ceil
 from typing import Any
 
 from services.market_feature_store import get_market_daily_feature_rows, model_to_feature_dict
+from services.weight_ops import normalize_cash_first
 
 
 DEFAULT_CONFIDENCE_LEVEL = 0.95
@@ -163,8 +164,8 @@ def evaluate_portfolio_var_cvar(
     min_samples: int = DEFAULT_MIN_SAMPLES,
     min_coverage: float = DEFAULT_MIN_COVERAGE,
 ) -> dict[str, Any]:
-    target = _normalize_cash_first(_clean_weights(target_weights))
-    current = _normalize_cash_first(_clean_weights(current_weights or {}))
+    target, _ = normalize_cash_first(_clean_weights(target_weights))
+    current, _ = normalize_cash_first(_clean_weights(current_weights or {}))
     rows = historical_return_rows or []
 
     target_historical = _historical_var_cvar(
@@ -374,27 +375,6 @@ def _max_scenario_loss(rows: list[dict[str, Any]]) -> float | None:
     if not rows:
         return None
     return round(max(float(row.get("estimated_loss") or 0.0) for row in rows), 6)
-
-
-def _normalize_cash_first(weights: dict[str, float]) -> dict[str, float]:
-    clean = _clean_weights(weights)
-    equity = sum(value for ticker, value in clean.items() if ticker != "CASH")
-    if equity >= 1.0:
-        scale = 1.0 / equity if equity > 0 else 0.0
-        out = {
-            ticker: round(value * scale, 6)
-            for ticker, value in clean.items()
-            if ticker != "CASH" and value > 1e-12
-        }
-        out["CASH"] = round(max(1.0 - sum(out.values()), 0.0), 6)
-        return out
-    out = {
-        ticker: round(value, 6)
-        for ticker, value in clean.items()
-        if ticker != "CASH" and value > 1e-12
-    }
-    out["CASH"] = round(max(1.0 - sum(out.values()), 0.0), 6)
-    return out
 
 
 def _clean_weights(raw: dict[str, Any] | None) -> dict[str, float]:

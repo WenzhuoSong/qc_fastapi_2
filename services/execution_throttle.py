@@ -10,6 +10,7 @@ from typing import Any
 
 from services.execution_preflight import command_weight_delta_metrics
 from services.mutation_ledger import MutationLedger
+from services.weight_ops import normalize_cash_first
 
 
 EXECUTION_THROTTLE_CONTRACT_VERSION = "v1"
@@ -32,8 +33,8 @@ def apply_execution_throttle(
     ``max_sell_delta`` as a hard safety limit.
     """
     cfg = _throttle_config(config)
-    desired = _normalize_cash_first(_clean_weights(target_weights))
-    current = _normalize_cash_first(_clean_weights(current_weights or {}))
+    desired, _ = normalize_cash_first(_clean_weights(target_weights))
+    current, _ = normalize_cash_first(_clean_weights(current_weights or {}))
     metrics_before = command_weight_delta_metrics(desired, current)
 
     if not cfg["enabled"]:
@@ -87,7 +88,7 @@ def apply_execution_throttle(
             deferred_delta[ticker] = round(deferred, 6)
 
     staged["CASH"] = max(1.0 - sum(staged.values()), 0.0)
-    staged = _normalize_cash_first(staged)
+    staged, _ = normalize_cash_first(staged)
     metrics_after = command_weight_delta_metrics(staged, current)
     mutation_ledger = _mutation_ledger_for_execution_throttle(
         desired=desired,
@@ -198,29 +199,6 @@ def _clean_weights(weights: dict[str, Any]) -> dict[str, float]:
             continue
         if parsed > 1e-12 or key == "CASH":
             out[key] = parsed
-    return out
-
-
-def _normalize_cash_first(weights: dict[str, float]) -> dict[str, float]:
-    clean = dict(weights or {})
-    equity = {
-        ticker: max(float(weight or 0.0), 0.0)
-        for ticker, weight in clean.items()
-        if ticker != "CASH" and float(weight or 0.0) > 1e-12
-    }
-    equity_sum = sum(equity.values())
-    cash = max(float(clean.get("CASH", 0.0) or 0.0), 0.0)
-    total = equity_sum + cash
-    if total <= 0:
-        return {"CASH": 1.0}
-    if total > 1.0 + 1e-9:
-        return {
-            ticker: round(weight / total, 6)
-            for ticker, weight in sorted({**equity, "CASH": cash}.items())
-            if weight > 1e-12 or ticker == "CASH"
-        }
-    out = {ticker: round(weight, 6) for ticker, weight in sorted(equity.items())}
-    out["CASH"] = round(max(1.0 - sum(out.values()), 0.0), 6)
     return out
 
 

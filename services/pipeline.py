@@ -372,33 +372,9 @@ def apply_regime_constraints(
             f"CASH {working.get('CASH', 0.0):.2%}→{min_cash:.2%} (regime floor)"
         )
 
-    working = _normalize_regime_constraint_cash(working)
+    working, _ = normalize_cash_first(working)
 
     return working, violations
-
-
-def _normalize_regime_constraint_cash(weights: dict[str, float]) -> dict[str, float]:
-    """Preserve tighten-only intent by assigning rounding residue to CASH."""
-    cleaned = {
-        str(ticker): round(max(float(weight or 0.0), 0.0), 6)
-        for ticker, weight in (weights or {}).items()
-    }
-    if not cleaned:
-        return cleaned
-    total = round(sum(cleaned.values()), 6)
-    diff = round(1.0 - total, 6)
-    if abs(diff) <= 1e-9:
-        return cleaned
-    cash_after = round(float(cleaned.get("CASH", 0.0) or 0.0) + diff, 6)
-    if cash_after >= -1e-9:
-        cleaned["CASH"] = max(cash_after, 0.0)
-        return cleaned
-    # This should not occur for tighten-only regime constraints. Fall back to
-    # proportional normalization and let final validation see any drift.
-    positive_total = sum(cleaned.values())
-    if positive_total <= 0:
-        return cleaned
-    return {ticker: round(weight / positive_total, 6) for ticker, weight in cleaned.items()}
 
 
 # ─────────────────────────────── Stage 4d: Disagreement Map ───────────────────────────────
