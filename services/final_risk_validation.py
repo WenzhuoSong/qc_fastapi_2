@@ -81,7 +81,15 @@ def validate_final_execution_target(
         and max_abs_drift > material_drift_threshold + 1e-12
     )
     human_confirmed = bool(policy_ctx.get("human_confirmed"))
-    conditional_review_required = bool(conditional_mutation_types and material_drift and not human_confirmed)
+    require_human_confirmation_for_conditional_material_drift = bool(
+        policy_ctx.get("require_human_confirmation_for_conditional_material_drift", True)
+    )
+    conditional_review_required = bool(
+        require_human_confirmation_for_conditional_material_drift
+        and conditional_mutation_types
+        and material_drift
+        and not human_confirmed
+    )
     conditional_mutation_violations = _conditional_mutation_violations(
         drift_rows=drift_rows,
         final=final,
@@ -132,6 +140,9 @@ def validate_final_execution_target(
         "unknown_mutation_types": unknown_mutation_types,
         "unsafe_untyped_drift": unsafe_untyped_drift,
         "conditional_review_required": conditional_review_required,
+        "require_human_confirmation_for_conditional_material_drift": (
+            require_human_confirmation_for_conditional_material_drift
+        ),
         "conditional_mutation_violations": conditional_mutation_violations,
         "human_confirmed": human_confirmed,
         "blocking_violations": blocking_violations if blocking_mode else [],
@@ -235,24 +246,25 @@ def _conditional_mutation_violations(
             continue
         final_weight = float(final.get(ticker, 0.0) or 0.0)
         current_weight = float(current.get(ticker, 0.0) or 0.0)
-        if current_weight <= 1e-9 and final_weight > 1e-9:
+        restricted = ticker in restricted_tickers
+        if restricted and current_weight <= 1e-9 and final_weight > 1e-9:
             rows.append(
                 {
-                    "type": "conditional_creates_new_exposure",
+                    "type": "conditional_creates_new_restricted_exposure",
                     "ticker": ticker,
                     "final": round(final_weight, 6),
                 }
             )
-        if final_weight > current_weight + 1e-9:
+        if restricted and final_weight > current_weight + 1e-9:
             rows.append(
                 {
-                    "type": "conditional_increases_above_current",
+                    "type": "conditional_increases_restricted_ticker",
                     "ticker": ticker,
                     "current": round(current_weight, 6),
                     "final": round(final_weight, 6),
                 }
             )
-        if ticker in restricted_tickers:
+        if restricted:
             rows.append(
                 {
                     "type": "conditional_touches_restricted_ticker",

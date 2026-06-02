@@ -2146,8 +2146,19 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             pipeline_context=pipeline_context,
         )
         if should_notify:
-            await tool_send_telegram({"text": remove_command_hints(comm_out["text"])})
-            logger.info("Risk rejected — notified and stopping")
+            notify_result = await tool_send_telegram({"text": remove_command_hints(comm_out["text"])})
+            if bool(notify_result.get("sent")):
+                await _mark_rejected_pipeline_notified(
+                    risk_out=risk_out,
+                    synthesizer_out=synthesizer_out,
+                    pipeline_context=pipeline_context,
+                )
+                logger.info("Risk rejected — notified and stopping")
+            else:
+                logger.warning(
+                    "Risk rejected — Telegram notification failed and cooldown was not recorded: %s",
+                    notify_result.get("error"),
+                )
         else:
             logger.info("Risk rejected — duplicate notification suppressed: %s", suppress_reason)
         pipeline_status = "rejected_by_risk"
@@ -2230,12 +2241,24 @@ async def _should_notify_rejected_pipeline(
             if age < timedelta(minutes=cooldown_minutes):
                 return False, f"same rejected proposal fingerprint within {cooldown_minutes}m"
 
+    return True, None
+
+
+async def _mark_rejected_pipeline_notified(
+    *,
+    risk_out: dict,
+    synthesizer_out: dict,
+    pipeline_context: dict,
+    cooldown_minutes: int = REJECTED_NOTIFICATION_COOLDOWN_MINUTES,
+) -> None:
+    fingerprint = _rejected_pipeline_fingerprint(risk_out, synthesizer_out, pipeline_context)
+    now = datetime.utcnow()
+    async with AsyncSessionLocal() as db:
         await upsert_system_config(db, REJECTED_NOTIFICATION_STATE_KEY, {
             "fingerprint": fingerprint,
             "notified_at": now.isoformat(),
             "cooldown_minutes": cooldown_minutes,
         }, "pipeline")
-    return True, None
 
 
 def _rejected_pipeline_fingerprint(
@@ -2509,6 +2532,9 @@ async def _apply_final_risk_validation(
     policy_context = {
         "post_risk_mutation_types": risk_out.get("post_risk_mutation_types") or [],
         "material_drift_threshold": final_validation_config.get("material_drift_threshold"),
+        "require_human_confirmation_for_conditional_material_drift": bool(
+            final_validation_config.get("require_human_confirmation_for_conditional_material_drift", True)
+        ),
         "human_confirmed": bool(risk_out.get("human_confirmed_final_validation")),
         "hard_risk_tickers": [
             str(ticker or "").upper().strip()
@@ -2753,12 +2779,17 @@ def _scorecard_restricted_tickers(position_governance: dict | None) -> list[str]
             continue
         reasons = {str(item or "") for item in row.get("reason_codes") or []}
         permission = str(row.get("action_permission") or "")
-        if permission in {"hold_or_trim", "reduce_risk_only", "defensive_only", "cash_only", "trim_or_exit"}:
+        scorecard_reasons = {reason for reason in reasons if reason.startswith("scorecard_")}
+        scorecard_only_human_required = scorecard_reasons == {"scorecard_human_required"}
+        if (
+            permission in {"hold_or_trim", "reduce_risk_only", "defensive_only", "cash_only", "trim_or_exit"}
+            and not scorecard_only_human_required
+        ):
             ticker = str(row.get("ticker") or "").upper().strip()
             if ticker and ticker not in tickers:
                 tickers.append(ticker)
             continue
-        if any(reason.startswith("scorecard_") for reason in reasons):
+        if any(reason.startswith("scorecard_") and reason != "scorecard_human_required" for reason in reasons):
             ticker = str(row.get("ticker") or "").upper().strip()
             if ticker and ticker not in tickers:
                 tickers.append(ticker)

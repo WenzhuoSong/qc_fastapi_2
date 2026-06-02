@@ -136,6 +136,16 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn("record_cancel_orders_requested", text)
         self.assertIn("Wait for QC heartbeat reconciliation", text)
 
+    def test_rejected_pipeline_notification_cooldown_requires_successful_send(self):
+        text = Path("services/pipeline.py").read_text()
+
+        self.assertIn("notify_result = await tool_send_telegram", text)
+        self.assertIn("if bool(notify_result.get(\"sent\"))", text)
+        self.assertIn("await _mark_rejected_pipeline_notified", text)
+        notify_pos = text.index("notify_result = await tool_send_telegram")
+        mark_pos = text.index("await _mark_rejected_pipeline_notified")
+        self.assertLess(notify_pos, mark_pos)
+
     def test_executor_active_execution_block_surfaces_stale_details(self):
         text = Path("agents/executor.py").read_text()
 

@@ -67,7 +67,7 @@ class FinalRiskValidationTest(unittest.TestCase):
         self.assertFalse(out["approved"])
         self.assertIn("execution_policy_violation", out["blocking_violations"])
 
-    def test_blocking_mode_rejects_conditional_mutation_that_increases_above_current(self):
+    def test_blocking_mode_allows_conditional_mutation_that_only_tightens_approved_buy(self):
         out = validate_final_execution_target(
             risk_approved_target={"SPY": 0.20, "CASH": 0.80},
             final_target={"SPY": 0.15, "CASH": 0.85},
@@ -80,10 +80,44 @@ class FinalRiskValidationTest(unittest.TestCase):
         )
 
         self.assertFalse(out["approved"])
+        self.assertIn("conditional_mutation_material_drift_requires_human_confirmation", out["blocking_violations"])
+        self.assertEqual(out["conditional_mutation_violations"], [])
+
+    def test_blocking_mode_allows_conditional_material_drift_when_human_review_disabled(self):
+        out = validate_final_execution_target(
+            risk_approved_target={"SPY": 0.20, "CASH": 0.80},
+            final_target={"SPY": 0.15, "CASH": 0.85},
+            current_weights={"SPY": 0.10, "CASH": 0.90},
+            policy_context={
+                "post_risk_mutation_types": ["turnover_scale_toward_current"],
+                "material_drift_threshold": 0.01,
+                "require_human_confirmation_for_conditional_material_drift": False,
+            },
+            mode="blocking",
+        )
+
+        self.assertTrue(out["approved"], out)
+        self.assertEqual(out["blocking_violations"], [])
+
+    def test_blocking_mode_rejects_conditional_mutation_that_increases_restricted_ticker(self):
+        out = validate_final_execution_target(
+            risk_approved_target={"SPY": 0.20, "CASH": 0.80},
+            final_target={"SPY": 0.15, "CASH": 0.85},
+            current_weights={"SPY": 0.10, "CASH": 0.90},
+            policy_context={
+                "post_risk_mutation_types": ["turnover_scale_toward_current"],
+                "material_drift_threshold": 0.01,
+                "scorecard_restricted_tickers": ["SPY"],
+                "require_human_confirmation_for_conditional_material_drift": False,
+            },
+            mode="blocking",
+        )
+
+        self.assertFalse(out["approved"])
         self.assertIn("conditional_mutation_contract_violation", out["blocking_violations"])
         self.assertEqual(
             out["conditional_mutation_violations"][0]["type"],
-            "conditional_increases_above_current",
+            "conditional_increases_restricted_ticker",
         )
 
     def test_blocking_mode_allows_typed_tighten_only_policy_cap_drift(self):

@@ -206,6 +206,46 @@ class RiskManagerTargetBuilderGatedTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["style_enforcement"]["mode"], "validation_only")
         self.assertTrue(out["approved"])
 
+    async def test_full_auto_scorecard_human_required_is_diagnostic_only(self):
+        out = await run_risk_manager_async(
+            pipeline_context={
+                "auth_mode": "FULL_AUTO",
+                "risk_params": {
+                    "target_builder_enabled": True,
+                    "max_single_position": 1.0,
+                    "max_broad_market": 1.0,
+                    "min_cash_pct": 0.0,
+                    "max_trade_cost_pct": 1.0,
+                },
+                "target_builder_gated": {
+                    "target_weights": {"SPY": 0.20, "CASH": 0.80},
+                    "diagnostics": {"mode": "gated"},
+                },
+                "market_scorecard": {
+                    "investment_permission": "small_overweight_only",
+                    "require_human_confirmation": True,
+                    "max_adjustment_from_base": 0.03,
+                },
+                "decision_style": {},
+            },
+            brief={
+                "current_weights": {"SPY": 0.18, "CASH": 0.82},
+                "holdings": [{"ticker": "SPY", "hist_vol_20d": 0.10}],
+                "portfolio": {"current_drawdown_pct": 0.0},
+            },
+            quant_baseline={"base_weights": {"SPY": 0.18, "CASH": 0.82}},
+            researcher_out={
+                "market_judgment": {"regime": "neutral", "uncertainty_flag": False},
+            },
+        )
+
+        self.assertTrue(out["approved"])
+        self.assertTrue(out["quantitative_checks"]["human_confirmation_ok"]["pass"])
+        self.assertNotIn(
+            "Market scorecard requires human confirmation; FULL_AUTO execution blocked",
+            out["rejection_reasons"],
+        )
+
     async def test_target_builder_gated_rejects_new_hard_risk_exposure(self):
         out = await run_risk_manager_async(
             pipeline_context={
