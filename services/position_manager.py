@@ -422,11 +422,20 @@ def _clean_ticker_set(values: Any) -> set[str]:
 
 def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
     cleaned = _clean_weights(weights)
-    total = sum(cleaned.values())
+    non_cash = {
+        ticker: weight
+        for ticker, weight in cleaned.items()
+        if ticker != "CASH" and weight > 0
+    }
+    non_cash_total = sum(non_cash.values())
+    cash = max(float(cleaned.get("CASH", 0.0) or 0.0), 0.0)
+    total = non_cash_total + cash
     if total <= 0:
         return {"CASH": 1.0}
-    scaled = {ticker: weight / total for ticker, weight in cleaned.items()}
-    out = {ticker: round(weight, 4) for ticker, weight in scaled.items() if ticker != "CASH" and weight > 0}
+    if non_cash_total > 1.0 + 1e-9:
+        scale = 1.0 / non_cash_total
+        non_cash = {ticker: weight * scale for ticker, weight in non_cash.items()}
+    out = {ticker: round(weight, 4) for ticker, weight in non_cash.items() if weight > 0}
     out["CASH"] = round(max(1.0 - sum(out.values()), 0.0), 4)
     return out
 

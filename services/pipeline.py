@@ -177,7 +177,7 @@ def enforce_pm_constraints(
     1. Each ticker's deviation from base_weights must not exceed max_delta (default 5%)
     2. CASH handled separately: only allowed to increase, not decrease (conservative principle)
     3. New tickers (not in base): weight capped at hard_max_delta (10%)
-    4. Renormalize after clip to ensure sum = 1.0
+    4. Fill remaining weight with CASH after clip; do not amplify risk weights
     5. Return clipped weights + clip log list
 
     Returns:
@@ -219,16 +219,26 @@ def enforce_pm_constraints(
                 )
             clipped[ticker] = capped
 
-    total = sum(clipped.values())
+    non_cash = {
+        ticker: weight
+        for ticker, weight in clipped.items()
+        if ticker != "CASH" and weight > 1e-9
+    }
+    non_cash_total = sum(non_cash.values())
+    cash = max(float(clipped.get("CASH", 0.0) or 0.0), 0.0)
+    total = non_cash_total + cash
     if total <= 0:
         raise ValueError("enforce_pm_constraints: post-clip total weight is 0, data anomaly")
 
-    normalized = {k: round(v / total, 6) for k, v in clipped.items()}
-
-    diff = 1.0 - sum(normalized.values())
-    if abs(diff) > 1e-9:
-        largest = max(normalized, key=lambda k: normalized[k] if k != "CASH" else -1)
-        normalized[largest] = round(normalized[largest] + diff, 6)
+    if non_cash_total > 1.0 + 1e-9:
+        scale = 1.0 / non_cash_total
+        non_cash = {ticker: weight * scale for ticker, weight in non_cash.items()}
+    normalized = {
+        ticker: round(weight, 6)
+        for ticker, weight in non_cash.items()
+        if weight > 1e-9
+    }
+    normalized["CASH"] = round(max(1.0 - sum(normalized.values()), 0.0), 6)
 
     return normalized, clip_log
 
@@ -303,16 +313,26 @@ def enforce_pm_constraints_v2(
                 )
             clipped[ticker] = capped
 
-    total = sum(clipped.values())
+    non_cash = {
+        ticker: weight
+        for ticker, weight in clipped.items()
+        if ticker != "CASH" and weight > 1e-9
+    }
+    non_cash_total = sum(non_cash.values())
+    cash = max(float(clipped.get("CASH", 0.0) or 0.0), 0.0)
+    total = non_cash_total + cash
     if total <= 0:
         raise ValueError("enforce_pm_constraints_v2: post-clip total weight is 0")
 
-    normalized = {k: round(v / total, 6) for k, v in clipped.items()}
-
-    diff = 1.0 - sum(normalized.values())
-    if abs(diff) > 1e-9:
-        largest = max(normalized, key=lambda k: normalized[k] if k != "CASH" else -1)
-        normalized[largest] = round(normalized[largest] + diff, 6)
+    if non_cash_total > 1.0 + 1e-9:
+        scale = 1.0 / non_cash_total
+        non_cash = {ticker: weight * scale for ticker, weight in non_cash.items()}
+    normalized = {
+        ticker: round(weight, 6)
+        for ticker, weight in non_cash.items()
+        if weight > 1e-9
+    }
+    normalized["CASH"] = round(max(1.0 - sum(normalized.values()), 0.0), 6)
 
     return normalized, clip_log
 

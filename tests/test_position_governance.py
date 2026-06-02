@@ -4,6 +4,19 @@ from services.position_governance import apply_position_governance
 
 
 class PositionGovernanceTest(unittest.TestCase):
+    def test_normalization_missing_cash_does_not_amplify_risk_weight(self):
+        out = apply_position_governance(
+            target_weights={"QQQ": 0.20},
+            current_weights={"QQQ": 0.20, "CASH": 0.80},
+            holdings_meta=[{"ticker": "QQQ", "unrealized_pnl_pct": 0.0}],
+            strategy_evidence={"strategy_results": []},
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            news_evidence={},
+        )
+
+        self.assertAlmostEqual(out.adjusted_weights["QQQ"], 0.20, places=6)
+        self.assertAlmostEqual(out.adjusted_weights["CASH"], 0.80, places=6)
+
     def test_position_explanations_sort_by_current_weight_desc(self):
         out = apply_position_governance(
             target_weights={"AAA": 0.02, "BBB": 0.18, "CCC": 0.08, "CASH": 0.72},

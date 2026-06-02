@@ -138,6 +138,21 @@ class PositionManagerTest(unittest.TestCase):
         self.assertFalse(any(v.startswith("min_hold_days:XLE") for v in out.violations))
         self.assertNotIn("defer_sell_due_to_min_hold_days", out.mutation_types)
 
+    def test_normalization_missing_cash_does_not_amplify_risk_weight(self):
+        out = apply_position_constraints(
+            target_weights={"AAA": 0.20},
+            current_holdings={"CASH": 1.0},
+            config={
+                "max_new_buys_per_cycle": 10,
+                "max_single_trade_pct": 1.0,
+                "max_turnover_per_cycle": 1.0,
+                "max_daily_trades": 10,
+            },
+        )
+
+        self.assertAlmostEqual(out.adjusted_weights["AAA"], 0.20, places=4)
+        self.assertAlmostEqual(out.adjusted_weights["CASH"], 0.80, places=4)
+
     def test_turnover_cap_scales_toward_current_weights(self):
         out = apply_position_constraints(
             target_weights={"AAA": 0.60, "CASH": 0.40},
