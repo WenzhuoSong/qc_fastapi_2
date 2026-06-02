@@ -3,6 +3,21 @@ from pathlib import Path
 
 
 class DashboardTests(unittest.TestCase):
+    def test_dashboard_has_operator_overview_charts_and_collapsible_sections(self):
+        source = Path("dashboard/app.py").read_text()
+
+        self.assertIn("Operator Overview", source)
+        self.assertIn("quick-nav", source)
+        self.assertIn("visual-grid", source)
+        self.assertIn("def _render_bar_chart", source)
+        self.assertIn("def _render_line_chart", source)
+        self.assertIn("def _render_command_center", source)
+        self.assertIn("def _render_priority_queue", source)
+        self.assertIn("details.detail-panel", source)
+        self.assertIn("Freshness Age (hours)", source)
+        self.assertIn("Residual Alpha Candidate", source)
+        self.assertIn("Recent Command Status", source)
+
     def test_displayed_dashboard_content_is_not_truncated(self):
         source = Path("dashboard/app.py").read_text()
         governance_start = source.index("def _compact_governance")

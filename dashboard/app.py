@@ -2622,6 +2622,27 @@ def render_dashboard(summary: dict[str, Any]) -> str:
     latest = summary["latest_analysis"]
     replay = summary["replay"]
     pc_readiness = summary.get("portfolio_construction_readiness") or {}
+    sections = [
+        ("execution", "Execution Control", _render_execution_control(summary.get("execution_control") or {}), True),
+        ("latest", "Latest Decision", _render_latest_analysis(latest), True),
+        ("pc", "Portfolio Construction Objective", _render_portfolio_construction_objective(summary.get("portfolio_construction_objective") or {}), False),
+        ("evidence", "ETF / Strategy Evidence", _render_strategy_evidence(summary.get("strategy_evidence") or {}), False),
+        ("risk", "Portfolio Risk Diagnostic", _render_portfolio_risk_diagnostic(summary.get("portfolio_risk_diagnostic") or {}), False),
+        ("alpha-review", "Alpha Decision Review Surface", _render_alpha_decision_review_surface(summary.get("alpha_decision_review_surface") or {}), False),
+        ("alpha-policy", "Alpha Decision Policy", _render_alpha_decision_policy(summary.get("alpha_decision_policy") or {}), False),
+        ("alpha-profiles", "Alpha Decision Profiles", _render_alpha_decision_profiles(summary.get("alpha_decision_profiles") or {}), False),
+        ("conviction", "Live Signal Conviction", _render_live_signal_conviction(summary.get("live_signal_conviction") or {}), False),
+        ("attribution", "Performance Attribution", _render_performance_attribution(summary.get("performance_attribution") or {}), False),
+        ("alpha-trend", "Alpha Validation Trend", _render_alpha_validation_trend(summary.get("alpha_validation_trend") or {}), False),
+        ("regime-gap", "Strategy Family / Regime Gap Analysis", _render_strategy_regime_gap_analysis(summary.get("strategy_regime_gap_analysis") or {}), False),
+        ("promotion", "Promotion / Degradation Recommendations", _render_strategy_promotion_recommendations(summary.get("strategy_promotion_recommendations") or {}), False),
+        ("readiness", "Portfolio Construction Readiness", _render_kv(pc_readiness), False),
+        ("replay", "Replay Diagnostics", _render_replay(replay), False),
+        ("data-quality", "Data Quality Audit Trend", _render_data_quality_audit(summary.get("data_quality_audit") or {}), False),
+        ("cron", "Cron Runs", _render_crons(summary.get("cron_runs") or []), False),
+        ("execution-raw", "Execution", _render_kv(summary.get("execution") or {}), False),
+    ]
+    section_html = "\n".join(_render_dashboard_section(section_id, title, content, open_by_default=opened) for section_id, title, content, opened in sections)
     html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -2638,112 +2659,294 @@ def render_dashboard(summary: dict[str, Any]) -> str:
     </div>
     <span class="status {escape(str(ops.get("overall", "unknown")))}">{escape(str(ops.get("overall", "unknown")))}</span>
   </header>
-  <main>
-    <section>
-      <h2>Operational Health</h2>
+  <nav class="quick-nav" aria-label="Dashboard sections">
+    <a href="#overview">Overview</a>
+    <a href="#execution">Execution</a>
+    <a href="#latest">Decision</a>
+    <a href="#pc">Portfolio Construction</a>
+    <a href="#evidence">Evidence</a>
+    <a href="#alpha-review">Alpha</a>
+    <a href="#data-quality">Data</a>
+  </nav>
+  <main class="dashboard-shell">
+    <section id="overview" class="overview-panel">
+      <div class="section-heading">
+        <h2>Operator Overview</h2>
+        <p>Focused on blockers, execution state, data freshness, and alpha evidence quality.</p>
+      </div>
+      {_render_command_center(summary)}
+      {_render_priority_queue(summary)}
+      {_render_visual_monitoring(summary)}
+    </section>
+
+    <section id="operational-health" class="panel">
+      <div class="section-heading">
+        <h2>Operational Health</h2>
+        <p>Freshness checks and degraded research inputs.</p>
+      </div>
       <div class="grid checks">{_render_checks(ops.get("checks") or {})}</div>
       {_render_list("Execution blockers", ops.get("execution_blockers") or [])}
       {_render_list("Research degradations", ops.get("research_degradations") or [])}
     </section>
 
-    <section>
-      <h2>Latest Decision</h2>
-      {_render_latest_analysis(latest)}
-    </section>
-
-    <section>
-      <h2>Portfolio Construction Objective</h2>
-      {_render_portfolio_construction_objective(summary.get("portfolio_construction_objective") or {})}
-    </section>
-
-    <section>
-      <h2>ETF / Strategy Evidence</h2>
-      {_render_strategy_evidence(summary.get("strategy_evidence") or {})}
-    </section>
-
-    <section>
-      <h2>Evidence Cap Calibration</h2>
+    <section id="evidence-cap" class="panel">
+      <div class="section-heading">
+        <h2>Evidence Cap Calibration</h2>
+        <p>Readiness and calibration state before evidence caps become allocation-affecting.</p>
+      </div>
       {_render_evidence_cap_calibration(summary.get("evidence_cap_calibration") or {})}
     </section>
 
-    <section>
-      <h2>Live Signal Conviction</h2>
-      {_render_live_signal_conviction(summary.get("live_signal_conviction") or {})}
-    </section>
-
-    <section>
-      <h2>Performance Attribution</h2>
-      {_render_performance_attribution(summary.get("performance_attribution") or {})}
-    </section>
-
-    <section>
-      <h2>Portfolio Risk Diagnostic</h2>
-      {_render_portfolio_risk_diagnostic(summary.get("portfolio_risk_diagnostic") or {})}
-    </section>
-
-    <section>
-      <h2>Alpha Validation Trend</h2>
-      {_render_alpha_validation_trend(summary.get("alpha_validation_trend") or {})}
-    </section>
-
-    <section>
-      <h2>Alpha Decision Policy</h2>
-      {_render_alpha_decision_policy(summary.get("alpha_decision_policy") or {})}
-    </section>
-
-    <section>
-      <h2>Alpha Decision Review Surface</h2>
-      {_render_alpha_decision_review_surface(summary.get("alpha_decision_review_surface") or {})}
-    </section>
-
-    <section>
-      <h2>Alpha Decision Profiles</h2>
-      {_render_alpha_decision_profiles(summary.get("alpha_decision_profiles") or {})}
-    </section>
-
-    <section>
-      <h2>Strategy Family / Regime Gap Analysis</h2>
-      {_render_strategy_regime_gap_analysis(summary.get("strategy_regime_gap_analysis") or {})}
-    </section>
-
-    <section>
-      <h2>Promotion / Degradation Recommendations</h2>
-      {_render_strategy_promotion_recommendations(summary.get("strategy_promotion_recommendations") or {})}
-    </section>
-
-    <section>
-      <h2>Portfolio Construction Readiness</h2>
-      {_render_kv(pc_readiness)}
-    </section>
-
-    <section>
-      <h2>Replay Diagnostics</h2>
-      {_render_replay(replay)}
-    </section>
-
-    <section>
-      <h2>Data Quality Audit Trend</h2>
-      {_render_data_quality_audit(summary.get("data_quality_audit") or {})}
-    </section>
-
-    <section>
-      <h2>Execution Control</h2>
-      {_render_execution_control(summary.get("execution_control") or {})}
-    </section>
-
-    <section>
-      <h2>Cron Runs</h2>
-      {_render_crons(summary.get("cron_runs") or [])}
-    </section>
-
-    <section>
-      <h2>Execution</h2>
-      {_render_kv(summary.get("execution") or {})}
-    </section>
+    {section_html}
   </main>
 </body>
 </html>"""
     return html
+
+
+def _render_dashboard_section(section_id: str, title: str, content: str, *, open_by_default: bool = False) -> str:
+    open_attr = " open" if open_by_default else ""
+    return f"""
+      <details id="{escape(section_id)}" class="panel detail-panel"{open_attr}>
+        <summary><h2>{escape(title)}</h2><span>Open details</span></summary>
+        <div class="detail-body">{content}</div>
+      </details>
+    """
+
+
+def _render_command_center(summary: dict[str, Any]) -> str:
+    ops = summary.get("ops") or {}
+    latest = summary.get("latest_analysis") or {}
+    control = summary.get("execution_control") or {}
+    snapshot = control.get("latest_account_snapshot") or {}
+    active = control.get("active_execution") or {}
+    guard = control.get("account_state_guard") or {}
+    auto_pause = control.get("auto_pause") or {}
+    scorecard = latest.get("scorecard") or {}
+    pc = summary.get("portfolio_construction_objective") or {}
+    alpha_policy = summary.get("alpha_decision_policy") or {}
+    risk = summary.get("portfolio_risk_diagnostic") or {}
+    command_status = "active" if active.get("active") else "idle"
+    market_state = "open" if snapshot.get("is_market_open") else "closed"
+    return f"""
+      <div class="command-grid">
+        {_render_status_card("System", ops.get("overall"), ops.get("generated_at"), "Execution blockers" if ops.get("execution_blockers") else "No execution blocker")}
+        {_render_status_card("Pipeline", latest.get("execution_status") or "unknown", latest.get("analyzed_at"), f"risk_approved={latest.get('risk_approved')}")}
+        {_render_status_card("Account", snapshot.get("account_status") or guard.get("status"), snapshot.get("recorded_at"), f"policy={snapshot.get('policy_version') or guard.get('policy_version')}")}
+        {_render_status_card("Market", market_state, snapshot.get("account_timestamp"), f"open_orders={snapshot.get('open_order_count') or 0}")}
+        {_render_status_card("Command", command_status, active.get("started_at"), f"{active.get('active_command_id') or 'no active command'}")}
+        {_render_status_card("Auto Pause", auto_pause.get("status") or "unknown", None, auto_pause.get("reason") or auto_pause.get("primary_trigger") or "no trigger")}
+      </div>
+      <div class="grid dashboard-focus">
+        <article class="card"><h3>Trading Posture</h3>{_render_kv({
+            "auth": (summary.get("config") or {}).get("authorization_mode", {}).get("value") if isinstance((summary.get("config") or {}).get("authorization_mode"), dict) else (summary.get("config") or {}).get("authorization_mode"),
+            "scorecard_permission": scorecard.get("investment_permission"),
+            "scorecard_data": scorecard.get("data_quality"),
+            "pc_mode": (pc.get("config") or {}).get("portfolio_construction_mode") or (pc.get("promotion_gate") or {}).get("mode"),
+            "alpha_policy": alpha_policy.get("effective_mode") or alpha_policy.get("mode"),
+        })}</article>
+        <article class="card"><h3>Account Truth</h3>{_render_kv({
+            "last_command_id": snapshot.get("last_command_id"),
+            "active_command_id": snapshot.get("active_command_id"),
+            "active_execution": snapshot.get("active_execution_status"),
+            "processed_commands": snapshot.get("processed_command_count"),
+            "cash_pct": snapshot.get("cash_pct"),
+        })}</article>
+        <article class="card"><h3>Risk Snapshot</h3>{_render_kv({
+            "status": risk.get("status"),
+            "var_95": (risk.get("target_historical") or {}).get("var_95_loss"),
+            "cvar_95": (risk.get("target_historical") or {}).get("cvar_95_loss"),
+            "max_scenario_loss": (risk.get("summary") or {}).get("max_scenario_loss"),
+            "warnings": len(risk.get("warnings") or []),
+        })}</article>
+      </div>
+    """
+
+
+def _render_priority_queue(summary: dict[str, Any]) -> str:
+    ops = summary.get("ops") or {}
+    control = summary.get("execution_control") or {}
+    latest = summary.get("latest_analysis") or {}
+    risks: list[dict[str, str]] = []
+    for item in ops.get("execution_blockers") or []:
+        risks.append({"level": "blocker", "source": "Ops", "message": str(item)})
+    for item in ops.get("research_degradations") or []:
+        risks.append({"level": "warning", "source": "Research", "message": str(item)})
+    guard = control.get("account_state_guard") or {}
+    if guard.get("would_block"):
+        risks.append({"level": "blocker", "source": "Account Guard", "message": str(guard.get("primary_blockers") or guard.get("blockers") or guard.get("reason") or "would block")})
+    auto_pause = control.get("auto_pause") or {}
+    if auto_pause.get("would_pause") or auto_pause.get("should_pause"):
+        risks.append({"level": "blocker" if auto_pause.get("should_pause") else "warning", "source": "Auto Pause", "message": str(auto_pause.get("reason") or auto_pause.get("primary_trigger") or "would pause")})
+    active = control.get("active_execution") or {}
+    if active.get("stale"):
+        risks.append({"level": "warning", "source": "Active Execution", "message": str(active.get("stale_operator_action") or active.get("stale_reason") or "stale active execution")})
+    for reason in latest.get("rejection_reasons") or []:
+        risks.append({"level": "warning", "source": "Latest Decision", "message": _format_value(reason)})
+    if not risks:
+        return """
+          <section class="priority-strip ok-strip">
+            <h3>Priority Queue</h3>
+            <p>No execution blocker or urgent degradation is currently reported.</p>
+          </section>
+        """
+    rows = "\n".join(
+        f"""<li class="{escape(row['level'])}">
+          <span>{escape(row['level'].upper())}</span>
+          <strong>{escape(row['source'])}</strong>
+          <p>{escape(row['message'])}</p>
+        </li>"""
+        for row in risks
+    )
+    return f"""
+      <section class="priority-strip">
+        <h3>Priority Queue</h3>
+        <ul class="risk-list">{rows}</ul>
+      </section>
+    """
+
+
+def _render_visual_monitoring(summary: dict[str, Any]) -> str:
+    ops = summary.get("ops") or {}
+    checks = ops.get("checks") or {}
+    age_rows = []
+    for key in ("qc_heartbeat", "daily_feature_snapshot", "yfinance_backfill", "news_cache", "memory_write"):
+        row = checks.get(key) or {}
+        age_rows.append({
+            "label": row.get("label") or key,
+            "value": row.get("age_hours"),
+            "status": row.get("state") or "unknown",
+        })
+    command_rows = summary.get("execution_control", {}).get("recent_commands") or []
+    command_counts = _count_values(command_rows, "qc_status")
+    attribution_rows = (summary.get("performance_attribution") or {}).get("recent_rows") or []
+    alpha_rows = (summary.get("alpha_validation_trend") or {}).get("recent_rows") or []
+    conviction_rows = (summary.get("live_signal_conviction") or {}).get("status_count_rows") or []
+    return f"""
+      <div class="visual-grid">
+        {_render_bar_chart("Freshness Age (hours)", age_rows, value_label="hours")}
+        {_render_bar_chart("Recent Command Status", command_counts, value_label="commands")}
+        {_render_line_chart("Residual Alpha Candidate", attribution_rows, x_key="period_key", y_key="residual_alpha_candidate")}
+        {_render_line_chart("Portfolio VaR 95 Loss", alpha_rows, x_key="generated_at", y_key="var_95_loss")}
+        {_render_bar_chart("Conviction Profile Status", conviction_rows, label_key="status", value_key="count", value_label="profiles")}
+      </div>
+    """
+
+
+def _render_status_card(title: str, state: Any, timestamp: Any, detail: Any) -> str:
+    status = str(state or "unknown")
+    return f"""
+      <article class="status-card {escape(status)}">
+        <div class="label">{escape(title)}</div>
+        <div class="metric">{escape(status)}</div>
+        <div class="muted">{escape(_format_value(detail))}</div>
+        <div class="timestamp">{escape(_format_value(timestamp))}</div>
+      </article>
+    """
+
+
+def _render_bar_chart(
+    title: str,
+    rows: list[dict[str, Any]],
+    *,
+    label_key: str = "label",
+    value_key: str = "value",
+    value_label: str = "",
+) -> str:
+    clean_rows = []
+    for row in rows:
+        value = _json_safe_number(row.get(value_key))
+        if value is None:
+            continue
+        clean_rows.append({"label": str(row.get(label_key) or ""), "value": value, "status": str(row.get("status") or "")})
+    if not clean_rows:
+        return f"<article class=\"chart-card\"><h3>{escape(title)}</h3><p class=\"muted\">No chart data.</p></article>"
+    max_value = max(abs(float(row["value"])) for row in clean_rows) or 1.0
+    bars = []
+    for row in clean_rows:
+        width = min(abs(float(row["value"])) / max_value * 100.0, 100.0)
+        bars.append(
+            f"""<div class="bar-row">
+              <span>{escape(row['label'])}</span>
+              <div class="bar-track"><div class="bar-fill {escape(row['status'])}" style="width:{width:.1f}%"></div></div>
+              <strong>{escape(_format_chart_number(row['value']))}{escape((' ' + value_label) if value_label else '')}</strong>
+            </div>"""
+        )
+    return f"""
+      <article class="chart-card">
+        <h3>{escape(title)}</h3>
+        <div class="bar-chart">{''.join(bars)}</div>
+      </article>
+    """
+
+
+def _render_line_chart(title: str, rows: list[dict[str, Any]], *, x_key: str, y_key: str) -> str:
+    points_raw = []
+    for row in reversed(rows):
+        value = _json_safe_number(row.get(y_key))
+        if value is None:
+            continue
+        points_raw.append((str(row.get(x_key) or ""), float(value)))
+    if len(points_raw) < 2:
+        return f"<article class=\"chart-card\"><h3>{escape(title)}</h3><p class=\"muted\">Need at least two data points.</p></article>"
+    width = 640
+    height = 190
+    pad_x = 34
+    pad_y = 24
+    values = [value for _, value in points_raw]
+    min_y = min(values)
+    max_y = max(values)
+    if abs(max_y - min_y) < 1e-12:
+        max_y += 1.0
+        min_y -= 1.0
+    plot_w = width - pad_x * 2
+    plot_h = height - pad_y * 2
+    coords = []
+    for index, (_, value) in enumerate(points_raw):
+        x = pad_x + (plot_w * index / max(len(points_raw) - 1, 1))
+        y = pad_y + plot_h - ((value - min_y) / (max_y - min_y) * plot_h)
+        coords.append((x, y))
+    polyline = " ".join(f"{x:.1f},{y:.1f}" for x, y in coords)
+    zero_line = ""
+    if min_y < 0 < max_y:
+        zero_y = pad_y + plot_h - ((0 - min_y) / (max_y - min_y) * plot_h)
+        zero_line = f"<line x1=\"{pad_x}\" y1=\"{zero_y:.1f}\" x2=\"{width - pad_x}\" y2=\"{zero_y:.1f}\" class=\"zero-line\" />"
+    first_label = points_raw[0][0]
+    last_label = points_raw[-1][0]
+    return f"""
+      <article class="chart-card">
+        <h3>{escape(title)}</h3>
+        <svg class="line-chart" viewBox="0 0 {width} {height}" role="img" aria-label="{escape(title)} line chart">
+          <rect x="{pad_x}" y="{pad_y}" width="{plot_w}" height="{plot_h}" class="plot-bg" />
+          {zero_line}
+          <polyline points="{polyline}" class="line-path" />
+          <circle cx="{coords[-1][0]:.1f}" cy="{coords[-1][1]:.1f}" r="4" class="line-dot" />
+          <text x="{pad_x}" y="{height - 5}" class="axis-label">{escape(first_label)}</text>
+          <text x="{width - pad_x}" y="{height - 5}" class="axis-label end">{escape(last_label)}</text>
+          <text x="{pad_x}" y="16" class="axis-label">{escape(_format_chart_number(max_y))}</text>
+          <text x="{pad_x}" y="{height - 28}" class="axis-label">{escape(_format_chart_number(min_y))}</text>
+        </svg>
+      </article>
+    """
+
+
+def _count_values(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        label = str(row.get(key) or "unknown")
+        counts[label] = counts.get(label, 0) + 1
+    return [{"label": label, "value": count, "status": label} for label, count in sorted(counts.items())]
+
+
+def _format_chart_number(value: Any) -> str:
+    num = _json_safe_number(value)
+    if num is None:
+        return ""
+    if abs(num) < 0.01 and num != 0:
+        return f"{num:.4f}"
+    if abs(num) < 10:
+        return f"{num:.2f}"
+    return f"{num:.0f}"
 
 
 def _render_checks(checks: dict[str, Any]) -> str:
@@ -3357,33 +3560,78 @@ def _iso(value: Any) -> str | None:
 
 def _css() -> str:
     return """
-    :root { color-scheme: light; --bg:#f6f7f9; --ink:#111827; --muted:#6b7280; --line:#d8dde6; --card:#ffffff; --ok:#0f766e; --bad:#b42318; --warn:#a16207; }
+    :root { color-scheme: light; --bg:#f6f7f9; --ink:#111827; --muted:#6b7280; --line:#d8dde6; --card:#ffffff; --soft:#f9fafb; --ok:#0f766e; --bad:#b42318; --warn:#a16207; --info:#1d4ed8; }
     * { box-sizing: border-box; }
-    body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-    header { display:flex; align-items:flex-end; justify-content:space-between; gap:24px; padding:24px 32px 16px; border-bottom:1px solid var(--line); background:#fff; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; overflow-x:hidden; background:var(--bg); color:var(--ink); font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    header { display:flex; align-items:flex-end; justify-content:space-between; gap:24px; padding:22px clamp(16px,3vw,36px) 16px; border-bottom:1px solid var(--line); background:#fff; }
     h1 { margin:0; font-size:24px; letter-spacing:0; }
-    h2 { margin:0 0 12px; font-size:18px; }
+    h2 { margin:0; font-size:18px; }
     h3 { margin:16px 0 8px; font-size:14px; }
     p { margin:4px 0 0; }
-    main { padding:24px 32px 48px; display:grid; gap:20px; }
-    section { background:#fff; border:1px solid var(--line); padding:18px; border-radius:8px; }
-    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+    .quick-nav { position:sticky; top:0; z-index:5; display:flex; gap:6px; overflow:auto; padding:10px clamp(16px,3vw,36px); border-bottom:1px solid var(--line); background:rgba(255,255,255,.94); backdrop-filter:blur(10px); }
+    .quick-nav a { flex:0 0 auto; color:var(--ink); text-decoration:none; padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; font-size:13px; }
+    .dashboard-shell { width:min(100%,1680px); margin:0 auto; padding:22px clamp(12px,2vw,28px) 48px; display:grid; gap:18px; }
+    section, .panel { min-width:0; background:#fff; border:1px solid var(--line); padding:18px; border-radius:8px; }
+    .overview-panel { display:grid; gap:16px; }
+    .section-heading { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; margin-bottom:14px; }
+    .section-heading p { color:var(--muted); max-width:720px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; min-width:0; }
     .checks { grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); }
     .card { border:1px solid var(--line); border-radius:8px; padding:14px; background:var(--card); min-width:0; }
+    .command-grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:12px; }
+    .dashboard-focus { grid-template-columns:repeat(3,minmax(0,1fr)); }
+    .status-card { min-width:0; border:1px solid var(--line); border-left:4px solid var(--info); border-radius:8px; padding:13px; background:#fff; }
+    .status-card .metric { font-size:18px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .status-card .timestamp { color:var(--muted); font-size:12px; margin-top:6px; overflow-wrap:anywhere; }
     .label, .muted { color:var(--muted); }
     .metric { margin-top:6px; font-size:22px; font-weight:700; }
-    .ok, .healthy, .success { color:var(--ok); }
-    .stale, .failed, .execution_blocked { color:var(--bad); }
-    .missing, .research_degraded, .skipped, .unknown { color:var(--warn); }
+    .ok, .healthy, .success, .approved, .closed, .idle, .pass { color:var(--ok); }
+    .stale, .failed, .execution_blocked, .blocker, .rejected, .timeout_no_ack, .defensive { color:var(--bad); }
+    .missing, .research_degraded, .skipped, .unknown, .warning, .pending, .alert, .tightened { color:var(--warn); }
     .status { padding:6px 10px; border:1px solid currentColor; border-radius:999px; font-weight:700; white-space:nowrap; }
+    .priority-strip { border:1px solid var(--line); border-radius:8px; padding:14px; background:var(--soft); }
+    .priority-strip h3 { margin-top:0; }
+    .ok-strip { border-color:#b7e4dc; background:#effaf8; }
+    .risk-list { display:grid; gap:8px; margin:8px 0 0; padding:0; list-style:none; }
+    .risk-list li { display:grid; grid-template-columns:92px 160px 1fr; gap:10px; align-items:start; border:1px solid var(--line); border-left:4px solid currentColor; border-radius:8px; padding:10px; background:#fff; }
+    .risk-list span { font-weight:700; font-size:12px; }
+    .risk-list strong { color:var(--ink); }
+    .risk-list p { margin:0; overflow-wrap:anywhere; }
+    .visual-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .chart-card { min-width:0; border:1px solid var(--line); border-radius:8px; padding:14px; background:#fff; }
+    .chart-card h3 { margin-top:0; }
+    .bar-chart { display:grid; gap:9px; }
+    .bar-row { display:grid; grid-template-columns:minmax(92px,150px) minmax(120px,1fr) minmax(70px,max-content); gap:10px; align-items:center; }
+    .bar-row span { color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .bar-row strong { text-align:right; font-variant-numeric:tabular-nums; }
+    .bar-track { height:10px; background:#edf0f4; border-radius:999px; overflow:hidden; }
+    .bar-fill { height:100%; min-width:2px; background:var(--info); border-radius:999px; }
+    .bar-fill.ok, .bar-fill.healthy, .bar-fill.accepted, .bar-fill.reconciled { background:var(--ok); }
+    .bar-fill.stale, .bar-fill.failed, .bar-fill.rejected, .bar-fill.timeout_no_ack { background:var(--bad); }
+    .bar-fill.missing, .bar-fill.unknown, .bar-fill.pending { background:var(--warn); }
+    .line-chart { width:100%; height:auto; display:block; }
+    .plot-bg { fill:#fafbfc; stroke:#edf0f4; }
+    .zero-line { stroke:#cbd5e1; stroke-dasharray:4 4; }
+    .line-path { fill:none; stroke:var(--info); stroke-width:3; stroke-linecap:round; stroke-linejoin:round; }
+    .line-dot { fill:var(--info); }
+    .axis-label { fill:var(--muted); font-size:11px; }
+    .axis-label.end { text-anchor:end; }
+    details.detail-panel { padding:0; overflow:hidden; }
+    details.detail-panel summary { cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:16px 18px; list-style:none; border-bottom:1px solid transparent; }
+    details.detail-panel summary::-webkit-details-marker { display:none; }
+    details.detail-panel summary span { color:var(--muted); font-size:13px; }
+    details.detail-panel[open] summary { border-bottom-color:var(--line); }
+    .detail-body { padding:18px; min-width:0; }
     .kv { display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-bottom:1px solid #edf0f4; }
     .kv span { color:var(--muted); }
     .kv strong { text-align:right; overflow-wrap:anywhere; }
-    .table-wrap { overflow:auto; max-height:70vh; border:1px solid var(--line); border-radius:8px; }
-    table { width:100%; border-collapse:separate; border-spacing:0; min-width:1100px; }
+    .table-wrap { overflow:auto; max-width:100%; max-height:58vh; border:1px solid var(--line); border-radius:8px; }
+    table { width:100%; border-collapse:separate; border-spacing:0; min-width:min(960px, 100%); }
     th, td { text-align:left; padding:9px 10px; border-bottom:1px solid #edf0f4; vertical-align:top; }
     th { position:sticky; top:0; z-index:1; color:var(--muted); font-weight:600; background:#fafbfc; }
     td { max-width:260px; overflow-wrap:anywhere; }
     ul { margin:8px 0 0; padding-left:20px; }
-    @media (max-width: 720px) { header { align-items:flex-start; flex-direction:column; padding:18px; } main { padding:18px; } }
+    @media (max-width: 1180px) { .command-grid, .dashboard-focus, .visual-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+    @media (max-width: 720px) { header { align-items:flex-start; flex-direction:column; padding:18px; } .dashboard-shell { padding:16px; } .section-heading, details.detail-panel summary { align-items:flex-start; flex-direction:column; } .command-grid, .dashboard-focus, .visual-grid, .risk-list li { grid-template-columns:1fr; } .bar-row { grid-template-columns:1fr; } }
     """
