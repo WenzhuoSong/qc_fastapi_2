@@ -104,6 +104,17 @@ class MutationLedgerTest(unittest.TestCase):
     def test_mutation_type_sets_are_disjoint(self):
         self.assertFalse(TIGHTEN_ONLY_TYPES & CONDITIONAL_TYPES)
 
+    def test_execution_buy_delta_throttle_is_tighten_only(self):
+        mutation = TickerMutation(
+            mutation_type="execution_buy_delta_throttle",
+            ticker="SPY",
+            weight_before=0.20,
+            weight_after=0.15,
+            reason="command buy delta cap",
+        )
+
+        self.assertTrue(mutation.is_tighten_only)
+
 
 if __name__ == "__main__":
     unittest.main()

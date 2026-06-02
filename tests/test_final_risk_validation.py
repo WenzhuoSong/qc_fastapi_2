@@ -30,6 +30,7 @@ class FinalRiskValidationTest(unittest.TestCase):
         self.assertFalse(out["severe_block"])
         self.assertEqual(out["mutation_types"], ["cash_raise_from_policy_cap"])
         self.assertEqual(out["drift"]["max_abs_drift"], 0.005)
+        self.assertEqual(out["missing_mutation_ledger_tickers"], ["PSI"])
 
     def test_blocking_mode_rejects_untyped_drift(self):
         out = validate_final_execution_target(
@@ -90,6 +91,19 @@ class FinalRiskValidationTest(unittest.TestCase):
             current_weights={"SPY": 0.10, "CASH": 0.90},
             policy_context={
                 "post_risk_mutation_types": ["turnover_scale_toward_current"],
+                "post_risk_mutation_ledgers": [
+                    {
+                        "mutations": [
+                            {
+                                "type": "turnover_scale_toward_current",
+                                "ticker": "SPY",
+                                "before": 0.20,
+                                "after": 0.15,
+                                "reason": "turnover scaled",
+                            }
+                        ]
+                    }
+                ],
                 "material_drift_threshold": 0.01,
                 "require_human_confirmation_for_conditional_material_drift": False,
             },
@@ -136,6 +150,12 @@ class FinalRiskValidationTest(unittest.TestCase):
                         "ticker": "SPY",
                         "before": 0.10,
                         "after": 0.15,
+                    },
+                    {
+                        "type": "cash_raise_from_policy_cap",
+                        "ticker": "XLE",
+                        "before": 0.10,
+                        "after": 0.09,
                     }
                 ],
                 "hard_risk_tickers": ["XLE"],
@@ -147,6 +167,7 @@ class FinalRiskValidationTest(unittest.TestCase):
 
         self.assertTrue(out["approved"], out)
         self.assertEqual(out["conditional_detail_tickers"], ["SPY"])
+        self.assertEqual(out["missing_mutation_ledger_tickers"], [])
         self.assertEqual(out["conditional_mutation_violations"], [])
         self.assertEqual(out["blocking_violations"], [])
 
@@ -176,10 +197,39 @@ class FinalRiskValidationTest(unittest.TestCase):
         )
 
         self.assertFalse(out["approved"])
-        self.assertIsNone(out["conditional_detail_tickers"])
-        self.assertIn("conditional_mutation_contract_violation", out["blocking_violations"])
+        self.assertEqual(out["conditional_detail_tickers"], ["SPY"])
+        self.assertEqual(out["missing_mutation_ledger_tickers"], ["XLE"])
+        self.assertIn("incomplete_mutation_ledger", out["blocking_violations"])
 
     def test_blocking_mode_allows_typed_tighten_only_policy_cap_drift(self):
+        out = validate_final_execution_target(
+            risk_approved_target={"PSI": 0.08, "CASH": 0.92},
+            final_target={"PSI": 0.075, "CASH": 0.925},
+            current_weights={"PSI": 0.05, "CASH": 0.95},
+            policy_context={
+                "post_risk_mutation_types": ["cash_raise_from_policy_cap"],
+                "post_risk_mutation_ledgers": [
+                    {
+                        "mutations": [
+                            {
+                                "type": "cash_raise_from_policy_cap",
+                                "ticker": "PSI",
+                                "before": 0.08,
+                                "after": 0.075,
+                                "reason": "policy cap",
+                            }
+                        ]
+                    }
+                ],
+                "material_drift_threshold": 0.001,
+            },
+            mode="blocking",
+        )
+
+        self.assertTrue(out["approved"], out)
+        self.assertEqual(out["blocking_violations"], [])
+
+    def test_blocking_mode_rejects_typed_drift_without_ticker_ledger(self):
         out = validate_final_execution_target(
             risk_approved_target={"PSI": 0.08, "CASH": 0.92},
             final_target={"PSI": 0.075, "CASH": 0.925},
@@ -191,8 +241,9 @@ class FinalRiskValidationTest(unittest.TestCase):
             mode="blocking",
         )
 
-        self.assertTrue(out["approved"], out)
-        self.assertEqual(out["blocking_violations"], [])
+        self.assertFalse(out["approved"])
+        self.assertEqual(out["missing_mutation_ledger_tickers"], ["PSI"])
+        self.assertIn("incomplete_mutation_ledger", out["blocking_violations"])
 
     def test_blocking_mode_allows_decay_risk_auto_reduce_mutation(self):
         out = validate_final_execution_target(
@@ -201,6 +252,19 @@ class FinalRiskValidationTest(unittest.TestCase):
             current_weights={"UVXY": 0.03, "CASH": 0.97},
             policy_context={
                 "post_risk_mutation_types": ["decay_risk_auto_reduce"],
+                "post_risk_mutation_ledgers": [
+                    {
+                        "mutations": [
+                            {
+                                "type": "decay_risk_auto_reduce",
+                                "ticker": "UVXY",
+                                "before": 0.03,
+                                "after": 0.02,
+                                "reason": "decay auto reduce",
+                            }
+                        ]
+                    }
+                ],
                 "material_drift_threshold": 0.001,
             },
             mode="blocking",

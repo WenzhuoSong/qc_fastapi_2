@@ -112,6 +112,7 @@ from services.mutation_ownership import (
     REGIME_CONSTRAINT_MUTATION_TYPE,
     legacy_mutation_classification_summary,
 )
+from services.mutation_ledger import MutationLedger
 from services.empirical_profile_store import (
     build_empirical_profiles_from_feature_store,
     collect_empirical_profile_tickers,
@@ -1709,6 +1710,20 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         risk_out["target_weights"] = clipped
         if regime_violations:
             risk_out.setdefault("post_risk_mutation_types", []).append(REGIME_CONSTRAINT_MUTATION_TYPE)
+            regime_ledger = MutationLedger()
+            for ticker in sorted((set(target_from_risk) | set(clipped)) - {"CASH"}):
+                before = float((target_from_risk or {}).get(ticker, 0.0) or 0.0)
+                after = float((clipped or {}).get(ticker, 0.0) or 0.0)
+                if after < before - 1e-9:
+                    regime_ledger.record(
+                        mutation_type=REGIME_CONSTRAINT_MUTATION_TYPE,
+                        ticker=ticker,
+                        before=before,
+                        after=after,
+                        reason="regime hard constraint tightened target weight",
+                    )
+            if regime_ledger.mutations:
+                risk_out.setdefault("post_risk_mutation_ledgers", []).append(regime_ledger.to_dict())
             risk_out["regime_constraint"] = {
                 "owner": "post_risk_tighten_only",
                 "mutation_type": REGIME_CONSTRAINT_MUTATION_TYPE,
@@ -1716,6 +1731,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 "violations": regime_violations,
                 "target_weights_before": target_from_risk,
                 "target_weights_after": clipped,
+                "mutation_ledger": regime_ledger.to_dict(),
             }
             logger.warning(
                 f"[Stage6→7] Regime constraint clipped {len(regime_violations)} items:\n"
@@ -1730,6 +1746,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                     "mutation_type": REGIME_CONSTRAINT_MUTATION_TYPE,
                     "owner": "post_risk_tighten_only",
                     "target_weight_mutation": "tighten_only",
+                    "mutation_ledger": regime_ledger.to_dict(),
                 },
                 duration_ms=0,
             )
@@ -2332,6 +2349,8 @@ async def _apply_final_execution_policy_cap(
     risk_out["final_policy_evaluation"] = final_cap.get("policy_evaluation") or {}
     if final_cap.get("mutation_types"):
         risk_out.setdefault("post_risk_mutation_types", []).extend(final_cap.get("mutation_types") or [])
+    if (final_cap.get("mutation_ledger") or {}).get("total_mutations", 0) > 0:
+        risk_out.setdefault("post_risk_mutation_ledgers", []).append(final_cap.get("mutation_ledger") or {})
 
     if not cap_events:
         await _save_step_log(
@@ -2345,6 +2364,7 @@ async def _apply_final_execution_policy_cap(
                 "cap_events": [],
                 "cash_raised": 0.0,
                 "triggered": False,
+                "mutation_ledger": final_cap.get("mutation_ledger") or {},
                 "policy_evaluation": final_cap.get("policy_evaluation") or {},
             },
             duration_ms=0,
@@ -2374,6 +2394,7 @@ async def _apply_final_execution_policy_cap(
             "cash_raised": final_cap["cash_raised"],
             "triggered": True,
             "mutation_types": final_cap.get("mutation_types") or [],
+            "mutation_ledger": final_cap.get("mutation_ledger") or {},
             "policy_evaluation": final_cap.get("policy_evaluation") or {},
             "rebalance_actions": final_cap["rebalance_actions"],
             "estimated_cost_pct": risk_out["estimated_cost_pct"],
@@ -2481,6 +2502,8 @@ async def _apply_execution_throttle(
         )
         risk_out.setdefault("overlays_applied", []).append("execution_throttle")
         risk_out.setdefault("post_risk_mutation_types", []).extend(throttle.get("mutation_types") or [])
+        if (throttle.get("mutation_ledger") or {}).get("total_mutations", 0) > 0:
+            risk_out.setdefault("post_risk_mutation_ledgers", []).append(throttle.get("mutation_ledger") or {})
         logger.warning(
             "[EXECUTION_THROTTLE] staged target | buy_delta %s -> %s | deferred=%s",
             (throttle.get("metrics_before") or {}).get("buy_delta"),
@@ -2536,6 +2559,7 @@ async def _apply_final_risk_validation(
     policy_context = {
         "post_risk_mutation_types": risk_out.get("post_risk_mutation_types") or [],
         "post_risk_mutation_details": risk_out.get("post_risk_mutation_details") or [],
+        "post_risk_mutation_ledgers": risk_out.get("post_risk_mutation_ledgers") or [],
         "material_drift_threshold": final_validation_config.get("material_drift_threshold"),
         "require_human_confirmation_for_conditional_material_drift": bool(
             final_validation_config.get("require_human_confirmation_for_conditional_material_drift", True)

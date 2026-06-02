@@ -20,7 +20,9 @@ MutationType = Literal[
     "cash_raise_from_group_cap",
     "emergency_reduce_only",
     "decay_risk_auto_reduce",
+    "execution_buy_delta_throttle",
     "loss_trim",
+    "regime_constraint_tighten",
     "sell_delta_throttle",
     "min_hold_defer_sell",
     "turnover_scale_toward_current",
@@ -36,7 +38,9 @@ TIGHTEN_ONLY_TYPES = frozenset(
         "cash_raise_from_group_cap",
         "emergency_reduce_only",
         "decay_risk_auto_reduce",
+        "execution_buy_delta_throttle",
         "loss_trim",
+        "regime_constraint_tighten",
     }
 )
 

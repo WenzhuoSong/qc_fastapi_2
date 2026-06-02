@@ -15,6 +15,7 @@ from services.execution_policy import (
     get_role,
 )
 from services.mutation_ownership import REGIME_CONSTRAINT_MUTATION_TYPE
+from services.mutation_ledger import MutationLedger, MutationLedgerError, normalize_mutation_type
 
 
 ALLOWED_POST_RISK_MUTATIONS = {
@@ -31,6 +32,8 @@ ALLOWED_POST_RISK_MUTATIONS = {
 CONDITIONAL_POST_RISK_MUTATIONS = {
     "turnover_scale_toward_current",
     "defer_sell_due_to_min_hold_days",
+    "min_hold_defer_sell",
+    "sell_delta_throttle",
 }
 
 SEVERE_CAP_MULTIPLIER = 1.20
@@ -55,8 +58,13 @@ def validate_final_execution_target(
     risk_target = _clean_weights(risk_approved_target)
     final = _clean_weights(final_target)
     current = _clean_weights(current_weights)
-    mutation_types = _unique([str(item) for item in policy_ctx.get("post_risk_mutation_types") or []])
+    legacy_mutation_types = _unique([str(item) for item in policy_ctx.get("post_risk_mutation_types") or []])
     mutation_details = _clean_mutation_details(policy_ctx.get("post_risk_mutation_details") or [])
+    mutation_ledger, mutation_ledger_errors = _build_mutation_ledger(
+        policy_ctx=policy_ctx,
+        legacy_details=mutation_details,
+    )
+    mutation_types = _unique(legacy_mutation_types + mutation_ledger.mutation_types())
     policy_evaluation = evaluate_policy(
         weights=final,
         current_weights=current,
@@ -70,15 +78,24 @@ def validate_final_execution_target(
     )
     unknown_mutation_types = [
         item for item in mutation_types
-        if item not in ALLOWED_POST_RISK_MUTATIONS and item not in CONDITIONAL_POST_RISK_MUTATIONS
+        if not _is_known_mutation_type(item)
     ]
     conditional_mutation_types = [
-        item for item in mutation_types if item in CONDITIONAL_POST_RISK_MUTATIONS
+        item for item in mutation_types if _is_conditional_mutation_type(item)
     ]
-    conditional_detail_tickers = _conditional_detail_tickers(
-        mutation_details=mutation_details,
-        conditional_mutation_types=set(conditional_mutation_types),
-    )
+    conditional_detail_tickers = _conditional_ledger_tickers(mutation_ledger)
+    if conditional_mutation_types and not conditional_detail_tickers:
+        conditional_detail_tickers = _conditional_detail_tickers(
+            mutation_details=mutation_details,
+            conditional_mutation_types=set(conditional_mutation_types),
+        )
+    ledger_affected_tickers = mutation_ledger.affected_tickers()
+    drift_tickers = {
+        str(row.get("ticker") or "").upper().strip()
+        for row in drift_rows
+        if str(row.get("ticker") or "").upper().strip() != "CASH"
+    }
+    missing_mutation_ledger_tickers = sorted(drift_tickers - ledger_affected_tickers)
     material_drift_threshold = _optional_float(policy_ctx.get("material_drift_threshold"))
     max_abs_drift = max((abs(float(row["delta"])) for row in drift_rows), default=0.0)
     material_drift = (
@@ -102,7 +119,8 @@ def validate_final_execution_target(
         restricted_tickers=_restricted_tickers(policy_ctx),
         affected_tickers=conditional_detail_tickers,
     ) if conditional_mutation_types else []
-    unsafe_untyped_drift = bool(drift_rows and not mutation_types)
+    unsafe_untyped_drift = bool(drift_tickers and not mutation_types and not ledger_affected_tickers)
+    incomplete_mutation_ledger = bool(drift_tickers and (missing_mutation_ledger_tickers or mutation_ledger_errors))
     severe_block = bool(severe_violations)
     blocking_mode = str(mode or "observe") == "blocking"
     blocking_violations: list[str] = []
@@ -116,6 +134,8 @@ def validate_final_execution_target(
         blocking_violations.append("conditional_mutation_contract_violation")
     if unsafe_untyped_drift:
         blocking_violations.append("untyped_post_risk_drift")
+    if incomplete_mutation_ledger:
+        blocking_violations.append("incomplete_mutation_ledger")
 
     approved = not severe_block
     if blocking_mode:
@@ -124,6 +144,7 @@ def validate_final_execution_target(
         approved = approved and not conditional_review_required
         approved = approved and not conditional_mutation_violations
         approved = approved and not unsafe_untyped_drift
+        approved = approved and not incomplete_mutation_ledger
 
     return {
         "approved": approved,
@@ -142,6 +163,11 @@ def validate_final_execution_target(
         },
         "mutation_types": mutation_types,
         "mutation_details": mutation_details,
+        "mutation_ledger": mutation_ledger.to_dict(),
+        "mutation_ledger_errors": mutation_ledger_errors,
+        "ledger_affected_tickers": sorted(ledger_affected_tickers),
+        "missing_mutation_ledger_tickers": missing_mutation_ledger_tickers,
+        "incomplete_mutation_ledger": incomplete_mutation_ledger,
         "allowed_mutation_types": sorted(ALLOWED_POST_RISK_MUTATIONS),
         "conditional_mutation_types": conditional_mutation_types,
         "conditional_detail_tickers": sorted(conditional_detail_tickers) if conditional_detail_tickers is not None else None,
@@ -157,6 +183,102 @@ def validate_final_execution_target(
         "risk_context": risk_ctx,
         "execution_effect": "hard_block" if not approved else ("blocking_pass" if blocking_mode else "observe"),
     }
+
+
+def _build_mutation_ledger(
+    *,
+    policy_ctx: dict[str, Any],
+    legacy_details: list[dict[str, Any]],
+) -> tuple[MutationLedger, list[str]]:
+    ledger = MutationLedger()
+    errors: list[str] = []
+    seen: set[tuple[str, str, float, float]] = set()
+
+    def record(raw: dict[str, Any], *, source: str) -> None:
+        raw_type = str(raw.get("type") or raw.get("mutation_type") or "").strip()
+        ticker = str(raw.get("ticker") or "").upper().strip()
+        before = _optional_float(raw.get("before", raw.get("weight_before")))
+        after = _optional_float(raw.get("after", raw.get("weight_after")))
+        if not raw_type or not ticker or ticker == "CASH":
+            errors.append(f"{source}: missing mutation type or ticker")
+            return
+        if before is None or after is None:
+            errors.append(f"{source}:{raw_type}:{ticker}: missing before/after")
+            return
+        try:
+            canonical_type = normalize_mutation_type(raw_type)
+        except MutationLedgerError:
+            canonical_type = raw_type
+        key = (canonical_type, ticker, round(before, 9), round(after, 9))
+        if key in seen:
+            return
+        seen.add(key)
+        try:
+            ledger.record(
+                mutation_type=raw_type,
+                ticker=ticker,
+                before=before,
+                after=after,
+                reason=str(raw.get("reason") or f"{source} mutation detail"),
+                metadata=dict(raw.get("metadata") or {}),
+            )
+        except MutationLedgerError as exc:
+            errors.append(f"{source}:{raw_type}:{ticker}: {exc}")
+
+    raw_ledgers = policy_ctx.get("post_risk_mutation_ledgers") or []
+    if isinstance(raw_ledgers, dict):
+        raw_ledgers = [raw_ledgers]
+    if not isinstance(raw_ledgers, list):
+        errors.append("post_risk_mutation_ledgers must be a list or dict")
+        raw_ledgers = []
+
+    for index, raw_ledger in enumerate(raw_ledgers):
+        if not isinstance(raw_ledger, dict):
+            errors.append(f"ledger[{index}] is not an object")
+            continue
+        raw_mutations = raw_ledger.get("mutations") or []
+        if not isinstance(raw_mutations, list):
+            errors.append(f"ledger[{index}].mutations is not a list")
+            continue
+        for raw_mutation in raw_mutations:
+            if not isinstance(raw_mutation, dict):
+                errors.append(f"ledger[{index}].mutations contains non-object row")
+                continue
+            record(raw_mutation, source=f"ledger[{index}]")
+
+    for raw_detail in legacy_details:
+        record(raw_detail, source="legacy")
+
+    return ledger, errors
+
+
+def _is_known_mutation_type(value: str) -> bool:
+    clean = str(value or "").strip()
+    if clean in ALLOWED_POST_RISK_MUTATIONS or clean in CONDITIONAL_POST_RISK_MUTATIONS:
+        return True
+    try:
+        canonical = normalize_mutation_type(clean)
+    except MutationLedgerError:
+        return False
+    return canonical in ALLOWED_POST_RISK_MUTATIONS or canonical in CONDITIONAL_POST_RISK_MUTATIONS
+
+
+def _is_conditional_mutation_type(value: str) -> bool:
+    clean = str(value or "").strip()
+    if clean in CONDITIONAL_POST_RISK_MUTATIONS:
+        return True
+    try:
+        canonical = normalize_mutation_type(clean)
+    except MutationLedgerError:
+        return False
+    return canonical in CONDITIONAL_POST_RISK_MUTATIONS
+
+
+def _conditional_ledger_tickers(ledger: MutationLedger) -> set[str] | None:
+    conditional = ledger.conditional_mutations()
+    if not conditional:
+        return set()
+    return {mutation.ticker for mutation in conditional}
 
 
 def _severe_violations(

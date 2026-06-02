@@ -16,6 +16,7 @@ from services.weight_ops import (
     apply_single_caps_cash_first,
     normalize_cash_first,
 )
+from services.mutation_ledger import MutationLedger
 from strategies import compute_rebalance_actions, estimate_cost_pct
 
 
@@ -28,6 +29,7 @@ def apply_final_execution_policy_cap(
     pre_cap = dict(target_weights or {})
     capped, cap_events, cash_raised, cap_diagnostics = _apply_policy_caps_with_weight_ops(pre_cap)
     capped, normalization_diagnostics = normalize_cash_first(capped)
+    mutation_ledger = _mutation_ledger_for_cap(pre_cap, capped, cap_events)
     policy_evaluation = evaluate_policy(weights=capped, current_weights=current_weights)
     rebalance_actions = compute_rebalance_actions(capped, current_weights or {}, rebalance_threshold)
     return {
@@ -38,6 +40,7 @@ def apply_final_execution_policy_cap(
         "cap_diagnostics": cap_diagnostics,
         "normalization_diagnostics": normalization_diagnostics,
         "mutation_types": ["cash_raise_from_policy_cap"] if cap_events else [],
+        "mutation_ledger": mutation_ledger,
         "policy_evaluation": policy_evaluation,
         "triggered": bool(cap_events),
         "rebalance_actions": rebalance_actions,
@@ -47,6 +50,46 @@ def apply_final_execution_policy_cap(
             if ticker != "CASH" and float(weight or 0.0) > 0.01
         ),
     }
+
+
+def _mutation_ledger_for_cap(
+    before_weights: dict[str, Any],
+    after_weights: dict[str, Any],
+    cap_events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    ledger = MutationLedger()
+    if not cap_events:
+        return ledger.to_dict()
+
+    before = _clean_float_weights(before_weights)
+    after = _clean_float_weights(after_weights)
+    for ticker in sorted((set(before) | set(after)) - {"CASH"}):
+        before_w = float(before.get(ticker, 0.0) or 0.0)
+        after_w = float(after.get(ticker, 0.0) or 0.0)
+        if after_w < before_w - 1e-9:
+            ledger.record(
+                mutation_type="cash_raise_from_policy_cap",
+                ticker=ticker,
+                before=before_w,
+                after=after_w,
+                reason="final execution policy cap released excess weight to CASH",
+            )
+    return ledger.to_dict()
+
+
+def _clean_float_weights(weights: dict[str, Any]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for raw_ticker, raw_weight in (weights or {}).items():
+        ticker = str(raw_ticker or "").upper().strip()
+        if not ticker:
+            continue
+        try:
+            weight = max(float(raw_weight or 0.0), 0.0)
+        except (TypeError, ValueError):
+            continue
+        if weight > 1e-12 or ticker == "CASH":
+            out[ticker] = weight
+    return out
 
 
 def _apply_policy_caps_with_weight_ops(

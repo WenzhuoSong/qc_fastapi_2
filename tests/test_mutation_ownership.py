@@ -42,6 +42,19 @@ class MutationOwnershipTests(unittest.TestCase):
             current_weights={"SPY": 0.25, "CASH": 0.75},
             policy_context={
                 "post_risk_mutation_types": [REGIME_CONSTRAINT_MUTATION_TYPE],
+                "post_risk_mutation_ledgers": [
+                    {
+                        "mutations": [
+                            {
+                                "type": REGIME_CONSTRAINT_MUTATION_TYPE,
+                                "ticker": "SPY",
+                                "before": 0.25,
+                                "after": 0.20,
+                                "reason": "regime hard constraint",
+                            }
+                        ]
+                    }
+                ],
                 "material_drift_threshold": 0.001,
             },
             mode="blocking",
@@ -57,6 +70,7 @@ class MutationOwnershipTests(unittest.TestCase):
         self.assertIn("legacy_mutation_classification_summary()", text)
         self.assertIn("REGIME_CONSTRAINT_MUTATION_TYPE", text)
         self.assertIn('"target_weight_mutation": "tighten_only"', text)
+        self.assertIn("post_risk_mutation_ledgers", text)
 
 
 if __name__ == "__main__":

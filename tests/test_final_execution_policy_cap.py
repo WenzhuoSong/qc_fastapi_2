@@ -21,6 +21,8 @@ class FinalExecutionPolicyCapTest(unittest.TestCase):
         self.assertAlmostEqual(out["target_weights"]["XLE"], 0.15, places=4)
         self.assertGreaterEqual(out["target_weights"]["CASH"], 0.70)
         self.assertEqual([event["ticker"] for event in out["cap_events"]], ["XLK", "XLE"])
+        self.assertEqual(out["mutation_ledger"]["mutation_types"], ["cash_raise_from_policy_cap"])
+        self.assertEqual(out["mutation_ledger"]["affected_tickers"], ["XLE", "XLK"])
         self.assertTrue(any(action["ticker"] == "XLK" for action in out["rebalance_actions"]))
 
     def test_noop_when_weights_already_compliant(self):
@@ -33,6 +35,7 @@ class FinalExecutionPolicyCapTest(unittest.TestCase):
         self.assertFalse(out["triggered"])
         self.assertEqual(out["cap_events"], [])
         self.assertEqual(out["mutation_types"], [])
+        self.assertEqual(out["mutation_ledger"]["total_mutations"], 0)
         self.assertEqual(out["target_weights"], {"XLK": 0.14, "XLE": 0.12, "CASH": 0.74})
 
     def test_policy_cap_does_not_renormalize_capped_weight_above_cap(self):
@@ -70,6 +73,10 @@ class FinalExecutionPolicyCapTest(unittest.TestCase):
         self.assertEqual(out["cap_events"][0]["group_role"], "sector")
         self.assertAlmostEqual(out["cash_raised"], 0.15, places=6)
         self.assertEqual(out["cap_diagnostics"]["contract"], "weight_ops_cash_first_v1")
+        self.assertEqual(
+            out["mutation_ledger"]["affected_tickers"],
+            ["XLE", "XLI", "XLK", "XLU"],
+        )
 
     def test_final_cap_module_uses_weight_ops_not_private_normalizer(self):
         source = inspect.getsource(final_cap_module)

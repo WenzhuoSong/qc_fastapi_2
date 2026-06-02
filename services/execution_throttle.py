@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from services.execution_preflight import command_weight_delta_metrics
+from services.mutation_ledger import MutationLedger
 
 
 EXECUTION_THROTTLE_CONTRACT_VERSION = "v1"
@@ -48,6 +49,7 @@ def apply_execution_throttle(
             deferred_delta={},
             violations=[],
             mutation_types=[],
+            mutation_ledger=MutationLedger().to_dict(),
             reason="disabled",
         )
 
@@ -65,6 +67,7 @@ def apply_execution_throttle(
             deferred_delta={},
             violations=[],
             mutation_types=[],
+            mutation_ledger=MutationLedger().to_dict(),
             reason="within_limits",
         )
 
@@ -86,6 +89,12 @@ def apply_execution_throttle(
     staged["CASH"] = max(1.0 - sum(staged.values()), 0.0)
     staged = _normalize_cash_first(staged)
     metrics_after = command_weight_delta_metrics(staged, current)
+    mutation_ledger = _mutation_ledger_for_execution_throttle(
+        desired=desired,
+        staged=staged,
+        deferred_delta=deferred_delta,
+        buy_scale=buy_scale,
+    )
     return _result(
         applied=True,
         desired=desired,
@@ -98,6 +107,7 @@ def apply_execution_throttle(
         deferred_delta=deferred_delta,
         violations=[f"buy_delta_throttled:{buy_delta:.2%}->{max_buy_delta:.2%}"],
         mutation_types=["execution_buy_delta_throttle"],
+        mutation_ledger=mutation_ledger,
         reason="buy_delta_exceeds_limit",
     )
 
@@ -115,6 +125,7 @@ def _result(
     deferred_delta: dict[str, float],
     violations: list[str],
     mutation_types: list[str],
+    mutation_ledger: dict[str, Any],
     reason: str,
 ) -> dict[str, Any]:
     return {
@@ -139,7 +150,30 @@ def _result(
         ),
         "violations": violations,
         "mutation_types": mutation_types,
+        "mutation_ledger": mutation_ledger,
     }
+
+
+def _mutation_ledger_for_execution_throttle(
+    *,
+    desired: dict[str, float],
+    staged: dict[str, float],
+    deferred_delta: dict[str, float],
+    buy_scale: float,
+) -> dict[str, Any]:
+    ledger = MutationLedger()
+    for ticker in sorted(deferred_delta):
+        before = float(desired.get(ticker, 0.0) or 0.0)
+        after = float(staged.get(ticker, 0.0) or 0.0)
+        if after < before - 1e-9:
+            ledger.record(
+                mutation_type="execution_buy_delta_throttle",
+                ticker=ticker,
+                before=before,
+                after=after,
+                reason=f"execution buy delta throttled with buy_scale={buy_scale:.6f}",
+            )
+    return ledger.to_dict()
 
 
 def _throttle_config(config: dict[str, Any] | None) -> dict[str, Any]:

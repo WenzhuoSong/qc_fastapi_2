@@ -24,6 +24,8 @@ class ExecutionThrottleTests(unittest.TestCase):
         self.assertAlmostEqual(out["deferred_delta"]["SPY"], 0.075)
         self.assertAlmostEqual(out["deferred_delta"]["QQQ"], 0.075)
         self.assertEqual(out["deferred_buy_delta"], 0.15)
+        self.assertEqual(out["mutation_ledger"]["mutation_types"], ["execution_buy_delta_throttle"])
+        self.assertEqual(out["mutation_ledger"]["affected_tickers"], ["QQQ", "SPY"])
 
     def test_noop_when_within_buy_limit(self):
         out = apply_execution_throttle(
@@ -36,6 +38,7 @@ class ExecutionThrottleTests(unittest.TestCase):
         self.assertEqual(out["reason"], "within_limits")
         self.assertEqual(out["desired_target_weights"], out["staged_target_weights"])
         self.assertEqual(out["metrics_after"]["buy_delta"], 0.02)
+        self.assertEqual(out["mutation_ledger"]["total_mutations"], 0)
 
     def test_disabled_preserves_desired_target(self):
         out = apply_execution_throttle(
@@ -62,16 +65,26 @@ class ExecutionThrottleTests(unittest.TestCase):
         self.assertEqual(out["deferred_delta"]["SPY"], 0.2)
 
     def test_final_validation_allows_execution_buy_delta_throttle(self):
+        throttle = apply_execution_throttle(
+            target_weights={"SPY": 0.20, "CASH": 0.80},
+            current_weights={"SPY": 0.10, "CASH": 0.90},
+            config={"max_buy_delta": 0.05},
+        )
+
         out = validate_final_execution_target(
             risk_approved_target={"SPY": 0.20, "CASH": 0.80},
             final_target={"SPY": 0.15, "CASH": 0.85},
             current_weights={"SPY": 0.10, "CASH": 0.90},
-            policy_context={"post_risk_mutation_types": ["execution_buy_delta_throttle"]},
+            policy_context={
+                "post_risk_mutation_types": ["execution_buy_delta_throttle"],
+                "post_risk_mutation_ledgers": [throttle["mutation_ledger"]],
+            },
             mode="blocking",
         )
 
         self.assertTrue(out["approved"], out)
         self.assertEqual(out["unknown_mutation_types"], [])
+        self.assertEqual(out["missing_mutation_ledger_tickers"], [])
 
 
 if __name__ == "__main__":
