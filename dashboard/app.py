@@ -1028,7 +1028,19 @@ async def _dashboard_config() -> dict[str, Any]:
                 select(SystemConfig).where(SystemConfig.key == "execution_lifecycle_config").limit(1)
             )
         ).scalar_one_or_none()
+        authorization_mode = (
+            await db.execute(
+                select(SystemConfig).where(SystemConfig.key == "authorization_mode").limit(1)
+            )
+        ).scalar_one_or_none()
+        execution_command = (
+            await db.execute(
+                select(SystemConfig).where(SystemConfig.key == "execution_command_config").limit(1)
+            )
+        ).scalar_one_or_none()
     return {
+        "authorization_mode": (authorization_mode.value if authorization_mode else {}) or {},
+        "execution_command_config": (execution_command.value if execution_command else {}) or {},
         "playground_config": (playground.value if playground else {}) or {},
         "circuit_state": (circuit.value if circuit else {}) or {},
         "portfolio_construction_promotion_config": (pc_promotion.value if pc_promotion else {}) or {},
@@ -2659,6 +2671,7 @@ def render_dashboard(summary: dict[str, Any]) -> str:
     </div>
     <span class="status {escape(str(ops.get("overall", "unknown")))}">{escape(str(ops.get("overall", "unknown")))}</span>
   </header>
+  {_render_top_status_bar(summary)}
   <nav class="quick-nav" aria-label="Dashboard sections">
     <a href="#overview">Overview</a>
     <a href="#account-window">Account</a>
@@ -2679,8 +2692,8 @@ def render_dashboard(summary: dict[str, Any]) -> str:
         <h2>Operator Overview</h2>
         <p>Focused on blockers, execution state, data freshness, and alpha evidence quality.</p>
       </div>
-      {_render_command_center(summary)}
-      {_render_priority_queue(summary)}
+      {_render_metric_cards(summary)}
+      {_render_operator_cockpit(summary)}
       {_render_visual_monitoring(summary)}
       {_render_operator_windows(summary)}
     </section>
@@ -2720,51 +2733,129 @@ def _render_dashboard_section(section_id: str, title: str, content: str, *, open
     """
 
 
-def _render_command_center(summary: dict[str, Any]) -> str:
+def _render_top_status_bar(summary: dict[str, Any]) -> str:
+    config = summary.get("config") or {}
+    circuit = config.get("circuit_state") or {}
+    auth_mode = _config_scalar(config.get("authorization_mode")) or "unknown"
+    control = summary.get("execution_control") or {}
+    snapshot = control.get("latest_account_snapshot") or {}
+    guard = control.get("account_state_guard") or {}
+    ops = summary.get("ops") or {}
+    circuit_state = str(circuit.get("state") or circuit.get("value") or "unknown")
+    can_trade = _dashboard_can_trade(summary)
+    return f"""
+      <div class="top-status-bar">
+        <div class="brand-mark">A</div>
+        <div class="top-status-main">
+          <div class="top-status-title">Trading Operations Console</div>
+          <div class="top-status-sub">Circuit, pipeline authority, account truth, and execution readiness.</div>
+        </div>
+        <div class="top-status-pills">
+          {_render_status_pill("Circuit", circuit_state, circuit_state)}
+          {_render_status_pill("Pipeline", auth_mode, "ok" if str(auth_mode).upper() == "FULL_AUTO" else "warn")}
+          {_render_status_pill("Trade", "TRADEABLE" if can_trade else "BLOCKED", "ok" if can_trade else "error")}
+          {_render_status_pill("Guard", guard.get("status") or "unknown", guard.get("status") or "unknown")}
+          {_render_status_pill("Policy", snapshot.get("policy_version") or "unknown", "ok" if snapshot.get("policy_version") else "warn")}
+          {_render_status_pill("Ops", ops.get("overall") or "unknown", ops.get("overall") or "unknown")}
+        </div>
+      </div>
+    """
+
+
+def _render_status_pill(label: str, value: Any, status: Any) -> str:
+    return f"""
+      <div class="top-pill {escape(str(status or 'unknown').lower())}">
+        <span>{escape(label)}</span>
+        <strong>{escape(_format_value(value))}</strong>
+      </div>
+    """
+
+
+def _render_metric_cards(summary: dict[str, Any]) -> str:
     ops = summary.get("ops") or {}
     latest = summary.get("latest_analysis") or {}
     control = summary.get("execution_control") or {}
     snapshot = control.get("latest_account_snapshot") or {}
     active = control.get("active_execution") or {}
     guard = control.get("account_state_guard") or {}
-    auto_pause = control.get("auto_pause") or {}
-    scorecard = latest.get("scorecard") or {}
-    pc = summary.get("portfolio_construction_objective") or {}
     alpha_policy = summary.get("alpha_decision_policy") or {}
-    risk = summary.get("portfolio_risk_diagnostic") or {}
+    alpha_profiles = summary.get("alpha_decision_profiles") or {}
+    attribution = summary.get("performance_attribution") or {}
+    config = summary.get("config") or {}
+    command_cfg = config.get("execution_command_config") or {}
+    command_rows = control.get("recent_commands") or []
+    today_commands = _count_today_commands(command_rows)
+    max_daily_commands = _json_safe_number(command_cfg.get("max_daily_commands")) or 0
+    turnover = _latest_target_turnover(latest)
     command_status = "active" if active.get("active") else "idle"
     market_state = "open" if snapshot.get("is_market_open") else "closed"
     return f"""
-      <div class="command-grid">
-        {_render_status_card("System", ops.get("overall"), ops.get("generated_at"), "Execution blockers" if ops.get("execution_blockers") else "No execution blocker")}
-        {_render_status_card("Pipeline", latest.get("execution_status") or "unknown", latest.get("analyzed_at"), f"risk_approved={latest.get('risk_approved')}")}
-        {_render_status_card("Account", snapshot.get("account_status") or guard.get("status"), snapshot.get("recorded_at"), f"policy={snapshot.get('policy_version') or guard.get('policy_version')}")}
-        {_render_status_card("Market", market_state, snapshot.get("account_timestamp"), f"open_orders={snapshot.get('open_order_count') or 0}")}
-        {_render_status_card("Command", command_status, active.get("started_at"), f"{active.get('active_command_id') or 'no active command'}")}
-        {_render_status_card("Auto Pause", auto_pause.get("status") or "unknown", None, auto_pause.get("reason") or auto_pause.get("primary_trigger") or "no trigger")}
+      <div class="metric-grid">
+        {_render_metric_card("System", ops.get("overall"), "Execution blocker" if ops.get("execution_blockers") else "No blocker", ops.get("overall"))}
+        {_render_metric_card("Pipeline", latest.get("execution_status") or "unknown", f"risk={latest.get('risk_approved')}", latest.get("execution_status") or "unknown")}
+        {_render_metric_card("Account", snapshot.get("account_status") or guard.get("status"), f"policy={snapshot.get('policy_version') or guard.get('policy_version')}", snapshot.get("account_status") or guard.get("status"))}
+        {_render_metric_card("Open Orders", snapshot.get("open_order_count") or 0, f"market={market_state}", "ok" if int(snapshot.get("open_order_count") or 0) == 0 else "warn")}
+        {_render_metric_card("Command", command_status, active.get("active_command_id") or "no active command", command_status)}
+        {_render_metric_card("Commands Today", f"{today_commands}/{int(max_daily_commands or 0)}", f"turnover={_format_pct_value(turnover)}", "ok" if not max_daily_commands or today_commands < max_daily_commands else "warn")}
+        {_render_metric_card("Alpha Mode", alpha_policy.get("effective_mode") or alpha_policy.get("mode") or "unknown", f"eligible={alpha_profiles.get('eligible_count')}", alpha_policy.get("effective_mode") or alpha_policy.get("mode") or "unknown")}
+        {_render_metric_card("Residual Alpha", _format_pct_value((attribution.get("latest") or {}).get("residual_alpha_candidate")), f"R2={(attribution.get('latest') or {}).get('r_squared')}", "ok" if (_json_safe_number((attribution.get("latest") or {}).get("residual_alpha_candidate")) or 0) >= 0 else "warn")}
       </div>
-      <div class="grid dashboard-focus">
-        <article class="card"><h3>Trading Posture</h3>{_render_kv({
-            "auth": (summary.get("config") or {}).get("authorization_mode", {}).get("value") if isinstance((summary.get("config") or {}).get("authorization_mode"), dict) else (summary.get("config") or {}).get("authorization_mode"),
-            "scorecard_permission": scorecard.get("investment_permission"),
-            "scorecard_data": scorecard.get("data_quality"),
-            "pc_mode": (pc.get("config") or {}).get("portfolio_construction_mode") or (pc.get("promotion_gate") or {}).get("mode"),
-            "alpha_policy": alpha_policy.get("effective_mode") or alpha_policy.get("mode"),
-        })}</article>
-        <article class="card"><h3>Account Truth</h3>{_render_kv({
-            "last_command_id": snapshot.get("last_command_id"),
-            "active_command_id": snapshot.get("active_command_id"),
-            "active_execution": snapshot.get("active_execution_status"),
-            "processed_commands": snapshot.get("processed_command_count"),
-            "cash_pct": snapshot.get("cash_pct"),
-        })}</article>
-        <article class="card"><h3>Risk Snapshot</h3>{_render_kv({
-            "status": risk.get("status"),
-            "var_95": (risk.get("target_historical") or {}).get("var_95_loss"),
-            "cvar_95": (risk.get("target_historical") or {}).get("cvar_95_loss"),
-            "max_scenario_loss": (risk.get("summary") or {}).get("max_scenario_loss"),
-            "warnings": len(risk.get("warnings") or []),
-        })}</article>
+    """
+
+
+def _render_command_center(summary: dict[str, Any]) -> str:
+    return _render_metric_cards(summary)
+
+
+def _render_operator_cockpit(summary: dict[str, Any]) -> str:
+    control = summary.get("execution_control") or {}
+    snapshot = control.get("latest_account_snapshot") or {}
+    command_cfg = (summary.get("config") or {}).get("execution_command_config") or {}
+    latest = summary.get("latest_analysis") or {}
+    active = control.get("active_execution") or {}
+    alpha = summary.get("alpha_decision_profiles") or {}
+    conviction = summary.get("live_signal_conviction") or {}
+    attribution = summary.get("performance_attribution") or {}
+    command_rows = control.get("recent_commands") or []
+    today_commands = _count_today_commands(command_rows)
+    max_daily_commands = int(_json_safe_number(command_cfg.get("max_daily_commands")) or 0)
+    turnover = _latest_target_turnover(latest)
+    max_turnover = _json_safe_number(command_cfg.get("max_gross_turnover_per_day")) or 0
+    cash_pct = _json_safe_number(snapshot.get("cash_pct"))
+    return f"""
+      <div class="cockpit-grid">
+        <article class="cockpit-panel priority-panel">
+          <div class="window-title"><h3>Priority Queue</h3><span>Why attention is needed</span></div>
+          {_render_priority_queue(summary)}
+        </article>
+        <article class="cockpit-panel account-execution-panel">
+          <div class="window-title"><h3>Account + Execution</h3><span>Can the system move?</span></div>
+          <div class="gauge-row">
+            {_render_arc_gauge("Cash", cash_pct, sub=_format_money_like(snapshot.get("cash")))}
+            {_render_arc_gauge("Turnover", _pct_ratio(turnover, max_turnover), sub=f"{_format_pct_value(turnover)} / {_format_pct_value(max_turnover)}")}
+            {_render_arc_gauge("Commands", _pct_ratio(today_commands, max_daily_commands), sub=f"{today_commands}/{max_daily_commands or 0}")}
+          </div>
+          <div class="split-grid">
+            <div>{_render_kv({
+                "last_command_id": snapshot.get("last_command_id"),
+                "active_command_id": snapshot.get("active_command_id"),
+                "active_execution": snapshot.get("active_execution_status"),
+                "processed_commands": snapshot.get("processed_command_count"),
+                "open_orders": snapshot.get("open_order_count"),
+            })}</div>
+            <div>{_render_bar_chart("Target / Actual Drift", active.get("drift_rows") or [], label_key="ticker", value_key="diff")}</div>
+          </div>
+        </article>
+        <article class="cockpit-panel alpha-panel">
+          <div class="window-title"><h3>Alpha Quality</h3><span>Evidence, attribution, maturity</span></div>
+          <div class="alpha-summary-grid">
+            {_render_metric_card("Eligible Profiles", alpha.get("eligible_count"), f"total={alpha.get('profile_count')}", "info")}
+            {_render_metric_card("Independent Strategies", alpha.get("independence_adjusted_strategy_count"), f"raw={alpha.get('raw_alpha_strategy_count')}", "info")}
+            {_render_metric_card("Residual", _format_pct_value((attribution.get("latest") or {}).get("residual_alpha_candidate")), "beta/factor adjusted", "ok" if (_json_safe_number((attribution.get("latest") or {}).get("residual_alpha_candidate")) or 0) >= 0 else "warn")}
+          </div>
+          {_render_attribution_stack_chart(attribution.get("recent_rows") or [])}
+          {_render_bar_chart("Conviction Status", conviction.get("status_count_rows") or [], label_key="status", value_key="count")}
+        </article>
       </div>
     """
 
@@ -2949,6 +3040,81 @@ def _render_status_card(title: str, state: Any, timestamp: Any, detail: Any) -> 
     """
 
 
+def _render_metric_card(label: str, value: Any, sub: Any, status: Any) -> str:
+    status_text = str(status or "unknown").lower()
+    return f"""
+      <article class="metric-card {escape(status_text)}">
+        <div class="metric-label">{escape(label)}</div>
+        <div class="metric-main">
+          <span class="status-dot {escape(status_text)}"></span>
+          <strong>{escape(_format_value(value))}</strong>
+        </div>
+        <div class="metric-sub">{escape(_format_value(sub))}</div>
+      </article>
+    """
+
+
+def _render_arc_gauge(label: str, value: Any, *, sub: str = "") -> str:
+    pct = max(min(float(_json_safe_number(value) or 0.0), 100.0), 0.0)
+    radius = 31
+    circumference = 3.141592653589793 * radius
+    dash = circumference * pct / 100.0
+    status = "ok" if pct < 60 else "warn" if pct < 90 else "error"
+    return f"""
+      <div class="arc-gauge {escape(status)}">
+        <svg viewBox="0 0 74 44" role="img" aria-label="{escape(label)} usage gauge">
+          <path d="M 6 38 A 31 31 0 0 1 68 38" class="arc-bg" />
+          <path d="M 6 38 A 31 31 0 0 1 68 38" class="arc-fg" stroke-dasharray="{dash:.2f} {circumference:.2f}" />
+          <text x="37" y="35" text-anchor="middle">{pct:.0f}%</text>
+        </svg>
+        <div class="arc-label">{escape(label)}</div>
+        <div class="arc-sub">{escape(sub)}</div>
+      </div>
+    """
+
+
+def _render_attribution_stack_chart(rows: list[dict[str, Any]]) -> str:
+    clean = []
+    for row in list(reversed(rows))[-8:]:
+        beta = max(_json_safe_number(row.get("spy_beta_contribution")) or 0.0, 0.0)
+        factor = max(_json_safe_number(row.get("momentum_factor_contribution")) or 0.0, 0.0)
+        residual = max(_json_safe_number(row.get("residual_alpha_candidate")) or 0.0, 0.0)
+        total = beta + factor + residual
+        clean.append({
+            "label": str(row.get("period_key") or row.get("period_end") or ""),
+            "beta": beta,
+            "factor": factor,
+            "residual": residual,
+            "total": total,
+        })
+    if not clean:
+        return "<article class=\"chart-card compact-chart\"><h3>Attribution Stack</h3><p class=\"muted\">No attribution data.</p></article>"
+    max_total = max((row["total"] for row in clean), default=0.0) or 1.0
+    bars = []
+    for row in clean:
+        total_height = max(row["total"] / max_total * 64.0, 2.0)
+        beta_h = row["beta"] / max(row["total"], 1e-9) * total_height if row["total"] else 0
+        factor_h = row["factor"] / max(row["total"], 1e-9) * total_height if row["total"] else 0
+        residual_h = row["residual"] / max(row["total"], 1e-9) * total_height if row["total"] else 0
+        bars.append(
+            f"""<div class="stack-bar">
+              <div class="stack-segments" style="height:{total_height:.1f}px">
+                <span class="seg residual" style="height:{residual_h:.1f}px"></span>
+                <span class="seg factor" style="height:{factor_h:.1f}px"></span>
+                <span class="seg beta" style="height:{beta_h:.1f}px"></span>
+              </div>
+              <em>{escape(row['label'])}</em>
+            </div>"""
+        )
+    return f"""
+      <article class="chart-card compact-chart">
+        <h3>Attribution Stack</h3>
+        <div class="stack-chart">{''.join(bars)}</div>
+        <div class="legend"><span class="beta"></span>Beta <span class="factor"></span>Factor <span class="residual"></span>Residual</div>
+      </article>
+    """
+
+
 def _render_bar_chart(
     title: str,
     rows: list[dict[str, Any]],
@@ -3040,6 +3206,81 @@ def _count_values(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
         label = str(row.get(key) or "unknown")
         counts[label] = counts.get(label, 0) + 1
     return [{"label": label, "value": count, "status": label} for label, count in sorted(counts.items())]
+
+
+def _dashboard_can_trade(summary: dict[str, Any]) -> bool:
+    ops = summary.get("ops") or {}
+    control = summary.get("execution_control") or {}
+    config = summary.get("config") or {}
+    circuit = config.get("circuit_state") or {}
+    snapshot = control.get("latest_account_snapshot") or {}
+    guard = control.get("account_state_guard") or {}
+    auto_pause = control.get("auto_pause") or {}
+    circuit_state = str(circuit.get("state") or circuit.get("value") or "").upper()
+    return (
+        not bool(ops.get("execution_blockers"))
+        and circuit_state in {"", "CLOSED"}
+        and str(snapshot.get("account_status") or "").lower() in {"", "ok"}
+        and int(snapshot.get("open_order_count") or 0) == 0
+        and not bool(guard.get("would_block"))
+        and not bool(auto_pause.get("should_pause"))
+    )
+
+
+def _config_scalar(value: Any) -> Any:
+    if isinstance(value, dict) and "value" in value:
+        return value.get("value")
+    return value
+
+
+def _count_today_commands(rows: list[dict[str, Any]]) -> int:
+    today_prefix = datetime.utcnow().date().isoformat()
+    count = 0
+    for row in rows:
+        executed_at = str(row.get("executed_at") or row.get("qc_ack_at") or "")
+        if executed_at.startswith(today_prefix):
+            count += 1
+    return count
+
+
+def _latest_target_turnover(latest: dict[str, Any]) -> float | None:
+    rows = (latest.get("transaction_cost_gate") or {}).get("rows") or []
+    values = [_json_safe_number(row.get("abs_delta")) for row in rows]
+    clean = [float(value) for value in values if value is not None]
+    if clean:
+        return round(sum(clean), 6)
+    actions = latest.get("rebalance_actions") or []
+    action_values = [_json_safe_number(row.get("weight_delta")) for row in actions if isinstance(row, dict)]
+    action_clean = [abs(float(value)) for value in action_values if value is not None]
+    if action_clean:
+        return round(sum(action_clean), 6)
+    return None
+
+
+def _pct_ratio(value: Any, max_value: Any) -> float:
+    numerator = _json_safe_number(value)
+    denominator = _json_safe_number(max_value)
+    if numerator is None or denominator is None or denominator <= 0:
+        return 0.0
+    return max(min(numerator / denominator * 100.0, 100.0), 0.0)
+
+
+def _format_pct_value(value: Any) -> str:
+    num = _json_safe_number(value)
+    if num is None:
+        return "n/a"
+    return f"{num:.1%}"
+
+
+def _format_money_like(value: Any) -> str:
+    num = _json_safe_number(value)
+    if num is None:
+        return ""
+    if abs(num) >= 1_000_000:
+        return f"${num / 1_000_000:.1f}M"
+    if abs(num) >= 1_000:
+        return f"${num / 1_000:.1f}K"
+    return f"${num:.0f}"
 
 
 def _format_chart_number(value: Any) -> str:
@@ -3664,7 +3905,7 @@ def _iso(value: Any) -> str | None:
 
 def _css() -> str:
     return """
-    :root { color-scheme: light; --bg:#f6f7f9; --ink:#111827; --muted:#6b7280; --line:#d8dde6; --card:#ffffff; --soft:#f9fafb; --ok:#0f766e; --bad:#b42318; --warn:#a16207; --info:#1d4ed8; }
+    :root { color-scheme: light; --bg:#f6f7f9; --ink:#111827; --muted:#6b7280; --line:#d8dde6; --card:#ffffff; --soft:#f9fafb; --ok:#0f766e; --bad:#b42318; --warn:#a16207; --info:#1d4ed8; --dark:#0c1524; --dark2:#080e1a; --dark-line:#1e293b; }
     * { box-sizing: border-box; }
     html { scroll-behavior:smooth; }
     body { margin:0; overflow-x:hidden; background:var(--bg); color:var(--ink); font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
@@ -3745,6 +3986,62 @@ def _css() -> str:
     th { position:sticky; top:0; z-index:1; color:var(--muted); font-weight:600; background:#fafbfc; }
     td { max-width:260px; overflow-wrap:anywhere; }
     ul { margin:8px 0 0; padding-left:20px; }
-    @media (max-width: 1180px) { .command-grid, .dashboard-focus, .visual-grid, .window-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
-    @media (max-width: 720px) { header { align-items:flex-start; flex-direction:column; padding:18px; } .dashboard-shell { padding:16px; } .section-heading, details.detail-panel summary, .window-title { align-items:flex-start; flex-direction:column; } .command-grid, .dashboard-focus, .visual-grid, .window-grid, .risk-list li { grid-template-columns:1fr; } .bar-row { grid-template-columns:1fr; } }
+    @media (max-width: 1280px) { .metric-grid { grid-template-columns:repeat(4,minmax(0,1fr)); } .cockpit-grid { grid-template-columns:1fr; } }
+    @media (max-width: 1180px) { .command-grid, .dashboard-focus, .visual-grid, .window-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .top-status-bar { align-items:flex-start; flex-direction:column; } .top-status-pills { justify-content:flex-start; width:100%; } }
+    @media (max-width: 720px) { header { align-items:flex-start; flex-direction:column; padding:18px; } .dashboard-shell { padding:16px; } .section-heading, details.detail-panel summary, .window-title { align-items:flex-start; flex-direction:column; } .metric-grid, .command-grid, .dashboard-focus, .visual-grid, .window-grid, .risk-list li, .split-grid, .alpha-summary-grid, .gauge-row { grid-template-columns:1fr; } .bar-row { grid-template-columns:1fr; } }
+    .top-status-bar { position:sticky; top:0; z-index:8; display:flex; align-items:center; gap:16px; min-width:0; padding:10px clamp(16px,3vw,36px); border-bottom:1px solid #1e293b; background:#080e1a; color:#e2e8f0; }
+    .brand-mark { width:24px; height:24px; border-radius:6px; display:grid; place-items:center; flex:0 0 auto; color:#fff; font-weight:900; background:linear-gradient(135deg,#6366f1,#10b981); }
+    .top-status-main { min-width:180px; }
+    .top-status-title { font-size:13px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+    .top-status-sub { color:#64748b; font-size:11px; }
+    .top-status-pills { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex:1; min-width:0; overflow:auto; }
+    .top-pill { display:flex; align-items:center; gap:6px; flex:0 0 auto; padding:4px 8px; border:1px solid currentColor; border-radius:6px; background:rgba(255,255,255,.03); }
+    .top-pill span { color:#64748b; font-size:10px; text-transform:uppercase; letter-spacing:.06em; }
+    .top-pill strong { color:currentColor; font-size:11px; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .metric-grid { display:grid; grid-template-columns:repeat(8,minmax(0,1fr)); gap:8px; }
+    .metric-card { min-width:0; border:1px solid #1e293b; border-radius:8px; padding:12px 14px; background:#0f172a; }
+    .metric-label { color:#64748b; font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .metric-main { display:flex; align-items:center; gap:7px; margin-top:5px; }
+    .metric-main strong { color:#e2e8f0; font-size:18px; font-weight:800; font-variant-numeric:tabular-nums; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .metric-sub { margin-top:3px; color:#64748b; font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .status-dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex:0 0 auto; background:#94a3b8; box-shadow:0 0 8px rgba(148,163,184,.35); }
+    .status-dot.ok, .status-dot.healthy, .status-dot.closed, .status-dot.pass, .status-dot.approved, .status-dot.idle, .status-dot.reconciled { background:#10b981; box-shadow:0 0 8px rgba(16,185,129,.45); }
+    .status-dot.warn, .status-dot.warning, .status-dot.alert, .status-dot.pending, .status-dot.partial, .status-dot.tightened { background:#f59e0b; box-shadow:0 0 8px rgba(245,158,11,.45); }
+    .status-dot.error, .status-dot.blocked, .status-dot.rejected, .status-dot.defensive, .status-dot.timeout_no_ack, .status-dot.execution_blocked { background:#ef4444; box-shadow:0 0 8px rgba(239,68,68,.45); }
+    .status-dot.info, .status-dot.observe { background:#6366f1; box-shadow:0 0 8px rgba(99,102,241,.45); }
+    .cockpit-grid { display:grid; grid-template-columns:minmax(260px,1fr) minmax(360px,1.4fr) minmax(280px,1fr); gap:14px; }
+    .cockpit-panel { min-width:0; border:1px solid #1e293b; border-radius:10px; padding:16px; background:#0c1524; color:#e2e8f0; }
+    .cockpit-panel .kv { border-bottom-color:#1e293b; }
+    .cockpit-panel .kv span { color:#64748b; }
+    .cockpit-panel .kv strong { color:#cbd5e1; }
+    .priority-panel .priority-strip { padding:0; border:0; background:transparent; }
+    .priority-panel .priority-strip > h3 { display:none; }
+    .priority-panel .risk-list li { border-color:#1e293b; background:#080e1a; }
+    .priority-panel .risk-list li { grid-template-columns:84px 1fr; gap:6px 10px; }
+    .priority-panel .risk-list li p { grid-column:1 / -1; }
+    .account-execution-panel .chart-card, .alpha-panel .chart-card { border-color:#1e293b; background:#080e1a; color:#e2e8f0; }
+    .account-execution-panel .kv strong { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .gauge-row { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:12px; }
+    .arc-gauge { display:grid; justify-items:center; gap:2px; min-width:0; color:#6366f1; }
+    .arc-gauge.ok { color:#10b981; }
+    .arc-gauge.warn { color:#f59e0b; }
+    .arc-gauge.error { color:#ef4444; }
+    .arc-gauge svg { width:74px; height:44px; display:block; }
+    .arc-bg { fill:none; stroke:#1e293b; stroke-width:5; stroke-linecap:round; }
+    .arc-fg { fill:none; stroke:currentColor; stroke-width:5; stroke-linecap:round; }
+    .arc-gauge text { fill:#e2e8f0; font-size:10px; font-weight:800; font-family:monospace; }
+    .arc-label { color:#64748b; font-size:9px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
+    .arc-sub { color:#475569; font-size:9px; text-align:center; min-height:12px; }
+    .split-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .alpha-summary-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-bottom:10px; }
+    .stack-chart { height:72px; display:flex; align-items:flex-end; gap:6px; margin-top:8px; }
+    .stack-bar { flex:1; min-width:12px; display:flex; flex-direction:column; align-items:center; gap:3px; }
+    .stack-segments { width:100%; max-width:24px; display:flex; flex-direction:column; justify-content:flex-end; overflow:hidden; border-radius:3px; background:#111827; }
+    .seg { display:block; width:100%; min-height:1px; }
+    .seg.beta, .legend .beta { background:#334155; }
+    .seg.factor, .legend .factor { background:#6366f1; }
+    .seg.residual, .legend .residual { background:#10b981; }
+    .stack-bar em { color:#64748b; font-size:9px; font-style:normal; max-width:44px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .legend { display:flex; align-items:center; gap:8px; margin-top:7px; color:#64748b; font-size:10px; }
+    .legend span { width:8px; height:8px; border-radius:2px; display:inline-block; }
     """
