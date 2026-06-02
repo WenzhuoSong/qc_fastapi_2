@@ -21,9 +21,10 @@ class ExecutionGatewayTest(unittest.TestCase):
             "strategy_results": [{"strategy_name": "momentum_lite_v1", "turnover": 0.30}],
         })
 
-        self.assertEqual(gateway["final_permission"], "human_required")
+        self.assertEqual(gateway["final_permission"], "tightened")
         self.assertEqual(gateway["source"], "strategy_layer")
         self.assertEqual(gateway["primary_reason"], "regime_consensus_mismatch")
+        self.assertEqual(gateway["response_class"], "strategy_conflict")
         self.assertEqual(gateway["execution_intel_layer"]["verdict"], "acceptable")
 
     def test_high_turnover_requires_human_when_strategy_passes(self):
@@ -37,9 +38,10 @@ class ExecutionGatewayTest(unittest.TestCase):
             "strategy_results": [{"strategy_name": "momentum_lite_v1", "turnover": 0.74}],
         })
 
-        self.assertEqual(gateway["final_permission"], "human_required")
+        self.assertEqual(gateway["final_permission"], "tightened")
         self.assertEqual(gateway["source"], "execution_intel_layer")
         self.assertEqual(gateway["primary_reason"], "high_turnover_cost")
+        self.assertEqual(gateway["response_class"], "cost_turnover")
 
     def test_clean_strategy_and_execution_are_approved(self):
         gateway = build_execution_gateway({
@@ -66,8 +68,9 @@ class ExecutionGatewayTest(unittest.TestCase):
             "strategy_results": [{"strategy_name": "momentum_lite_v1", "turnover": 0.30}],
         })
 
-        self.assertEqual(gateway["final_permission"], "human_required")
+        self.assertEqual(gateway["final_permission"], "tightened")
         self.assertEqual(gateway["primary_reason"], "execution_intel_insufficient_data")
+        self.assertEqual(gateway["response_class"], "data_quality")
         self.assertEqual(gateway["execution_intel_layer"]["execution_intel_status"], "insufficient_data")
 
 

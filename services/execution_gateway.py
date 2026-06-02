@@ -26,11 +26,11 @@ def build_execution_gateway(
         primary_reason = strategy_layer["reason"]
         source = "strategy_layer"
     elif strategy_layer["verdict"] == "watch_only":
-        final_permission = "human_required"
+        final_permission = "tightened"
         primary_reason = strategy_layer["reason"]
         source = "strategy_layer"
-    elif execution_layer["verdict"] in {"blocked", "human_required"}:
-        final_permission = "human_required"
+    elif execution_layer["verdict"] in {"blocked", "tightened"}:
+        final_permission = "tightened"
         primary_reason = execution_layer["reason"]
         source = "execution_intel_layer"
     else:
@@ -42,6 +42,7 @@ def build_execution_gateway(
         "final_permission": final_permission,
         "primary_reason": primary_reason,
         "source": source,
+        "response_class": _response_class(strategy_layer, execution_layer, source),
         "strategy_layer": strategy_layer,
         "execution_intel_layer": execution_layer,
         "thresholds": {
@@ -64,23 +65,27 @@ def _strategy_layer(evidence: dict[str, Any]) -> dict[str, Any]:
         return {
             "verdict": "blocked",
             "reason": "no_actionable_strategy_confidence",
+            "response_class": "data_quality",
             "historical_evidence": historical or "unknown",
         }
     if consensus_conflict or legacy_permission == "human_required":
         return {
             "verdict": "watch_only",
             "reason": "regime_consensus_mismatch",
+            "response_class": "strategy_conflict",
             "historical_evidence": historical or "unknown",
         }
     if actionable_count > 0 or legacy_permission in {"allowed", "advisory"}:
         return {
             "verdict": "approved",
             "reason": "historical_strategy_support",
+            "response_class": "normal",
             "historical_evidence": historical or "unknown",
         }
     return {
         "verdict": "watch_only",
         "reason": "strategy_confidence_watch_only",
+        "response_class": "data_quality",
         "historical_evidence": historical or "unknown",
     }
 
@@ -96,31 +101,43 @@ def _execution_layer(evidence: dict[str, Any], *, turnover_threshold: float) -> 
     max_turnover = _max_turnover(evidence)
     if max_turnover > turnover_threshold:
         return {
-            "verdict": "human_required",
+            "verdict": "tightened",
             "reason": "high_turnover_cost",
+            "response_class": "cost_turnover",
             "execution_intel_status": status,
             "gross_turnover_pct": round(max_turnover, 6),
         }
     if status == "insufficient_data":
         return {
-            "verdict": "human_required",
+            "verdict": "tightened",
             "reason": "execution_intel_insufficient_data",
+            "response_class": "data_quality",
             "execution_intel_status": status,
             "gross_turnover_pct": round(max_turnover, 6),
         }
     if status == "conflicted":
         return {
-            "verdict": "human_required",
+            "verdict": "tightened",
             "reason": "execution_intel_conflicted",
+            "response_class": "strategy_conflict",
             "execution_intel_status": status,
             "gross_turnover_pct": round(max_turnover, 6),
         }
     return {
         "verdict": "acceptable",
         "reason": "execution_intel_available",
+        "response_class": "normal",
         "execution_intel_status": status,
         "gross_turnover_pct": round(max_turnover, 6),
     }
+
+
+def _response_class(strategy_layer: dict[str, Any], execution_layer: dict[str, Any], source: str) -> str:
+    if source == "strategy_layer":
+        return str(strategy_layer.get("response_class") or "data_quality")
+    if source == "execution_intel_layer":
+        return str(execution_layer.get("response_class") or "data_quality")
+    return "normal"
 
 
 def _max_turnover(evidence: dict[str, Any]) -> float:

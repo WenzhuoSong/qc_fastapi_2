@@ -52,6 +52,40 @@ class CircuitState(str, Enum):
     DEFENSIVE = "DEFENSIVE"  # Protected mode
 
 
+class CircuitTriggerClass(str, Enum):
+    MARKET_RISK = "market_risk"
+    ACCOUNT_RISK = "account_risk"
+    EXECUTION_RISK = "execution_risk"
+    CONTROL_PLANE = "control_plane"
+    DIAGNOSTICS = "diagnostics"
+    DERIVED = "derived"
+    TECHNICAL = "technical"
+
+
+TRIGGER_CLASS_MAP = {
+    "vix": CircuitTriggerClass.MARKET_RISK,
+    "vix_spike": CircuitTriggerClass.MARKET_RISK,
+    "drawdown": CircuitTriggerClass.MARKET_RISK,
+    "drawdown_threshold": CircuitTriggerClass.MARKET_RISK,
+    "account_state_stale": CircuitTriggerClass.ACCOUNT_RISK,
+    "account_state_guard_failure": CircuitTriggerClass.ACCOUNT_RISK,
+    "account_stale": CircuitTriggerClass.ACCOUNT_RISK,
+    "holdings_mismatch": CircuitTriggerClass.ACCOUNT_RISK,
+    "rejections": CircuitTriggerClass.EXECUTION_RISK,
+    "consecutive_qc_rejects": CircuitTriggerClass.EXECUTION_RISK,
+    "policy_mismatch_timeout": CircuitTriggerClass.CONTROL_PLANE,
+    "policy_sync_recovery_exhausted": CircuitTriggerClass.CONTROL_PLANE,
+    "policy_version_mismatch": CircuitTriggerClass.CONTROL_PLANE,
+    "llm_failure": CircuitTriggerClass.DIAGNOSTICS,
+    "persistent_alert": CircuitTriggerClass.DERIVED,
+}
+
+STICKY_DEFENSIVE_TRIGGER_CLASSES = {
+    CircuitTriggerClass.MARKET_RISK,
+    CircuitTriggerClass.ACCOUNT_RISK,
+}
+
+
 # ─────────────────────────────── Dataclasses ───────────────────────────────
 
 
@@ -522,7 +556,7 @@ class CircuitBreakerMonitor:
         # cooldown close path remains reachable after escalation checks.
         elif current == CircuitState.ALERT:
             persistent_tr = next((t for t in trigger_results if t.name == "persistent_alert" and t.triggered), None)
-            if persistent_tr:
+            if persistent_tr and self._persistent_alert_can_escalate_to_defensive(circuit_cfg):
                 return CircuitState.DEFENSIVE, "persistent_alert", persistent_tr.details
             if escalations:
                 # Only escalate to DEFENSIVE if VIX > 40 or rejection count very high
@@ -566,6 +600,12 @@ class CircuitBreakerMonitor:
                     return CircuitState.ALERT, "deescalation", f"VIX={vix_tr.value:.1f} dropped, drawdown={dd_tr.value:.2%} recovered → ALERT"
 
         return current, "", "no state change"
+
+    def _persistent_alert_can_escalate_to_defensive(self, circuit_cfg) -> bool:
+        cfg = circuit_cfg.value if circuit_cfg else {}
+        original_trigger = str((cfg or {}).get("primary_trigger") or "").strip()
+        trigger_class = TRIGGER_CLASS_MAP.get(original_trigger, CircuitTriggerClass.TECHNICAL)
+        return trigger_class in STICKY_DEFENSIVE_TRIGGER_CLASSES
 
     async def get_current_state(self) -> CircuitState:
         async with AsyncSessionLocal() as db:

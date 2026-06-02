@@ -97,6 +97,7 @@ class CircuitBreakerStateMachineTests(unittest.TestCase):
         circuit_cfg = _ConfigRow({
             "value": "ALERT",
             "updated_at": (datetime.utcnow() - timedelta(hours=3)).isoformat(),
+            "primary_trigger": "vix",
         })
 
         next_state, trigger, reason = monitor._compute_next_state(
@@ -119,6 +120,75 @@ class CircuitBreakerStateMachineTests(unittest.TestCase):
         self.assertEqual(next_state, CircuitState.DEFENSIVE)
         self.assertEqual(trigger, "persistent_alert")
         self.assertIn("persisted", reason)
+
+    def test_persistent_technical_alert_does_not_escalate_to_defensive(self):
+        monitor = CircuitBreakerMonitor(
+            CircuitConfig(cooldown_minutes=30, persistent_alert_hours=2)
+        )
+        circuit_cfg = _ConfigRow({
+            "value": "ALERT",
+            "updated_at": (datetime.utcnow() - timedelta(hours=3)).isoformat(),
+            "primary_trigger": "llm_failure",
+        })
+
+        next_state, trigger, reason = monitor._compute_next_state(
+            CircuitState.ALERT,
+            [
+                TriggerResult(
+                    name="llm_failure",
+                    value=0.75,
+                    threshold=0.5,
+                    triggered=True,
+                    direction="escalate",
+                    details="LLM failure rate=75%",
+                ),
+                TriggerResult(
+                    name="persistent_alert",
+                    value=3.0,
+                    threshold=2,
+                    triggered=True,
+                    direction="escalate",
+                    details="ALERT persisted 3.0h > 2h",
+                ),
+            ],
+            circuit_cfg,
+        )
+
+        self.assertEqual(next_state, CircuitState.ALERT)
+        self.assertEqual(trigger, "")
+        self.assertEqual(reason, "no state change")
+
+    def test_persistent_control_plane_alert_closes_when_original_trigger_clears(self):
+        monitor = CircuitBreakerMonitor(
+            CircuitConfig(cooldown_minutes=30, persistent_alert_hours=2)
+        )
+        circuit_cfg = _ConfigRow({
+            "value": "ALERT",
+            "updated_at": (datetime.utcnow() - timedelta(hours=3)).isoformat(),
+            "primary_trigger": "policy_mismatch_timeout",
+        })
+
+        next_state, trigger, reason = monitor._compute_next_state(
+            CircuitState.ALERT,
+            [
+                _clear("vix"),
+                _clear("drawdown"),
+                _clear("llm_failure"),
+                TriggerResult(
+                    name="persistent_alert",
+                    value=3.0,
+                    threshold=2,
+                    triggered=True,
+                    direction="escalate",
+                    details="ALERT persisted 3.0h > 2h",
+                ),
+            ],
+            circuit_cfg,
+        )
+
+        self.assertEqual(next_state, CircuitState.CLOSED)
+        self.assertEqual(trigger, "all_clear")
+        self.assertIn("cooldown", reason)
 
 
 def _clear(name: str) -> TriggerResult:
