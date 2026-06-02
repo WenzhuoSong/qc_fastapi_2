@@ -66,6 +66,7 @@ class MarketScorecardTest(unittest.TestCase):
         self.assertEqual(scorecard["market_condition"], "bullish")
         self.assertEqual(scorecard["investment_permission"], "normal_rebalance")
         self.assertFalse(scorecard["require_human_confirmation"])
+        self.assertEqual(scorecard["confirmation_classes"], [])
         self.assertEqual(scorecard["max_adjustment_from_base"], 0.05)
         self.assertEqual(scorecard["min_cash_weight"], 0.05)
 
@@ -86,6 +87,7 @@ class MarketScorecardTest(unittest.TestCase):
         self.assertEqual(scorecard["investment_permission"], "small_overweight_only")
         self.assertEqual(scorecard["max_adjustment_from_base"], 0.03)
         self.assertTrue(scorecard["require_human_confirmation"])
+        self.assertEqual(scorecard["confirmation_classes"], ["data_quality"])
         self.assertIn("limited_data_quality", scorecard["triggered_rules"])
 
     def test_missing_playground_has_explicit_fallback(self):
@@ -105,6 +107,7 @@ class MarketScorecardTest(unittest.TestCase):
         self.assertIn("playground_missing", scorecard["triggered_rules"])
         self.assertIn("limited_data_quality", scorecard["triggered_rules"])
         self.assertTrue(scorecard["require_human_confirmation"])
+        self.assertEqual(scorecard["confirmation_classes"], ["data_quality"])
         self.assertLessEqual(scorecard["max_adjustment_from_base"], 0.03)
 
     def test_bullish_but_bond_heavy_rotation_is_mixed(self):
@@ -120,6 +123,7 @@ class MarketScorecardTest(unittest.TestCase):
 
         self.assertEqual(scorecard["market_condition"], "bullish_but_mixed")
         self.assertIn("bullish_but_mixed_rotation", scorecard["triggered_rules"])
+        self.assertEqual(scorecard["confirmation_classes"], ["strategy_conflict"])
         self.assertEqual(scorecard["investment_permission"], "small_overweight_only")
 
     def test_bull_with_defensive_rotation_subtype_does_not_double_count_conflict(self):
@@ -169,6 +173,7 @@ class MarketScorecardTest(unittest.TestCase):
         self.assertEqual(scorecard["investment_permission"], "small_overweight_only")
         self.assertLessEqual(scorecard["max_turnover_per_cycle"], 0.20)
         self.assertTrue(scorecard["require_human_confirmation"])
+        self.assertEqual(scorecard["confirmation_classes"], ["strategy_conflict", "data_quality"])
 
     def test_high_volatility_sets_defensive_limits(self):
         evidence = fresh_evidence(market={"vix": 34.0, "avg_atr_pct": 0.014})
@@ -180,6 +185,7 @@ class MarketScorecardTest(unittest.TestCase):
         self.assertEqual(scorecard["min_cash_weight"], 0.15)
         self.assertEqual(scorecard["max_single_position"], 0.15)
         self.assertTrue(scorecard["prefer_hedges"])
+        self.assertEqual(scorecard["confirmation_classes"], ["market_stress"])
 
     def test_extreme_volatility_produces_cash_only(self):
         evidence = fresh_evidence(market={"vix": 55.0})
@@ -190,6 +196,7 @@ class MarketScorecardTest(unittest.TestCase):
         self.assertEqual(scorecard["max_equity_weight"], 0.0)
         self.assertEqual(scorecard["min_cash_weight"], 1.0)
         self.assertFalse(scorecard["allow_new_positions"])
+        self.assertEqual(scorecard["confirmation_classes"], ["market_stress"])
 
     def test_defensive_drawdown_blocks_new_positions(self):
         evidence = fresh_evidence(market={"drawdown_pct": 0.12})
@@ -200,6 +207,7 @@ class MarketScorecardTest(unittest.TestCase):
         self.assertEqual(scorecard["max_equity_weight"], 0.50)
         self.assertEqual(scorecard["min_cash_weight"], 0.20)
         self.assertFalse(scorecard["allow_new_positions"])
+        self.assertEqual(scorecard["confirmation_classes"], ["market_stress"])
 
     def test_stale_evidence_limits_action(self):
         evidence = fresh_evidence(
@@ -212,6 +220,7 @@ class MarketScorecardTest(unittest.TestCase):
 
         self.assertIn("stale_evidence", scorecard["triggered_rules"])
         self.assertTrue(scorecard["require_human_confirmation"])
+        self.assertEqual(scorecard["confirmation_classes"], ["data_quality"])
         self.assertLessEqual(scorecard["max_adjustment_from_base"], 0.01)
 
     def test_resolve_conflicts_takes_most_conservative_intersection(self):
@@ -226,6 +235,7 @@ class MarketScorecardTest(unittest.TestCase):
                     "max_turnover_per_cycle": 0.20,
                     "allow_new_positions": True,
                     "require_human_confirmation": True,
+                    "confirmation_class": "data_quality",
                 },
                 {
                     "name": "high_volatility",
@@ -236,7 +246,9 @@ class MarketScorecardTest(unittest.TestCase):
                     "max_turnover_per_cycle": 0.30,
                     "max_single_position": 0.15,
                     "allow_new_positions": False,
+                    "require_human_confirmation": True,
                     "prefer_hedges": True,
+                    "confirmation_class": "market_stress",
                 },
             ]
         )
@@ -248,6 +260,7 @@ class MarketScorecardTest(unittest.TestCase):
         self.assertEqual(resolved["max_turnover_per_cycle"], 0.20)
         self.assertFalse(resolved["allow_new_positions"])
         self.assertTrue(resolved["require_human_confirmation"])
+        self.assertEqual(resolved["confirmation_classes"], ["data_quality", "market_stress"])
         self.assertTrue(resolved["prefer_hedges"])
 
 

@@ -49,6 +49,10 @@ class GovernanceConfig:
     advisory_basket_loss_manual_review_enabled: float = 1.0
     advisory_basket_loss_auto_trim_enabled: float = 0.0
     advisory_basket_loss_auto_trim_pct: float = 0.01
+    market_stress_auto_trim_enabled: float = 1.0
+    market_stress_trim_pct: float = 0.01
+    market_stress_high_beta_threshold: float = 1.20
+    market_stress_high_risk_budget_cost: float = 0.70
 
     @classmethod
     def from_config(cls, raw: dict[str, Any] | None) -> "GovernanceConfig":
@@ -118,6 +122,8 @@ def apply_position_governance(
     group_limits = _group_limits(cfg)
     permission = str((market_scorecard or {}).get("investment_permission") or "normal_rebalance")
     require_human = bool((market_scorecard or {}).get("require_human_confirmation"))
+    confirmation_classes = _scorecard_confirmation_classes(market_scorecard or {})
+    market_stress_confirmation = "market_stress" in confirmation_classes
 
     decisions: list[dict[str, Any]] = []
     blocked_actions: list[str] = []
@@ -166,6 +172,21 @@ def apply_position_governance(
         if permission in {"hold_or_trim", "reduce_risk_only", "cash_only", "defensive_only"}:
             reasons.append(f"scorecard_{permission}")
             allowed_actions.discard("add")
+        if market_stress_confirmation:
+            reasons.append("scorecard_market_stress")
+            allowed_actions.discard("add")
+            if (
+                cfg.market_stress_auto_trim_enabled
+                and current_w > 0.0
+                and _is_market_stress_trim_candidate(
+                    row=row,
+                    risk_budget_status=risk_budget_status,
+                    atr=atr,
+                    cfg=cfg,
+                )
+            ):
+                target_w = min(target_w, max(current_w - cfg.market_stress_trim_pct, 0.0))
+                decision = "trim"
 
         if ticker in hard_risk_tickers:
             reasons.append("hard_risk")
@@ -547,6 +568,35 @@ def _risk_budget_status(risk_contribution: float, cfg: GovernanceConfig) -> str:
     if risk_contribution >= cfg.high_risk_contribution_pct * 0.5:
         return "medium"
     return "normal"
+
+
+def _scorecard_confirmation_classes(scorecard: dict[str, Any]) -> set[str]:
+    raw = scorecard.get("confirmation_classes") or []
+    if isinstance(raw, str):
+        return {raw}
+    if isinstance(raw, (list, tuple, set)):
+        return {str(item) for item in raw if str(item or "").strip()}
+    return set()
+
+
+def _is_market_stress_trim_candidate(
+    *,
+    row: dict[str, Any],
+    risk_budget_status: str,
+    atr: float | None,
+    cfg: GovernanceConfig,
+) -> bool:
+    if risk_budget_status == "high":
+        return True
+    if atr is not None and atr >= cfg.high_atr_pct:
+        return True
+    risk_budget_cost = _to_float(row.get("risk_budget_cost"))
+    if risk_budget_cost is not None and risk_budget_cost >= cfg.market_stress_high_risk_budget_cost:
+        return True
+    beta = _to_float(row.get("beta_vs_spy", row.get("beta")))
+    if beta is not None and beta >= cfg.market_stress_high_beta_threshold:
+        return True
+    return False
 
 
 def _assign_risk_ranks(decisions: list[dict[str, Any]]) -> None:

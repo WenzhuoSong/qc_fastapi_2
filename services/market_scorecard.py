@@ -21,6 +21,10 @@ PERMISSION_SEVERITY = {
     "cash_only": 6,
 }
 
+CONFIRMATION_DATA_QUALITY = "data_quality"
+CONFIRMATION_MARKET_STRESS = "market_stress"
+CONFIRMATION_STRATEGY_CONFLICT = "strategy_conflict"
+
 DEFAULT_SCORECARD: dict[str, Any] = {
     "market_condition": "normal",
     "regime": "unknown",
@@ -40,6 +44,7 @@ DEFAULT_SCORECARD: dict[str, Any] = {
     "max_single_position": 0.20,
     "allow_new_positions": True,
     "require_human_confirmation": False,
+    "confirmation_classes": [],
     "prefer_hedges": False,
     "reasons": [],
     "warnings": [],
@@ -114,6 +119,7 @@ def resolve_conflicts(triggered_rules: list[dict[str, Any]]) -> dict[str, Any]:
         "min_cash_weight": _max_value(rules, "min_cash_weight", 0.05),
         "allow_new_positions": all(bool(r.get("allow_new_positions", True)) for r in rules),
         "require_human_confirmation": any(bool(r.get("require_human_confirmation", False)) for r in rules),
+        "confirmation_classes": _collect_confirmation_classes(rules),
         "prefer_hedges": any(bool(r.get("prefer_hedges", False)) for r in rules),
         "investment_permission": _most_restrictive_permission(rules),
         "triggered_rules": [str(r.get("name", "unnamed_rule")) for r in rules],
@@ -147,6 +153,7 @@ def _base_rule(base: dict[str, Any]) -> dict[str, Any]:
         "max_single_position": base.get("max_single_position", 0.20),
         "allow_new_positions": base.get("allow_new_positions", True),
         "require_human_confirmation": base.get("require_human_confirmation", False),
+        "confirmation_classes": list(base.get("confirmation_classes") or []),
         "prefer_hedges": base.get("prefer_hedges", False),
         "reasons": ["Base scorecard permissions applied"],
     }
@@ -162,6 +169,7 @@ def _staleness_rules(evidence: dict[str, Any]) -> list[dict[str, Any]]:
             "max_adjustment_from_base": 0.01,
             "max_turnover_per_cycle": 0.10,
             "require_human_confirmation": True,
+            "confirmation_class": CONFIRMATION_DATA_QUALITY,
             "warnings": ["Evidence bundle is stale or missing freshness metadata"],
             "reasons": ["Stale evidence limits allocation changes"],
         }
@@ -187,6 +195,7 @@ def _data_quality_rules(strategies: dict[str, Any], data_quality: dict[str, Any]
                 "investment_permission": "small_overweight_only",
                 "max_adjustment_from_base": 0.03,
                 "require_human_confirmation": True,
+                "confirmation_class": CONFIRMATION_DATA_QUALITY,
                 "warnings": ["No recent Playground result available"],
                 "reasons": ["Strategy comparison cannot influence allocation"],
             }
@@ -205,6 +214,7 @@ def _data_quality_rules(strategies: dict[str, Any], data_quality: dict[str, Any]
                 "max_adjustment_from_base": 0.03,
                 "max_turnover_per_cycle": 0.20,
                 "require_human_confirmation": True,
+                "confirmation_class": CONFIRMATION_DATA_QUALITY,
                 "reasons": reasons,
             }
         )
@@ -235,6 +245,7 @@ def _market_conflict_rules(
             "max_adjustment_from_base": 0.03,
             "max_equity_weight": 0.85,
             "require_human_confirmation": True,
+            "confirmation_class": CONFIRMATION_STRATEGY_CONFLICT,
             "reasons": ["Bullish regime conflicts with defensive or bond-heavy rotation"],
         }
     ]
@@ -255,6 +266,7 @@ def _volatility_rules(market: dict[str, Any]) -> list[dict[str, Any]]:
                 "max_single_position": 0.0,
                 "allow_new_positions": False,
                 "require_human_confirmation": True,
+                "confirmation_class": CONFIRMATION_MARKET_STRESS,
                 "prefer_hedges": True,
                 "reasons": [f"VIX {vix:.1f} exceeds extreme threshold 50"],
             }
@@ -270,6 +282,7 @@ def _volatility_rules(market: dict[str, Any]) -> list[dict[str, Any]]:
                 "min_cash_weight": 0.15,
                 "max_single_position": 0.15,
                 "require_human_confirmation": True,
+                "confirmation_class": CONFIRMATION_MARKET_STRESS,
                 "prefer_hedges": True,
                 "reasons": [reason],
             }
@@ -291,6 +304,7 @@ def _drawdown_rules(market: dict[str, Any]) -> list[dict[str, Any]]:
                 "max_single_position": 0.0,
                 "allow_new_positions": False,
                 "require_human_confirmation": True,
+                "confirmation_class": CONFIRMATION_MARKET_STRESS,
                 "reasons": [f"Drawdown {drawdown:.1%} exceeds extreme threshold 20%"],
             }
         ]
@@ -305,6 +319,7 @@ def _drawdown_rules(market: dict[str, Any]) -> list[dict[str, Any]]:
                 "max_single_position": 0.12,
                 "allow_new_positions": False,
                 "require_human_confirmation": True,
+                "confirmation_class": CONFIRMATION_MARKET_STRESS,
                 "reasons": [f"Drawdown {drawdown:.1%} exceeds defensive threshold 10%"],
             }
         ]
@@ -329,6 +344,7 @@ def _turnover_rules(strategies: dict[str, Any]) -> list[dict[str, Any]]:
             "investment_permission": "small_overweight_only",
             "max_turnover_per_cycle": 0.20,
             "require_human_confirmation": True,
+            "confirmation_class": CONFIRMATION_STRATEGY_CONFLICT,
             "warnings": [f"Strategy turnover {max_turnover:.1%} may erode returns"],
             "reasons": ["High-turnover strategy output limits action size"],
         }
@@ -354,6 +370,7 @@ def _strategy_confidence_rules(strategies: dict[str, Any]) -> list[dict[str, Any
             "max_adjustment_from_base": 0.03,
             "max_turnover_per_cycle": 0.20,
             "require_human_confirmation": True,
+            "confirmation_class": CONFIRMATION_STRATEGY_CONFLICT,
             "warnings": ["Strategy consensus conflicts with current regime; do not follow consensus weights directly"],
             "reasons": ["Playground consensus is defensive while regime evidence is risk-on"],
         })
@@ -365,6 +382,7 @@ def _strategy_confidence_rules(strategies: dict[str, Any]) -> list[dict[str, Any
             "max_adjustment_from_base": 0.03,
             "max_turnover_per_cycle": 0.20,
             "require_human_confirmation": True,
+            "confirmation_class": CONFIRMATION_DATA_QUALITY,
             "warnings": ["Best strategy confidence is advisory-only; use direction, not full target weights"],
             "reasons": [f"No primary strategy confidence; best confidence={best:.2f}"],
         })
@@ -375,6 +393,7 @@ def _strategy_confidence_rules(strategies: dict[str, Any]) -> list[dict[str, Any
             "max_adjustment_from_base": 0.01,
             "max_turnover_per_cycle": 0.10,
             "require_human_confirmation": True,
+            "confirmation_class": CONFIRMATION_DATA_QUALITY,
             "warnings": ["No strategy has actionable confidence"],
             "reasons": [f"Best strategy confidence={best:.2f}"],
         })
@@ -495,6 +514,19 @@ def _collect(rules: list[dict[str, Any]], key: str) -> list[str]:
         else:
             out.extend(str(item) for item in value)
     return _unique_list(out)
+
+
+def _collect_confirmation_classes(rules: list[dict[str, Any]]) -> list[str]:
+    out: list[str] = []
+    for rule in rules:
+        if not bool(rule.get("require_human_confirmation", False)):
+            continue
+        value = rule.get("confirmation_classes", rule.get("confirmation_class"))
+        if isinstance(value, str):
+            out.append(value)
+        elif isinstance(value, (list, tuple, set)):
+            out.extend(str(item) for item in value)
+    return _unique_list([item for item in out if item])
 
 
 def _unique_list(values: list[str]) -> list[str]:

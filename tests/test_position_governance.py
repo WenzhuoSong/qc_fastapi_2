@@ -223,6 +223,71 @@ class PositionGovernanceTest(unittest.TestCase):
         self.assertEqual(out.manual_action_hints[0]["ticker"], "PSI")
         self.assertEqual(out.manual_action_hints[0]["suggested_action"], "manual_trim_review")
 
+    def test_data_quality_human_required_does_not_auto_trim_high_beta_position(self):
+        out = apply_position_governance(
+            target_weights={"QQQ": 0.12, "CASH": 0.88},
+            current_weights={"QQQ": 0.12, "CASH": 0.88},
+            holdings_meta=[
+                {
+                    "ticker": "QQQ",
+                    "universe_role": "core",
+                    "unrealized_pnl_pct": 0.01,
+                    "atr_pct": 0.018,
+                    "beta_vs_spy": 1.35,
+                },
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {"strategy_name": "momentum_lite_v1", "suggested_use": "advisory", "selected_tickers": ["QQQ"]}
+                ]
+            },
+            market_scorecard={
+                "investment_permission": "normal_rebalance",
+                "require_human_confirmation": True,
+                "confirmation_classes": ["data_quality"],
+            },
+            news_evidence={},
+        )
+
+        decision = _decision(out, "QQQ")
+        self.assertEqual(decision["decision"], "hold")
+        self.assertAlmostEqual(decision["target_after"], 0.12, places=4)
+        self.assertIn("scorecard_human_required", decision["reason_codes"])
+        self.assertNotIn("scorecard_market_stress", decision["reason_codes"])
+        self.assertFalse(out.forced_trims)
+
+    def test_market_stress_human_required_auto_trims_high_beta_position(self):
+        out = apply_position_governance(
+            target_weights={"QQQ": 0.12, "CASH": 0.88},
+            current_weights={"QQQ": 0.12, "CASH": 0.88},
+            holdings_meta=[
+                {
+                    "ticker": "QQQ",
+                    "universe_role": "core",
+                    "unrealized_pnl_pct": 0.01,
+                    "atr_pct": 0.018,
+                    "beta_vs_spy": 1.35,
+                },
+            ],
+            strategy_evidence={
+                "strategy_results": [
+                    {"strategy_name": "momentum_lite_v1", "suggested_use": "advisory", "selected_tickers": ["QQQ"]}
+                ]
+            },
+            market_scorecard={
+                "investment_permission": "normal_rebalance",
+                "require_human_confirmation": True,
+                "confirmation_classes": ["market_stress"],
+            },
+            news_evidence={},
+        )
+
+        decision = _decision(out, "QQQ")
+        self.assertEqual(decision["decision"], "trim")
+        self.assertAlmostEqual(decision["target_after"], 0.11, places=4)
+        self.assertIn("scorecard_market_stress", decision["reason_codes"])
+        self.assertTrue(any(item.startswith("QQQ") for item in out.forced_trims))
+
     def test_thesis_status_broken_for_hard_risk_and_has_no_execution_authority(self):
         out = apply_position_governance(
             target_weights={"XLE": 0.09, "CASH": 0.91},
