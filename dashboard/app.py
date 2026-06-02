@@ -2661,6 +2661,11 @@ def render_dashboard(summary: dict[str, Any]) -> str:
   </header>
   <nav class="quick-nav" aria-label="Dashboard sections">
     <a href="#overview">Overview</a>
+    <a href="#account-window">Account</a>
+    <a href="#system-window">System</a>
+    <a href="#actions-window">Actions</a>
+    <a href="#data-window">Data</a>
+    <a href="#alpha-window">Alpha</a>
     <a href="#execution">Execution</a>
     <a href="#latest">Decision</a>
     <a href="#pc">Portfolio Construction</a>
@@ -2677,6 +2682,7 @@ def render_dashboard(summary: dict[str, Any]) -> str:
       {_render_command_center(summary)}
       {_render_priority_queue(summary)}
       {_render_visual_monitoring(summary)}
+      {_render_operator_windows(summary)}
     </section>
 
     <section id="operational-health" class="panel">
@@ -2763,7 +2769,100 @@ def _render_command_center(summary: dict[str, Any]) -> str:
     """
 
 
-def _render_priority_queue(summary: dict[str, Any]) -> str:
+def _render_operator_windows(summary: dict[str, Any]) -> str:
+    control = summary.get("execution_control") or {}
+    snapshot = control.get("latest_account_snapshot") or {}
+    active = control.get("active_execution") or {}
+    guard = control.get("account_state_guard") or {}
+    auto_pause = control.get("auto_pause") or {}
+    ops = summary.get("ops") or {}
+    checks = ops.get("checks") or {}
+    data_audit = summary.get("data_quality_audit") or {}
+    alpha_policy = summary.get("alpha_decision_policy") or {}
+    alpha_profiles = summary.get("alpha_decision_profiles") or {}
+    attribution = summary.get("performance_attribution") or {}
+    conviction = summary.get("live_signal_conviction") or {}
+    latest = summary.get("latest_analysis") or {}
+    action_rows = _priority_rows(summary)
+    command_rows = control.get("recent_commands") or []
+    freshness_rows = [
+        {"check": row.get("label") or key, "state": row.get("state"), "age_hours": row.get("age_hours"), "reason": row.get("reason")}
+        for key, row in checks.items()
+        if isinstance(row, dict)
+    ]
+    return f"""
+      <div class="window-grid">
+        <article id="account-window" class="operator-window">
+          <div class="window-title"><h3>Account Window</h3><span>Truth source</span></div>
+          {_render_kv({
+              "account_status": snapshot.get("account_status"),
+              "data_status": snapshot.get("data_status"),
+              "policy_version": snapshot.get("policy_version"),
+              "cash_pct": snapshot.get("cash_pct"),
+              "open_orders": snapshot.get("open_order_count"),
+              "last_command_id": snapshot.get("last_command_id"),
+              "processed_commands": snapshot.get("processed_command_count"),
+          })}
+          <div class="mini-chart">{_render_bar_chart("Target / Actual Drift", active.get("drift_rows") or [], label_key="ticker", value_key="diff")}</div>
+        </article>
+        <article id="system-window" class="operator-window">
+          <div class="window-title"><h3>System Window</h3><span>Health and guards</span></div>
+          {_render_kv({
+              "overall": ops.get("overall"),
+              "guard": guard.get("status"),
+              "guard_effect": guard.get("execution_effect"),
+              "auto_pause": auto_pause.get("status"),
+              "would_pause": auto_pause.get("would_pause"),
+              "should_pause": auto_pause.get("should_pause"),
+          })}
+          {_render_table(freshness_rows, ["check", "state", "age_hours", "reason"])}
+        </article>
+        <article id="actions-window" class="operator-window">
+          <div class="window-title"><h3>Actions Window</h3><span>What needs attention</span></div>
+          {_render_table(action_rows, ["level", "source", "message"])}
+          <h4>Recent Commands</h4>
+          {_render_table(command_rows, ["executed_at", "command_id", "command_type", "qc_status", "execution_state", "qc_rejection_reason"])}
+        </article>
+        <article id="data-window" class="operator-window">
+          <div class="window-title"><h3>Data Window</h3><span>Research inputs</span></div>
+          {_render_kv({
+              "audit_status": (data_audit.get("latest") or {}).get("status"),
+              "joined_rows": (data_audit.get("latest") or {}).get("joined_rows"),
+              "unit_risks": (data_audit.get("latest") or {}).get("unit_risk_count"),
+              "high_drift": (data_audit.get("latest") or {}).get("high_drift_classes"),
+              "yfinance_health": (checks.get("yfinance_ticker_health") or {}).get("state"),
+              "yfinance_ok": f"{(checks.get('yfinance_ticker_health') or {}).get('ok_count', 0)}/{(checks.get('yfinance_ticker_health') or {}).get('ticker_count', 0)}",
+          })}
+          <div class="mini-chart">{_render_line_chart("Unit Risk Trend", data_audit.get("recent") or [], x_key="created_at", y_key="unit_risk_count")}</div>
+        </article>
+        <article id="alpha-window" class="operator-window">
+          <div class="window-title"><h3>Alpha Window</h3><span>Evidence quality</span></div>
+          {_render_kv({
+              "policy_mode": alpha_policy.get("effective_mode") or alpha_policy.get("mode"),
+              "profile_count": alpha_profiles.get("profile_count"),
+              "eligible_count": alpha_profiles.get("eligible_count"),
+              "latest_residual": (attribution.get("latest") or {}).get("residual_alpha_candidate"),
+              "latest_r2": (attribution.get("latest") or {}).get("r_squared"),
+              "signals": (conviction.get("overview") or {}).get("frozen_signal_count"),
+          })}
+          <div class="mini-chart">{_render_bar_chart("Conviction Status", conviction.get("status_count_rows") or [], label_key="status", value_key="count")}</div>
+        </article>
+        <article class="operator-window">
+          <div class="window-title"><h3>Decision Window</h3><span>Latest run</span></div>
+          {_render_kv({
+              "analysis_id": latest.get("id"),
+              "trigger": latest.get("trigger_type"),
+              "execution_status": latest.get("execution_status"),
+              "risk_approved": latest.get("risk_approved"),
+              "scorecard": (latest.get("scorecard") or {}).get("investment_permission"),
+              "data_quality": (latest.get("scorecard") or {}).get("data_quality"),
+          })}
+        </article>
+      </div>
+    """
+
+
+def _priority_rows(summary: dict[str, Any]) -> list[dict[str, str]]:
     ops = summary.get("ops") or {}
     control = summary.get("execution_control") or {}
     latest = summary.get("latest_analysis") or {}
@@ -2783,6 +2882,11 @@ def _render_priority_queue(summary: dict[str, Any]) -> str:
         risks.append({"level": "warning", "source": "Active Execution", "message": str(active.get("stale_operator_action") or active.get("stale_reason") or "stale active execution")})
     for reason in latest.get("rejection_reasons") or []:
         risks.append({"level": "warning", "source": "Latest Decision", "message": _format_value(reason)})
+    return risks
+
+
+def _render_priority_queue(summary: dict[str, Any]) -> str:
+    risks = _priority_rows(summary)
     if not risks:
         return """
           <section class="priority-strip ok-strip">
@@ -3599,6 +3703,15 @@ def _css() -> str:
     .risk-list strong { color:var(--ink); }
     .risk-list p { margin:0; overflow-wrap:anywhere; }
     .visual-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .window-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+    .operator-window { min-width:0; border:1px solid var(--line); border-radius:8px; padding:14px; background:#fff; box-shadow:0 1px 0 rgba(17,24,39,.03); }
+    .window-title { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:10px; border-bottom:1px solid #edf0f4; padding-bottom:8px; }
+    .window-title h3 { margin:0; }
+    .window-title span { color:var(--muted); font-size:12px; white-space:nowrap; }
+    .operator-window h4 { margin:14px 0 8px; font-size:13px; }
+    .mini-chart { margin-top:12px; }
+    .mini-chart .chart-card { border:0; padding:0; }
+    .mini-chart .chart-card h3 { font-size:13px; }
     .chart-card { min-width:0; border:1px solid var(--line); border-radius:8px; padding:14px; background:#fff; }
     .chart-card h3 { margin-top:0; }
     .bar-chart { display:grid; gap:9px; }
@@ -3632,6 +3745,6 @@ def _css() -> str:
     th { position:sticky; top:0; z-index:1; color:var(--muted); font-weight:600; background:#fafbfc; }
     td { max-width:260px; overflow-wrap:anywhere; }
     ul { margin:8px 0 0; padding-left:20px; }
-    @media (max-width: 1180px) { .command-grid, .dashboard-focus, .visual-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
-    @media (max-width: 720px) { header { align-items:flex-start; flex-direction:column; padding:18px; } .dashboard-shell { padding:16px; } .section-heading, details.detail-panel summary { align-items:flex-start; flex-direction:column; } .command-grid, .dashboard-focus, .visual-grid, .risk-list li { grid-template-columns:1fr; } .bar-row { grid-template-columns:1fr; } }
+    @media (max-width: 1180px) { .command-grid, .dashboard-focus, .visual-grid, .window-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+    @media (max-width: 720px) { header { align-items:flex-start; flex-direction:column; padding:18px; } .dashboard-shell { padding:16px; } .section-heading, details.detail-panel summary, .window-title { align-items:flex-start; flex-direction:column; } .command-grid, .dashboard-focus, .visual-grid, .window-grid, .risk-list li { grid-template-columns:1fr; } .bar-row { grid-template-columns:1fr; } }
     """
