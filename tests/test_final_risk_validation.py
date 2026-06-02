@@ -120,6 +120,65 @@ class FinalRiskValidationTest(unittest.TestCase):
             "conditional_increases_restricted_ticker",
         )
 
+    def test_conditional_mutation_details_prevent_unrelated_restricted_drift_false_positive(self):
+        out = validate_final_execution_target(
+            risk_approved_target={"SPY": 0.20, "XLE": 0.10, "CASH": 0.70},
+            final_target={"SPY": 0.15, "XLE": 0.09, "CASH": 0.76},
+            current_weights={"SPY": 0.20, "XLE": 0.10, "CASH": 0.70},
+            policy_context={
+                "post_risk_mutation_types": [
+                    "defer_sell_due_to_min_hold_days",
+                    "cash_raise_from_policy_cap",
+                ],
+                "post_risk_mutation_details": [
+                    {
+                        "type": "defer_sell_due_to_min_hold_days",
+                        "ticker": "SPY",
+                        "before": 0.10,
+                        "after": 0.15,
+                    }
+                ],
+                "hard_risk_tickers": ["XLE"],
+                "material_drift_threshold": 0.001,
+                "require_human_confirmation_for_conditional_material_drift": False,
+            },
+            mode="blocking",
+        )
+
+        self.assertTrue(out["approved"], out)
+        self.assertEqual(out["conditional_detail_tickers"], ["SPY"])
+        self.assertEqual(out["conditional_mutation_violations"], [])
+        self.assertEqual(out["blocking_violations"], [])
+
+    def test_incomplete_conditional_mutation_details_fall_back_to_conservative_review(self):
+        out = validate_final_execution_target(
+            risk_approved_target={"SPY": 0.20, "XLE": 0.10, "CASH": 0.70},
+            final_target={"SPY": 0.15, "XLE": 0.09, "CASH": 0.76},
+            current_weights={"SPY": 0.20, "XLE": 0.10, "CASH": 0.70},
+            policy_context={
+                "post_risk_mutation_types": [
+                    "defer_sell_due_to_min_hold_days",
+                    "turnover_scale_toward_current",
+                ],
+                "post_risk_mutation_details": [
+                    {
+                        "type": "defer_sell_due_to_min_hold_days",
+                        "ticker": "SPY",
+                        "before": 0.10,
+                        "after": 0.15,
+                    }
+                ],
+                "hard_risk_tickers": ["XLE"],
+                "material_drift_threshold": 0.001,
+                "require_human_confirmation_for_conditional_material_drift": False,
+            },
+            mode="blocking",
+        )
+
+        self.assertFalse(out["approved"])
+        self.assertIsNone(out["conditional_detail_tickers"])
+        self.assertIn("conditional_mutation_contract_violation", out["blocking_violations"])
+
     def test_blocking_mode_allows_typed_tighten_only_policy_cap_drift(self):
         out = validate_final_execution_target(
             risk_approved_target={"PSI": 0.08, "CASH": 0.92},

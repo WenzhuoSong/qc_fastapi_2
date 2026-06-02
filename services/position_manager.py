@@ -62,6 +62,7 @@ class PositionManagerOutput:
     trade_summary: dict[str, Any]
     constraints: dict[str, Any]
     mutation_types: list[str]
+    mutation_details: list[dict[str, Any]]
 
 
 class PositionManager:
@@ -92,6 +93,7 @@ class PositionManager:
 
         violations: list[str] = []
         mutation_types: list[str] = []
+        mutation_details: list[dict[str, Any]] = []
         hold_days = _extract_hold_days(holdings_meta or [])
         profiles = asset_profiles or _load_asset_profiles_for_weights(target, current)
         min_hold_exempt = _clean_ticker_set(min_hold_exempt_tickers)
@@ -113,6 +115,14 @@ class PositionManager:
                         f"min_hold_days:{ticker} held {days}d < {constraints.min_hold_days}d, sell skipped"
                     )
                     mutation_types.append("defer_sell_due_to_min_hold_days")
+                    mutation_details.append(
+                        {
+                            "type": "defer_sell_due_to_min_hold_days",
+                            "ticker": ticker,
+                            "before": round(tgt_w, 6),
+                            "after": round(cur_w, 6),
+                        }
+                    )
 
         target = self._apply_decay_holding_limits(
             target,
@@ -127,7 +137,27 @@ class PositionManager:
         target = self._cap_position_count(target, current, constraints, violations, mutation_types)
         target = self._cap_single_buys(target, current, constraints, violations, mutation_types)
         target = self._cap_trade_count(target, current, constraints, violations, mutation_types, actual_daily_trades)
+        target_before_turnover = dict(target)
+        mutation_count_before_turnover = len(mutation_types)
         target = self._cap_turnover(target, current, constraints, violations, mutation_types)
+        if (
+            len(mutation_types) > mutation_count_before_turnover
+            and "turnover_scale_toward_current" in mutation_types[mutation_count_before_turnover:]
+        ):
+            for ticker in sorted(set(target_before_turnover) | set(target)):
+                if ticker == "CASH":
+                    continue
+                before = float(target_before_turnover.get(ticker, 0.0) or 0.0)
+                after = float(target.get(ticker, 0.0) or 0.0)
+                if abs(after - before) > 1e-9:
+                    mutation_details.append(
+                        {
+                            "type": "turnover_scale_toward_current",
+                            "ticker": ticker,
+                            "before": round(before, 6),
+                            "after": round(after, 6),
+                        }
+                    )
 
         adjusted = _normalize_weights(target)
         final_deltas = _weight_deltas(adjusted, current)
@@ -157,6 +187,7 @@ class PositionManager:
             trade_summary=summary,
             constraints=asdict(constraints),
             mutation_types=_unique(mutation_types),
+            mutation_details=mutation_details,
         )
 
     def _apply_decay_holding_limits(

@@ -1937,8 +1937,10 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             "trade_summary": pm_out.trade_summary,
             "constraints": pm_out.constraints,
             "mutation_types": pm_out.mutation_types,
+            "mutation_details": pm_out.mutation_details,
         }
         risk_out.setdefault("post_risk_mutation_types", []).extend(pm_out.mutation_types)
+        risk_out.setdefault("post_risk_mutation_details", []).extend(pm_out.mutation_details)
 
         if pm_out.violations:
             logger.warning(
@@ -1960,6 +1962,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 "violations": pm_out.violations,
                 "trade_summary": pm_out.trade_summary,
                 "mutation_types": pm_out.mutation_types,
+                "mutation_details": pm_out.mutation_details,
             },
             duration_ms=0,
         )
@@ -2566,6 +2569,7 @@ async def _apply_final_risk_validation(
     )
     policy_context = {
         "post_risk_mutation_types": risk_out.get("post_risk_mutation_types") or [],
+        "post_risk_mutation_details": risk_out.get("post_risk_mutation_details") or [],
         "material_drift_threshold": final_validation_config.get("material_drift_threshold"),
         "require_human_confirmation_for_conditional_material_drift": bool(
             final_validation_config.get("require_human_confirmation_for_conditional_material_drift", True)

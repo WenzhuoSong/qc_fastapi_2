@@ -56,6 +56,7 @@ def validate_final_execution_target(
     final = _clean_weights(final_target)
     current = _clean_weights(current_weights)
     mutation_types = _unique([str(item) for item in policy_ctx.get("post_risk_mutation_types") or []])
+    mutation_details = _clean_mutation_details(policy_ctx.get("post_risk_mutation_details") or [])
     policy_evaluation = evaluate_policy(
         weights=final,
         current_weights=current,
@@ -74,6 +75,10 @@ def validate_final_execution_target(
     conditional_mutation_types = [
         item for item in mutation_types if item in CONDITIONAL_POST_RISK_MUTATIONS
     ]
+    conditional_detail_tickers = _conditional_detail_tickers(
+        mutation_details=mutation_details,
+        conditional_mutation_types=set(conditional_mutation_types),
+    )
     material_drift_threshold = _optional_float(policy_ctx.get("material_drift_threshold"))
     max_abs_drift = max((abs(float(row["delta"])) for row in drift_rows), default=0.0)
     material_drift = (
@@ -95,6 +100,7 @@ def validate_final_execution_target(
         final=final,
         current=current,
         restricted_tickers=_restricted_tickers(policy_ctx),
+        affected_tickers=conditional_detail_tickers,
     ) if conditional_mutation_types else []
     unsafe_untyped_drift = bool(drift_rows and not mutation_types)
     severe_block = bool(severe_violations)
@@ -135,8 +141,10 @@ def validate_final_execution_target(
             "material_drift": material_drift,
         },
         "mutation_types": mutation_types,
+        "mutation_details": mutation_details,
         "allowed_mutation_types": sorted(ALLOWED_POST_RISK_MUTATIONS),
         "conditional_mutation_types": conditional_mutation_types,
+        "conditional_detail_tickers": sorted(conditional_detail_tickers) if conditional_detail_tickers is not None else None,
         "unknown_mutation_types": unknown_mutation_types,
         "unsafe_untyped_drift": unsafe_untyped_drift,
         "conditional_review_required": conditional_review_required,
@@ -238,11 +246,14 @@ def _conditional_mutation_violations(
     final: dict[str, float],
     current: dict[str, float],
     restricted_tickers: set[str],
+    affected_tickers: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for drift in drift_rows:
         ticker = str(drift.get("ticker") or "").upper().strip()
         if not ticker or ticker == "CASH":
+            continue
+        if affected_tickers is not None and ticker not in affected_tickers:
             continue
         final_weight = float(final.get(ticker, 0.0) or 0.0)
         current_weight = float(current.get(ticker, 0.0) or 0.0)
@@ -284,6 +295,50 @@ def _restricted_tickers(policy_ctx: dict[str, Any]) -> set[str]:
     ):
         tickers.update(str(item or "").upper().strip() for item in policy_ctx.get(key) or [])
     return {ticker for ticker in tickers if ticker}
+
+
+def _clean_mutation_details(values: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if not isinstance(values, list):
+        return out
+    for raw in values:
+        if not isinstance(raw, dict):
+            continue
+        mutation_type = str(raw.get("type") or "").strip()
+        ticker = str(raw.get("ticker") or "").upper().strip()
+        if not mutation_type or not ticker or ticker == "CASH":
+            continue
+        row = {"type": mutation_type, "ticker": ticker}
+        for key in ("before", "after"):
+            value = _optional_float(raw.get(key))
+            if value is not None:
+                row[key] = round(value, 6)
+        out.append(row)
+    return out
+
+
+def _conditional_detail_tickers(
+    *,
+    mutation_details: list[dict[str, Any]],
+    conditional_mutation_types: set[str],
+) -> set[str] | None:
+    if not conditional_mutation_types:
+        return set()
+    conditional_details = [
+        row for row in mutation_details
+        if str(row.get("type") or "").strip() in conditional_mutation_types
+    ]
+    detail_types = {
+        str(row.get("type") or "").strip()
+        for row in conditional_details
+    }
+    if not conditional_details or detail_types != conditional_mutation_types:
+        return None
+    rows = [
+        str(row.get("ticker") or "").upper().strip()
+        for row in conditional_details
+    ]
+    return {ticker for ticker in rows if ticker and ticker != "CASH"}
 
 
 def _clean_weights(weights: dict[str, Any] | None) -> dict[str, float]:

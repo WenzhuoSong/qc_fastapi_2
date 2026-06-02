@@ -20,6 +20,16 @@ class StrategyUseConstraintsTest(unittest.TestCase):
         self.assertEqual(out, {"SPY": 0.6, "CASH": 0.4})
         self.assertEqual(log, [])
 
+    def test_missing_cash_does_not_amplify_risk_weight(self):
+        out, log = apply_strategy_use_constraints(
+            base_weights={"CASH": 1.0},
+            adjusted_weights={"SPY": 0.20},
+            strategy_evidence={"playground_available": False},
+        )
+
+        self.assertEqual(out, {"SPY": 0.2, "CASH": 0.8})
+        self.assertEqual(log, [])
+
     def test_advisory_only_caps_delta_and_blocks_unsupported_new_position(self):
         out, log = apply_strategy_use_constraints(
             base_weights={"SPY": 0.50, "CASH": 0.50},
