@@ -14,3 +14,4 @@ feedparser==6.0.11
 pyyaml>=6.0
 yfinance>=0.2.54
 pandas>=2.2.0
+hypothesis>=6.100.0
