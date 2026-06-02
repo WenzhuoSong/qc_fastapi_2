@@ -2,6 +2,11 @@
 from __future__ import annotations
 
 from services.pc_promotion_config import default_pc_promotion_config
+from services.weight_source_contract import (
+    PC_CANDIDATE_KEY,
+    PC_SHADOW_KEY,
+    weight_source_contract_summary,
+)
 
 
 def construction_input_for_target_builder(
@@ -26,8 +31,11 @@ def construction_input_for_target_builder(
         "gate_reason": gate.get("reason"),
         "construction_weights": None,
         "construction_source": None,
+        "construction_weight_source": PC_SHADOW_KEY,
+        "target_builder_input_key": None,
         "construction_participated": False,
         "execution_effect": "none",
+        "weight_source_contract": weight_source_contract_summary(),
     }
 
     if mode != "gated":
@@ -47,6 +55,8 @@ def construction_input_for_target_builder(
         "effective_mode": "portfolio_construction_gated",
         "construction_weights": weights,
         "construction_source": str(source),
+        "construction_weight_source": PC_CANDIDATE_KEY,
+        "target_builder_input_key": PC_CANDIDATE_KEY,
         "construction_participated": True,
         "execution_effect": "target_builder_input",
         "blocked_reason": None,

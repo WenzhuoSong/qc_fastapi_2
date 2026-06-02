@@ -12,6 +12,10 @@ from typing import Any
 from services.evidence_cap_config import default_evidence_cap_config, resolve_evidence_cap_mode
 from services.execution_policy import apply_policy_caps, evaluate_policy, policy_snapshot
 from services.weight_ops import apply_single_caps_cash_first, normalize_cash_first
+from services.weight_source_contract import (
+    assert_no_forbidden_target_builder_inputs,
+    weight_source_contract_summary,
+)
 
 
 NO_ADD_PERMISSIONS = {"hold_or_trim", "reduce_risk_only", "defensive_only", "cash_only"}
@@ -62,6 +66,13 @@ def build_target_weights(
     mode: str = "target_builder_shadow",
 ) -> TargetBuildResult:
     """Construct deterministic target weights from non-LLM execution contracts."""
+    assert_no_forbidden_target_builder_inputs(
+        {
+            "base_weights": base_weights,
+            "construction_weights": construction_weights or {},
+            "constraints": constraints or {},
+        }
+    )
     base = _clean_weights(base_weights)
     construction = _clean_weights(construction_weights)
     construction_participated = construction_weights is not None and bool(str(construction_source or "").strip())
@@ -278,6 +289,11 @@ def build_target_weights(
             "execution_effect": "risk_manager_input" if clean_mode == "target_builder_gated" else "none",
             "consumes_raw_llm_adjusted_weights": False,
             "raw_llm_adjusted_weights_consumed": False,
+            "diagnostic_weight_inputs_rejected": True,
+            "weight_source_contract": weight_source_contract_summary(),
+            "target_weight_authority": "executable"
+            if clean_mode == "target_builder_gated"
+            else "diagnostic_shadow",
             "target_construction_source": "portfolio_construction"
             if construction_participated
             else "deterministic_target_builder",

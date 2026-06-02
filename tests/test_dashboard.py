@@ -70,11 +70,30 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('"target_builder_target": lifecycle.get("target_builder_target")', function_source)
         self.assertIn('"diagnostic_llm_target": lifecycle.get("diagnostic_llm_target")', function_source)
         self.assertIn('"validated_advisory_delta": lifecycle.get("validated_advisory_delta")', function_source)
+        self.assertIn('"final_target_authority": final_target_label.get("authority")', function_source)
+        self.assertIn('"target_builder_target_authority": tb_target_label.get("authority")', function_source)
+        self.assertIn('"diagnostic_llm_target_authority": llm_target_label.get("authority")', function_source)
+        self.assertIn('"validated_advisory_delta_authority": advisory_delta_label.get("authority")', function_source)
         self.assertIn('"advisory_validator_result": advisory.get("validator_result")', function_source)
         self.assertIn('"ticker_role": policy.get("ticker_role")', function_source)
         self.assertIn('"policy_cap_applied": policy.get("policy_cap_applied")', function_source)
         self.assertIn('"qc_status": raw.get("qc_status")', function_source)
         self.assertIn('"entered_via_hedge_path": hedge_path.get("entered_via_hedge_path")', function_source)
+
+    def test_dashboard_surfaces_weight_source_contract(self):
+        source = Path("dashboard/app.py").read_text()
+
+        self.assertIn("weight_source_contract", source)
+        self.assertIn("def _weight_source_contract_dashboard", source)
+        self.assertIn("def _render_weight_source_contract", source)
+        self.assertIn("Weight Source Contract", source)
+        self.assertIn("dashboard_weight_source_labels", source)
+        self.assertIn("classify_weight_column", source)
+        self.assertIn("weight-executable", source)
+        self.assertIn("weight-advisory", source)
+        self.assertIn("weight-reference", source)
+        self.assertIn("final_target_authority", source)
+        self.assertIn("diagnostic_llm_target_authority", source)
 
     def test_dashboard_reads_stage_telemetry_from_agent_step_log(self):
         source = Path("dashboard/app.py").read_text()

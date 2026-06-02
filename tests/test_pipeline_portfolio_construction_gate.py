@@ -16,6 +16,9 @@ class PipelinePortfolioConstructionGateTests(unittest.TestCase):
         self.assertEqual(out["blocked_reason"], "mode_candidate_not_gated")
         self.assertEqual(out["configured_mode"], "candidate")
         self.assertEqual(out["effective_mode"], "deterministic_target_builder")
+        self.assertEqual(out["construction_weight_source"], "pc_shadow_weights")
+        self.assertIsNone(out["target_builder_input_key"])
+        self.assertEqual(out["weight_source_contract"]["contract_version"], "weight_source_contract_v1")
 
     def test_gated_mode_requires_eligible_promotion_gate(self):
         out = construction_input_for_target_builder(
@@ -64,6 +67,9 @@ class PipelinePortfolioConstructionGateTests(unittest.TestCase):
         self.assertEqual(out["execution_effect"], "target_builder_input")
         self.assertEqual(out["configured_mode"], "gated")
         self.assertEqual(out["effective_mode"], "portfolio_construction_gated")
+        self.assertEqual(out["construction_weight_source"], "pc_candidate_weights")
+        self.assertEqual(out["target_builder_input_key"], "pc_candidate_weights")
+        self.assertEqual(out["weight_source_contract"]["contract_version"], "weight_source_contract_v1")
 
 
 if __name__ == "__main__":

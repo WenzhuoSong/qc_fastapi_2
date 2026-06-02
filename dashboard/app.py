@@ -47,6 +47,11 @@ from services.operational_health import build_operational_health_snapshot
 from services.playground import _recent_snapshot_row_limit
 from services.evidence_cap_calibration import load_evidence_cap_calibration_report
 from services.command_lifecycle import build_reconciliation_lag_report
+from services.weight_source_contract import (
+    classify_weight_column,
+    dashboard_weight_source_labels,
+    weight_source_contract_summary,
+)
 
 DATA_QUALITY_AUDIT_NAME = "qc_yfinance_feature_parity"
 
@@ -156,7 +161,18 @@ async def build_dashboard_summary() -> dict[str, Any]:
         "execution": execution,
         "execution_control": execution_control,
         "replay": replay,
+        "weight_source_contract": _weight_source_contract_dashboard(),
         "config": config,
+    }
+
+
+def _weight_source_contract_dashboard() -> dict[str, Any]:
+    contract = weight_source_contract_summary()
+    return {
+        "available": True,
+        **contract,
+        "labels": dashboard_weight_source_labels(),
+        "execution_authority": "display_contract_only",
     }
 
 
@@ -207,6 +223,7 @@ async def _latest_analysis() -> dict[str, Any]:
         "scorecard": _compact_scorecard(scorecard),
         "strategy_detail": strategy_detail,
         "feature_source_summary": feature_source_summary,
+        "weight_source_contract": _weight_source_contract_dashboard(),
         "strategy_evidence": strategy_evidence,
         "position_governance": _compact_governance(governance, ledger),
         "decision_ledger": compact_ledger,
@@ -2591,6 +2608,11 @@ def _ledger_rows_from_tickers(tickers: dict[str, Any]) -> list[dict[str, Any]]:
         advisory = raw.get("llm_advisory") or {}
         policy = raw.get("execution_policy") or {}
         hedge_path = raw.get("hedge_path") or {}
+        final_target_label = classify_weight_column("final_target")
+        pc_target_label = classify_weight_column("portfolio_construction_target")
+        tb_target_label = classify_weight_column("target_builder_target")
+        llm_target_label = classify_weight_column("diagnostic_llm_target")
+        advisory_delta_label = classify_weight_column("validated_advisory_delta")
         rows.append({
             "ticker": raw.get("ticker") or ticker,
             "proposed_action": raw.get("proposed_action"),
@@ -2612,10 +2634,25 @@ def _ledger_rows_from_tickers(tickers: dict[str, Any]) -> list[dict[str, Any]]:
             "entered_via_hedge_path": hedge_path.get("entered_via_hedge_path"),
             "hedge_trigger_reasons": hedge_path.get("hedge_trigger_reasons") or [],
             "final_target": lifecycle.get("final_target"),
+            "final_target_label": final_target_label.get("label"),
+            "final_target_authority": final_target_label.get("authority"),
+            "final_target_visual_class": final_target_label.get("visual_class"),
             "portfolio_construction_target": lifecycle.get("portfolio_construction_target"),
+            "portfolio_construction_target_label": pc_target_label.get("label"),
+            "portfolio_construction_target_authority": pc_target_label.get("authority"),
+            "portfolio_construction_target_visual_class": pc_target_label.get("visual_class"),
             "target_builder_target": lifecycle.get("target_builder_target"),
+            "target_builder_target_label": tb_target_label.get("label"),
+            "target_builder_target_authority": tb_target_label.get("authority"),
+            "target_builder_target_visual_class": tb_target_label.get("visual_class"),
             "diagnostic_llm_target": lifecycle.get("diagnostic_llm_target"),
+            "diagnostic_llm_target_label": llm_target_label.get("label"),
+            "diagnostic_llm_target_authority": llm_target_label.get("authority"),
+            "diagnostic_llm_target_visual_class": llm_target_label.get("visual_class"),
             "validated_advisory_delta": lifecycle.get("validated_advisory_delta"),
+            "validated_advisory_delta_label": advisory_delta_label.get("label"),
+            "validated_advisory_delta_authority": advisory_delta_label.get("authority"),
+            "validated_advisory_delta_visual_class": advisory_delta_label.get("visual_class"),
             "changed_by": lifecycle.get("changed_by") or [],
             "advisory_validator_result": advisory.get("validator_result"),
             "source_effects": raw.get("source_effects") or {},
@@ -2637,6 +2674,7 @@ def render_dashboard(summary: dict[str, Any]) -> str:
     sections = [
         ("execution", "Execution Control", _render_execution_control(summary.get("execution_control") or {}), True),
         ("latest", "Latest Decision", _render_latest_analysis(latest), True),
+        ("weight-source", "Weight Source Contract", _render_weight_source_contract(summary.get("weight_source_contract") or {}), False),
         ("pc", "Portfolio Construction Objective", _render_portfolio_construction_objective(summary.get("portfolio_construction_objective") or {}), False),
         ("evidence", "ETF / Strategy Evidence", _render_strategy_evidence(summary.get("strategy_evidence") or {}), False),
         ("risk", "Portfolio Risk Diagnostic", _render_portfolio_risk_diagnostic(summary.get("portfolio_risk_diagnostic") or {}), False),
@@ -3311,6 +3349,29 @@ def _render_checks(checks: dict[str, Any]) -> str:
     return "\n".join(cards)
 
 
+def _render_weight_source_contract(contract: dict[str, Any]) -> str:
+    if not contract.get("available"):
+        return "<p class=\"muted\">No weight source contract available.</p>"
+    overview = {
+        "contract_version": contract.get("contract_version"),
+        "executable_target_key": contract.get("executable_target_key"),
+        "pc_candidate_key": contract.get("pc_candidate_key"),
+        "pc_shadow_key": contract.get("pc_shadow_key"),
+        "llm_adjusted_key": contract.get("llm_adjusted_key"),
+        "baseline_reference_key": contract.get("baseline_reference_key"),
+        "execution_authority": contract.get("execution_authority"),
+    }
+    return f"""
+      <div class="weight-source-contract">
+        <div class="grid">
+          <article class="card"><h3>Contract Overview</h3>{_render_kv(overview)}</article>
+          <article class="card"><h3>Forbidden Target Builder Inputs</h3>{_render_list("", contract.get("forbidden_target_builder_input_keys") or [])}</article>
+        </div>
+        <h3>Weight Source Labels</h3>{_render_table(contract.get("labels") or [], ["column", "label", "authority", "visual_class", "may_enter_target_builder", "display_note"])}
+      </div>
+    """
+
+
 def _render_latest_analysis(latest: dict[str, Any]) -> str:
     if not latest.get("available"):
         return "<p class=\"muted\">No analysis available.</p>"
@@ -3340,7 +3401,8 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
       <h3>Manual Review Hints</h3>{_render_table(hints, ["ticker", "suggested_action", "current_weight", "suggested_target", "delta"])}
       <h3>Thesis Problems</h3>{_render_table(thesis, ["ticker", "status", "validator"])}
       <h3>Position Explanations</h3>{_render_table(governance.get("position_explanations") or [], ["ticker", "position_state", "decision", "current_weight", "target_after", "unrealized_pnl_pct", "risk_budget_status", "strategy_support", "action_permission", "strategy_intent", "llm_effect", "construction_effect", "risk_governance_effect", "final_explanation", "why_hold", "why_not_add", "why_not_exit", "next_trigger"])}
-      <h3>Decision Ledger</h3>{_render_table((latest.get("decision_ledger") or {}).get("top_decisions") or [], ["ticker", "proposed_action", "final_action", "execution_status", "qc_status", "qc_rejection_reason", "risk_result", "ticker_role", "single_cap", "group_cap", "policy_version", "policy_cap_applied", "policy_cap_original", "cash_raised_by_policy_cap", "entered_via_hedge_path", "hedge_trigger_reasons", "final_target", "target_builder_target", "diagnostic_llm_target", "validated_advisory_delta", "advisory_validator_result", "changed_by"])}
+      <h3>Weight Source Contract</h3>{_render_weight_source_contract(latest.get("weight_source_contract") or {})}
+      <h3>Decision Ledger</h3>{_render_table((latest.get("decision_ledger") or {}).get("top_decisions") or [], ["ticker", "proposed_action", "final_action", "execution_status", "qc_status", "qc_rejection_reason", "risk_result", "ticker_role", "single_cap", "group_cap", "policy_version", "policy_cap_applied", "policy_cap_original", "cash_raised_by_policy_cap", "entered_via_hedge_path", "hedge_trigger_reasons", "final_target", "final_target_authority", "target_builder_target", "target_builder_target_authority", "portfolio_construction_target", "portfolio_construction_target_authority", "diagnostic_llm_target", "diagnostic_llm_target_authority", "validated_advisory_delta", "validated_advisory_delta_authority", "advisory_validator_result", "changed_by"])}
       <h3>Pipeline Stage Telemetry</h3>{_render_table(latest.get("stage_metrics") or [], ["stage", "agent", "duration_ms", "model", "prompt_tokens", "completion_tokens", "failed"])}
     """
 
@@ -3985,6 +4047,11 @@ def _css() -> str:
     th, td { text-align:left; padding:9px 10px; border-bottom:1px solid #edf0f4; vertical-align:top; }
     th { position:sticky; top:0; z-index:1; color:var(--muted); font-weight:600; background:#fafbfc; }
     td { max-width:260px; overflow-wrap:anywhere; }
+    .weight-source-contract .table-wrap { max-height:320px; }
+    .weight-executable { color:var(--ok); font-weight:800; }
+    .weight-advisory { color:var(--info); font-style:italic; }
+    .weight-reference { color:var(--muted); }
+    .weight-unknown { color:var(--warn); }
     ul { margin:8px 0 0; padding-left:20px; }
     @media (max-width: 1280px) { .metric-grid { grid-template-columns:repeat(4,minmax(0,1fr)); } .cockpit-grid { grid-template-columns:1fr; } }
     @media (max-width: 1180px) { .command-grid, .dashboard-focus, .visual-grid, .window-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .top-status-bar { align-items:flex-start; flex-direction:column; } .top-status-pills { justify-content:flex-start; width:100%; } }

@@ -84,6 +84,42 @@ class TargetBuilderTest(unittest.TestCase):
         self.assertEqual(out["diagnostics"]["portfolio_construction_blocked_reason"], "promotion_gate_not_eligible")
         self.assertEqual(out["diagnostics"]["portfolio_construction_gate_blockers"], ["insufficient_cycles"])
         self.assertIsNone(out["per_ticker"]["QQQ"]["construction_weight"])
+        self.assertTrue(out["diagnostics"]["diagnostic_weight_inputs_rejected"])
+        self.assertEqual(
+            out["diagnostics"]["weight_source_contract"]["contract_version"],
+            "weight_source_contract_v1",
+        )
+        self.assertEqual(out["diagnostics"]["target_weight_authority"], "executable")
+
+    def test_rejects_legacy_diagnostic_weight_source_keys(self):
+        with self.assertRaisesRegex(AssertionError, "Forbidden target_builder input weight source"):
+            build_target_weights(
+                base_weights={"QQQ": 0.14, "CASH": 0.86},
+                current_weights={"QQQ": 0.12, "CASH": 0.88},
+                market_scorecard={"investment_permission": "normal_rebalance"},
+                decision_style={},
+                position_governance={"position_decisions": []},
+                validated_advisory=[],
+                constraints={"llm_adjusted_weights": {"QQQ": 0.90, "CASH": 0.10}},
+                mode="target_builder_gated",
+            )
+
+    def test_rejects_nested_legacy_weight_source_keys(self):
+        with self.assertRaisesRegex(AssertionError, "portfolio_construction_gate.pc_shadow_weights"):
+            build_target_weights(
+                base_weights={"QQQ": 0.14, "CASH": 0.86},
+                current_weights={"QQQ": 0.12, "CASH": 0.88},
+                market_scorecard={"investment_permission": "normal_rebalance"},
+                decision_style={},
+                position_governance={"position_decisions": []},
+                validated_advisory=[],
+                constraints={
+                    "portfolio_construction_gate": {
+                        "pc_shadow_weights": {"QQQ": 0.25, "CASH": 0.75}
+                    }
+                },
+                mode="target_builder_gated",
+            )
 
     def test_conviction_fields_are_visible_but_not_consumed(self):
         out = build_target_weights(
