@@ -1,5 +1,7 @@
 import unittest
+import inspect
 
+import services.final_execution_policy_cap as final_cap_module
 from services.final_execution_policy_cap import apply_final_execution_policy_cap
 
 
@@ -50,6 +52,32 @@ class FinalExecutionPolicyCapTest(unittest.TestCase):
             places=6,
         )
         self.assertGreater(out["target_weights"]["CASH"], 0.72)
+
+    def test_group_cap_uses_weight_ops_and_releases_to_cash(self):
+        out = apply_final_execution_policy_cap(
+            target_weights={"XLK": 0.15, "XLE": 0.15, "XLI": 0.15, "XLU": 0.15, "CASH": 0.40},
+            current_weights={"CASH": 1.0},
+            rebalance_threshold=0.005,
+        )
+
+        self.assertTrue(out["triggered"])
+        self.assertTrue(out["policy_evaluation"]["allowed"], out["policy_evaluation"])
+        self.assertAlmostEqual(out["target_weights"]["XLK"], 0.1125, places=6)
+        self.assertAlmostEqual(out["target_weights"]["XLE"], 0.1125, places=6)
+        self.assertAlmostEqual(out["target_weights"]["XLI"], 0.1125, places=6)
+        self.assertAlmostEqual(out["target_weights"]["XLU"], 0.1125, places=6)
+        self.assertAlmostEqual(out["target_weights"]["CASH"], 0.55, places=6)
+        self.assertEqual(out["cap_events"][0]["group_role"], "sector")
+        self.assertAlmostEqual(out["cash_raised"], 0.15, places=6)
+        self.assertEqual(out["cap_diagnostics"]["contract"], "weight_ops_cash_first_v1")
+
+    def test_final_cap_module_uses_weight_ops_not_private_normalizer(self):
+        source = inspect.getsource(final_cap_module)
+
+        self.assertIn("normalize_cash_first", source)
+        self.assertIn("apply_single_caps_cash_first", source)
+        self.assertIn("apply_group_caps_cash_first", source)
+        self.assertNotIn("def _normalize_preserving_policy_caps", source)
 
 
 if __name__ == "__main__":
