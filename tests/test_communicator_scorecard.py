@@ -376,6 +376,8 @@ class CommunicatorScorecardTest(unittest.TestCase):
 
         self.assertIn("Market scorecard", text)
         self.assertIn("bullish_but_mixed", text)
+        self.assertIn("tightened=scorecard", text)
+        self.assertNotIn("human confirm", text)
         self.assertIn("Data quality detail", text)
         self.assertIn("Feature source summary", text)
         self.assertIn("live_state=QC heartbeat", text)
@@ -410,7 +412,8 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("permission=advisory", text)
         self.assertIn("strategy_advisory_only:max_delta:SPY", text)
         self.assertIn("Execution gateway", text)
-        self.assertIn("final=human_required", text)
+        self.assertIn("final=tightened", text)
+        self.assertNotIn("final=human_required", text)
         self.assertIn("strategy=watch_only:regime_consensus_mismatch", text)
         self.assertIn("Knowledge resolution", text)
         self.assertIn("regime_strategy_conflict:momentum_lite_v1", text)

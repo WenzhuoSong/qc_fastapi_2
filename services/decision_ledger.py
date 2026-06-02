@@ -483,7 +483,7 @@ def _risk_governance_effect_text(
     if not risk_approved:
         return "risk manager blocked execution; final target reverts to current weight"
     if "scorecard_human_required" in reason_codes:
-        return f"governance decision={decision}; scorecard requires human confirmation"
+        return f"governance decision={decision}; scorecard tightened execution"
     if "hard_risk" in reason_codes:
         return f"governance decision={decision}; hard-risk review allows trim/exit only"
     if permission:

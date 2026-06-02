@@ -723,7 +723,7 @@ def _manual_action_hints(
             "suggested_target": round(suggested_target, 6),
             "delta": round(suggested_target - current_w, 6),
             "reason_codes": reasons[:5],
-            "note": "risk-reducing trim requires human confirmation before execution",
+            "note": "risk-reducing trim requires operator review before execution",
         })
     return hints
 
@@ -1087,7 +1087,7 @@ def _why_hold(
     if "hard_risk" in reasons:
         out.append("hard-risk event is active; position requires manual trim/exit review")
         if facts.get("execution_blocker") == "human_required":
-            out.append("automatic execution is blocked by human confirmation")
+            out.append("automatic execution is blocked by scorecard tightening")
         return list(dict.fromkeys(out))[:4]
     if "basket_review" in reasons:
         basket = facts.get("basket_context") or {}
@@ -1124,7 +1124,7 @@ def _why_not_add(
     if "add" in allowed and not blocked and not ({"unrealized_loss_review", "basket_review", "high_atr"} & reasons):
         return ["add is allowed within risk limits"]
     if "scorecard_human_required" in reasons:
-        out.append("market scorecard requires human confirmation")
+        out.append("market scorecard tightened new-risk adds")
     if any(reason.startswith("scorecard_") and reason != "scorecard_human_required" for reason in reasons):
         out.append("scorecard permission restricts new risk")
     if "unrealized_loss_review" in reasons:

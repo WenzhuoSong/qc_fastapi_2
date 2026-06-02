@@ -577,6 +577,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         account_state_guard_config=account_state_guard_config,
         final_risk_validation_config=final_risk_validation_config,
         auto_pause_config=auto_pause_config,
+        execution_lifecycle_config=execution_lifecycle_config,
     )
     if full_auto_safety_violations:
         message = (

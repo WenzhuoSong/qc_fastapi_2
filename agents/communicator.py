@@ -166,6 +166,7 @@ def _build_payload(
             "data_quality": scorecard.get("data_quality"),
             "dominant_constraint": scorecard.get("dominant_constraint"),
             "require_human_confirmation": scorecard.get("require_human_confirmation"),
+            "confirmation_classes": list(scorecard.get("confirmation_classes") or []),
             "reasons": (scorecard.get("reasons") or [])[:3],
             "warnings": (scorecard.get("warnings") or [])[:3],
         },
@@ -351,7 +352,10 @@ def _fallback_template(p: dict) -> str:
     position_governance_line = _format_position_governance_line(position_governance)
 
     if not approved:
-        reasons_text = "\n".join(f"  - {r}" for r in p["rejection_reasons"]) or "  - No reason provided"
+        reasons_text = (
+            "\n".join(f"  - {_display_rejection_reason(r)}" for r in p["rejection_reasons"])
+            or "  - No reason provided"
+        )
         return (
             f"🚫 <b>Rebalance rejected by risk</b>\n"
             f"――――――――――――――――\n"
@@ -442,11 +446,12 @@ def _format_scorecard_line(scorecard: dict) -> str:
     permission = scorecard.get("investment_permission")
     data_quality = scorecard.get("data_quality")
     dominant = scorecard.get("dominant_constraint")
-    human = " | human confirm" if scorecard.get("require_human_confirmation") else ""
+    tightening_classes = _scorecard_tightening_classes(scorecard)
+    tightened = f" | tightened={','.join(tightening_classes)}" if tightening_classes else ""
     return (
         f"<b>Market scorecard</b>\n"
         f"  {condition} | permission={permission} | data={data_quality}"
-        f"{human}\n"
+        f"{tightened}\n"
         f"  dominant: {dominant}\n\n"
     )
 
@@ -593,7 +598,9 @@ def _format_proposal_shaping_line(shaping: dict) -> str:
     if constraints.get("max_turnover") is not None:
         cap_bits.append(f"turnover<={float(constraints.get('max_turnover')):.1%}")
     if constraints.get("human_required"):
-        cap_bits.append("human_required")
+        classes = constraints.get("confirmation_classes") or []
+        class_text = ",".join(str(item) for item in classes if str(item)) or "scorecard"
+        cap_bits.append(f"scorecard_tightened={class_text}")
     if constraints.get("scorecard_data_quality"):
         cap_bits.append(f"data={constraints.get('scorecard_data_quality')}")
     cap_text = " | " + " | ".join(cap_bits) if cap_bits else ""
@@ -805,13 +812,40 @@ def _format_execution_gateway_line(gateway: dict) -> str:
         return ""
     strategy = gateway.get("strategy_layer") or {}
     execution = gateway.get("execution_intel_layer") or {}
+    final_permission = _display_final_permission(gateway.get("final_permission"))
+    response_class = gateway.get("response_class")
+    response_text = f" | class={response_class}" if response_class else ""
     return (
         f"<b>Execution gateway</b>\n"
-        f"  final={gateway.get('final_permission')} | source={gateway.get('source')} "
-        f"| reason={gateway.get('primary_reason')}\n"
+        f"  final={final_permission} | source={gateway.get('source')} "
+        f"| reason={gateway.get('primary_reason')}{response_text}\n"
         f"  strategy={strategy.get('verdict', 'unknown')}:{strategy.get('reason', 'unknown')} "
         f"| execution={execution.get('verdict', 'unknown')}:{execution.get('reason', 'unknown')}\n\n"
     )
+
+
+def _scorecard_tightening_classes(scorecard: dict) -> list[str]:
+    if not scorecard or not bool(scorecard.get("require_human_confirmation")):
+        return []
+    raw = scorecard.get("confirmation_classes") or []
+    classes = [str(item) for item in raw if str(item)]
+    return classes or ["scorecard"]
+
+
+def _display_final_permission(value) -> str:
+    raw = str(value or "").strip()
+    if raw == "human_required":
+        return "tightened"
+    return raw
+
+
+def _display_rejection_reason(value) -> str:
+    raw = str(value or "")
+    if raw == "Market scorecard requires human confirmation":
+        return "Market scorecard tightened the proposal"
+    if "human_required" in raw:
+        return raw.replace("human_required", "scorecard_tightened")
+    return raw
 
 
 def _compact_knowledge_resolution(resolution: dict, calibration: dict) -> dict:

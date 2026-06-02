@@ -106,6 +106,7 @@ def shape_proposal_before_risk(
             "scorecard_permission": scorecard.get("investment_permission"),
             "scorecard_data_quality": scorecard.get("data_quality"),
             "human_required": bool(scorecard.get("require_human_confirmation")),
+            "confirmation_classes": list(scorecard.get("confirmation_classes") or []),
             "trade_style": style.get("trade_style"),
         },
     }
