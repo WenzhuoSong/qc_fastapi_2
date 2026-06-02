@@ -448,6 +448,16 @@ class TargetBuilderTest(unittest.TestCase):
         self.assertNotIn("adjusted_weights", signature.parameters)
         self.assertNotIn("raw_llm_adjusted_weights", signature.parameters)
 
+    def test_weight_arithmetic_uses_weight_ops_contract(self):
+        import services.target_builder as target_builder_module
+
+        source = inspect.getsource(target_builder_module)
+
+        self.assertIn("from services.weight_ops import", source)
+        self.assertIn("normalize_cash_first", source)
+        self.assertIn("apply_single_caps_cash_first", source)
+        self.assertNotIn("def _normalize_cash_first", source)
+
 
 if __name__ == "__main__":
     unittest.main()

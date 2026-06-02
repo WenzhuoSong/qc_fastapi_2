@@ -11,6 +11,7 @@ from typing import Any
 
 from services.evidence_cap_config import default_evidence_cap_config, resolve_evidence_cap_mode
 from services.execution_policy import apply_policy_caps, evaluate_policy, policy_snapshot
+from services.weight_ops import apply_single_caps_cash_first, normalize_cash_first
 
 
 NO_ADD_PERMISSIONS = {"hold_or_trim", "reduce_risk_only", "defensive_only", "cash_only"}
@@ -206,7 +207,7 @@ def build_target_weights(
             )
 
     work["CASH"] = max(1.0 - sum(work.values()), 0.0)
-    normalized = _normalize_cash_first(work)
+    normalized = _cash_first_weights(work)
     turnover_before = _turnover(work, current)
 
     turnover_cap = _effective_turnover_cap(scorecard, style, cfg)
@@ -214,11 +215,11 @@ def build_target_weights(
         normalized = _scale_toward_current(normalized, current, turnover_cap)
         violations.append(f"turnover_clip:{turnover_before:.2%}->{turnover_cap:.2%}")
 
-    normalized = _normalize_cash_first(normalized)
+    normalized = _cash_first_weights(normalized)
     capped_targets, cap_events, cash_raised = apply_policy_caps(normalized)
     if cash_raised > 0:
         capped_targets["CASH"] = float(capped_targets.get("CASH", 0.0) or 0.0) + cash_raised
-    normalized = _normalize_cash_first(capped_targets)
+    normalized = _cash_first_weights(capped_targets)
     evidence_cap_gate = _apply_evidence_cap_gate(
         evidence_cap_diagnostics=evidence_cap_diagnostics,
         target_weights=normalized,
@@ -506,8 +507,8 @@ def _apply_evidence_cap_gate(
 
     out_weights = dict(target_weights)
     rows: list[dict[str, Any]] = []
-    released_to_cash = 0.0
     applied_tickers: list[str] = []
+    cap_by_ticker: dict[str, float] = {}
     for ticker, raw in sorted(evidence_cap_diagnostics.items()):
         if not isinstance(raw, dict):
             continue
@@ -526,8 +527,7 @@ def _apply_evidence_cap_gate(
         target_after = target_before
         if applied and enforcement_cap is not None:
             target_after = round(max(float(enforcement_cap), 0.0), 6)
-            out_weights[clean_ticker] = target_after
-            released_to_cash += max(target_before - target_after, 0.0)
+            cap_by_ticker[clean_ticker] = target_after
             applied_tickers.append(clean_ticker)
         row = {
             "ticker": clean_ticker,
@@ -568,9 +568,22 @@ def _apply_evidence_cap_gate(
                 "effective_mode": gate.get("effective_mode"),
             }
 
-    if released_to_cash > 0.0:
-        out_weights["CASH"] = float(out_weights.get("CASH", 0.0) or 0.0) + released_to_cash
-        out_weights = _normalize_cash_first(out_weights)
+    cap_diagnostics: dict[str, Any] = {"cap_events": [], "total_released": 0.0}
+    if cap_by_ticker:
+        out_weights, cap_diagnostics = apply_single_caps_cash_first(out_weights, cap_by_ticker)
+        out_weights = _cash_first_weights(out_weights)
+        target_after_by_ticker = {
+            str(row.get("ticker") or "").upper().strip(): round(
+                float(out_weights.get(str(row.get("ticker") or "").upper().strip(), 0.0) or 0.0),
+                6,
+            )
+            for row in rows
+            if str(row.get("ticker") or "").upper().strip() in cap_by_ticker
+        }
+        for row in rows:
+            ticker = str(row.get("ticker") or "").upper().strip()
+            if ticker in target_after_by_ticker:
+                row["target_after_cap"] = target_after_by_ticker[ticker]
 
     rows.sort(
         key=lambda item: (
@@ -601,7 +614,8 @@ def _apply_evidence_cap_gate(
             "input_schema": "pipeline_context.evidence_cap_diagnostics",
             "would_apply_count": sum(1 for row in rows if row.get("would_apply_cap")),
             "applied_count": len(applied_tickers),
-            "cash_raised_by_evidence_cap": round(released_to_cash, 6),
+            "cash_raised_by_evidence_cap": round(float(cap_diagnostics.get("total_released") or 0.0), 6),
+            "cap_diagnostics": cap_diagnostics,
             "rows": rows,
         },
     }
@@ -663,24 +677,19 @@ def _scale_toward_current(target: dict[str, float], current: dict[str, float], c
     return out
 
 
-def _normalize_cash_first(weights: dict[str, Any]) -> dict[str, float]:
-    clean = _clean_weights(weights)
-    equity = sum(value for ticker, value in clean.items() if ticker != "CASH")
-    if equity >= 1.0:
-        scale = 1.0 / equity if equity > 0 else 0.0
-        out = {
-            ticker: round(value * scale, 6)
-            for ticker, value in clean.items()
-            if ticker != "CASH" and value > 1e-9
-        }
-        out["CASH"] = round(max(1.0 - sum(out.values()), 0.0), 6)
-        return out
-    out = {
-        ticker: round(value, 6)
-        for ticker, value in clean.items()
-        if ticker != "CASH" and value > 1e-9
-    }
-    out["CASH"] = round(max(1.0 - sum(out.values()), 0.0), 6)
+def _cash_first_weights(weights: dict[str, Any]) -> dict[str, float]:
+    normalized, _ = normalize_cash_first(weights)
+    return _round_weight_map(normalized)
+
+
+def _round_weight_map(weights: dict[str, Any]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for ticker, value in (weights or {}).items():
+        clean = str(ticker or "").upper().strip()
+        parsed = _optional_float(value)
+        if clean and parsed is not None and parsed > 1e-9:
+            out[clean] = round(parsed, 6)
+    out.setdefault("CASH", 0.0)
     return out
 
 

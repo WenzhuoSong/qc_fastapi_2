@@ -15,6 +15,12 @@ from services.alpha_decision_policy import (
     default_alpha_decision_policy_config,
     evaluate_alpha_decision_policy,
 )
+from services.weight_ops import (
+    apply_group_caps_cash_first,
+    apply_single_caps_cash_first,
+    normalize_cash_first,
+    normalize_proportional,
+)
 
 
 NO_ADD_PERMISSIONS = {"hold_or_trim", "reduce_risk_only", "defensive_only", "cash_only"}
@@ -102,8 +108,8 @@ class PortfolioConstructionModel:
         turnover_budget: float | None = None,
         objective: ConstructionObjective | None = None,
     ) -> PortfolioConstructionResult:
-        base = _normalize_cash_first(_clean_weights(base_weights))
-        current = _normalize_cash_first(_clean_weights(current_weights))
+        base = _proportional_weights(_clean_weights(base_weights))
+        current = _cash_first_weights(_clean_weights(current_weights))
         signals = _clean_signals(signal_strengths or {})
         active_baskets = _active_basket_groups(basket_reviews)
         budget = _optional_float(turnover_budget)
@@ -143,7 +149,7 @@ class PortfolioConstructionModel:
             violations.append(f"turnover_budget:{turnover_before:.2%}->{budget:.2%}")
             steps.append("turnover_budget")
 
-        weights = _normalize_cash_first(weights)
+        weights = _cash_first_weights(weights)
         turnover_after = _turnover(weights, current)
         factor_exposures = {
             key: round(value, 6)
@@ -256,16 +262,15 @@ class PortfolioConstructionModel:
             exposure = _factor_exposure_for_group(out, group_name)
             if exposure <= definition.limit_pct + 1e-9:
                 continue
-            scale = definition.limit_pct / exposure if exposure > 0 else 1.0
-            released = 0.0
-            for ticker in _tickers_with_factor_tag(out, group_name):
-                before = out.get(ticker, 0.0)
-                after = before * scale
-                out[ticker] = after
-                released += before - after
-            out["CASH"] = float(out.get("CASH", 0.0) or 0.0) + released
+            members = set(_tickers_with_factor_tag(out, group_name))
+            role_map = {
+                ticker: group_name if ticker in members else "__other__"
+                for ticker in out
+                if ticker != "CASH"
+            }
+            out, _ = apply_group_caps_cash_first(out, {group_name: definition.limit_pct}, role_map)
             violations.append(f"factor_limit:{group_name} {exposure:.2%}->{definition.limit_pct:.2%}")
-        return _normalize_cash_first(out), violations
+        return _cash_first_weights(out), violations
 
     def _apply_basket_constraints(
         self,
@@ -282,18 +287,15 @@ class PortfolioConstructionModel:
             exposure = sum(float(out.get(ticker, 0.0) or 0.0) for ticker in definition.tickers)
             if exposure <= reduced_limit + 1e-9:
                 continue
-            scale = reduced_limit / exposure if exposure > 0 else 1.0
-            released = 0.0
-            for ticker in definition.tickers:
-                before = float(out.get(ticker, 0.0) or 0.0)
-                if before <= 0:
-                    continue
-                after = before * scale
-                out[ticker] = after
-                released += before - after
-            out["CASH"] = float(out.get("CASH", 0.0) or 0.0) + released
+            members = set(definition.tickers)
+            role_map = {
+                ticker: group_name if ticker in members else "__other__"
+                for ticker in out
+                if ticker != "CASH"
+            }
+            out, _ = apply_group_caps_cash_first(out, {group_name: reduced_limit}, role_map)
             violations.append(f"basket_limit:{group_name} {exposure:.2%}->{reduced_limit:.2%}")
-        return _normalize_cash_first(out), violations
+        return _cash_first_weights(out), violations
 
     def _allocate_turnover_budget(
         self,
@@ -331,7 +333,7 @@ class PortfolioConstructionModel:
             out[ticker] = float(current.get(ticker, 0.0) or 0.0) + (1 if delta > 0 else -1) * allowed_abs_delta
             remaining -= allowed_abs_delta
         out["CASH"] = max(1.0 - sum(value for ticker, value in out.items() if ticker != "CASH"), 0.0)
-        return _normalize_cash_first(out)
+        return _cash_first_weights(out)
 
     def _check_violations(self, weights: dict[str, float], active_baskets: set[str]) -> list[str]:
         violations: list[str] = []
@@ -637,16 +639,16 @@ def _merge_signal_strengths(
 def _clip_adds_to_current(target: dict[str, float], current: dict[str, float]) -> tuple[dict[str, float], list[str]]:
     out = dict(target)
     violations: list[str] = []
-    released = 0.0
+    caps: dict[str, float] = {}
     for ticker in sorted((set(out) | set(current)) - {"CASH"}):
         target_w = float(out.get(ticker, 0.0) or 0.0)
         current_w = float(current.get(ticker, 0.0) or 0.0)
         if target_w > current_w + 1e-9:
-            out[ticker] = current_w
-            released += target_w - current_w
+            caps[ticker] = current_w
             violations.append(f"scorecard_no_add:{ticker} {target_w:.2%}->{current_w:.2%}")
-    out["CASH"] = float(out.get("CASH", 0.0) or 0.0) + released
-    return _normalize_cash_first(out), violations
+    if caps:
+        out, _ = apply_single_caps_cash_first(out, caps)
+    return _cash_first_weights(out), violations
 
 
 def _factor_exposure_for_group(weights: dict[str, float], group_name: str) -> float:
@@ -699,24 +701,24 @@ def _tickers_with_factor_tag(weights: dict[str, float], group_name: str) -> list
     ]
 
 
-def _normalize_cash_first(weights: dict[str, Any]) -> dict[str, float]:
-    clean = _clean_weights(weights)
-    equity = sum(value for ticker, value in clean.items() if ticker != "CASH")
-    if equity >= 1.0:
-        scale = 1.0 / equity if equity > 0 else 0.0
-        out = {
-            ticker: round(value * scale, 6)
-            for ticker, value in clean.items()
-            if ticker != "CASH" and value > 1e-9
-        }
-        out["CASH"] = round(max(1.0 - sum(out.values()), 0.0), 6)
-        return out
-    out = {
-        ticker: round(value, 6)
-        for ticker, value in clean.items()
-        if ticker != "CASH" and value > 1e-9
-    }
-    out["CASH"] = round(max(1.0 - sum(out.values()), 0.0), 6)
+def _cash_first_weights(weights: dict[str, Any]) -> dict[str, float]:
+    normalized, _ = normalize_cash_first(weights)
+    return _round_weight_map(normalized)
+
+
+def _proportional_weights(weights: dict[str, Any]) -> dict[str, float]:
+    normalized, _ = normalize_proportional(weights)
+    return _round_weight_map(normalized)
+
+
+def _round_weight_map(weights: dict[str, Any]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for ticker, value in (weights or {}).items():
+        clean = str(ticker or "").upper().strip()
+        parsed = _optional_float(value)
+        if clean and parsed is not None and parsed > 1e-9:
+            out[clean] = round(parsed, 6)
+    out.setdefault("CASH", 0.0)
     return out
 
 

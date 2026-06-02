@@ -1,5 +1,7 @@
+import inspect
 import unittest
 
+import services.portfolio_construction as portfolio_construction_module
 from services.portfolio_construction import (
     PortfolioConstructionModel,
     build_construction_alpha_decision_context,
@@ -8,6 +10,28 @@ from services.portfolio_construction import (
 
 
 class PortfolioConstructionTests(unittest.TestCase):
+    def test_weight_arithmetic_uses_weight_ops_contract(self):
+        source = inspect.getsource(portfolio_construction_module)
+
+        self.assertIn("from services.weight_ops import", source)
+        self.assertIn("normalize_cash_first", source)
+        self.assertIn("normalize_proportional", source)
+        self.assertIn("apply_group_caps_cash_first", source)
+        self.assertNotIn("def _normalize_cash_first", source)
+
+    def test_initial_base_construction_uses_proportional_normalization(self):
+        out = PortfolioConstructionModel().construct(
+            base_weights={"SPY": 0.20, "CASH": 0.20},
+            current_weights={"SPY": 0.50, "CASH": 0.50},
+            signal_strengths={},
+            basket_reviews=None,
+            scorecard_permission="normal_rebalance",
+            turnover_budget=None,
+        ).to_dict()
+
+        self.assertAlmostEqual(out["target_weights"]["SPY"], 0.50)
+        self.assertAlmostEqual(out["target_weights"]["CASH"], 0.50)
+
     def test_factor_limits_scale_excess_exposure_to_cash(self):
         out = PortfolioConstructionModel().construct(
             base_weights={
