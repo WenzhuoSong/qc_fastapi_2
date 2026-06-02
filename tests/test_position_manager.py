@@ -53,6 +53,17 @@ def _load_position_manager_exports():
 apply_position_constraints, _build_position_monitor_diagnostics, _holding_days_are_trusted = _load_position_manager_exports()
 
 
+def _ledger_mutations(out):
+    return (out.mutation_ledger or {}).get("mutations") or []
+
+
+def _find_ledger_mutation(out, mutation_type, ticker):
+    for row in _ledger_mutations(out):
+        if row.get("type") == mutation_type and row.get("ticker") == ticker:
+            return row
+    return None
+
+
 class PositionManagerTest(unittest.TestCase):
     def test_holding_days_schema_gate_rejects_warmup_polluted_version(self):
         snapshot = types.SimpleNamespace(schema_version="1.3")
@@ -128,6 +139,11 @@ class PositionManagerTest(unittest.TestCase):
             },
             out.mutation_details,
         )
+        ledger_row = _find_ledger_mutation(out, "min_hold_defer_sell", "AAA")
+        self.assertIsNotNone(ledger_row)
+        self.assertTrue(ledger_row["conditional"])
+        self.assertAlmostEqual(ledger_row["before"], 0.0, places=6)
+        self.assertAlmostEqual(ledger_row["after"], 0.2, places=6)
         self.assertAlmostEqual(sum(out.adjusted_weights.values()), 1.0, places=4)
 
     def test_min_hold_days_does_not_defer_exempt_risk_trim(self):
@@ -186,6 +202,11 @@ class PositionManagerTest(unittest.TestCase):
             },
             out.mutation_details,
         )
+        ledger_row = _find_ledger_mutation(out, "turnover_scale_toward_current", "AAA")
+        self.assertIsNotNone(ledger_row)
+        self.assertTrue(ledger_row["conditional"])
+        self.assertAlmostEqual(ledger_row["before"], 0.6, places=6)
+        self.assertAlmostEqual(ledger_row["after"], 0.2, places=6)
 
     def test_max_daily_trades_caps_extra_buys(self):
         out = apply_position_constraints(
@@ -204,6 +225,11 @@ class PositionManagerTest(unittest.TestCase):
         self.assertEqual(out.trade_summary["total_trades"], 2)
         self.assertTrue(any(v.startswith("daily_trade_count_capped:") for v in out.violations))
         self.assertIn("cap_trade_count_buys", out.mutation_types)
+        ledger_row = _find_ledger_mutation(out, "cap_trade_count_buys", "CCC")
+        self.assertIsNotNone(ledger_row)
+        self.assertTrue(ledger_row["tighten_only"])
+        self.assertAlmostEqual(ledger_row["before"], 0.08, places=6)
+        self.assertAlmostEqual(ledger_row["after"], 0.0, places=6)
 
     def test_actual_daily_trades_reduce_remaining_trade_slots(self):
         out = apply_position_constraints(
@@ -222,6 +248,9 @@ class PositionManagerTest(unittest.TestCase):
         self.assertEqual(held, ["AAA"])
         self.assertEqual(out.trade_summary["actual_daily_trades_before_cycle"], 2)
         self.assertTrue(any(v.startswith("daily_trade_count_capped:") for v in out.violations))
+        ledger_row = _find_ledger_mutation(out, "cap_trade_count_buys", "BBB")
+        self.assertIsNotNone(ledger_row)
+        self.assertTrue(ledger_row["tighten_only"])
 
     def test_decay_risk_auto_reduce_uses_asset_profile_holding_policy(self):
         out = apply_position_constraints(
@@ -248,6 +277,10 @@ class PositionManagerTest(unittest.TestCase):
         self.assertTrue(any(v.startswith("decay_auto_reduce:UVXY") for v in out.violations))
         self.assertIn("decay_risk_auto_reduce", out.mutation_types)
         self.assertEqual(out.trade_summary["decay_holding_reviews"], 1)
+        ledger_row = _find_ledger_mutation(out, "decay_risk_auto_reduce", "UVXY")
+        self.assertIsNotNone(ledger_row)
+        self.assertTrue(ledger_row["tighten_only"])
+        self.assertLess(ledger_row["after"], ledger_row["before"])
 
     def test_decay_max_hold_review_forces_larger_trim(self):
         out = apply_position_constraints(
@@ -270,6 +303,47 @@ class PositionManagerTest(unittest.TestCase):
         self.assertAlmostEqual(out.adjusted_weights["TQQQ"], 0.02, places=4)
         self.assertTrue(any(v.startswith("decay_max_hold_review:TQQQ") for v in out.violations))
         self.assertIn("decay_risk_auto_reduce", out.mutation_types)
+        ledger_row = _find_ledger_mutation(out, "decay_risk_auto_reduce", "TQQQ")
+        self.assertIsNotNone(ledger_row)
+        self.assertTrue(ledger_row["tighten_only"])
+
+    def test_single_buy_delta_cap_records_ledger_mutation(self):
+        out = apply_position_constraints(
+            target_weights={"AAA": 0.30, "CASH": 0.70},
+            current_holdings={"AAA": 0.02, "CASH": 0.98},
+            config={
+                "max_new_buys_per_cycle": 10,
+                "max_single_trade_pct": 0.05,
+                "max_turnover_per_cycle": 1.0,
+                "max_daily_trades": 10,
+            },
+        )
+
+        self.assertIn("cap_single_buy_delta", out.mutation_types)
+        ledger_row = _find_ledger_mutation(out, "cap_single_buy_delta", "AAA")
+        self.assertIsNotNone(ledger_row)
+        self.assertTrue(ledger_row["tighten_only"])
+        self.assertAlmostEqual(ledger_row["before"], 0.30, places=6)
+        self.assertAlmostEqual(ledger_row["after"], 0.07, places=6)
+
+    def test_max_new_buys_cap_records_ledger_mutation(self):
+        out = apply_position_constraints(
+            target_weights={"AAA": 0.10, "BBB": 0.09, "CASH": 0.81},
+            current_holdings={"CASH": 1.0},
+            config={
+                "max_new_buys_per_cycle": 1,
+                "max_single_trade_pct": 1.0,
+                "max_turnover_per_cycle": 1.0,
+                "max_daily_trades": 10,
+            },
+        )
+
+        self.assertIn("cap_new_buy_to_current", out.mutation_types)
+        ledger_row = _find_ledger_mutation(out, "cap_new_buy_to_current", "BBB")
+        self.assertIsNotNone(ledger_row)
+        self.assertTrue(ledger_row["tighten_only"])
+        self.assertAlmostEqual(ledger_row["before"], 0.09, places=6)
+        self.assertAlmostEqual(ledger_row["after"], 0.0, places=6)
 
 
 if __name__ == "__main__":

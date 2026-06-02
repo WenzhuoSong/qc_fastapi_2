@@ -1901,9 +1901,11 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             "constraints": pm_out.constraints,
             "mutation_types": pm_out.mutation_types,
             "mutation_details": pm_out.mutation_details,
+            "mutation_ledger": pm_out.mutation_ledger,
         }
         risk_out.setdefault("post_risk_mutation_types", []).extend(pm_out.mutation_types)
         risk_out.setdefault("post_risk_mutation_details", []).extend(pm_out.mutation_details)
+        risk_out.setdefault("post_risk_mutation_ledgers", []).append(pm_out.mutation_ledger)
 
         if pm_out.violations:
             logger.warning(
@@ -1926,6 +1928,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 "trade_summary": pm_out.trade_summary,
                 "mutation_types": pm_out.mutation_types,
                 "mutation_details": pm_out.mutation_details,
+                "mutation_ledger": pm_out.mutation_ledger,
             },
             duration_ms=0,
         )
