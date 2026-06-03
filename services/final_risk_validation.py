@@ -310,7 +310,11 @@ def validate_safety_contract(
         "mutation_types": authoritative_mutation_types,
         "unknown_mutation_types": unknown_mutation_types,
         "conditional_mutation_types": conditional_mutation_types,
-        "conditional_detail_tickers": conditional_detail_tickers,
+        "conditional_detail_tickers": (
+            sorted(conditional_detail_tickers)
+            if conditional_detail_tickers is not None
+            else None
+        ),
         "conditional_mutation_violations": conditional_mutation_violations,
         "violations": safety_violations,
     }

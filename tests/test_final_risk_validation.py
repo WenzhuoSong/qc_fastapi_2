@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from services.final_risk_validation import validate_accounting_contract
@@ -109,6 +110,8 @@ class FinalRiskValidationTest(unittest.TestCase):
 
         self.assertTrue(out["ok"], out)
         self.assertEqual(out["conditional_mutation_violations"], [])
+        self.assertEqual(out["conditional_detail_tickers"], ["QQQ"])
+        json.dumps(out)
 
     def test_active_envelope_conditional_material_drift_does_not_require_human_review(self):
         envelope_ledger = {
@@ -398,9 +401,11 @@ class FinalRiskValidationTest(unittest.TestCase):
 
         self.assertTrue(out["approved"], out)
         self.assertEqual(out["conditional_detail_tickers"], ["SPY"])
+        self.assertEqual(out["safety_contract"]["conditional_detail_tickers"], ["SPY"])
         self.assertEqual(out["missing_mutation_ledger_tickers"], [])
         self.assertEqual(out["conditional_mutation_violations"], [])
         self.assertEqual(out["blocking_violations"], [])
+        json.dumps(out)
 
     def test_incomplete_conditional_mutation_details_fall_back_to_conservative_review(self):
         out = validate_final_execution_target(

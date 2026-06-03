@@ -120,6 +120,7 @@ from services.empirical_profile_store import (
     collect_empirical_profile_tickers,
 )
 from services.execution_audit import build_execution_audit_payload, count_today_actual_execution_actions
+from services.json_safety import json_safe as _json_safe
 from strategies              import compute_rebalance_actions, estimate_cost_pct
 from tracking.monitor_client import PipelineRunTracker
 from db.session          import AsyncSessionLocal
@@ -663,16 +664,18 @@ async def _save_step_log(
 ) -> None:
     """Write one agent_step_log record. Silent failure, does not affect pipeline."""
     try:
+        safe_input_data = _json_safe(input_data or {})
+        safe_output_data = _json_safe(output_data or {})
         token_usage = None
-        if isinstance(output_data, dict) and isinstance(output_data.get("_token_usage"), dict):
-            token_usage = output_data.get("_token_usage")
+        if isinstance(safe_output_data, dict) and isinstance(safe_output_data.get("_token_usage"), dict):
+            token_usage = safe_output_data.get("_token_usage")
         async with AsyncSessionLocal() as db:
             db.add(AgentStepLog(
                 analysis_id = analysis_id,
                 stage       = stage,
                 agent_name  = agent_name,
-                input_data  = input_data,
-                output_data = output_data,
+                input_data  = safe_input_data,
+                output_data = safe_output_data,
                 duration_ms = duration_ms,
                 model       = model,
                 token_usage = token_usage,
@@ -3509,15 +3512,18 @@ async def _finalize_analysis(
 ) -> None:
     """Backfill complete data to analysis row when pipeline ends."""
     from sqlalchemy import update
+    safe_synthesizer_out = _json_safe(synthesizer_out)
+    safe_quant_baseline = _json_safe(quant_baseline)
+    safe_risk_out = _json_safe(risk_out)
     async with AsyncSessionLocal() as db:
         await db.execute(
             update(AgentAnalysis)
             .where(AgentAnalysis.id == analysis_id)
             .values(
-                researcher_output = synthesizer_out,
-                allocator_output  = quant_baseline,
-                risk_output       = risk_out,
-                risk_approved     = bool(risk_out.get("approved", False)),
+                researcher_output = safe_synthesizer_out,
+                allocator_output  = safe_quant_baseline,
+                risk_output       = safe_risk_out,
+                risk_approved     = bool(safe_risk_out.get("approved", False)),
                 execution_status  = "pending",
             )
         )
@@ -3528,11 +3534,12 @@ async def _update_analysis_risk_output(analysis_id: int, risk_out: dict) -> None
     """Persist post-communicator audit fields without changing execution status."""
     from sqlalchemy import update
     try:
+        safe_risk_out = _json_safe(risk_out)
         async with AsyncSessionLocal() as db:
             await db.execute(
                 update(AgentAnalysis)
                 .where(AgentAnalysis.id == analysis_id)
-                .values(risk_output=risk_out)
+                .values(risk_output=safe_risk_out)
             )
             await db.commit()
     except Exception as e:
