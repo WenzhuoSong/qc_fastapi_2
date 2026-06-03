@@ -470,7 +470,10 @@ def _optional_float(value: Any) -> float | None:
 
 
 def _turnover(target: dict[str, float], current: dict[str, float]) -> float:
-    tickers = set(target) | set(current)
+    # Turnover here is executable trade turnover. CASH is a residual balance,
+    # and QC/account holding snapshots often omit it, so including CASH creates
+    # false turnover whenever risk-reducing trims raise cash.
+    tickers = (set(target) | set(current)) - {"CASH"}
     return sum(
         abs(float(target.get(ticker, 0.0) or 0.0) - float(current.get(ticker, 0.0) or 0.0))
         for ticker in tickers

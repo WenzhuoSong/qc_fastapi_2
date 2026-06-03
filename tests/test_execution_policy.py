@@ -85,6 +85,16 @@ class ExecutionPolicyTests(unittest.TestCase):
         self.assertTrue(result["allowed"], result["violations"])
         self.assertTrue(result["checks"]["role_group_cap_ok"]["pass"])
 
+    def test_turnover_ignores_cash_residual_when_current_snapshot_omits_cash(self):
+        result = evaluate_policy(
+            weights={"QQQ": 0.1136, "XLK": 0.1238, "CASH": 0.322019},
+            current_weights={"QQQ": 0.1336, "XLK": 0.1438},
+            context={"min_cash_weight": 0.05, "max_turnover_per_cycle": 0.20},
+        )
+
+        self.assertTrue(result["checks"]["turnover_ok"]["pass"], result["violations"])
+        self.assertAlmostEqual(result["checks"]["turnover_ok"]["actual"], 0.02)
+
     def test_policy_snapshot_contains_version_and_roles(self):
         snapshot = policy_snapshot()
         self.assertEqual(snapshot["version"], "sprint8a")
