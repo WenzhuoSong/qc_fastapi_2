@@ -23,9 +23,11 @@ ALLOWED_POST_RISK_MUTATIONS = {
     "cap_single_buy_delta",
     "cap_trade_count_buys",
     "cash_raise_from_policy_cap",
+    "cash_raise_from_group_cap",
     "decay_risk_auto_reduce",
     "emergency_reduce_only",
     "execution_buy_delta_throttle",
+    "loss_trim",
     REGIME_CONSTRAINT_MUTATION_TYPE,
 }
 
@@ -425,7 +427,8 @@ def _conditional_mutation_violations(
             continue
         if hard_risk:
             actual_trim = current_weight - final_weight
-            if actual_trim < forced_trim_min_delta - 1e-9:
+            required_trim = min(forced_trim_min_delta, max(current_weight, 0.0))
+            if actual_trim < required_trim - 1e-9:
                 rows.append(
                     {
                         "type": "hard_risk_trim_suppressed",
@@ -433,7 +436,7 @@ def _conditional_mutation_violations(
                         "current": round(current_weight, 6),
                         "final": round(final_weight, 6),
                         "actual_trim": round(actual_trim, 6),
-                        "min_trim": round(forced_trim_min_delta, 6),
+                        "min_trim": round(required_trim, 6),
                     }
                 )
                 continue

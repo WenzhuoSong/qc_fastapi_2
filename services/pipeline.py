@@ -1786,6 +1786,22 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         }
 
         if run_governance_execution:
+            governance_ledger = _position_governance_mutation_ledger(
+                before=target_before_governance,
+                after=governance_out.adjusted_weights,
+                mutation_type=(
+                    "emergency_reduce_only"
+                    if full_auto_governance_only
+                    else "loss_trim"
+                ),
+            )
+            if governance_ledger.mutations:
+                risk_out.setdefault("post_risk_mutation_ledgers", []).append(
+                    governance_ledger.to_dict()
+                )
+                risk_out.setdefault("post_risk_mutation_types", []).append(
+                    governance_ledger.mutation_types()[0]
+                )
             risk_out["target_weights"] = governance_out.adjusted_weights
             rebalance_threshold = float((pipeline_context.get("risk_params") or {}).get("rebalance_threshold", 0.02))
             if full_auto_governance_only:
@@ -1845,6 +1861,11 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 "portfolio_summary": governance_out.portfolio_summary,
                 "feature_source_summary": governance_feature_summary,
                 "data_source_policy": risk_out.get("data_source_policy") or {},
+                "mutation_ledger": (
+                    governance_ledger.to_dict()
+                    if run_governance_execution
+                    else MutationLedger().to_dict()
+                ),
             },
             duration_ms=0,
         )
@@ -2813,6 +2834,42 @@ def _scorecard_restricted_tickers(position_governance: dict | None) -> list[str]
             if ticker and ticker not in tickers:
                 tickers.append(ticker)
     return tickers
+
+
+def _position_governance_mutation_ledger(
+    *,
+    before: dict | None,
+    after: dict | None,
+    mutation_type: str,
+) -> MutationLedger:
+    ledger = MutationLedger()
+    before_weights = _clean_weight_map(before)
+    after_weights = _clean_weight_map(after)
+    for ticker in sorted((set(before_weights) | set(after_weights)) - {"CASH"}):
+        before_w = float(before_weights.get(ticker, 0.0) or 0.0)
+        after_w = float(after_weights.get(ticker, 0.0) or 0.0)
+        if after_w < before_w - 1e-9:
+            ledger.record(
+                mutation_type=mutation_type,
+                ticker=ticker,
+                before=before_w,
+                after=after_w,
+                reason="position_governance reduced post-risk target weight",
+            )
+    return ledger
+
+
+def _clean_weight_map(weights: dict | None) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for raw_ticker, raw_weight in (weights or {}).items():
+        ticker = str(raw_ticker or "").upper().strip()
+        if not ticker:
+            continue
+        try:
+            out[ticker] = max(float(raw_weight or 0.0), 0.0)
+        except (TypeError, ValueError):
+            out[ticker] = 0.0
+    return out
 
 
 def _position_manager_min_hold_exempt_tickers(

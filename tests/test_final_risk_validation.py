@@ -301,6 +301,115 @@ class FinalRiskValidationTest(unittest.TestCase):
         self.assertEqual(out["missing_mutation_ledger_tickers"], ["XLE"])
         self.assertIn("incomplete_mutation_ledger", out["blocking_violations"])
 
+    def test_governance_trim_and_min_hold_ledgers_cover_all_post_risk_drift(self):
+        out = validate_final_execution_target(
+            risk_approved_target={
+                "IWM": 0.092153,
+                "QQQ": 0.149453,
+                "SPY": 0.082453,
+                "XLE": 0.109653,
+                "XLI": 0.034553,
+                "XLK": 0.150000,
+                "XLU": 0.000826,
+                "CASH": 0.254148,
+            },
+            final_target={
+                "IWM": 0.103100,
+                "QQQ": 0.140400,
+                "SPY": 0.093400,
+                "XLE": 0.090600,
+                "XLI": 0.045500,
+                "XLK": 0.147200,
+                "XLU": 0.000000,
+                "CASH": 0.253039,
+            },
+            current_weights={
+                "IWM": 0.103100,
+                "QQQ": 0.160000,
+                "SPY": 0.093400,
+                "XLE": 0.121000,
+                "XLI": 0.045500,
+                "XLK": 0.167000,
+                "XLU": 0.001000,
+                "CASH": 0.181000,
+            },
+            policy_context={
+                "post_risk_mutation_types": [
+                    "loss_trim",
+                    "defer_sell_due_to_min_hold_days",
+                ],
+                "post_risk_mutation_ledgers": [
+                    {
+                        "mutations": [
+                            {
+                                "type": "loss_trim",
+                                "ticker": "QQQ",
+                                "before": 0.149453,
+                                "after": 0.140400,
+                                "reason": "position governance trim",
+                            },
+                            {
+                                "type": "loss_trim",
+                                "ticker": "XLE",
+                                "before": 0.109653,
+                                "after": 0.090600,
+                                "reason": "position governance trim",
+                            },
+                            {
+                                "type": "loss_trim",
+                                "ticker": "XLK",
+                                "before": 0.150000,
+                                "after": 0.147200,
+                                "reason": "position governance trim",
+                            },
+                            {
+                                "type": "loss_trim",
+                                "ticker": "XLU",
+                                "before": 0.000826,
+                                "after": 0.000000,
+                                "reason": "position governance trim",
+                            },
+                        ]
+                    },
+                    {
+                        "mutations": [
+                            {
+                                "type": "min_hold_defer_sell",
+                                "ticker": "SPY",
+                                "before": 0.082453,
+                                "after": 0.093400,
+                                "reason": "young position sell deferred",
+                            },
+                            {
+                                "type": "min_hold_defer_sell",
+                                "ticker": "IWM",
+                                "before": 0.092153,
+                                "after": 0.103100,
+                                "reason": "young position sell deferred",
+                            },
+                            {
+                                "type": "min_hold_defer_sell",
+                                "ticker": "XLI",
+                                "before": 0.034553,
+                                "after": 0.045500,
+                                "reason": "young position sell deferred",
+                            },
+                        ]
+                    },
+                ],
+                "hard_risk_tickers": ["XLE", "XLU"],
+                "scorecard_restricted_tickers": ["QQQ", "XLE", "XLK", "XLU"],
+                "material_drift_threshold": 0.001,
+                "require_human_confirmation_for_conditional_material_drift": False,
+            },
+            mode="blocking",
+        )
+
+        self.assertTrue(out["approved"], out)
+        self.assertEqual(out["missing_mutation_ledger_tickers"], [])
+        self.assertNotIn("incomplete_mutation_ledger", out["blocking_violations"])
+        self.assertEqual(out["conditional_mutation_violations"], [])
+
     def test_blocking_mode_allows_typed_tighten_only_policy_cap_drift(self):
         out = validate_final_execution_target(
             risk_approved_target={"PSI": 0.08, "CASH": 0.92},
