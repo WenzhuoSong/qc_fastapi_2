@@ -1,0 +1,22 @@
+id: GLD
+type: asset
+asset_class: commodity_etf
+role: defensive_cash_proxy
+sector_group: defensive_gold
+summary: Gold ETF used as a defensive diversifier and inflation/geopolitical hedge proxy.
+decay_risk: low
+allowed_actions: [de_risk, increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.05
+  full_auto: 0.04
+risk_budget_cost: 0.45
+risk_drivers: [gold_price, real_rates, usd, geopolitical_risk]
+positive_regimes: [risk_off, inflation_shock, falling_real_rates]
+weak_regimes: [rising_real_rates, strong_usd]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - defensive diversifier, not cash
+  - explain losses through real-rate and USD context
+sources: [issuer_fact_sheet, execution_policy]
+last_reviewed: 2026-06-03

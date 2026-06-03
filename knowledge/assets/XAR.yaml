@@ -1,0 +1,21 @@
+id: XAR
+type: asset
+asset_class: sector_etf
+role: sector_theme
+sector_group: aerospace_defense
+summary: Aerospace and defense ETF with equal-weight industry exposure.
+decay_risk: low
+allowed_actions: [increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.05
+  full_auto: 0.035
+risk_budget_cost: 0.70
+risk_drivers: [aerospace_beta, defense_spending, industrial_beta]
+positive_regimes: [defense_spending_strength, industrial_momentum]
+weak_regimes: [industrial_slowdown, high_vol]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - count with ITA and industrial exposure
+sources: [issuer_fact_sheet, execution_policy]
+last_reviewed: 2026-06-03

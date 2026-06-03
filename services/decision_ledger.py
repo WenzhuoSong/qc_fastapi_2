@@ -38,6 +38,17 @@ STATIC_REASON_SOURCE_EFFECTS: dict[str, tuple[tuple[str, str], ...]] = {
 }
 
 
+DISPLAY_REASON_CODE_REPLACEMENTS: dict[str, str] = {
+    "human_required": "review_flag",
+    "scorecard_human_required": "scorecard_tightened",
+}
+
+DISPLAY_SOURCE_EFFECT_REPLACEMENTS: dict[str, str] = {
+    "human_required": "review_flag",
+    "scorecard_human_required": "scorecard_tightened",
+}
+
+
 def build_decision_ledger(
     *,
     evidence_bundle: dict[str, Any] | None = None,
@@ -123,6 +134,8 @@ def build_decision_ledger(
         "portfolio_summary": {
             "market_permission": (market_scorecard or {}).get("investment_permission"),
             "require_human_confirmation": (market_scorecard or {}).get("require_human_confirmation"),
+            "scorecard_tightened": bool((market_scorecard or {}).get("require_human_confirmation")),
+            "scorecard_tightening_classes": list((market_scorecard or {}).get("confirmation_classes") or []),
             "risk_approved": approved,
             "execution_status": execution_status,
             "target_construction_mode": risk.get("target_construction_mode"),
@@ -321,6 +334,11 @@ def _build_ticker_row(
     if explanation is not None:
         explanation["entered_via_hedge_path"] = hedge_path["entered_via_hedge_path"]
         explanation["hedge_trigger_reasons"] = hedge_path["hedge_trigger_reasons"]
+    source_effects = _source_effects(
+        reason_codes=reason_codes,
+        evidence_used=evidence_used,
+        trade_lifecycle=trade_lifecycle,
+    )
 
     return {
         "ticker": ticker,
@@ -334,11 +352,8 @@ def _build_ticker_row(
             "holding_days": holding_meta.get("holding_days"),
         },
         "evidence_used": evidence_used,
-        "source_effects": _source_effects(
-            reason_codes=reason_codes,
-            evidence_used=evidence_used,
-            trade_lifecycle=trade_lifecycle,
-        ),
+        "source_effects": source_effects,
+        "display_source_effects": _display_source_effects(source_effects),
         "trade_lifecycle": trade_lifecycle,
         "llm_advisory": _compact_advisory_override(advisory_override),
         "execution_policy": execution_policy,
@@ -349,6 +364,7 @@ def _build_ticker_row(
         "risk_result": "approved" if risk_approved else "blocked",
         "governance_available": governance_available,
         "reason_codes": reason_codes,
+        "display_reason_codes": _display_reason_codes(reason_codes),
         "explanation": explanation,
         "placeholders": {
             "scorecard": None,
@@ -764,6 +780,23 @@ def _source_effects(
         for source, values in effects.items()
         if values
     }
+
+
+def _display_reason_codes(reason_codes: list[str]) -> list[str]:
+    return _unique([
+        DISPLAY_REASON_CODE_REPLACEMENTS.get(str(code), str(code))
+        for code in reason_codes
+    ])
+
+
+def _display_source_effects(source_effects: dict[str, list[str]]) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for source, effects in (source_effects or {}).items():
+        out[source] = _unique([
+            DISPLAY_SOURCE_EFFECT_REPLACEMENTS.get(str(effect), str(effect))
+            for effect in (effects or [])
+        ])
+    return {source: effects for source, effects in out.items() if effects}
 
 
 def _static_reason_source_effects(reason_code: str) -> tuple[tuple[str, str], ...]:

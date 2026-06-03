@@ -1,0 +1,21 @@
+id: XLF
+type: asset
+asset_class: sector_etf
+role: sector_theme
+sector_group: financials
+summary: Financial sector ETF with bank, insurance, and capital-market exposure.
+decay_risk: low
+allowed_actions: [increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.06
+  full_auto: 0.04
+risk_budget_cost: 0.60
+risk_drivers: [yield_curve, credit_cycle, financial_conditions]
+positive_regimes: [cyclical_growth, steepening_curve]
+weak_regimes: [credit_stress, recession_risk]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - monitor credit and rate sensitivity
+sources: [issuer_fact_sheet, execution_policy]
+last_reviewed: 2026-06-03

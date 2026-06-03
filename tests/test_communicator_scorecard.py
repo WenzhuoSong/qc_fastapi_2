@@ -493,6 +493,9 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("Decision ledger", text)
         self.assertIn("QQQ: trim -> none", text)
         self.assertIn("risk_rejected", text)
+        self.assertIn("review_flag", text)
+        self.assertNotIn("human_required", text)
+        self.assertNotIn("scorecard_human_required", text)
         self.assertIn("Decision style", text)
         self.assertIn("defensive_only", text)
         self.assertIn("Evidence bundle is stale", text)
@@ -956,6 +959,8 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertTrue(out["used_fallback"])
         self.assertIn("Rebalance rejected by risk", out["text"])
         self.assertIn("No execution this round", out["text"])
+        self.assertIn("Market scorecard tightened the proposal", out["text"])
+        self.assertNotIn("requires human confirmation", out["text"])
         self.assertNotIn("Action taken", out["text"])
         self.assertNotIn("/confirm", out["text"])
 

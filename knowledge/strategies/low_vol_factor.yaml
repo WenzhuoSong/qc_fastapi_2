@@ -18,5 +18,53 @@ governance_implications:
   - useful as advisory risk brake
   - do not assume bond ETFs are risk-free
   - prefer hold-or-trim when data quality is poor
+compatibility_mappings:
+  - role: core_market
+    horizon: defensive_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: increase
+        signal_type: low_vol_core_tilt
+      - gte: 0.40
+        action: watch
+        signal_type: low_vol_core_monitor
+      - lt: 0.40
+        action: neutral
+        signal_type: no_low_vol_core_signal
+    max_weight_multiplier: 0.45
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{regime}_low_vol_core"
+
+  - role: sector_theme
+    horizon: defensive_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: increase
+        signal_type: low_vol_sector_theme_tilt
+      - gte: 0.40
+        action: watch
+        signal_type: low_vol_sector_theme_monitor
+      - lt: 0.40
+        action: neutral
+        signal_type: no_low_vol_sector_theme_signal
+    max_weight_multiplier: 0.30
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{regime}_low_vol_sector_theme"
+
+  - role: defensive_cash_proxy
+    horizon: defensive_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: de_risk
+        signal_type: low_vol_defensive_proxy
+      - gte: 0.40
+        action: watch
+        signal_type: low_vol_defensive_monitor
+      - lt: 0.40
+        action: neutral
+        signal_type: no_low_vol_defensive_signal
+    max_weight_multiplier: 0.75
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{regime}_low_vol_defensive"
 sources: [quality_minus_junk_2013, fama_french_1993]
 last_reviewed: 2026-05-18

@@ -40,8 +40,11 @@ class DecisionLedgerTests(unittest.TestCase):
         self.assertIn("risk_rejected", row["reason_codes"])
         self.assertIn("human_required", row["reason_codes"])
         self.assertIn("scorecard_human_required", row["reason_codes"])
+        self.assertIn("review_flag", row["display_reason_codes"])
+        self.assertIn("scorecard_tightened", row["display_reason_codes"])
         self.assertIn("risk_rejected", row["source_effects"]["risk"])
         self.assertIn("scorecard_human_required", row["source_effects"]["scorecard"])
+        self.assertIn("scorecard_tightened", row["display_source_effects"]["scorecard"])
         self.assertEqual(ledger["portfolio_summary"]["execution_status"], "not_sent")
 
     def test_missing_position_governance_warns_without_fallback_inference(self):
@@ -281,6 +284,7 @@ class DecisionLedgerTests(unittest.TestCase):
         self.assertIn("satellite_basket_loss_review", effects["knowledge"])
         self.assertIn("hard_risk", effects["news"])
         self.assertIn("scorecard_human_required", effects["scorecard"])
+        self.assertIn("scorecard_tightened", ledger["tickers"]["FTXL"]["display_source_effects"]["scorecard"])
         self.assertIn("advisory_or_weaker_support", effects["strategy"])
         self.assertIn("risk_rejected", effects["risk"])
 

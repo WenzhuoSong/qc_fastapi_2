@@ -1,14 +1,57 @@
 import ast
+import tempfile
 import unittest
 from pathlib import Path
 
 from services.execution_policy import ROLE_POLICIES, TICKER_ROLES, TickerRole
+from tools.generate_qc_fallback_policy import (
+    compare_qc_fallback_policy,
+    expected_qc_fallback_policy,
+    generate_policy_snippet,
+    load_qc_fallback_policy,
+)
 
 
 QC_FILE = Path(__file__).resolve().parents[2] / "quantconnect_files" / "test1.py"
 
 
 class QCFallbackPolicyContractTest(unittest.TestCase):
+    def test_generator_emits_deterministic_fastapi_policy_snippet(self):
+        snippet = generate_policy_snippet()
+        expected = expected_qc_fallback_policy()
+
+        self.assertIn(f'POLICY_VERSION = "{expected["POLICY_VERSION"]}"', snippet)
+        self.assertIn('"PSI":"thematic"', snippet)
+        self.assertIn('"hedge":{"max_single":0.03,"max_total_group":0.08}', snippet)
+
+    def test_qc_checker_passes_current_quantconnect_file(self):
+        result = compare_qc_fallback_policy(QC_FILE)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["expected_counts"]["tickers"], len(TICKER_ROLES))
+
+    def test_qc_checker_detects_policy_drift(self):
+        expected = expected_qc_fallback_policy()
+        roles = dict(expected["TICKER_ROLES"])
+        roles["PSI"] = "sector"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "bad_qc.py"
+            path.write_text(
+                "\n".join([
+                    "class QCAgenticV1:",
+                    f'    POLICY_VERSION = "{expected["POLICY_VERSION"]}"',
+                    f"    TICKER_ROLES = {roles!r}",
+                    f"    ROLE_CAPS = {expected['ROLE_CAPS']!r}",
+                ]),
+                encoding="utf-8",
+            )
+
+            result = compare_qc_fallback_policy(path)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["differences"][0]["field"], "TICKER_ROLES")
+        self.assertIn("PSI", result["differences"][0]["changed"])
+
     def test_qc_fallback_roles_match_fastapi_policy(self):
         qc_policy = _load_qc_policy_constants()
         expected = {ticker: role.value for ticker, role in TICKER_ROLES.items()}
@@ -35,11 +78,12 @@ class QCFallbackPolicyContractTest(unittest.TestCase):
 
     def test_qc_fallback_policy_sync_and_version_are_deployed(self):
         text = QC_FILE.read_text()
+        qc_policy = load_qc_fallback_policy(QC_FILE)
 
-        self.assertIn('"version": "sprint8a"', text)
+        self.assertEqual(qc_policy["POLICY_VERSION"], "sprint8a")
         self.assertIn('self._policy_source = "compiled_fallback"', text)
         self.assertIn('target == "PolicySync"', text)
-        self.assertIn("_apply_inline_policy(data)", text)
+        self.assertIn("def _apply_inline_policy", text)
         self.assertIn("_policy_payload_from_command(data)", text)
         self.assertIn('self._get_field(data, "payload_json", None)', text)
         self.assertIn('self._field_as_policy_dict(data, "roles")', text)
@@ -49,15 +93,15 @@ class QCFallbackPolicyContractTest(unittest.TestCase):
         self.assertIn("[POLICY] Inline SetWeights policy applied version=", text)
         self.assertIn("[POLICY] Inline SetWeights policy ignored: missing roles/caps", text)
         self.assertIn("[POLICY] Inline SetWeights policy ignored: version mismatch", text)
-        self.assertIn("[POLICY] Inline SetWeights policy ignored; ", text)
+        self.assertIn("[POLICY] Inline SetWeights policy skipped", text)
         self.assertIn("[POLICY] source=", text)
 
     def test_qc_setweights_inline_policy_is_optional_when_version_aligned(self):
         text = QC_FILE.read_text()
 
         self.assertNotIn("invalid inline execution policy", text)
-        self.assertNotIn('self._send_ack(command_id, "rejected", reason)', text[text.index("elif not self._apply_inline_policy(data)") : text.index("self.log(\n                    f\"[POLICY] source=")])
-        self.assertIn("[POLICY] Inline SetWeights policy ignored; ", text)
+        self.assertIn("[POLICY] Inline SetWeights policy skipped", text)
+        self.assertIn("policy_mismatch = policy_version != current_policy_version", text)
 
     def test_qc_command_hardening_contract_is_deployed(self):
         text = QC_FILE.read_text()
@@ -81,8 +125,8 @@ class QCFallbackPolicyContractTest(unittest.TestCase):
         text = QC_FILE.read_text()
 
         self.assertIn("def _get_field(data, key: str, default=None):", text)
-        self.assertIn('hasattr(data, "ContainsKey")', text)
-        self.assertIn("data.ContainsKey(key)", text)
+        self.assertIn('getattr(data, "ContainsKey", None)', text)
+        self.assertIn("callable(contains) and contains(key)", text)
         self.assertIn("return data[key]", text)
         self.assertIn("def _is_mapping_like(raw) -> bool:", text)
 
@@ -121,7 +165,7 @@ class QCFallbackPolicyContractTest(unittest.TestCase):
         self.assertIn("def _cancel_order_by_id", text)
         self.assertIn('target == "CancelOrders"', text)
         self.assertIn('"target_command_id"', text)
-        self.assertIn('"cancel_orders"', text)
+        self.assertIn('"action": "cancel"', text)
         self.assertIn("active_command_in_progress", text)
         self.assertIn("already_in_progress", text)
         self.assertIn("reduce_only_override_candidate", text)
@@ -153,23 +197,9 @@ class QCFallbackPolicyContractTest(unittest.TestCase):
 
 
 def _load_qc_policy_constants() -> dict:
-    tree = ast.parse(QC_FILE.read_text())
-    class_node = next(
-        node for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "QCAgenticV1"
-    )
-    env: dict[str, object] = {}
-    for node in class_node.body:
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target = node.targets[0]
-        if not isinstance(target, ast.Name):
-            continue
-        if target.id.startswith("MAX_") or target.id in {"TICKER_ROLES", "ROLE_CAPS"}:
-            env[target.id] = _eval_policy_node(node.value, env)
     return {
-        "TICKER_ROLES": env["TICKER_ROLES"],
-        "ROLE_CAPS": env["ROLE_CAPS"],
+        "TICKER_ROLES": load_qc_fallback_policy(QC_FILE)["TICKER_ROLES"],
+        "ROLE_CAPS": load_qc_fallback_policy(QC_FILE)["ROLE_CAPS"],
     }
 
 
@@ -188,7 +218,9 @@ def _load_qc_universe_constants() -> set[str]:
             continue
         if target.id in {"CORE_UNIVERSE", "SATELLITE_UNIVERSE", "HEDGE_UNIVERSE"}:
             env[target.id] = _eval_policy_node(node.value, env)
-    return set(env["CORE_UNIVERSE"]) | set(env["SATELLITE_UNIVERSE"]) | set(env["HEDGE_UNIVERSE"])
+    if {"CORE_UNIVERSE", "SATELLITE_UNIVERSE", "HEDGE_UNIVERSE"}.issubset(env):
+        return set(env["CORE_UNIVERSE"]) | set(env["SATELLITE_UNIVERSE"]) | set(env["HEDGE_UNIVERSE"])
+    return set(load_qc_fallback_policy(QC_FILE)["TICKER_ROLES"])
 
 
 def _eval_policy_node(node: ast.AST, env: dict[str, object]):

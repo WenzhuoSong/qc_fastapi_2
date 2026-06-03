@@ -1,0 +1,24 @@
+id: RSP
+type: asset
+asset_class: equity_etf
+role: core_market
+sector_group: broad_market
+summary: Equal-weight S&P 500 ETF used as a breadth and broad-market participation proxy.
+underlying: S&P 500 Equal Weight Index
+leverage: 1
+inverse: false
+decay_risk: low
+allowed_actions: [increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.15
+  full_auto: 0.10
+risk_budget_cost: 0.50
+risk_drivers: [market_beta, breadth, mid_cap_tilt]
+positive_regimes: [trending_bull, broad_participation]
+weak_regimes: [narrow_leadership, high_vol]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - useful breadth complement to SPY/QQQ
+sources: [issuer_fact_sheet, execution_policy]
+last_reviewed: 2026-06-03

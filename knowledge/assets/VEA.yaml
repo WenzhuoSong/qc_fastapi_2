@@ -1,0 +1,21 @@
+id: VEA
+type: asset
+asset_class: equity_etf
+role: core_market
+sector_group: international_developed
+summary: Developed ex-US equity ETF used as a satellite broad-market diversifier.
+decay_risk: low
+allowed_actions: [increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.05
+  full_auto: 0.04
+risk_budget_cost: 0.55
+risk_drivers: [international_equity_beta, currency, global_growth]
+positive_regimes: [global_risk_on, dollar_weakness]
+weak_regimes: [global_slowdown, strong_usd]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - satellite-sized despite broad-market asset role
+sources: [issuer_fact_sheet, execution_policy]
+last_reviewed: 2026-06-03

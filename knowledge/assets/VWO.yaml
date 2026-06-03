@@ -1,0 +1,21 @@
+id: VWO
+type: asset
+asset_class: equity_etf
+role: core_market
+sector_group: emerging_markets
+summary: Emerging markets equity ETF used as a satellite broad-market diversifier.
+decay_risk: low
+allowed_actions: [increase, reduce, hold, watch, neutral]
+max_reasonable_weight:
+  playground: 1.0
+  semi_auto: 0.05
+  full_auto: 0.035
+risk_budget_cost: 0.70
+risk_drivers: [emerging_market_beta, currency, global_growth, china_risk]
+positive_regimes: [global_risk_on, dollar_weakness]
+weak_regimes: [global_slowdown, strong_usd, china_stress]
+holding_policy: {allow_long_hold: true}
+governance_notes:
+  - satellite-sized despite broad-market asset role
+sources: [issuer_fact_sheet, execution_policy]
+last_reviewed: 2026-06-03

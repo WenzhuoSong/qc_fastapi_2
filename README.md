@@ -55,6 +55,25 @@ webhooks; all scheduled work runs as separate Railway cron services, each
 in its own Python process with its own `asyncio.run()`. This eliminates
 asyncpg cross-event-loop issues by giving every job a fresh event loop.
 
+## QC Fallback Policy Sync Check
+
+Before merging or deploying any `services/execution_policy.py` change, verify
+that the QuantConnect fallback policy file is still synchronized:
+
+```bash
+python tools/generate_qc_fallback_policy.py --check ../quantconnect_files/test1.py
+```
+
+To print the deterministic snippet derived from FastAPI:
+
+```bash
+python tools/generate_qc_fallback_policy.py --print
+```
+
+The checker is read-only. If it reports drift, update the QC fallback snippet,
+keep the QC file below the QuantConnect size limit, deploy QC, then verify the
+heartbeat `policy_version` matches `services.execution_policy.POLICY_VERSION`.
+
 ## Pipeline: 10-Stage Relay
 
 ```

@@ -1,0 +1,52 @@
+id: equal_weight_benchmark
+type: strategy
+category: benchmark
+horizon: diagnostic_reference
+summary: Equal-weight benchmark across the eligible ETF research universe.
+best_regimes: [benchmarking, broad_participation]
+weak_regimes: [narrow_leadership, high_dispersion, risk_off]
+required_features: []
+optional_features: [daily_return_pct]
+positive_signals:
+  - broad participation reference
+  - diversification comparison point
+failure_modes:
+  - ignores trend, valuation, volatility, and news
+  - can dilute leadership in narrow markets
+  - can include weak assets solely because they are in universe
+governance_implications:
+  - diagnostic benchmark only
+  - use as advisory/reference evidence, not alpha conviction
+  - never promote to trade authority without separate approval
+compatibility_mappings:
+  - role: core_market
+    horizon: diagnostic_reference
+    score_thresholds:
+      - gte: 0.00
+        action: watch
+        signal_type: equal_weight_reference
+    max_weight_multiplier: 0.0
+    weight_formula: zero
+    branch_label_template: "{regime}_equal_weight_core_reference"
+
+  - role: sector_theme
+    horizon: diagnostic_reference
+    score_thresholds:
+      - gte: 0.00
+        action: watch
+        signal_type: equal_weight_reference
+    max_weight_multiplier: 0.0
+    weight_formula: zero
+    branch_label_template: "{regime}_equal_weight_sector_reference"
+
+  - role: defensive_cash_proxy
+    horizon: diagnostic_reference
+    score_thresholds:
+      - gte: 0.00
+        action: watch
+        signal_type: equal_weight_reference
+    max_weight_multiplier: 0.0
+    weight_formula: zero
+    branch_label_template: "{regime}_equal_weight_defensive_reference"
+sources: [benchmark_reference, risk_governance_policy]
+last_reviewed: 2026-06-03

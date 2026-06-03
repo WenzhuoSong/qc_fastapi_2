@@ -128,7 +128,7 @@ class StrategyEvidenceTest(unittest.TestCase):
         self.assertEqual(cards[0].signal_type, "tail_risk_hedge")
         self.assertEqual(cards[0].max_reasonable_weight, 0.03)
 
-    def test_missing_compatibility_mapping_fallback(self):
+    def test_momentum_core_market_mapping_votes_after_mapping_cleanup(self):
         strategy = get_strategy("momentum_lite_v1")
         ctx = build_knowledge_context(
             tickers=["SPY"],
@@ -142,15 +142,12 @@ class StrategyEvidenceTest(unittest.TestCase):
             knowledge_context=ctx,
         )
 
-        self.assertEqual(cards[0].action, "watch")
-        self.assertEqual(cards[0].vote_status, "mapping_error")
-        self.assertEqual(cards[0].vote_diagnostics["alert_class"], "knowledge_mapping_error")
-        self.assertEqual(
-            cards[0].vote_diagnostics["dedupe_key"],
-            "momentum_lite_v1:SPY:missing_compatibility_mapping",
-        )
-        self.assertEqual(cards[0].max_reasonable_weight, 0.0)
-        self.assertIn("missing_compatibility_mapping", cards[0].reason)
+        self.assertEqual(cards[0].action, "increase")
+        self.assertEqual(cards[0].vote_status, "voted")
+        self.assertIsNone(cards[0].vote_diagnostics["alert_class"])
+        self.assertGreater(cards[0].max_reasonable_weight, 0.0)
+        self.assertEqual(cards[0].signal_type, "broad_market_momentum")
+        self.assertEqual(cards[0].reason, "mapped_by_compatibility_threshold")
 
     def test_tqqq_and_uvxy_same_score_have_different_weight_caps(self):
         strategy = get_strategy("leveraged_etf_momentum_allocator")
@@ -324,14 +321,16 @@ class StrategyEvidenceTest(unittest.TestCase):
             mode="semi_auto",
         )[0]
         mapping_error_strategy = get_strategy("momentum_lite_v1")
+        missing_profile_context = build_knowledge_context(
+            tickers=["SPY"],
+            strategy_names=["momentum_lite_v1"],
+            regime="trending_bull",
+        )
+        missing_profile_context["strategies"] = []
         mapping_error = build_evidence_cards(
             strategy=mapping_error_strategy,
             scored=_scored(SPY=0.8),
-            knowledge_context=build_knowledge_context(
-                tickers=["SPY"],
-                strategy_names=["momentum_lite_v1"],
-                regime="trending_bull",
-            ),
+            knowledge_context=missing_profile_context,
         )[0]
 
         summary = summarize_evidence_cards([voted, watch, mapping_error])

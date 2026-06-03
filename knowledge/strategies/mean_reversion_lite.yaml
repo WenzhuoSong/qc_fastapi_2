@@ -17,5 +17,47 @@ governance_implications:
   - avoid full-size allocation when trend regime is strong
   - require hard-risk check before buying losers
   - prefer small step-in sizing
+compatibility_mappings:
+  - role: core_market
+    horizon: short_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: increase
+        signal_type: broad_market_mean_reversion
+      - gte: 0.40
+        action: watch
+        signal_type: mean_reversion_monitor
+      - lt: 0.40
+        action: neutral
+        signal_type: no_mean_reversion_signal
+    max_weight_multiplier: 0.45
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{regime}_mean_reversion_core"
+
+  - role: sector_theme
+    horizon: short_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: increase
+        signal_type: sector_theme_mean_reversion
+      - gte: 0.40
+        action: watch
+        signal_type: sector_theme_mean_reversion_monitor
+      - lt: 0.40
+        action: neutral
+        signal_type: no_sector_theme_mean_reversion_signal
+    max_weight_multiplier: 0.35
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{regime}_mean_reversion_sector_theme"
+
+  - role: defensive_cash_proxy
+    horizon: defensive_tactical
+    score_thresholds:
+      - gte: 0.00
+        action: watch
+        signal_type: defensive_proxy_not_mean_reversion_universe
+    max_weight_multiplier: 0.0
+    weight_formula: zero
+    branch_label_template: "{regime}_mean_reversion_defensive_watch"
 sources: [fama_french_1993]
 last_reviewed: 2026-05-18

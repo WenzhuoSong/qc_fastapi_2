@@ -638,7 +638,7 @@ def _format_strategy_use_enforcement_line(enforcement: dict) -> str:
     if evidence.get("execution_intel_status"):
         evidence_bits.append(f"execution={evidence.get('execution_intel_status')}")
     if evidence.get("execution_permission"):
-        evidence_bits.append(f"permission={evidence.get('execution_permission')}")
+        evidence_bits.append(f"permission={_display_final_permission(evidence.get('execution_permission'))}")
     if best:
         evidence_bits.append(
             f"best={best.get('strategy_name')}({best.get('suggested_use')})"
@@ -839,6 +839,21 @@ def _display_final_permission(value) -> str:
     return raw
 
 
+def _display_reason_code(value) -> str:
+    raw = str(value or "").strip()
+    if raw == "scorecard_human_required":
+        return "scorecard_tightened"
+    if raw == "human_required":
+        return "review_flag"
+    if "human_required" in raw:
+        return raw.replace("human_required", "scorecard_tightened")
+    return raw
+
+
+def _display_reason_codes(values) -> list[str]:
+    return [_display_reason_code(value) for value in (values or [])]
+
+
 def _display_rejection_reason(value) -> str:
     raw = str(value or "")
     if raw == "Market scorecard requires human confirmation":
@@ -995,6 +1010,8 @@ def _compact_decision_ledger(ledger: dict) -> dict:
         advisory = row.get("llm_advisory") or {}
         policy = row.get("execution_policy") or {}
         hedge_path = row.get("hedge_path") or {}
+        raw_reason_codes = list(row.get("reason_codes") or [])
+        display_reason_codes = row.get("display_reason_codes") or _display_reason_codes(raw_reason_codes)
         rows.append({
             "ticker": row.get("ticker") or ticker,
             "proposed_action": row.get("proposed_action"),
@@ -1005,7 +1022,8 @@ def _compact_decision_ledger(ledger: dict) -> dict:
             "qc_rejection_reason": row.get("qc_rejection_reason"),
             "qc_timestamp": row.get("qc_timestamp"),
             "risk_result": row.get("risk_result"),
-            "reason_codes": (row.get("reason_codes") or [])[:4],
+            "reason_codes": display_reason_codes[:4],
+            "internal_reason_codes": raw_reason_codes[:4],
             "ticker_role": policy.get("ticker_role"),
             "single_cap": policy.get("single_cap"),
             "group_cap": policy.get("group_cap"),
@@ -1028,7 +1046,7 @@ def _compact_decision_ledger(ledger: dict) -> dict:
             "validated_advisory_delta": lifecycle.get("validated_advisory_delta"),
             "advisory_validator_result": advisory.get("validator_result"),
             "changed_by": lifecycle.get("changed_by") or [],
-            "source_effects": _compact_source_effects(row.get("source_effects") or {}),
+            "source_effects": _compact_source_effects(row.get("display_source_effects") or row.get("source_effects") or {}),
             "sort_score": _decision_ledger_sort_score(row),
         })
     rows.sort(key=lambda item: (-int(item.get("sort_score") or 0), str(item.get("ticker") or "")))
@@ -1121,7 +1139,7 @@ def _format_decision_ledger_line(ledger: dict) -> str:
         ticker = row.get("ticker")
         proposed = row.get("proposed_action") or "hold"
         final = row.get("final_action") or "unknown"
-        reasons = ",".join(str(item) for item in (row.get("reason_codes") or [])[:3])
+        reasons = ",".join(_display_reason_codes(row.get("display_reason_codes") or row.get("reason_codes") or [])[:3])
         changed_by = ",".join(str(item) for item in (row.get("changed_by") or [])[:2])
         sources = ",".join(str(item) for item in (row.get("source_effects") or [])[:4])
         suffix_parts = []
@@ -1377,7 +1395,7 @@ def _format_position_governance_line(governance: dict) -> str:
     if explanations:
         lines.extend(explanations)
     for row in interesting:
-        reasons = ",".join((row.get("reason_codes") or [])[:3])
+        reasons = ",".join(_display_reason_codes(row.get("reason_codes") or [])[:3])
         lines.append(
             f"  {row.get('ticker')}: {row.get('decision')} | "
             f"support={row.get('strategy_support')} | "

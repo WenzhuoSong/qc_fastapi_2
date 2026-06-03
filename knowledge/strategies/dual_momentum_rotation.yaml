@@ -1,0 +1,71 @@
+id: dual_momentum_rotation
+type: strategy
+category: dual_momentum
+horizon: medium_tactical
+summary: Relative and absolute momentum rotation that favors ETFs with positive medium and long momentum.
+best_regimes: [trending_bull, sector_rotation, persistent_relative_strength]
+weak_regimes: [mean_reverting, violent_whipsaw, sideways_chop]
+required_features: [mom_60d, mom_252d, hist_vol_20d]
+optional_features: [mom_20d, daily_return_pct]
+positive_signals:
+  - positive absolute momentum
+  - strong relative rank versus eligible peers
+  - volatility does not dominate the signal
+failure_modes:
+  - whipsaw when leadership changes rapidly
+  - may move to cash after losses because absolute momentum lags
+  - can miss early reversals before medium/long momentum confirm
+governance_implications:
+  - use as leadership detector, not standalone allocation authority
+  - cap sector/theme signals tightly until live conviction matures
+  - confirm with macro, news, and risk checks before increasing exposure
+compatibility_mappings:
+  - role: core_market
+    horizon: medium_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: increase
+        signal_type: dual_momentum_core_leadership
+      - gte: 0.40
+        action: watch
+        signal_type: dual_momentum_core_monitor
+      - lt: 0.40
+        action: neutral
+        signal_type: no_dual_momentum_core_signal
+    max_weight_multiplier: 0.55
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{regime}_dual_momentum_core"
+
+  - role: sector_theme
+    horizon: medium_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: increase
+        signal_type: dual_momentum_sector_theme_leadership
+      - gte: 0.40
+        action: watch
+        signal_type: dual_momentum_sector_theme_monitor
+      - lt: 0.40
+        action: neutral
+        signal_type: no_dual_momentum_sector_signal
+    max_weight_multiplier: 0.40
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{regime}_dual_momentum_sector_theme"
+
+  - role: defensive_cash_proxy
+    horizon: defensive_tactical
+    score_thresholds:
+      - gte: 0.70
+        action: de_risk
+        signal_type: dual_momentum_defensive_fallback
+      - gte: 0.40
+        action: watch
+        signal_type: dual_momentum_defensive_monitor
+      - lt: 0.40
+        action: neutral
+        signal_type: no_dual_momentum_defensive_signal
+    max_weight_multiplier: 0.45
+    weight_formula: confidence_cap_multiplier
+    branch_label_template: "{regime}_dual_momentum_defensive"
+sources: [time_series_momentum_2012, cross_sectional_momentum, risk_governance_policy]
+last_reviewed: 2026-06-03

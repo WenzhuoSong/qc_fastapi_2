@@ -122,6 +122,10 @@ async def build_dashboard_summary() -> dict[str, Any]:
     strategy_regime_gap_analysis = await _strategy_regime_gap_analysis_dashboard()
     strategy_promotion_recommendations = await _strategy_promotion_recommendations_dashboard()
     alpha_decision_profiles = await _alpha_decision_profiles_dashboard()
+    alpha_readiness_report = _alpha_readiness_report_dashboard(
+        strategy_evidence=strategy_evidence,
+        alpha_decision_profiles=alpha_decision_profiles,
+    )
     alpha_decision_policy = _alpha_decision_policy_dashboard_status(
         config.get("alpha_decision_policy_config") or {},
         alpha_decision_profiles,
@@ -155,6 +159,7 @@ async def build_dashboard_summary() -> dict[str, Any]:
         "strategy_regime_gap_analysis": strategy_regime_gap_analysis,
         "strategy_promotion_recommendations": strategy_promotion_recommendations,
         "alpha_decision_profiles": alpha_decision_profiles,
+        "alpha_readiness_report": alpha_readiness_report,
         "alpha_decision_policy": alpha_decision_policy,
         "alpha_decision_review_surface": alpha_decision_review_surface,
         "cron_runs": cron_runs,
@@ -563,8 +568,12 @@ async def _execution_control_status(latest_analysis: dict[str, Any]) -> dict[str
 
     deferred_rows_compact = [_compact_deferred_execution_row(row) for row in deferred_rows]
     open_deferred = [row for row in deferred_rows_compact if row.get("status") == "open"]
-    accepted_command_rows = [_compact_execution_row(row) for row in accepted_commands]
     lifecycle_rows = [_compact_lifecycle_event(row) for row in lifecycle_events]
+    lifecycle_status_by_command = _lifecycle_status_by_command(lifecycle_rows)
+    accepted_command_rows = [
+        _compact_execution_row(row, lifecycle_status=lifecycle_status_by_command.get(row.command_id))
+        for row in accepted_commands
+    ]
     return {
         "available": True,
         "account_state_guard": latest_analysis.get("account_state_guard") or {},
@@ -577,7 +586,10 @@ async def _execution_control_status(latest_analysis: dict[str, Any]) -> dict[str
             config=(lifecycle_cfg.value if lifecycle_cfg else {}) or {},
         ),
         "recent_command_events": lifecycle_rows,
-        "recent_commands": [_compact_execution_row(row) for row in recent_commands],
+        "recent_commands": [
+            _compact_execution_row(row, lifecycle_status=lifecycle_status_by_command.get(row.command_id))
+            for row in recent_commands
+        ],
         "reconciliation_lag": build_reconciliation_lag_report(
             commands=accepted_command_rows,
             events=lifecycle_rows,
@@ -822,6 +834,36 @@ def _alpha_decision_policy_dashboard_status(
             "execution_authority": "none",
             "target_weight_mutation": "none",
             "blockers": ["policy_status_unavailable"],
+            "warnings": [],
+        }
+
+
+def _alpha_readiness_report_dashboard(
+    *,
+    strategy_evidence: dict[str, Any],
+    alpha_decision_profiles: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the PR5 diagnostic alpha readiness handoff report."""
+    try:
+        from services.alpha_readiness_report import build_current_alpha_readiness_report
+
+        return {
+            "available": True,
+            **build_current_alpha_readiness_report(
+                strategy_evidence=strategy_evidence or {},
+                alpha_decision_profiles=alpha_decision_profiles or {},
+            ),
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"{type(exc).__name__}: {exc}",
+            "contract_version": "alpha_readiness_report_v1",
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+            "diagnostic_only": True,
+            "attribution_trade_authority": "none",
+            "rows": [],
             "warnings": [],
         }
 
@@ -1551,6 +1593,8 @@ def _compact_strategy_evidence(strategies: dict[str, Any]) -> dict[str, Any]:
         })
 
     summary = _evidence_card_summary(card_rows, strategies.get("evidence_summary") or {})
+    visible_card_rows = _default_visible_evidence_cards(card_rows)
+    collapsed_card_rows = _default_collapsed_evidence_cards(card_rows)
     evidence_cap_observe = _compact_evidence_cap_observe(
         cap_diagnostics=strategies.get("evidence_cap_diagnostics") or {},
         vote_summary=strategies.get("evidence_vote_summary") or {},
@@ -1577,6 +1621,12 @@ def _compact_strategy_evidence(strategies: dict[str, Any]) -> dict[str, Any]:
         "independence_high_correlation_pairs": strategy_independence.get("high_correlation_pairs") or [],
         "independence_family_rows": strategy_independence.get("family_correlation_rows") or [],
         "strategy_rows": strategy_rows,
+        "evidence_matrix_display_policy": {
+            "default_visible_vote_statuses": ["voted", "mapping_error"],
+            "default_collapsed_vote_statuses": ["watch", "abstain"],
+        },
+        "evidence_matrix_rows": visible_card_rows,
+        "evidence_matrix_collapsed_rows": collapsed_card_rows,
         "evidence_card_rows": card_rows,
         "mapping_warning_rows": _evidence_mapping_warning_rows(card_rows),
         "role_action_rows": _role_action_rows(card_rows),
@@ -1679,6 +1729,20 @@ def _compact_evidence_card(card: dict[str, Any], *, fallback_strategy: str) -> d
         "effective_confidence_rule": conviction_diag.get("effective_confidence_rule"),
         "conviction_shadow_only": conviction_diag.get("shadow_only"),
     }
+
+
+def _default_visible_evidence_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        row for row in cards
+        if str(row.get("vote_status") or "voted") in {"voted", "mapping_error"}
+    ]
+
+
+def _default_collapsed_evidence_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        row for row in cards
+        if str(row.get("vote_status") or "voted") in {"watch", "abstain"}
+    ]
 
 
 def _evidence_card_summary(cards: list[dict[str, Any]], fallback_summary: dict[str, Any]) -> dict[str, Any]:
@@ -2493,14 +2557,70 @@ def _compact_lifecycle_event(row: Any) -> dict[str, Any]:
     }
 
 
-def _compact_execution_row(row: Any) -> dict[str, Any]:
+TERMINAL_LIFECYCLE_STATES = {
+    "reconciled",
+    "reconciliation_drift",
+    "failed_no_fill",
+    "superseded",
+    "timeout_no_execution_confirmed",
+}
+
+ACTIVE_LIFECYCLE_STATES = {
+    "qc_accepted": "accepted",
+    "accepted": "accepted",
+    "orders_submitted": "orders_submitted",
+    "partial": "partial",
+    "filled": "filled",
+}
+
+
+def _lifecycle_status_by_command(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    terminal: dict[str, dict[str, Any]] = {}
+    active: dict[str, dict[str, Any]] = {}
+    for event in events or []:
+        command_id = str(event.get("command_id") or "").strip()
+        if not command_id:
+            continue
+        event_type = str(event.get("event_type") or "").strip()
+        event_status = str(event.get("event_status") or "").strip()
+        status_key = event_status or event_type
+        if status_key in TERMINAL_LIFECYCLE_STATES or event_type in TERMINAL_LIFECYCLE_STATES:
+            terminal.setdefault(command_id, _lifecycle_status_payload(event, status_key or event_type, "terminal_lifecycle"))
+        elif status_key in ACTIVE_LIFECYCLE_STATES or event_type in ACTIVE_LIFECYCLE_STATES:
+            display = ACTIVE_LIFECYCLE_STATES.get(status_key) or ACTIVE_LIFECYCLE_STATES.get(event_type) or status_key or event_type
+            active.setdefault(command_id, _lifecycle_status_payload(event, display, "active_lifecycle"))
+    out = dict(active)
+    out.update(terminal)
+    return out
+
+
+def _lifecycle_status_payload(event: dict[str, Any], display_status: str, source: str) -> dict[str, Any]:
+    return {
+        "display_status": display_status,
+        "source": source,
+        "event_type": event.get("event_type"),
+        "event_status": event.get("event_status"),
+        "event_time": event.get("event_time"),
+    }
+
+
+def _compact_execution_row(row: Any, *, lifecycle_status: dict[str, Any] | None = None) -> dict[str, Any]:
     response = row.qc_response if isinstance(row.qc_response, dict) else {}
     order_summary = response.get("order_summary") if isinstance(response.get("order_summary"), dict) else {}
+    lifecycle_status = lifecycle_status or {}
+    fallback_status = row.qc_status or row.status
+    display_status = lifecycle_status.get("display_status") or fallback_status
     return {
         "executed_at": _iso(row.executed_at),
         "command_id": row.command_id,
         "analysis_id": row.analysis_id,
         "command_type": row.command_type,
+        "display_status": display_status,
+        "lifecycle_display_status": lifecycle_status.get("display_status"),
+        "lifecycle_status_source": lifecycle_status.get("source") or "execution_log",
+        "latest_lifecycle_event": lifecycle_status.get("event_type"),
+        "latest_lifecycle_event_status": lifecycle_status.get("event_status"),
+        "latest_lifecycle_event_time": lifecycle_status.get("event_time"),
         "status": row.status,
         "qc_status": row.qc_status,
         "qc_ack_at": _iso(row.qc_ack_at),
@@ -2682,6 +2802,7 @@ def render_dashboard(summary: dict[str, Any]) -> str:
         ("evidence", "ETF / Strategy Evidence", _render_strategy_evidence(summary.get("strategy_evidence") or {}), False),
         ("risk", "Portfolio Risk Diagnostic", _render_portfolio_risk_diagnostic(summary.get("portfolio_risk_diagnostic") or {}), False),
         ("alpha-review", "Alpha Decision Review Surface", _render_alpha_decision_review_surface(summary.get("alpha_decision_review_surface") or {}), False),
+        ("alpha-readiness", "Alpha Attribution Readiness", _render_alpha_readiness_report(summary.get("alpha_readiness_report") or {}), False),
         ("alpha-policy", "Alpha Decision Policy", _render_alpha_decision_policy(summary.get("alpha_decision_policy") or {}), False),
         ("alpha-profiles", "Alpha Decision Profiles", _render_alpha_decision_profiles(summary.get("alpha_decision_profiles") or {}), False),
         ("conviction", "Live Signal Conviction", _render_live_signal_conviction(summary.get("live_signal_conviction") or {}), False),
@@ -3534,7 +3655,8 @@ def _render_strategy_evidence(evidence: dict[str, Any]) -> str:
       <h3>Strategies</h3>{_render_table(evidence.get("strategy_rows") or [], ["strategy", "raw_family", "canonical_family", "alpha_source", "data_ready", "can_influence_allocation", "suggested_use", "confidence_score", "selected_tickers", "evidence_contract_version", "cards_generated", "missing_mapping_count", "fallback_count", "mapping_error_count", "watch_vote_count", "abstain_count", "actions", "vote_statuses", "conviction_statuses", "reason_codes", "walk_forward_level", "walk_forward_pass_rate", "turnover"])}
       <h3>Strategy Family Rows</h3>{_render_table(evidence.get("diversity_family_rows") or [], ["family", "strategy_count", "alpha_source_strategy_count", "actionable_strategy_count", "actionable_alpha_strategy_count", "independent_alpha_counted", "strategy_names", "actionable_alpha_strategy_names", "suggested_uses"])}
       <h3>Strategy Diversity Rows</h3>{_render_table(evidence.get("diversity_strategy_rows") or [], ["strategy_name", "raw_family", "canonical_family", "alpha_source", "suggested_use", "actionable", "confidence_score", "data_ready", "can_influence_allocation"])}
-      <h3>EvidenceCards</h3>{_render_table(evidence.get("evidence_card_rows") or [], ["strategy", "ticker", "role", "action", "vote_status", "abstain_reason", "signal_type", "horizon", "confidence", "conviction_display", "conviction_status", "conviction_source_bucket", "conviction_n", "effective_confidence", "raw_score", "normalized_score", "max_reasonable_weight", "risk_budget_cost", "branch", "reason", "vote_reason_code", "vote_dedupe_key", "vote_alert_class", "vote_missing_fields", "mapping_role", "weight_formula", "base_cap", "max_weight_multiplier", "effective_confidence_rule", "conviction_shadow_only"])}
+      <h3>Evidence Matrix Default View</h3>{_render_kv(evidence.get("evidence_matrix_display_policy") or {}, keys=["default_visible_vote_statuses", "default_collapsed_vote_statuses"])}{_render_table(evidence.get("evidence_matrix_rows") or [], ["strategy", "ticker", "role", "action", "vote_status", "abstain_reason", "signal_type", "horizon", "confidence", "conviction_display", "conviction_status", "conviction_source_bucket", "conviction_n", "effective_confidence", "raw_score", "normalized_score", "max_reasonable_weight", "risk_budget_cost", "branch", "reason", "vote_reason_code", "vote_dedupe_key", "vote_alert_class", "vote_missing_fields", "mapping_role", "weight_formula", "base_cap", "max_weight_multiplier", "effective_confidence_rule", "conviction_shadow_only"])}
+      <h3>Evidence Matrix Collapsed Watch/Abstain</h3>{_render_table(evidence.get("evidence_matrix_collapsed_rows") or [], ["strategy", "ticker", "role", "action", "vote_status", "abstain_reason", "signal_type", "horizon", "confidence", "conviction_display", "conviction_status", "vote_reason_code", "vote_missing_fields"])}
       <h3>Mapping And Safety Warnings</h3>{_render_table(evidence.get("mapping_warning_rows") or [], ["strategy", "ticker", "role", "action", "reason", "missing_safety_fields", "allowed_actions", "conviction_status", "conviction_n"])}
       <h3>Role / Action Summary</h3>{_render_table(evidence.get("role_action_rows") or [], ["role", "action", "count", "avg_confidence", "max_reasonable_weight_max", "tickers"])}
       <h3>Conviction Status Summary</h3>{_render_table(evidence.get("conviction_status_rows") or [], ["status", "count"])}
@@ -3839,6 +3961,35 @@ def _render_alpha_decision_review_surface(review: dict[str, Any]) -> str:
     """
 
 
+def _render_alpha_readiness_report(report: dict[str, Any]) -> str:
+    if not report.get("available"):
+        return f"<p class=\"muted\">{escape(str(report.get('reason') or 'Alpha readiness report unavailable.'))}</p>"
+    overview = {
+        "status": report.get("status"),
+        "strategy_count": report.get("strategy_count"),
+        "candidate_count": report.get("candidate_count"),
+        "hard_mapping_error_count": report.get("hard_mapping_error_count"),
+        "diagnostic_only": report.get("diagnostic_only"),
+    }
+    contract = {
+        "contract_version": report.get("contract_version"),
+        "execution_authority": report.get("execution_authority"),
+        "target_weight_mutation": report.get("target_weight_mutation"),
+        "attribution_trade_authority": report.get("attribution_trade_authority"),
+        "gated_authority_out_of_scope": report.get("gated_authority_out_of_scope"),
+    }
+    return f"""
+      <div class="grid">
+        <article class="card"><h3>Readiness Overview</h3>{_render_kv(overview)}</article>
+        <article class="card"><h3>Readiness Contract</h3>{_render_kv(contract)}</article>
+        <article class="card"><h3>Candidate Criteria</h3>{_render_kv(report.get("criteria") or {})}</article>
+      </div>
+      <h3>Authority Counts</h3>{_render_kv(report.get("authority_counts") or {})}
+      <h3>Strategy Readiness Rows</h3>{_render_table(report.get("rows") or [], ["suggested_authority", "strategy_id", "mapping_coverage_pct", "voted_signal_count", "mapping_error_count", "live_sample_count", "residual_alpha_latest", "redundancy_cluster", "max_positive_correlation", "readiness_reasons", "authority_blockers", "mapping_error_cycles_last_10"])}
+      <h3>Readiness Warnings</h3>{_render_list("", report.get("warnings") or [])}
+    """
+
+
 def _render_alpha_decision_profiles(profiles: dict[str, Any]) -> str:
     if not profiles.get("available"):
         reason = profiles.get("reason") or "No alpha decision profiles available."
@@ -3931,7 +4082,7 @@ def _render_execution_control(control: dict[str, Any]) -> str:
       <h3>Active Execution Events</h3>{_render_table(active_execution.get("recent_event_rows") or [], ["event_time", "command_id", "event_type", "event_status", "source", "reason", "execution_state", "submitted_order_count", "filled_order_count", "open_order_count", "max_abs_diff", "diff_count"])}
       <h3>Account Guard Checks</h3>{_render_table(guard.get("checks") or [], ["check", "pass", "actual", "threshold", "reason"])}
       <h3>Auto Pause Triggers</h3>{_render_table(auto_pause.get("triggers") or [], ["trigger", "triggered", "value", "threshold", "severity", "details"])}
-      <h3>Recent QC Commands</h3>{_render_table(control.get("recent_commands") or [], ["executed_at", "command_id", "analysis_id", "command_type", "status", "qc_status", "execution_state", "qc_ack_at", "qc_rejection_reason", "active_command_id", "submitted_order_count", "filled_order_count", "open_order_count", "superseded_command_id", "canceled_order_count", "policy_mismatch", "retry_count"])}
+      <h3>Recent QC Commands</h3>{_render_table(control.get("recent_commands") or [], ["executed_at", "command_id", "analysis_id", "command_type", "display_status", "lifecycle_display_status", "lifecycle_status_source", "latest_lifecycle_event", "status", "qc_status", "execution_state", "qc_ack_at", "qc_rejection_reason", "active_command_id", "submitted_order_count", "filled_order_count", "open_order_count", "superseded_command_id", "canceled_order_count", "policy_mismatch", "retry_count"])}
       <h3>Command Lifecycle Events</h3>{_render_table(control.get("recent_command_events") or [], ["event_time", "command_id", "analysis_id", "event_type", "event_status", "source", "reason", "qc_status", "execution_state", "submitted_order_count", "filled_order_count", "open_order_count", "max_abs_diff", "diff_count", "policy_mismatch", "policy_version", "target_count", "payload_keys"])}
       <h3>Accepted Commands Without Reconciliation</h3>{_render_table(reconciliation_lag.get("rows") or [], ["command_id", "analysis_id", "qc_status", "accepted_at", "age_minutes", "max_age_minutes", "status", "latest_event_type", "latest_event_status", "reason"])}
       <h3>Deferred Execution Ledger</h3>{_render_table(deferred.get("recent_rows") or [], ["created_at", "updated_at", "resolved_at", "command_id", "analysis_id", "status", "side", "ticker", "original_delta", "remaining_delta", "current_weight", "desired_weight", "staged_weight", "latest_current_weight", "latest_desired_weight", "latest_staged_weight", "reason", "resolution_reason", "review_count"])}

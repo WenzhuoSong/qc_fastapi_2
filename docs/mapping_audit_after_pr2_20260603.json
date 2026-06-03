@@ -1,0 +1,2223 @@
+{
+  "by_reason": {
+    "mapped": 237,
+    "watch_only_mapping": 95
+  },
+  "contract_version": "strategy_mapping_audit_v1",
+  "generated_at": "2026-06-03T15:49:51+00:00",
+  "hard_mapping_error_count": 0,
+  "hard_mapping_errors": [],
+  "missing_asset_profiles": [],
+  "missing_strategy_profiles": [],
+  "normal_watch_count": 95,
+  "normal_watch_rows": [
+    {
+      "asset_profile_source": "assets/AIQ.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "AIQ"
+    },
+    {
+      "asset_profile_source": "assets/BND.yaml",
+      "asset_role": "defensive_cash_proxy",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "defensive_cash_proxy",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "BND"
+    },
+    {
+      "asset_profile_source": "assets/BOTZ.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "BOTZ"
+    },
+    {
+      "asset_profile_source": "assets/CIBR.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "CIBR"
+    },
+    {
+      "asset_profile_source": "assets/DRAM.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "DRAM"
+    },
+    {
+      "asset_profile_source": "assets/FTXL.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "FTXL"
+    },
+    {
+      "asset_profile_source": "assets/GLD.yaml",
+      "asset_role": "defensive_cash_proxy",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "defensive_cash_proxy",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "GLD"
+    },
+    {
+      "asset_profile_source": "assets/GRID.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "GRID"
+    },
+    {
+      "asset_profile_source": "assets/HACK.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "HACK"
+    },
+    {
+      "asset_profile_source": "assets/IBB.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "IBB"
+    },
+    {
+      "asset_profile_source": "assets/ICLN.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "ICLN"
+    },
+    {
+      "asset_profile_source": "assets/IEF.yaml",
+      "asset_role": "defensive_cash_proxy",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "defensive_cash_proxy",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "IEF"
+    },
+    {
+      "asset_profile_source": "assets/IGV.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "IGV"
+    },
+    {
+      "asset_profile_source": "assets/ITA.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "ITA"
+    },
+    {
+      "asset_profile_source": "assets/IWM.yaml",
+      "asset_role": "core_market",
+      "eligible_for_coverage": true,
+      "execution_role": "core",
+      "mapping_role": "core_market",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "IWM"
+    },
+    {
+      "asset_profile_source": "assets/PSI.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "PSI"
+    },
+    {
+      "asset_profile_source": "assets/QQQ.yaml",
+      "asset_role": "core_market",
+      "eligible_for_coverage": true,
+      "execution_role": "core",
+      "mapping_role": "core_market",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "QQQ"
+    },
+    {
+      "asset_profile_source": "assets/RSP.yaml",
+      "asset_role": "core_market",
+      "eligible_for_coverage": true,
+      "execution_role": "core",
+      "mapping_role": "core_market",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "RSP"
+    },
+    {
+      "asset_profile_source": "assets/SGOV.yaml",
+      "asset_role": "defensive_cash_proxy",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "defensive_cash_proxy",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "SGOV"
+    },
+    {
+      "asset_profile_source": "assets/SMH.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "SMH"
+    },
+    {
+      "asset_profile_source": "assets/SOXX.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "SOXX"
+    },
+    {
+      "asset_profile_source": "assets/SPY.yaml",
+      "asset_role": "core_market",
+      "eligible_for_coverage": true,
+      "execution_role": "core",
+      "mapping_role": "core_market",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "SPY"
+    },
+    {
+      "asset_profile_source": "assets/TAN.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "TAN"
+    },
+    {
+      "asset_profile_source": "assets/TLT.yaml",
+      "asset_role": "defensive_cash_proxy",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "defensive_cash_proxy",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "TLT"
+    },
+    {
+      "asset_profile_source": "assets/URA.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "URA"
+    },
+    {
+      "asset_profile_source": "assets/USMV.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "USMV"
+    },
+    {
+      "asset_profile_source": "assets/VEA.yaml",
+      "asset_role": "core_market",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "core_market",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "VEA"
+    },
+    {
+      "asset_profile_source": "assets/VTV.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "VTV"
+    },
+    {
+      "asset_profile_source": "assets/VUG.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "VUG"
+    },
+    {
+      "asset_profile_source": "assets/VWO.yaml",
+      "asset_role": "core_market",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "core_market",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "VWO"
+    },
+    {
+      "asset_profile_source": "assets/XAR.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "XAR"
+    },
+    {
+      "asset_profile_source": "assets/XBI.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "XBI"
+    },
+    {
+      "asset_profile_source": "assets/XLB.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "XLB"
+    },
+    {
+      "asset_profile_source": "assets/XLC.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "XLC"
+    },
+    {
+      "asset_profile_source": "assets/XLE.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "XLE"
+    },
+    {
+      "asset_profile_source": "assets/XLF.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "XLF"
+    },
+    {
+      "asset_profile_source": "assets/XLI.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "XLI"
+    },
+    {
+      "asset_profile_source": "assets/XLK.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "XLK"
+    },
+    {
+      "asset_profile_source": "assets/XLP.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "XLP"
+    },
+    {
+      "asset_profile_source": "assets/XLRE.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "XLRE"
+    },
+    {
+      "asset_profile_source": "assets/XLU.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "XLU"
+    },
+    {
+      "asset_profile_source": "assets/XLV.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "XLV"
+    },
+    {
+      "asset_profile_source": "assets/XLY.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "XLY"
+    },
+    {
+      "asset_profile_source": "assets/XSD.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "equal_weight_benchmark",
+      "strategy_profile_source": "strategies/equal_weight_benchmark.yaml",
+      "ticker": "XSD"
+    },
+    {
+      "asset_profile_source": "assets/QQQ.yaml",
+      "asset_role": "core_market",
+      "eligible_for_coverage": true,
+      "execution_role": "core",
+      "mapping_role": "core_market",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "neutral",
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "leveraged_etf_momentum_allocator",
+      "strategy_profile_source": "strategies/leveraged_etf_momentum_allocator.yaml",
+      "ticker": "QQQ"
+    },
+    {
+      "asset_profile_source": "assets/SPY.yaml",
+      "asset_role": "core_market",
+      "eligible_for_coverage": true,
+      "execution_role": "core",
+      "mapping_role": "core_market",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "neutral",
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "leveraged_etf_momentum_allocator",
+      "strategy_profile_source": "strategies/leveraged_etf_momentum_allocator.yaml",
+      "ticker": "SPY"
+    },
+    {
+      "asset_profile_source": "assets/BND.yaml",
+      "asset_role": "defensive_cash_proxy",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "defensive_cash_proxy",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "mean_reversion_lite",
+      "strategy_profile_source": "strategies/mean_reversion_lite.yaml",
+      "ticker": "BND"
+    },
+    {
+      "asset_profile_source": "assets/GLD.yaml",
+      "asset_role": "defensive_cash_proxy",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "defensive_cash_proxy",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "mean_reversion_lite",
+      "strategy_profile_source": "strategies/mean_reversion_lite.yaml",
+      "ticker": "GLD"
+    },
+    {
+      "asset_profile_source": "assets/IEF.yaml",
+      "asset_role": "defensive_cash_proxy",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "defensive_cash_proxy",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "mean_reversion_lite",
+      "strategy_profile_source": "strategies/mean_reversion_lite.yaml",
+      "ticker": "IEF"
+    },
+    {
+      "asset_profile_source": "assets/SGOV.yaml",
+      "asset_role": "defensive_cash_proxy",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "defensive_cash_proxy",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "mean_reversion_lite",
+      "strategy_profile_source": "strategies/mean_reversion_lite.yaml",
+      "ticker": "SGOV"
+    },
+    {
+      "asset_profile_source": "assets/TLT.yaml",
+      "asset_role": "defensive_cash_proxy",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "defensive_cash_proxy",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "mean_reversion_lite",
+      "strategy_profile_source": "strategies/mean_reversion_lite.yaml",
+      "ticker": "TLT"
+    },
+    {
+      "asset_profile_source": "assets/AIQ.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "AIQ"
+    },
+    {
+      "asset_profile_source": "assets/BND.yaml",
+      "asset_role": "defensive_cash_proxy",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "defensive_cash_proxy",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "BND"
+    },
+    {
+      "asset_profile_source": "assets/BOTZ.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "BOTZ"
+    },
+    {
+      "asset_profile_source": "assets/CIBR.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "CIBR"
+    },
+    {
+      "asset_profile_source": "assets/DRAM.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "DRAM"
+    },
+    {
+      "asset_profile_source": "assets/FTXL.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "FTXL"
+    },
+    {
+      "asset_profile_source": "assets/GLD.yaml",
+      "asset_role": "defensive_cash_proxy",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "defensive_cash_proxy",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "GLD"
+    },
+    {
+      "asset_profile_source": "assets/GRID.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "GRID"
+    },
+    {
+      "asset_profile_source": "assets/HACK.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "HACK"
+    },
+    {
+      "asset_profile_source": "assets/IBB.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "IBB"
+    },
+    {
+      "asset_profile_source": "assets/ICLN.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "ICLN"
+    },
+    {
+      "asset_profile_source": "assets/IEF.yaml",
+      "asset_role": "defensive_cash_proxy",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "defensive_cash_proxy",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "IEF"
+    },
+    {
+      "asset_profile_source": "assets/IGV.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "IGV"
+    },
+    {
+      "asset_profile_source": "assets/ITA.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "ITA"
+    },
+    {
+      "asset_profile_source": "assets/IWM.yaml",
+      "asset_role": "core_market",
+      "eligible_for_coverage": true,
+      "execution_role": "core",
+      "mapping_role": "core_market",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "IWM"
+    },
+    {
+      "asset_profile_source": "assets/PSI.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "PSI"
+    },
+    {
+      "asset_profile_source": "assets/QQQ.yaml",
+      "asset_role": "core_market",
+      "eligible_for_coverage": true,
+      "execution_role": "core",
+      "mapping_role": "core_market",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "QQQ"
+    },
+    {
+      "asset_profile_source": "assets/RSP.yaml",
+      "asset_role": "core_market",
+      "eligible_for_coverage": true,
+      "execution_role": "core",
+      "mapping_role": "core_market",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "RSP"
+    },
+    {
+      "asset_profile_source": "assets/SGOV.yaml",
+      "asset_role": "defensive_cash_proxy",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "defensive_cash_proxy",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "SGOV"
+    },
+    {
+      "asset_profile_source": "assets/SMH.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "SMH"
+    },
+    {
+      "asset_profile_source": "assets/SOXX.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "SOXX"
+    },
+    {
+      "asset_profile_source": "assets/SPY.yaml",
+      "asset_role": "core_market",
+      "eligible_for_coverage": true,
+      "execution_role": "core",
+      "mapping_role": "core_market",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "SPY"
+    },
+    {
+      "asset_profile_source": "assets/TAN.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "TAN"
+    },
+    {
+      "asset_profile_source": "assets/TLT.yaml",
+      "asset_role": "defensive_cash_proxy",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "defensive_cash_proxy",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "TLT"
+    },
+    {
+      "asset_profile_source": "assets/URA.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "URA"
+    },
+    {
+      "asset_profile_source": "assets/USMV.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "USMV"
+    },
+    {
+      "asset_profile_source": "assets/VEA.yaml",
+      "asset_role": "core_market",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "core_market",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "VEA"
+    },
+    {
+      "asset_profile_source": "assets/VTV.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "VTV"
+    },
+    {
+      "asset_profile_source": "assets/VUG.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "VUG"
+    },
+    {
+      "asset_profile_source": "assets/VWO.yaml",
+      "asset_role": "core_market",
+      "eligible_for_coverage": true,
+      "execution_role": "satellite",
+      "mapping_role": "core_market",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "VWO"
+    },
+    {
+      "asset_profile_source": "assets/XAR.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "XAR"
+    },
+    {
+      "asset_profile_source": "assets/XBI.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "XBI"
+    },
+    {
+      "asset_profile_source": "assets/XLB.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "XLB"
+    },
+    {
+      "asset_profile_source": "assets/XLC.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "XLC"
+    },
+    {
+      "asset_profile_source": "assets/XLE.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "XLE"
+    },
+    {
+      "asset_profile_source": "assets/XLF.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "XLF"
+    },
+    {
+      "asset_profile_source": "assets/XLI.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "XLI"
+    },
+    {
+      "asset_profile_source": "assets/XLK.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "XLK"
+    },
+    {
+      "asset_profile_source": "assets/XLP.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "XLP"
+    },
+    {
+      "asset_profile_source": "assets/XLRE.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "XLRE"
+    },
+    {
+      "asset_profile_source": "assets/XLU.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "XLU"
+    },
+    {
+      "asset_profile_source": "assets/XLV.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "XLV"
+    },
+    {
+      "asset_profile_source": "assets/XLY.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "sector",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "XLY"
+    },
+    {
+      "asset_profile_source": "assets/XSD.yaml",
+      "asset_role": "sector_theme",
+      "eligible_for_coverage": true,
+      "execution_role": "thematic",
+      "mapping_role": "sector_theme",
+      "reason": "watch_only_mapping",
+      "requested_actions": [
+        "watch"
+      ],
+      "status": "watch",
+      "strategy_id": "risk_parity_lite",
+      "strategy_profile_source": "strategies/risk_parity_lite.yaml",
+      "ticker": "XSD"
+    }
+  ],
+  "strategy_coverage": {
+    "absolute_trend_following_lite": {
+      "by_reason": {
+        "mapped": 5
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 5,
+      "mapped_rows": 5,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 5,
+      "watch_rows": 0
+    },
+    "carry_cash_proxy_lite": {
+      "by_reason": {
+        "mapped": 4
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 4,
+      "mapped_rows": 4,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 4,
+      "watch_rows": 0
+    },
+    "defensive_quality_rotation_lite": {
+      "by_reason": {
+        "mapped": 4
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 4,
+      "mapped_rows": 4,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 4,
+      "watch_rows": 0
+    },
+    "dual_momentum_rotation": {
+      "by_reason": {
+        "mapped": 44
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 44,
+      "mapped_rows": 44,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 44,
+      "watch_rows": 0
+    },
+    "equal_weight_benchmark": {
+      "by_reason": {
+        "watch_only_mapping": 44
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 44,
+      "mapped_rows": 0,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 44,
+      "watch_rows": 44
+    },
+    "inverse_equity_hedge_lite": {
+      "by_reason": {
+        "mapped": 3
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 3,
+      "mapped_rows": 3,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 3,
+      "watch_rows": 0
+    },
+    "leveraged_etf_momentum_allocator": {
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 6,
+      "mapped_rows": 4,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 6,
+      "watch_rows": 2
+    },
+    "leveraged_long_amplifier_lite": {
+      "by_reason": {
+        "mapped": 3
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 3,
+      "mapped_rows": 3,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 3,
+      "watch_rows": 0
+    },
+    "low_vol_factor": {
+      "by_reason": {
+        "mapped": 44
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 44,
+      "mapped_rows": 44,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 44,
+      "watch_rows": 0
+    },
+    "macro_cyclical_inflation_rotation_lite": {
+      "by_reason": {
+        "mapped": 6
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 6,
+      "mapped_rows": 6,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 6,
+      "watch_rows": 0
+    },
+    "macro_rate_duration_lite": {
+      "by_reason": {
+        "mapped": 4
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 4,
+      "mapped_rows": 4,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 4,
+      "watch_rows": 0
+    },
+    "mean_reversion_lite": {
+      "by_reason": {
+        "mapped": 39,
+        "watch_only_mapping": 5
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 44,
+      "mapped_rows": 39,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 44,
+      "watch_rows": 5
+    },
+    "momentum_lite_v1": {
+      "by_reason": {
+        "mapped": 44
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 44,
+      "mapped_rows": 44,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 44,
+      "watch_rows": 0
+    },
+    "relative_value_reversion_lite": {
+      "by_reason": {
+        "mapped": 3
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 3,
+      "mapped_rows": 3,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 3,
+      "watch_rows": 0
+    },
+    "risk_parity_lite": {
+      "by_reason": {
+        "watch_only_mapping": 44
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 44,
+      "mapped_rows": 0,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 44,
+      "watch_rows": 44
+    },
+    "seasonality_month_end_lite": {
+      "by_reason": {
+        "mapped": 3
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 3,
+      "mapped_rows": 3,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 3,
+      "watch_rows": 0
+    },
+    "sector_theme_relative_strength_lite": {
+      "by_reason": {
+        "mapped": 11
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 11,
+      "mapped_rows": 11,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 11,
+      "watch_rows": 0
+    },
+    "sector_theme_relative_value_reversion_lite": {
+      "by_reason": {
+        "mapped": 12
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 12,
+      "mapped_rows": 12,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 12,
+      "watch_rows": 0
+    },
+    "volatility_hedge_lite": {
+      "by_reason": {
+        "mapped": 4
+      },
+      "coverage_pct": 1.0,
+      "eligible_ticker_count": 4,
+      "mapped_rows": 4,
+      "mapping_error_rows": 0,
+      "voted_or_watch_rows": 4,
+      "watch_rows": 0
+    }
+  },
+  "ticker_coverage": {
+    "AIQ": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 6,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 6,
+      "eligible_strategy_count": 8,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "BND": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 6,
+        "watch_only_mapping": 3
+      },
+      "covered_count": 6,
+      "eligible_strategy_count": 9,
+      "mapping_error_count": 0,
+      "watch_count": 3
+    },
+    "BOTZ": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 6,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 6,
+      "eligible_strategy_count": 8,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "CIBR": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 6,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 6,
+      "eligible_strategy_count": 8,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "DRAM": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "FTXL": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 6,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 6,
+      "eligible_strategy_count": 8,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "GLD": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 3,
+        "watch_only_mapping": 3
+      },
+      "covered_count": 3,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 3
+    },
+    "GRID": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "HACK": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "IBB": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "ICLN": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "IEF": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 7,
+        "watch_only_mapping": 3
+      },
+      "covered_count": 7,
+      "eligible_strategy_count": 10,
+      "mapping_error_count": 0,
+      "watch_count": 3
+    },
+    "IGV": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "ITA": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "IWM": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 8,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 8,
+      "eligible_strategy_count": 10,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "PSI": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 6,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 6,
+      "eligible_strategy_count": 8,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "QQQ": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 8,
+        "watch_only_mapping": 3
+      },
+      "covered_count": 8,
+      "eligible_strategy_count": 11,
+      "mapping_error_count": 0,
+      "watch_count": 3
+    },
+    "RSP": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "SGOV": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 9,
+        "watch_only_mapping": 3
+      },
+      "covered_count": 9,
+      "eligible_strategy_count": 12,
+      "mapping_error_count": 0,
+      "watch_count": 3
+    },
+    "SMH": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "SOXL": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 1
+      },
+      "covered_count": 1,
+      "eligible_strategy_count": 1,
+      "mapping_error_count": 0,
+      "watch_count": 0
+    },
+    "SOXS": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 1
+      },
+      "covered_count": 1,
+      "eligible_strategy_count": 1,
+      "mapping_error_count": 0,
+      "watch_count": 0
+    },
+    "SOXX": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 6,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 6,
+      "eligible_strategy_count": 8,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "SPXL": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 2
+      },
+      "covered_count": 2,
+      "eligible_strategy_count": 2,
+      "mapping_error_count": 0,
+      "watch_count": 0
+    },
+    "SPXS": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 1
+      },
+      "covered_count": 1,
+      "eligible_strategy_count": 1,
+      "mapping_error_count": 0,
+      "watch_count": 0
+    },
+    "SPY": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 7,
+        "watch_only_mapping": 3
+      },
+      "covered_count": 7,
+      "eligible_strategy_count": 10,
+      "mapping_error_count": 0,
+      "watch_count": 3
+    },
+    "SQQQ": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 2
+      },
+      "covered_count": 2,
+      "eligible_strategy_count": 2,
+      "mapping_error_count": 0,
+      "watch_count": 0
+    },
+    "TAN": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "TLT": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 8,
+        "watch_only_mapping": 3
+      },
+      "covered_count": 8,
+      "eligible_strategy_count": 11,
+      "mapping_error_count": 0,
+      "watch_count": 3
+    },
+    "TQQQ": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 2
+      },
+      "covered_count": 2,
+      "eligible_strategy_count": 2,
+      "mapping_error_count": 0,
+      "watch_count": 0
+    },
+    "URA": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "USMV": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "UVXY": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 2
+      },
+      "covered_count": 2,
+      "eligible_strategy_count": 2,
+      "mapping_error_count": 0,
+      "watch_count": 0
+    },
+    "VEA": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "VIXY": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 1
+      },
+      "covered_count": 1,
+      "eligible_strategy_count": 1,
+      "mapping_error_count": 0,
+      "watch_count": 0
+    },
+    "VTV": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "VUG": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "VWO": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "XAR": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "XBI": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "XLB": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "XLC": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "XLE": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 7,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 7,
+      "eligible_strategy_count": 9,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "XLF": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "XLI": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 7,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 7,
+      "eligible_strategy_count": 9,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "XLK": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 6,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 6,
+      "eligible_strategy_count": 8,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "XLP": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "XLRE": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 7,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 7,
+      "eligible_strategy_count": 9,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "XLU": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "XLV": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "XLY": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 4,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 4,
+      "eligible_strategy_count": 6,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    },
+    "XSD": {
+      "abstain_count": 0,
+      "by_reason": {
+        "mapped": 6,
+        "watch_only_mapping": 2
+      },
+      "covered_count": 6,
+      "eligible_strategy_count": 8,
+      "mapping_error_count": 0,
+      "watch_count": 2
+    }
+  },
+  "top_hard_mapping_errors": [],
+  "total_rows": 332
+}

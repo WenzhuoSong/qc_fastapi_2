@@ -1,0 +1,52 @@
+id: risk_parity_lite
+type: strategy
+category: risk_budgeting
+horizon: diagnostic_reference
+summary: Inverse-volatility risk-budget benchmark across eligible ETFs.
+best_regimes: [uncertain, mixed_rotation, risk_management_focus]
+weak_regimes: [strong_single_theme_trend, volatility_regime_break]
+required_features: [hist_vol_20d]
+optional_features: [atr_pct, daily_return_pct]
+positive_signals:
+  - lower realized volatility
+  - balanced contribution to risk
+failure_modes:
+  - may overweight low-volatility laggards
+  - backward-looking volatility can miss new risks
+  - does not establish positive expected return by itself
+governance_implications:
+  - neutral risk-budget benchmark only
+  - advisory/reference evidence, not independent alpha conviction
+  - useful for comparing concentration and turnover
+compatibility_mappings:
+  - role: core_market
+    horizon: diagnostic_reference
+    score_thresholds:
+      - gte: 0.00
+        action: watch
+        signal_type: risk_parity_reference
+    max_weight_multiplier: 0.0
+    weight_formula: zero
+    branch_label_template: "{regime}_risk_parity_core_reference"
+
+  - role: sector_theme
+    horizon: diagnostic_reference
+    score_thresholds:
+      - gte: 0.00
+        action: watch
+        signal_type: risk_parity_reference
+    max_weight_multiplier: 0.0
+    weight_formula: zero
+    branch_label_template: "{regime}_risk_parity_sector_reference"
+
+  - role: defensive_cash_proxy
+    horizon: diagnostic_reference
+    score_thresholds:
+      - gte: 0.00
+        action: watch
+        signal_type: risk_parity_reference
+    max_weight_multiplier: 0.0
+    weight_formula: zero
+    branch_label_template: "{regime}_risk_parity_defensive_reference"
+sources: [risk_parity_literature, risk_governance_policy]
+last_reviewed: 2026-06-03
