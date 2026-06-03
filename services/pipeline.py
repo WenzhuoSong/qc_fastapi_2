@@ -104,6 +104,8 @@ from services.transaction_cost_gate import (
     evaluate_transaction_cost_gate,
 )
 from services.weight_ops import normalize_cash_first
+from services.target_envelope import TargetEnvelope
+from services.target_envelope import default_target_envelope_config
 from services.evidence_cap_config import default_evidence_cap_config
 from services.alpha_decision_policy import default_alpha_decision_policy_config
 from services.portfolio_risk_diagnostic import load_portfolio_var_cvar_diagnostic
@@ -466,6 +468,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         transaction_cost_cfg = await get_system_config(db, "transaction_cost_gate_config")
         evidence_cap_cfg = await get_system_config(db, "evidence_cap_config")
         alpha_decision_policy_cfg = await get_system_config(db, "alpha_decision_policy_config")
+        target_envelope_cfg = await get_system_config(db, "target_envelope_config")
         override_cfg    = await get_system_config(db, "circuit_override")
         alert_cfg       = await get_system_config(db, "circuit_pause_alert")
 
@@ -531,6 +534,9 @@ async def _guard_and_config(trigger: str) -> dict | None:
     alpha_decision_policy_config = default_alpha_decision_policy_config(
         (alpha_decision_policy_cfg.value if alpha_decision_policy_cfg else {}) or {}
     )
+    target_envelope_config = default_target_envelope_config(
+        (target_envelope_cfg.value if target_envelope_cfg else {}) or {}
+    )
 
     full_auto_safety_violations = full_auto_safety_precondition_violations(
         auth_mode=auth_mode,
@@ -580,6 +586,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "transaction_cost_gate_config": transaction_cost_gate_config,
         "evidence_cap_config": evidence_cap_config,
         "alpha_decision_policy_config": alpha_decision_policy_config,
+        "target_envelope_config": target_envelope_config,
     }
 
 
@@ -846,6 +853,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     # Stage 1: market_brief (Python)
     t0 = time.time()
     brief = await build_market_brief(pipeline_context)
+    pipeline_context["brief"] = brief
     dur_brief = int((time.time() - t0) * 1000)
     if not brief.get("holdings"):
         logger.warning("Stage 1 market_brief: no holdings in latest snapshot — skipping pipeline")
@@ -1646,6 +1654,12 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     approved = bool(risk_out.get("approved", False))
     if approved and risk_out.get("target_weights"):
         risk_out["risk_approved_target_weights"] = dict(risk_out.get("target_weights") or {})
+        _create_target_envelope_if_needed(
+            pipeline_context=pipeline_context,
+            risk_out=risk_out,
+            current_weights=brief.get("current_weights") or {},
+            risk_approved_target=risk_out["risk_approved_target_weights"],
+        )
 
     # Phase 3: Record rejection for circuit breaker monitoring
     if not approved:
@@ -1700,6 +1714,15 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                     )
             if regime_ledger.mutations:
                 risk_out.setdefault("post_risk_mutation_ledgers", []).append(regime_ledger.to_dict())
+            _sync_target_envelope_stage(
+                pipeline_context=pipeline_context,
+                risk_out=risk_out,
+                new_weights=clipped,
+                stage="regime_constraint",
+                fallback_mutation_type=REGIME_CONSTRAINT_MUTATION_TYPE,
+                reason="regime hard constraint output imported into TargetEnvelope",
+                mutation_ledger=regime_ledger.to_dict(),
+            )
             risk_out["regime_constraint"] = {
                 "owner": "post_risk_tighten_only",
                 "mutation_type": REGIME_CONSTRAINT_MUTATION_TYPE,
@@ -1758,6 +1781,13 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         if full_auto_governance_only:
             governance_config["replacement_enabled"] = 0.0
             governance_config["llm_advisory_enabled"] = 0.0
+        if run_governance_execution:
+            _create_target_envelope_if_needed(
+                pipeline_context=pipeline_context,
+                risk_out=risk_out,
+                current_weights=brief.get("current_weights") or {},
+                risk_approved_target=target_before_governance,
+            )
         governance_out = apply_position_governance(
             target_weights=target_before_governance,
             current_weights=brief.get("current_weights") or {},
@@ -1786,28 +1816,30 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         }
 
         if run_governance_execution:
-            governance_ledger = _position_governance_mutation_ledger(
-                before=target_before_governance,
-                after=governance_out.adjusted_weights,
-                mutation_type=(
-                    "emergency_reduce_only"
-                    if full_auto_governance_only
-                    else "loss_trim"
-                ),
+            governance_mutation_type = (
+                "emergency_reduce_only"
+                if full_auto_governance_only
+                else "loss_trim"
             )
-            if governance_ledger.mutations:
+            governance_ledger = _apply_position_governance_to_target_envelope(
+                pipeline_context=pipeline_context,
+                risk_out=risk_out,
+                target_before_governance=target_before_governance,
+                adjusted_weights=governance_out.adjusted_weights,
+                mutation_type=governance_mutation_type,
+            )
+            if governance_ledger.get("total_mutations", 0) > 0:
                 risk_out.setdefault("post_risk_mutation_ledgers", []).append(
-                    governance_ledger.to_dict()
+                    governance_ledger
                 )
                 risk_out.setdefault("post_risk_mutation_types", []).append(
-                    governance_ledger.mutation_types()[0]
+                    (governance_ledger.get("mutation_types") or [governance_mutation_type])[0]
                 )
-            risk_out["target_weights"] = governance_out.adjusted_weights
             rebalance_threshold = float((pipeline_context.get("risk_params") or {}).get("rebalance_threshold", 0.02))
             if full_auto_governance_only:
                 rebalance_threshold = min(rebalance_threshold, 0.005)
             rebalance_actions = compute_rebalance_actions(
-                governance_out.adjusted_weights,
+                risk_out.get("target_weights") or {},
                 brief.get("current_weights") or {},
                 rebalance_threshold,
             )
@@ -1862,7 +1894,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 "feature_source_summary": governance_feature_summary,
                 "data_source_policy": risk_out.get("data_source_policy") or {},
                 "mutation_ledger": (
-                    governance_ledger.to_dict()
+                    governance_ledger
                     if run_governance_execution
                     else MutationLedger().to_dict()
                 ),
@@ -1913,10 +1945,16 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             holdings_meta=brief.get("holdings") or [],
             actual_daily_trades=actual_daily_trades,
         )
-        risk_out["target_weights"] = pm_out.adjusted_weights
+        pm_envelope_ledger = _apply_position_manager_to_target_envelope(
+            pipeline_context=pipeline_context,
+            risk_out=risk_out,
+            target_before_pm=target_before_pm,
+            adjusted_weights=pm_out.adjusted_weights,
+            mutation_ledger=pm_out.mutation_ledger,
+        )
         rebalance_threshold = float((pipeline_context.get("risk_params") or {}).get("rebalance_threshold", 0.02))
         rebalance_actions = compute_rebalance_actions(
-            pm_out.adjusted_weights,
+            risk_out.get("target_weights") or {},
             brief.get("current_weights") or {},
             rebalance_threshold,
         )
@@ -1929,11 +1967,12 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             "constraints": pm_out.constraints,
             "mutation_types": pm_out.mutation_types,
             "mutation_details": pm_out.mutation_details,
-            "mutation_ledger": pm_out.mutation_ledger,
+            "mutation_ledger": pm_envelope_ledger,
+            "diagnostic_legacy_mutation_ledger": pm_out.mutation_ledger,
         }
         risk_out.setdefault("post_risk_mutation_types", []).extend(pm_out.mutation_types)
         risk_out.setdefault("post_risk_mutation_details", []).extend(pm_out.mutation_details)
-        risk_out.setdefault("post_risk_mutation_ledgers", []).append(pm_out.mutation_ledger)
+        risk_out.setdefault("post_risk_mutation_ledgers", []).append(pm_envelope_ledger)
 
         if pm_out.violations:
             logger.warning(
@@ -1956,7 +1995,8 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 "trade_summary": pm_out.trade_summary,
                 "mutation_types": pm_out.mutation_types,
                 "mutation_details": pm_out.mutation_details,
-                "mutation_ledger": pm_out.mutation_ledger,
+                "mutation_ledger": pm_envelope_ledger,
+                "diagnostic_legacy_mutation_ledger": pm_out.mutation_ledger,
             },
             duration_ms=0,
         )
@@ -1966,6 +2006,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         risk_out=risk_out,
         current_weights=brief.get("current_weights") or {},
         rebalance_threshold=float((pipeline_context.get("risk_params") or {}).get("rebalance_threshold", 0.02)),
+        pipeline_context=pipeline_context,
     )
     await _apply_execution_throttle(
         analysis_id=analysis_id,
@@ -2334,12 +2375,331 @@ def _rejected_pipeline_fingerprint(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _target_envelope_enabled(pipeline_context: dict) -> bool:
+    config = default_target_envelope_config(
+        pipeline_context.get("target_envelope_config") or {}
+    )
+    return bool(config.get("enabled"))
+
+
+def _target_envelope_authoritative(pipeline_context: dict) -> bool:
+    config = default_target_envelope_config(
+        pipeline_context.get("target_envelope_config") or {}
+    )
+    return bool(config.get("enabled")) and str(config.get("mode") or "active") in {"active", "strict"}
+
+
+def _target_envelope_obj(pipeline_context: dict) -> TargetEnvelope | None:
+    envelope = pipeline_context.get("_target_envelope_obj")
+    return envelope if isinstance(envelope, TargetEnvelope) else None
+
+
+def _create_target_envelope_if_needed(
+    *,
+    pipeline_context: dict,
+    risk_out: dict,
+    current_weights: dict,
+    risk_approved_target: dict,
+) -> TargetEnvelope | None:
+    if not _target_envelope_enabled(pipeline_context):
+        return None
+    existing = _target_envelope_obj(pipeline_context)
+    if existing is not None:
+        return existing
+    if not risk_approved_target:
+        return None
+    envelope = TargetEnvelope(
+        current_weights=current_weights or {},
+        risk_approved_target=risk_approved_target or {},
+    )
+    pipeline_context["_target_envelope_obj"] = envelope
+    _attach_target_envelope(
+        pipeline_context=pipeline_context,
+        risk_out=risk_out,
+        envelope=envelope,
+    )
+    return envelope
+
+
+def _attach_target_envelope(
+    *,
+    pipeline_context: dict,
+    risk_out: dict,
+    envelope: TargetEnvelope,
+) -> None:
+    payload = envelope.to_dict()
+    payload["config"] = default_target_envelope_config(
+        pipeline_context.get("target_envelope_config") or {}
+    )
+    if risk_out.get("target_envelope_errors"):
+        payload["bridge_errors"] = list(risk_out.get("target_envelope_errors") or [])
+    risk_out["target_envelope"] = payload
+    if _target_envelope_authoritative(pipeline_context):
+        risk_out["target_weights"] = envelope.final_target
+
+
+def _sync_target_envelope_stage(
+    *,
+    pipeline_context: dict,
+    risk_out: dict,
+    new_weights: dict,
+    stage: str,
+    fallback_mutation_type: str,
+    reason: str,
+    mutation_ledger: dict | None = None,
+) -> None:
+    if not _target_envelope_enabled(pipeline_context):
+        return
+    envelope = _target_envelope_obj(pipeline_context)
+    if envelope is None:
+        envelope = _create_target_envelope_if_needed(
+            pipeline_context=pipeline_context,
+            risk_out=risk_out,
+            current_weights=(pipeline_context.get("brief") or {}).get("current_weights") or {},
+            risk_approved_target=(
+                risk_out.get("risk_approved_target_weights")
+                or risk_out.get("target_weights")
+                or {}
+            ),
+        )
+    if envelope is None:
+        return
+    try:
+        if mutation_ledger:
+            envelope.apply_stage_ledger(
+                new_weights=new_weights or {},
+                mutation_ledger=mutation_ledger,
+                fallback_mutation_type=fallback_mutation_type,
+                reason=reason,
+                stage=stage,
+            )
+        else:
+            envelope.apply_stage_target(
+                new_weights=new_weights or {},
+                mutation_type=fallback_mutation_type,
+                reason=reason,
+                stage=stage,
+            )
+    except Exception as exc:
+        risk_out.setdefault("target_envelope_errors", []).append(
+            f"{stage}: {type(exc).__name__}: {exc}"
+        )
+    finally:
+        _attach_target_envelope(
+            pipeline_context=pipeline_context,
+            risk_out=risk_out,
+            envelope=envelope,
+        )
+
+
+def _apply_position_governance_to_target_envelope(
+    *,
+    pipeline_context: dict,
+    risk_out: dict,
+    target_before_governance: dict,
+    adjusted_weights: dict,
+    mutation_type: str,
+) -> dict:
+    """Write position-governance executable changes directly into envelope."""
+    if not _target_envelope_enabled(pipeline_context):
+        legacy_ledger = _position_governance_mutation_ledger(
+            before=target_before_governance,
+            after=adjusted_weights,
+            mutation_type=mutation_type,
+        )
+        risk_out["target_weights"] = adjusted_weights
+        return legacy_ledger.to_dict()
+
+    envelope = _create_target_envelope_if_needed(
+        pipeline_context=pipeline_context,
+        risk_out=risk_out,
+        current_weights=(pipeline_context.get("brief") or {}).get("current_weights") or {},
+        risk_approved_target=target_before_governance,
+    )
+    if envelope is None:
+        risk_out["target_weights"] = adjusted_weights
+        return MutationLedger().to_dict()
+
+    start_index = len(envelope.ledger.mutations)
+    try:
+        envelope.apply_stage_target(
+            new_weights=adjusted_weights or {},
+            mutation_type=mutation_type,
+            reason="position governance executable mutation",
+            stage="position_governance",
+        )
+    except Exception as exc:
+        risk_out.setdefault("target_envelope_errors", []).append(
+            f"position_governance: {type(exc).__name__}: {exc}"
+        )
+    finally:
+        _attach_target_envelope(
+            pipeline_context=pipeline_context,
+            risk_out=risk_out,
+            envelope=envelope,
+        )
+
+    stage_ledger = MutationLedger()
+    stage_ledger.extend(envelope.ledger.mutations[start_index:])
+    return stage_ledger.to_dict()
+
+
+def _apply_position_manager_to_target_envelope(
+    *,
+    pipeline_context: dict,
+    risk_out: dict,
+    target_before_pm: dict,
+    adjusted_weights: dict,
+    mutation_ledger: dict,
+) -> dict:
+    """Write position-manager executable changes directly into envelope."""
+    if not _target_envelope_enabled(pipeline_context):
+        risk_out["target_weights"] = adjusted_weights
+        return mutation_ledger or MutationLedger().to_dict()
+
+    envelope = _create_target_envelope_if_needed(
+        pipeline_context=pipeline_context,
+        risk_out=risk_out,
+        current_weights=(pipeline_context.get("brief") or {}).get("current_weights") or {},
+        risk_approved_target=target_before_pm,
+    )
+    if envelope is None:
+        risk_out["target_weights"] = adjusted_weights
+        return MutationLedger().to_dict()
+
+    start_index = len(envelope.ledger.mutations)
+    try:
+        envelope.apply_stage_mutation_ledger(
+            mutation_ledger=mutation_ledger or {},
+            stage="position_manager",
+            reason="position manager executable mutation",
+        )
+        _record_unaccounted_stage_drift(
+            pipeline_context=pipeline_context,
+            risk_out=risk_out,
+            stage="position_manager",
+            expected=adjusted_weights or {},
+            actual=envelope.final_target,
+        )
+    except Exception as exc:
+        risk_out.setdefault("target_envelope_errors", []).append(
+            f"position_manager: {type(exc).__name__}: {exc}"
+        )
+    finally:
+        _attach_target_envelope(
+            pipeline_context=pipeline_context,
+            risk_out=risk_out,
+            envelope=envelope,
+        )
+
+    stage_ledger = MutationLedger()
+    stage_ledger.extend(envelope.ledger.mutations[start_index:])
+    return stage_ledger.to_dict()
+
+
+def _apply_structured_ledger_stage_to_target_envelope(
+    *,
+    pipeline_context: dict,
+    risk_out: dict,
+    stage: str,
+    expected_weights: dict,
+    mutation_ledger: dict,
+    reason: str,
+) -> dict:
+    """Apply a post-risk stage through its structured mutation ledger only."""
+    if not _target_envelope_enabled(pipeline_context):
+        risk_out["target_weights"] = expected_weights
+        return mutation_ledger or MutationLedger().to_dict()
+
+    envelope = _target_envelope_obj(pipeline_context)
+    if envelope is None:
+        envelope = _create_target_envelope_if_needed(
+            pipeline_context=pipeline_context,
+            risk_out=risk_out,
+            current_weights=(pipeline_context.get("brief") or {}).get("current_weights") or {},
+            risk_approved_target=(
+                risk_out.get("risk_approved_target_weights")
+                or risk_out.get("target_weights")
+                or {}
+            ),
+        )
+    if envelope is None:
+        risk_out["target_weights"] = expected_weights
+        return MutationLedger().to_dict()
+
+    start_index = len(envelope.ledger.mutations)
+    try:
+        envelope.apply_stage_mutation_ledger(
+            mutation_ledger=mutation_ledger or {},
+            stage=stage,
+            reason=reason,
+        )
+        _record_unaccounted_stage_drift(
+            pipeline_context=pipeline_context,
+            risk_out=risk_out,
+            stage=stage,
+            expected=expected_weights or {},
+            actual=envelope.final_target,
+        )
+    except Exception as exc:
+        risk_out.setdefault("target_envelope_errors", []).append(
+            f"{stage}: {type(exc).__name__}: {exc}"
+        )
+    finally:
+        _attach_target_envelope(
+            pipeline_context=pipeline_context,
+            risk_out=risk_out,
+            envelope=envelope,
+        )
+
+    stage_ledger = MutationLedger()
+    stage_ledger.extend(envelope.ledger.mutations[start_index:])
+    return stage_ledger.to_dict()
+
+
+def _record_unaccounted_stage_drift(
+    *,
+    pipeline_context: dict,
+    risk_out: dict,
+    stage: str,
+    expected: dict,
+    actual: dict,
+    tolerance: float = 1e-6,
+) -> None:
+    if not _target_envelope_authoritative(pipeline_context):
+        return
+    expected_clean = _clean_weight_map_for_contract(expected)
+    actual_clean = _clean_weight_map_for_contract(actual)
+    for ticker in sorted((set(expected_clean) | set(actual_clean)) - {"CASH"}):
+        expected_w = expected_clean.get(ticker, 0.0)
+        actual_w = actual_clean.get(ticker, 0.0)
+        if abs(expected_w - actual_w) > tolerance:
+            risk_out.setdefault("target_envelope_errors", []).append(
+                f"{stage}: unaccounted non-CASH drift for {ticker}: "
+                f"stage_output={expected_w:.6f}, envelope={actual_w:.6f}"
+            )
+
+
+def _clean_weight_map_for_contract(weights: dict | None) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for raw_ticker, raw_weight in (weights or {}).items():
+        ticker = str(raw_ticker or "").upper().strip()
+        if not ticker:
+            continue
+        try:
+            out[ticker] = max(float(raw_weight or 0.0), 0.0)
+        except (TypeError, ValueError):
+            out[ticker] = 0.0
+    return out
+
+
 async def _apply_final_execution_policy_cap(
     *,
     analysis_id: int,
     risk_out: dict,
     current_weights: dict,
     rebalance_threshold: float,
+    pipeline_context: dict,
 ) -> None:
     """Final execution-policy clamp after governance and position manager edits."""
     if not risk_out.get("approved") or not risk_out.get("target_weights"):
@@ -2360,8 +2720,16 @@ async def _apply_final_execution_policy_cap(
     risk_out["final_policy_evaluation"] = final_cap.get("policy_evaluation") or {}
     if final_cap.get("mutation_types"):
         risk_out.setdefault("post_risk_mutation_types", []).extend(final_cap.get("mutation_types") or [])
-    if (final_cap.get("mutation_ledger") or {}).get("total_mutations", 0) > 0:
-        risk_out.setdefault("post_risk_mutation_ledgers", []).append(final_cap.get("mutation_ledger") or {})
+    final_cap_envelope_ledger = _apply_structured_ledger_stage_to_target_envelope(
+        pipeline_context=pipeline_context,
+        risk_out=risk_out,
+        stage="final_policy_cap",
+        expected_weights=capped,
+        mutation_ledger=final_cap.get("mutation_ledger") or {},
+        reason="final execution policy cap executable mutation",
+    )
+    if final_cap_envelope_ledger.get("total_mutations", 0) > 0:
+        risk_out.setdefault("post_risk_mutation_ledgers", []).append(final_cap_envelope_ledger)
 
     if not cap_events:
         await _save_step_log(
@@ -2375,7 +2743,8 @@ async def _apply_final_execution_policy_cap(
                 "cap_events": [],
                 "cash_raised": 0.0,
                 "triggered": False,
-                "mutation_ledger": final_cap.get("mutation_ledger") or {},
+                "mutation_ledger": final_cap_envelope_ledger,
+                "diagnostic_legacy_mutation_ledger": final_cap.get("mutation_ledger") or {},
                 "policy_evaluation": final_cap.get("policy_evaluation") or {},
             },
             duration_ms=0,
@@ -2405,7 +2774,8 @@ async def _apply_final_execution_policy_cap(
             "cash_raised": final_cap["cash_raised"],
             "triggered": True,
             "mutation_types": final_cap.get("mutation_types") or [],
-            "mutation_ledger": final_cap.get("mutation_ledger") or {},
+            "mutation_ledger": final_cap_envelope_ledger,
+            "diagnostic_legacy_mutation_ledger": final_cap.get("mutation_ledger") or {},
             "policy_evaluation": final_cap.get("policy_evaluation") or {},
             "rebalance_actions": final_cap["rebalance_actions"],
             "estimated_cost_pct": risk_out["estimated_cost_pct"],
@@ -2498,23 +2868,33 @@ async def _apply_execution_throttle(
         logger.warning("[DEFERRED_EXECUTION_LEDGER] failed to persist deferred plan: %s", exc)
     if throttle.get("applied"):
         staged = throttle.get("staged_target_weights") or {}
-        risk_out["target_weights"] = staged
+        throttle_envelope_ledger = _apply_structured_ledger_stage_to_target_envelope(
+            pipeline_context=pipeline_context,
+            risk_out=risk_out,
+            stage="execution_throttle",
+            expected_weights=staged,
+            mutation_ledger=throttle.get("mutation_ledger") or {},
+            reason="execution throttle executable mutation",
+        )
         risk_out["execution_desired_target_weights"] = throttle.get("desired_target_weights") or desired
         risk_out["execution_deferred_delta"] = throttle.get("deferred_delta") or {}
         risk_out["rebalance_actions"] = compute_rebalance_actions(
-            staged,
+            risk_out.get("target_weights") or {},
             current_weights or {},
             rebalance_threshold,
         )
         risk_out["estimated_cost_pct"] = estimate_cost_pct(risk_out["rebalance_actions"])
         risk_out["n_holdings"] = sum(
-            1 for ticker, weight in staged.items()
+            1 for ticker, weight in (risk_out.get("target_weights") or {}).items()
             if ticker != "CASH" and float(weight or 0.0) > 0.01
         )
         risk_out.setdefault("overlays_applied", []).append("execution_throttle")
         risk_out.setdefault("post_risk_mutation_types", []).extend(throttle.get("mutation_types") or [])
-        if (throttle.get("mutation_ledger") or {}).get("total_mutations", 0) > 0:
-            risk_out.setdefault("post_risk_mutation_ledgers", []).append(throttle.get("mutation_ledger") or {})
+        if throttle_envelope_ledger.get("total_mutations", 0) > 0:
+            risk_out.setdefault("post_risk_mutation_ledgers", []).append(throttle_envelope_ledger)
+        throttle["envelope_mutation_ledger"] = throttle_envelope_ledger
+        throttle["diagnostic_legacy_mutation_ledger"] = throttle.get("mutation_ledger") or {}
+        throttle["mutation_ledger"] = throttle_envelope_ledger
         logger.warning(
             "[EXECUTION_THROTTLE] staged target | buy_delta %s -> %s | deferred=%s",
             (throttle.get("metrics_before") or {}).get("buy_delta"),
@@ -2567,10 +2947,39 @@ async def _apply_final_risk_validation(
     scorecard_restricted_tickers = _scorecard_restricted_tickers(
         risk_out.get("position_governance") or {}
     )
+    envelope_payload = risk_out.get("target_envelope") or {}
+    envelope_authoritative = bool(
+        envelope_payload and _target_envelope_authoritative(pipeline_context)
+    )
+    if envelope_authoritative:
+        risk_approved_for_validation = (
+            envelope_payload.get("risk_approved_target") or {}
+        )
+        final_target_for_validation = envelope_payload.get("final_target") or {}
+        risk_out["target_weights"] = dict(final_target_for_validation)
+        envelope_ledger = envelope_payload.get("ledger") or {}
+        post_risk_mutation_ledgers = [envelope_ledger] if envelope_ledger else []
+        post_risk_mutation_types = envelope_ledger.get("mutation_types") or []
+        post_risk_mutation_details = []
+    else:
+        risk_approved_for_validation = (
+            risk_out.get("risk_approved_target_weights")
+            or risk_out.get("risk_manager_input_target_weights")
+            or {}
+        )
+        final_target_for_validation = risk_out.get("target_weights") or {}
+        post_risk_mutation_ledgers = risk_out.get("post_risk_mutation_ledgers") or []
+        post_risk_mutation_types = risk_out.get("post_risk_mutation_types") or []
+        post_risk_mutation_details = risk_out.get("post_risk_mutation_details") or []
     policy_context = {
-        "post_risk_mutation_types": risk_out.get("post_risk_mutation_types") or [],
-        "post_risk_mutation_details": risk_out.get("post_risk_mutation_details") or [],
-        "post_risk_mutation_ledgers": risk_out.get("post_risk_mutation_ledgers") or [],
+        "post_risk_mutation_types": post_risk_mutation_types,
+        "post_risk_mutation_details": post_risk_mutation_details,
+        "post_risk_mutation_ledgers": post_risk_mutation_ledgers,
+        "target_envelope": envelope_payload,
+        "target_envelope_config": default_target_envelope_config(
+            pipeline_context.get("target_envelope_config") or {}
+        ),
+        "target_envelope_errors": risk_out.get("target_envelope_errors") or [],
         "material_drift_threshold": final_validation_config.get("material_drift_threshold"),
         "require_human_confirmation_for_conditional_material_drift": bool(
             final_validation_config.get("require_human_confirmation_for_conditional_material_drift", True)
@@ -2594,16 +3003,13 @@ async def _apply_final_risk_validation(
         },
     }
     validation = validate_final_execution_target(
-        risk_approved_target=(
-            risk_out.get("risk_approved_target_weights")
-            or risk_out.get("risk_manager_input_target_weights")
-            or {}
-        ),
-        final_target=risk_out.get("target_weights") or {},
+        risk_approved_target=risk_approved_for_validation,
+        final_target=final_target_for_validation,
         current_weights=current_weights or {},
         risk_context={
             "target_construction_mode": risk_out.get("target_construction_mode"),
             "approval_source": risk_out.get("approval_source"),
+            "target_envelope_authoritative": envelope_authoritative,
         },
         policy_context=policy_context,
         mode=resolve_final_risk_validation_mode(
@@ -2637,8 +3043,8 @@ async def _apply_final_risk_validation(
         "6cc_final_risk_validation",
         "final_risk_validation",
         input_data={
-            "risk_approved_target": risk_out.get("risk_approved_target_weights") or {},
-            "final_target": risk_out.get("target_weights") or {},
+            "risk_approved_target": risk_approved_for_validation,
+            "final_target": final_target_for_validation,
             "current_weights": current_weights or {},
             "policy_context": policy_context,
             "final_validation_config": final_validation_config,

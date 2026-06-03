@@ -95,6 +95,26 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("final_target_authority", source)
         self.assertIn("diagnostic_llm_target_authority", source)
 
+    def test_dashboard_surfaces_target_path_visibility(self):
+        source = Path("dashboard/app.py").read_text()
+
+        self.assertIn("build_target_path_visibility", source)
+        self.assertIn('"target_path_visibility": build_target_path_visibility(risk)', source)
+        self.assertIn("def _render_target_path_visibility", source)
+        self.assertIn("Target Path", source)
+        self.assertIn("Executable Truths", source)
+        self.assertIn("Diagnostic / Shadow Surfaces", source)
+        self.assertIn("Target Path Stages", source)
+        self.assertIn("Stage Mutation Attribution", source)
+        self.assertIn("Executable vs Diagnostic Weights", source)
+        self.assertIn("actual_holdings", source)
+        self.assertIn("risk_approved_target", source)
+        self.assertIn("envelope_final_target", source)
+        self.assertIn("legacy_dict_final_target", source)
+        self.assertIn("advisory_llm_weight", source)
+        self.assertIn("pc_shadow_reference_weight", source)
+        self.assertIn("safety_effect", source)
+
     def test_dashboard_reads_stage_telemetry_from_agent_step_log(self):
         source = Path("dashboard/app.py").read_text()
         pipeline_source = Path("services/pipeline.py").read_text()

@@ -1,6 +1,9 @@
 import unittest
 
+from services.final_risk_validation import validate_accounting_contract
 from services.final_risk_validation import validate_final_execution_target
+from services.final_risk_validation import validate_safety_contract
+from services.mutation_ledger import MutationLedger
 
 
 class FinalRiskValidationTest(unittest.TestCase):
@@ -28,7 +31,9 @@ class FinalRiskValidationTest(unittest.TestCase):
 
         self.assertTrue(out["approved"])
         self.assertFalse(out["severe_block"])
-        self.assertEqual(out["mutation_types"], ["cash_raise_from_policy_cap"])
+        self.assertEqual(out["mutation_types"], [])
+        self.assertEqual(out["diagnostic_mutation_types"], ["cash_raise_from_policy_cap"])
+        self.assertEqual(out["legacy_mutation_types"], ["cash_raise_from_policy_cap"])
         self.assertEqual(out["drift"]["max_abs_drift"], 0.005)
         self.assertEqual(out["missing_mutation_ledger_tickers"], ["PSI"])
 
@@ -43,6 +48,104 @@ class FinalRiskValidationTest(unittest.TestCase):
 
         self.assertFalse(out["approved"])
         self.assertTrue(out["unsafe_untyped_drift"])
+
+    def test_active_target_envelope_accounting_failure_blocks(self):
+        out = validate_final_execution_target(
+            risk_approved_target={"SPY": 0.10, "CASH": 0.90},
+            final_target={"SPY": 0.08, "CASH": 0.92},
+            current_weights={"SPY": 0.10, "CASH": 0.90},
+            policy_context={
+                "target_envelope": {
+                    "accounting_violations": [
+                        {
+                            "type": "ledger_replay_mismatch",
+                            "ticker": "SPY",
+                            "expected": 0.10,
+                            "actual": 0.08,
+                        }
+                    ],
+                    "ledger": {"mutations": []},
+                },
+                "target_envelope_config": {
+                    "enabled": True,
+                    "mode": "active",
+                },
+            },
+            mode="observe",
+        )
+
+        self.assertFalse(out["approved"])
+        self.assertIn("target_envelope_accounting_violation", out["blocking_violations"])
+
+    def test_validate_accounting_contract_reports_bridge_errors(self):
+        out = validate_accounting_contract(
+            target_envelope={"accounting_violations": []},
+            bridge_errors=["position_manager: bad mutation"],
+        )
+
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["violations"][0]["type"], "bridge_error")
+
+    def test_validate_safety_contract_allows_restricted_reduce(self):
+        ledger = MutationLedger()
+        ledger.record(
+            mutation_type="turnover_scale_toward_current",
+            ticker="QQQ",
+            before=0.1500,
+            after=0.1483,
+            reason="turnover scaled but still reduced",
+        )
+
+        out = validate_safety_contract(
+            risk_approved_target={"QQQ": 0.1500, "CASH": 0.8500},
+            final_target={"QQQ": 0.1483, "CASH": 0.8517},
+            current_weights={"QQQ": 0.1606, "CASH": 0.8394},
+            policy_context={
+                "scorecard_restricted_tickers": ["QQQ"],
+                "forced_trim_min_delta": 0.005,
+            },
+            mutation_ledger=ledger,
+        )
+
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["conditional_mutation_violations"], [])
+
+    def test_active_envelope_conditional_material_drift_does_not_require_human_review(self):
+        envelope_ledger = {
+            "mutation_types": ["turnover_scale_toward_current"],
+            "mutations": [
+                {
+                    "type": "turnover_scale_toward_current",
+                    "ticker": "QQQ",
+                    "before": 0.1500,
+                    "after": 0.1483,
+                    "reason": "turnover scaled but still reduced restricted ticker",
+                }
+            ],
+        }
+        out = validate_final_execution_target(
+            risk_approved_target={"QQQ": 0.1500, "CASH": 0.8500},
+            final_target={"QQQ": 0.1483, "CASH": 0.8517},
+            current_weights={"QQQ": 0.1606, "CASH": 0.8394},
+            policy_context={
+                "target_envelope": {
+                    "accounting_violations": [],
+                    "ledger": envelope_ledger,
+                },
+                "target_envelope_config": {
+                    "enabled": True,
+                    "mode": "active",
+                },
+                "post_risk_mutation_ledgers": [envelope_ledger],
+                "scorecard_restricted_tickers": ["QQQ"],
+                "material_drift_threshold": 0.001,
+                "require_human_confirmation_for_conditional_material_drift": True,
+            },
+            mode="blocking",
+        )
+
+        self.assertTrue(out["approved"], out)
+        self.assertFalse(out["conditional_review_required"])
 
     def test_hard_risk_new_exposure_is_severe(self):
         out = validate_final_execution_target(
@@ -68,7 +171,7 @@ class FinalRiskValidationTest(unittest.TestCase):
         self.assertFalse(out["approved"])
         self.assertIn("execution_policy_violation", out["blocking_violations"])
 
-    def test_blocking_mode_allows_conditional_mutation_that_only_tightens_approved_buy(self):
+    def test_blocking_mode_rejects_loose_conditional_string_without_ledger(self):
         out = validate_final_execution_target(
             risk_approved_target={"SPY": 0.20, "CASH": 0.80},
             final_target={"SPY": 0.15, "CASH": 0.85},
@@ -81,7 +184,8 @@ class FinalRiskValidationTest(unittest.TestCase):
         )
 
         self.assertFalse(out["approved"])
-        self.assertIn("conditional_mutation_material_drift_requires_human_confirmation", out["blocking_violations"])
+        self.assertIn("incomplete_mutation_ledger", out["blocking_violations"])
+        self.assertIn("untyped_post_risk_drift", out["blocking_violations"])
         self.assertEqual(out["conditional_mutation_violations"], [])
 
     def test_blocking_mode_allows_conditional_material_drift_when_human_review_disabled(self):
@@ -120,6 +224,19 @@ class FinalRiskValidationTest(unittest.TestCase):
             current_weights={"SPY": 0.10, "CASH": 0.90},
             policy_context={
                 "post_risk_mutation_types": ["turnover_scale_toward_current"],
+                "post_risk_mutation_ledgers": [
+                    {
+                        "mutations": [
+                            {
+                                "type": "turnover_scale_toward_current",
+                                "ticker": "SPY",
+                                "before": 0.20,
+                                "after": 0.15,
+                                "reason": "turnover scaled restricted ticker",
+                            }
+                        ]
+                    }
+                ],
                 "material_drift_threshold": 0.01,
                 "scorecard_restricted_tickers": ["SPY"],
                 "require_human_confirmation_for_conditional_material_drift": False,
@@ -244,18 +361,32 @@ class FinalRiskValidationTest(unittest.TestCase):
                     "defer_sell_due_to_min_hold_days",
                     "cash_raise_from_policy_cap",
                 ],
+                "post_risk_mutation_ledgers": [
+                    {
+                        "mutations": [
+                            {
+                                "type": "min_hold_defer_sell",
+                                "ticker": "SPY",
+                                "before": 0.20,
+                                "after": 0.15,
+                                "reason": "sell deferred but still below risk target",
+                            },
+                            {
+                                "type": "cash_raise_from_policy_cap",
+                                "ticker": "XLE",
+                                "before": 0.10,
+                                "after": 0.09,
+                                "reason": "policy cap trim",
+                            },
+                        ]
+                    },
+                ],
                 "post_risk_mutation_details": [
                     {
                         "type": "defer_sell_due_to_min_hold_days",
                         "ticker": "SPY",
-                        "before": 0.10,
+                        "before": 0.20,
                         "after": 0.15,
-                    },
-                    {
-                        "type": "cash_raise_from_policy_cap",
-                        "ticker": "XLE",
-                        "before": 0.10,
-                        "after": 0.09,
                     }
                 ],
                 "hard_risk_tickers": ["XLE"],
@@ -297,8 +428,8 @@ class FinalRiskValidationTest(unittest.TestCase):
         )
 
         self.assertFalse(out["approved"])
-        self.assertEqual(out["conditional_detail_tickers"], ["SPY"])
-        self.assertEqual(out["missing_mutation_ledger_tickers"], ["XLE"])
+        self.assertEqual(out["conditional_detail_tickers"], [])
+        self.assertEqual(out["missing_mutation_ledger_tickers"], ["SPY", "XLE"])
         self.assertIn("incomplete_mutation_ledger", out["blocking_violations"])
 
     def test_governance_trim_and_min_hold_ledgers_cover_all_post_risk_drift(self):

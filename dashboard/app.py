@@ -52,6 +52,7 @@ from services.weight_source_contract import (
     dashboard_weight_source_labels,
     weight_source_contract_summary,
 )
+from services.target_path_visibility import build_target_path_visibility
 
 DATA_QUALITY_AUDIT_NAME = "qc_yfinance_feature_parity"
 
@@ -237,6 +238,7 @@ async def _latest_analysis() -> dict[str, Any]:
         "final_validation": _compact_final_validation(
             (risk.get("final_validation") if isinstance(risk, dict) else None) or {}
         ),
+        "target_path_visibility": build_target_path_visibility(risk),
         "transaction_cost_gate": _compact_transaction_cost_gate(
             (risk.get("transaction_cost_gate") if isinstance(risk, dict) else None) or {}
         ),
@@ -2674,6 +2676,7 @@ def render_dashboard(summary: dict[str, Any]) -> str:
     sections = [
         ("execution", "Execution Control", _render_execution_control(summary.get("execution_control") or {}), True),
         ("latest", "Latest Decision", _render_latest_analysis(latest), True),
+        ("target-path", "Target Path", _render_target_path_visibility(latest.get("target_path_visibility") or {}), True),
         ("weight-source", "Weight Source Contract", _render_weight_source_contract(summary.get("weight_source_contract") or {}), False),
         ("pc", "Portfolio Construction Objective", _render_portfolio_construction_objective(summary.get("portfolio_construction_objective") or {}), False),
         ("evidence", "ETF / Strategy Evidence", _render_strategy_evidence(summary.get("strategy_evidence") or {}), False),
@@ -3381,6 +3384,7 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
     pc_eval = latest.get("portfolio_construction_evaluation") or {}
     pc_gate = latest.get("portfolio_construction_promotion_gate") or {}
     final_validation = latest.get("final_validation") or {}
+    target_path = latest.get("target_path_visibility") or {}
     transaction_cost_gate = latest.get("transaction_cost_gate") or {}
     portfolio_risk = latest.get("portfolio_risk_diagnostic") or {}
     thesis = (governance.get("thesis_status_summary") or {}).get("problem_tickers") or []
@@ -3395,6 +3399,7 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
       <h3>Portfolio Construction Evaluation</h3>{_render_kv(pc_eval)}
       <h3>Portfolio Construction Promotion Gate</h3>{_render_kv(pc_gate)}
       <h3>Final Risk Validation</h3>{_render_kv(final_validation)}
+      <h3>Target Path</h3>{_render_target_path_visibility(target_path)}
       <h3>Transaction Cost Gate</h3>{_render_kv(transaction_cost_gate, keys=["mode", "broker", "status", "execution_effect", "summary", "warnings"])}
       <h3>Transaction Cost Rows</h3>{_render_table(transaction_cost_gate.get("rows") or [], ["ticker", "trade_action", "asset_cost_bucket", "abs_delta", "estimated_cost_rate", "cost_drag", "confidence", "conviction_status", "conviction_discount", "expected_edge", "edge_to_cost_ratio", "verdict", "reason"])}
       <h3>Portfolio Risk Diagnostic</h3>{_render_kv(portfolio_risk, keys=["status", "mode", "execution_authority", "data_quality", "summary", "warnings"])}
@@ -3404,6 +3409,44 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
       <h3>Weight Source Contract</h3>{_render_weight_source_contract(latest.get("weight_source_contract") or {})}
       <h3>Decision Ledger</h3>{_render_table((latest.get("decision_ledger") or {}).get("top_decisions") or [], ["ticker", "proposed_action", "final_action", "execution_status", "qc_status", "qc_rejection_reason", "risk_result", "ticker_role", "single_cap", "group_cap", "policy_version", "policy_cap_applied", "policy_cap_original", "cash_raised_by_policy_cap", "entered_via_hedge_path", "hedge_trigger_reasons", "final_target", "final_target_authority", "target_builder_target", "target_builder_target_authority", "portfolio_construction_target", "portfolio_construction_target_authority", "diagnostic_llm_target", "diagnostic_llm_target_authority", "validated_advisory_delta", "validated_advisory_delta_authority", "advisory_validator_result", "changed_by"])}
       <h3>Pipeline Stage Telemetry</h3>{_render_table(latest.get("stage_metrics") or [], ["stage", "agent", "duration_ms", "model", "prompt_tokens", "completion_tokens", "failed"])}
+    """
+
+
+def _render_target_path_visibility(visibility: dict[str, Any]) -> str:
+    if not visibility:
+        return "<p class=\"muted\">No target path visibility payload.</p>"
+    if not visibility.get("available"):
+        return f"""
+          <p class="muted">TargetEnvelope visibility is unavailable.</p>
+          {_render_kv({
+              "contract_version": visibility.get("contract_version"),
+              "execution_authority": visibility.get("execution_authority"),
+              "warnings": visibility.get("warnings") or [],
+          })}
+        """
+    return f"""
+      <div class="target-path-panel">
+        <div class="grid">
+          <article class="card">
+            <h3>Executable Truths</h3>
+            {_render_table(visibility.get("truth_rows") or [], ["key", "label", "authority", "executable", "visual_class", "weight_count", "top_weights", "note"])}
+          </article>
+          <article class="card">
+            <h3>Diagnostic / Shadow Surfaces</h3>
+            {_render_table(visibility.get("diagnostic_surface_rows") or [], ["key", "label", "authority", "executable", "visual_class", "weight_count", "top_weights", "note"])}
+          </article>
+        </div>
+        <h3>Target Path Contract</h3>{_render_kv({
+            "contract_version": visibility.get("contract_version"),
+            "execution_authority": visibility.get("execution_authority"),
+            "path": visibility.get("path"),
+            "warnings": visibility.get("warnings") or [],
+            "accounting": visibility.get("accounting") or {},
+        })}
+        <h3>Target Path Stages</h3>{_render_table(visibility.get("stage_rows") or [], ["stage", "changed_ticker_count", "mutation_count", "mutation_types", "safety_effects", "cash_actual", "cash_matches_requested", "boundary_only"])}
+        <h3>Stage Mutation Attribution</h3>{_render_table(visibility.get("mutation_rows") or [], ["stage", "ticker", "mutation_type", "before", "after", "delta", "current", "risk_approved", "final", "stage_effect", "safety_effect", "tighten_only", "conditional", "reason"])}
+        <h3>Executable vs Diagnostic Weights</h3>{_render_table(visibility.get("weight_rows") or [], ["ticker", "actual_holdings", "risk_approved_target", "envelope_final_target", "legacy_dict_final_target", "advisory_llm_weight", "pc_shadow_reference_weight", "final_vs_actual", "risk_reduction"])}
+      </div>
     """
 
 

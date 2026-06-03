@@ -98,6 +98,17 @@ _DEFAULTS = {
         "require_human_confirmation_for_conditional_material_drift": True,
     },
 
+    # Post-risk executable target contract. Active mode makes TargetEnvelope
+    # the authority for final validation and execution while legacy dict
+    # outputs remain available as diagnostics during migration.
+    "target_envelope_config": {
+        "enabled": True,
+        "mode": "active",
+        "shadow_compare_enabled": True,
+        "block_on_accounting_failure": True,
+        "block_on_safety_failure": True,
+    },
+
     # Command-level execution preflight. These caps sit after final risk
     # validation and before any SetWeights command can be submitted to QC.
     "execution_command_config": {

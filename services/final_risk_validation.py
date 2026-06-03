@@ -62,35 +62,47 @@ def validate_final_execution_target(
     current = _clean_weights(current_weights)
     legacy_mutation_types = _unique([str(item) for item in policy_ctx.get("post_risk_mutation_types") or []])
     mutation_details = _clean_mutation_details(policy_ctx.get("post_risk_mutation_details") or [])
+    target_envelope = policy_ctx.get("target_envelope") or {}
+    target_envelope_config = policy_ctx.get("target_envelope_config") or {}
+    target_envelope_mode = str(target_envelope_config.get("mode") or "").lower().strip()
+    target_envelope_blocking = bool(
+        target_envelope
+        and target_envelope_config.get("enabled", True)
+        and target_envelope_mode in {"active", "strict"}
+    )
+    target_envelope_accounting_violations = (
+        target_envelope.get("accounting_violations") or []
+    ) if isinstance(target_envelope, dict) else []
+    target_envelope_bridge_errors = policy_ctx.get("target_envelope_errors") or (
+        target_envelope.get("bridge_errors") if isinstance(target_envelope, dict) else []
+    ) or []
+    target_envelope_accounting_failure = bool(
+        target_envelope_accounting_violations or target_envelope_bridge_errors
+    )
+    accounting_contract = validate_accounting_contract(
+        target_envelope=target_envelope,
+        bridge_errors=target_envelope_bridge_errors,
+    )
     mutation_ledger, mutation_ledger_errors = _build_mutation_ledger(
         policy_ctx=policy_ctx,
-        legacy_details=mutation_details,
     )
-    mutation_types = _unique(legacy_mutation_types + mutation_ledger.mutation_types())
-    policy_evaluation = evaluate_policy(
-        weights=final,
+    authoritative_mutation_types = mutation_ledger.mutation_types()
+    mutation_types = authoritative_mutation_types
+    diagnostic_mutation_types = _unique(legacy_mutation_types + authoritative_mutation_types)
+    safety_contract = validate_safety_contract(
+        risk_approved_target=risk_target,
+        final_target=final,
         current_weights=current,
-        context=policy_ctx.get("execution_policy_context") or {},
+        policy_context=policy_ctx,
+        mutation_ledger=mutation_ledger,
     )
-    drift_rows = _drift_rows(risk_target, final)
-    severe_violations = _severe_violations(
-        final=final,
-        current=current,
-        hard_risk_tickers=set(policy_ctx.get("hard_risk_tickers") or []),
-    )
-    unknown_mutation_types = [
-        item for item in mutation_types
-        if not _is_known_mutation_type(item)
-    ]
-    conditional_mutation_types = [
-        item for item in mutation_types if _is_conditional_mutation_type(item)
-    ]
-    conditional_detail_tickers = _conditional_ledger_tickers(mutation_ledger)
-    if conditional_mutation_types and not conditional_detail_tickers:
-        conditional_detail_tickers = _conditional_detail_tickers(
-            mutation_details=mutation_details,
-            conditional_mutation_types=set(conditional_mutation_types),
-        )
+    policy_evaluation = safety_contract["policy_evaluation"]
+    drift_rows = safety_contract["drift_rows"]
+    severe_violations = safety_contract["severe_violations"]
+    unknown_mutation_types = safety_contract["unknown_mutation_types"]
+    conditional_mutation_types = safety_contract["conditional_mutation_types"]
+    conditional_detail_tickers = safety_contract["conditional_detail_tickers"]
+    conditional_mutation_violations = safety_contract["conditional_mutation_violations"]
     ledger_affected_tickers = mutation_ledger.affected_tickers()
     drift_tickers = {
         str(row.get("ticker") or "").upper().strip()
@@ -109,28 +121,14 @@ def validate_final_execution_target(
         policy_ctx.get("require_human_confirmation_for_conditional_material_drift", True)
     )
     conditional_review_required = bool(
+        not target_envelope_blocking
+        and
         require_human_confirmation_for_conditional_material_drift
         and conditional_mutation_types
         and material_drift
         and not human_confirmed
     )
-    conditional_mutation_violations = _conditional_mutation_violations(
-        drift_rows=drift_rows,
-        risk_target=risk_target,
-        final=final,
-        current=current,
-        restricted_tickers=_restricted_tickers(policy_ctx),
-        hard_risk_tickers={
-            str(ticker or "").upper().strip()
-            for ticker in policy_ctx.get("hard_risk_tickers") or []
-            if str(ticker or "").strip()
-        },
-        affected_tickers=conditional_detail_tickers,
-        forced_trim_min_delta=(
-            _optional_float(policy_ctx.get("forced_trim_min_delta")) or 0.005
-        ),
-    ) if conditional_mutation_types else []
-    unsafe_untyped_drift = bool(drift_tickers and not mutation_types and not ledger_affected_tickers)
+    unsafe_untyped_drift = bool(drift_tickers and not authoritative_mutation_types and not ledger_affected_tickers)
     incomplete_mutation_ledger = bool(drift_tickers and (missing_mutation_ledger_tickers or mutation_ledger_errors))
     severe_block = bool(severe_violations)
     blocking_mode = str(mode or "observe") == "blocking"
@@ -147,6 +145,10 @@ def validate_final_execution_target(
         blocking_violations.append("untyped_post_risk_drift")
     if incomplete_mutation_ledger:
         blocking_violations.append("incomplete_mutation_ledger")
+    if target_envelope_accounting_violations:
+        blocking_violations.append("target_envelope_accounting_violation")
+    if target_envelope_bridge_errors:
+        blocking_violations.append("target_envelope_bridge_error")
 
     approved = not severe_block
     if blocking_mode:
@@ -156,6 +158,9 @@ def validate_final_execution_target(
         approved = approved and not conditional_mutation_violations
         approved = approved and not unsafe_untyped_drift
         approved = approved and not incomplete_mutation_ledger
+    if target_envelope_blocking:
+        approved = approved and bool(accounting_contract.get("ok"))
+        approved = approved and bool(safety_contract.get("ok"))
 
     return {
         "approved": approved,
@@ -173,12 +178,21 @@ def validate_final_execution_target(
             "material_drift": material_drift,
         },
         "mutation_types": mutation_types,
+        "diagnostic_mutation_types": diagnostic_mutation_types,
+        "legacy_mutation_types": legacy_mutation_types,
+        "authoritative_mutation_types": authoritative_mutation_types,
         "mutation_details": mutation_details,
         "mutation_ledger": mutation_ledger.to_dict(),
         "mutation_ledger_errors": mutation_ledger_errors,
         "ledger_affected_tickers": sorted(ledger_affected_tickers),
         "missing_mutation_ledger_tickers": missing_mutation_ledger_tickers,
         "incomplete_mutation_ledger": incomplete_mutation_ledger,
+        "target_envelope": target_envelope,
+        "target_envelope_accounting_violations": target_envelope_accounting_violations,
+        "target_envelope_bridge_errors": target_envelope_bridge_errors,
+        "target_envelope_accounting_failure": target_envelope_accounting_failure,
+        "accounting_contract": accounting_contract,
+        "safety_contract": safety_contract,
         "allowed_mutation_types": sorted(ALLOWED_POST_RISK_MUTATIONS),
         "conditional_mutation_types": conditional_mutation_types,
         "conditional_detail_tickers": sorted(conditional_detail_tickers) if conditional_detail_tickers is not None else None,
@@ -190,16 +204,121 @@ def validate_final_execution_target(
         ),
         "conditional_mutation_violations": conditional_mutation_violations,
         "human_confirmed": human_confirmed,
-        "blocking_violations": blocking_violations if blocking_mode else [],
+        "blocking_violations": blocking_violations if (blocking_mode or target_envelope_blocking) else [],
         "risk_context": risk_ctx,
         "execution_effect": "hard_block" if not approved else ("blocking_pass" if blocking_mode else "observe"),
+    }
+
+
+def validate_accounting_contract(
+    *,
+    target_envelope: dict[str, Any] | None,
+    bridge_errors: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Validate the envelope replay/accounting contract.
+
+    This answers only one question: can the executable final target be
+    reproduced from the envelope ledger? Safety decisions are intentionally
+    handled by `validate_safety_contract`.
+    """
+    envelope = target_envelope if isinstance(target_envelope, dict) else {}
+    accounting_violations = list(envelope.get("accounting_violations") or [])
+    bridge_error_rows = [
+        {"type": "bridge_error", "message": str(error)}
+        for error in (bridge_errors or envelope.get("bridge_errors") or [])
+    ]
+    violations = accounting_violations + bridge_error_rows
+    return {
+        "ok": not violations,
+        "authority": envelope.get("authority") or "legacy_dict",
+        "contract_version": envelope.get("contract_version"),
+        "violations": violations,
+        "accounting_violations": accounting_violations,
+        "bridge_errors": bridge_error_rows,
+    }
+
+
+def validate_safety_contract(
+    *,
+    risk_approved_target: dict[str, Any],
+    final_target: dict[str, Any],
+    current_weights: dict[str, Any],
+    policy_context: dict[str, Any] | None,
+    mutation_ledger: MutationLedger,
+) -> dict[str, Any]:
+    """Validate whether the final executable target increases risk."""
+    policy_ctx = policy_context or {}
+    risk_target = _clean_weights(risk_approved_target)
+    final = _clean_weights(final_target)
+    current = _clean_weights(current_weights)
+    policy_evaluation = evaluate_policy(
+        weights=final,
+        current_weights=current,
+        context=policy_ctx.get("execution_policy_context") or {},
+    )
+    drift_rows = _drift_rows(risk_target, final)
+    severe_violations = _severe_violations(
+        final=final,
+        current=current,
+        hard_risk_tickers=set(policy_ctx.get("hard_risk_tickers") or []),
+    )
+    authoritative_mutation_types = mutation_ledger.mutation_types()
+    unknown_mutation_types = [
+        item for item in authoritative_mutation_types
+        if not _is_known_mutation_type(item)
+    ]
+    conditional_mutation_types = [
+        item for item in authoritative_mutation_types
+        if _is_conditional_mutation_type(item)
+    ]
+    conditional_detail_tickers = _conditional_ledger_tickers(mutation_ledger)
+    conditional_mutation_violations = _conditional_mutation_violations(
+        drift_rows=drift_rows,
+        risk_target=risk_target,
+        final=final,
+        current=current,
+        restricted_tickers=_restricted_tickers(policy_ctx),
+        hard_risk_tickers={
+            str(ticker or "").upper().strip()
+            for ticker in policy_ctx.get("hard_risk_tickers") or []
+            if str(ticker or "").strip()
+        },
+        affected_tickers=conditional_detail_tickers,
+        forced_trim_min_delta=(
+            _optional_float(policy_ctx.get("forced_trim_min_delta")) or 0.005
+        ),
+    ) if conditional_mutation_types else []
+    safety_violations: list[dict[str, Any]] = []
+    if not policy_evaluation.get("allowed"):
+        safety_violations.append(
+            {
+                "type": "execution_policy_violation",
+                "details": policy_evaluation.get("violations") or [],
+            }
+        )
+    safety_violations.extend(severe_violations)
+    safety_violations.extend(
+        {"type": "unknown_post_risk_mutation_type", "mutation_type": item}
+        for item in unknown_mutation_types
+    )
+    safety_violations.extend(conditional_mutation_violations)
+    return {
+        "ok": not safety_violations,
+        "policy_evaluation": policy_evaluation,
+        "drift_rows": drift_rows,
+        "severe_violations": severe_violations,
+        "mutation_types": authoritative_mutation_types,
+        "unknown_mutation_types": unknown_mutation_types,
+        "conditional_mutation_types": conditional_mutation_types,
+        "conditional_detail_tickers": conditional_detail_tickers,
+        "conditional_mutation_violations": conditional_mutation_violations,
+        "violations": safety_violations,
     }
 
 
 def _build_mutation_ledger(
     *,
     policy_ctx: dict[str, Any],
-    legacy_details: list[dict[str, Any]],
 ) -> tuple[MutationLedger, list[str]]:
     ledger = MutationLedger()
     errors: list[str] = []
@@ -256,9 +375,6 @@ def _build_mutation_ledger(
                 errors.append(f"ledger[{index}].mutations contains non-object row")
                 continue
             record(raw_mutation, source=f"ledger[{index}]")
-
-    for raw_detail in legacy_details:
-        record(raw_detail, source="legacy")
 
     return ledger, errors
 
@@ -483,30 +599,6 @@ def _clean_mutation_details(values: Any) -> list[dict[str, Any]]:
                 row[key] = round(value, 6)
         out.append(row)
     return out
-
-
-def _conditional_detail_tickers(
-    *,
-    mutation_details: list[dict[str, Any]],
-    conditional_mutation_types: set[str],
-) -> set[str] | None:
-    if not conditional_mutation_types:
-        return set()
-    conditional_details = [
-        row for row in mutation_details
-        if str(row.get("type") or "").strip() in conditional_mutation_types
-    ]
-    detail_types = {
-        str(row.get("type") or "").strip()
-        for row in conditional_details
-    }
-    if not conditional_details or detail_types != conditional_mutation_types:
-        return None
-    rows = [
-        str(row.get("ticker") or "").upper().strip()
-        for row in conditional_details
-    ]
-    return {ticker for ticker in rows if ticker and ticker != "CASH"}
 
 
 def _clean_weights(weights: dict[str, Any] | None) -> dict[str, float]:
