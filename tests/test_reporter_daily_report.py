@@ -23,6 +23,9 @@ def _load_reporter_module():
     execution_log_store.summarize_execution_activity_rows = lambda rows: {
         "command_count": 0,
         "gross_turnover": 0.0,
+        "ordinary_command_count": 0,
+        "risk_reduce_command_count": 0,
+        "risk_reduce_gross_turnover": 0.0,
     }
 
     with patch.dict(
@@ -52,12 +55,16 @@ class ReporterDailyReportTests(unittest.TestCase):
             "win_rate_30d": 0.62,
             "commands_used_today": 2,
             "gross_turnover_today": 0.42,
+            "ordinary_commands_today": 1,
+            "risk_reduce_commands_today": 1,
+            "risk_reduce_turnover_today": 0.05,
             "execution_log_rows_today": 9,
             "preflight_blocked_today": 5,
         })
 
-        self.assertIn("Commands used for cap  2", text)
+        self.assertIn("Commands used for cap  2 (ordinary 1, risk-reduce 1)", text)
         self.assertIn("Turnover used for cap  42.00%", text)
+        self.assertIn("Risk-reduce turnover  5.00%", text)
         self.assertIn("Execution log rows  9 (5 preflight blocked)", text)
         self.assertNotIn("Executions today", text)
 

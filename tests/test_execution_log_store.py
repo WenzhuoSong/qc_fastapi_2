@@ -267,6 +267,92 @@ class ExecutionLogStoreTests(unittest.TestCase):
 
         self.assertEqual(summary["command_count"], 1)
         self.assertEqual(summary["gross_turnover"], 0.12)
+        self.assertEqual(summary["ordinary_command_count"], 1)
+        self.assertEqual(summary["risk_reduce_command_count"], 0)
+
+    def test_daily_activity_summary_splits_risk_reduce_rows(self):
+        risk_reduce = type(
+            "Row",
+            (),
+            {
+                "command_type": "weight_adjustment",
+                "status": "sent",
+                "qc_status": "reconciled",
+                "command_payload": {
+                    "command_preflight": {
+                        "metrics": {
+                            "buy_delta": 0.0,
+                            "sell_delta": 0.08,
+                            "gross_turnover": 0.04,
+                        }
+                    }
+                },
+            },
+        )()
+        ordinary = type(
+            "Row",
+            (),
+            {
+                "command_type": "weight_adjustment",
+                "status": "sent",
+                "qc_status": "reconciled",
+                "command_payload": {
+                    "command_preflight": {
+                        "metrics": {
+                            "buy_delta": 0.02,
+                            "sell_delta": 0.04,
+                            "gross_turnover": 0.03,
+                        }
+                    }
+                },
+            },
+        )()
+
+        summary = execution_log_store.summarize_execution_activity_rows([risk_reduce, ordinary])
+
+        self.assertEqual(summary["command_count"], 2)
+        self.assertEqual(summary["gross_turnover"], 0.07)
+        self.assertEqual(summary["risk_reduce_command_count"], 1)
+        self.assertEqual(summary["risk_reduce_gross_turnover"], 0.04)
+        self.assertEqual(summary["ordinary_command_count"], 1)
+        self.assertEqual(summary["ordinary_gross_turnover"], 0.03)
+
+    def test_timeout_reconciliation_uses_earliest_conclusive_no_execution_snapshot(self):
+        row = type("Row", (), {"command_id": "analysis_232"})()
+        no_execution_snapshot = type(
+            "Snapshot",
+            (),
+            {
+                "id": 168,
+                "recorded_at": "2026-06-03 14:30:00",
+                "raw_snapshot": {"last_command_id": ""},
+                "active_command_id": None,
+                "target_weights": {},
+                "has_open_orders": False,
+                "open_order_count": 0,
+            },
+        )()
+        later_success_snapshot = type(
+            "Snapshot",
+            (),
+            {
+                "id": 169,
+                "recorded_at": "2026-06-03 14:45:00",
+                "raw_snapshot": {"last_command_id": "analysis_234"},
+                "active_command_id": None,
+                "target_weights": {"SPY": 0.1},
+                "has_open_orders": False,
+                "open_order_count": 0,
+            },
+        )()
+
+        decision = execution_log_store._timeout_reconciliation_decision_from_snapshots(
+            row,
+            [no_execution_snapshot, later_success_snapshot],
+        )
+
+        self.assertEqual(decision["status"], "timeout_no_execution_confirmed")
+        self.assertEqual(decision["snapshot_id"], 168)
 
     def test_record_active_execution_wait_contract_exists(self):
         text = Path("services/execution_log_store.py").read_text()

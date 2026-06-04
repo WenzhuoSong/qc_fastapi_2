@@ -9,6 +9,8 @@ from services.execution_policy import evaluate_policy
 DEFAULT_COMMAND_PREFLIGHT_CONFIG = {
     "max_daily_commands": 3,
     "max_gross_turnover_per_day": 0.50,
+    "risk_reduce_reserved_commands": 1,
+    "risk_reduce_gross_turnover_per_day": 0.05,
     "max_buy_delta": 0.15,
     "max_sell_delta": 0.20,
 }
@@ -69,10 +71,13 @@ async def preflight_execution_command(
     target = _clean_weights(target_weights)
     current = _clean_weights(current_weights or {})
     metrics = command_weight_delta_metrics(target, current)
+    command_class = _command_class_from_metrics(metrics)
     submission_state = await command_submission_state(command_id=command_id, analysis_id=analysis_id)
     today = await summarize_today_execution_activity()
     policy_sync_ack_status = _policy_sync_ack_status(policy_sync_result)
     policy_transport_ok = _policy_alignment_ok(policy_alignment_result)
+    command_count_limit = _daily_command_limit(cfg, command_class)
+    gross_turnover_limit = _daily_turnover_limit(cfg, command_class)
 
     checks: dict[str, dict[str, Any]] = {
         "command_id_present": {
@@ -110,14 +115,20 @@ async def preflight_execution_command(
             "threshold": "recent account_state_guard policy alignment required before SetWeights",
         },
         "daily_command_count_ok": {
-            "pass": int(today.get("command_count") or 0) < int(cfg["max_daily_commands"]),
+            "pass": int(today.get("command_count") or 0) < int(command_count_limit),
             "actual": int(today.get("command_count") or 0),
-            "threshold": int(cfg["max_daily_commands"]),
+            "threshold": int(command_count_limit),
+            "base_threshold": int(cfg["max_daily_commands"]),
+            "reserve_applied": int(command_count_limit) - int(cfg["max_daily_commands"]),
+            "bucket": command_class,
         },
         "daily_gross_turnover_ok": {
-            "pass": float(today.get("gross_turnover") or 0.0) + metrics["gross_turnover"] <= float(cfg["max_gross_turnover_per_day"]) + 1e-12,
+            "pass": float(today.get("gross_turnover") or 0.0) + metrics["gross_turnover"] <= float(gross_turnover_limit) + 1e-12,
             "actual": round(float(today.get("gross_turnover") or 0.0) + metrics["gross_turnover"], 6),
-            "threshold": float(cfg["max_gross_turnover_per_day"]),
+            "threshold": float(gross_turnover_limit),
+            "base_threshold": float(cfg["max_gross_turnover_per_day"]),
+            "reserve_applied": round(float(gross_turnover_limit) - float(cfg["max_gross_turnover_per_day"]), 6),
+            "bucket": command_class,
         },
         "buy_delta_ok": {
             "pass": metrics["buy_delta"] <= float(cfg["max_buy_delta"]) + 1e-12,
@@ -141,6 +152,7 @@ async def preflight_execution_command(
         "metrics": metrics,
         "today": today,
         "config": cfg,
+        "command_class": command_class,
         "execution_authority": "hard_block" if blockers else "allowed",
     }
 
@@ -158,7 +170,12 @@ def format_command_preflight_blockers(preflight_result: dict[str, Any]) -> str:
         label = COMMAND_PREFLIGHT_BLOCKER_LABELS.get(name, str(name))
         actual = _format_check_value(name, check.get("actual"))
         threshold = _format_check_value(name, check.get("threshold"))
-        lines.append(f"- {label}: actual={actual}, threshold={threshold} ({name})")
+        bucket = check.get("bucket")
+        reserve = check.get("reserve_applied")
+        reserve_text = ""
+        if bucket == "risk_reduce" and reserve not in (None, 0, 0.0):
+            reserve_text = f", reserve_applied={_format_check_value(name, reserve)}"
+        lines.append(f"- {label}: actual={actual}, threshold={threshold}{reserve_text} ({name})")
     return "\n".join(lines)
 
 
@@ -182,6 +199,32 @@ def command_weight_delta_metrics(
         "sell_delta": round(sell_delta, 6),
         "gross_turnover": round(gross / 2.0, 6),
     }
+
+
+def _command_class_from_metrics(metrics: dict[str, Any]) -> str:
+    """Classify commands for preflight budget purposes."""
+    try:
+        buy_delta = float(metrics.get("buy_delta") or 0.0)
+        sell_delta = float(metrics.get("sell_delta") or 0.0)
+    except (TypeError, ValueError):
+        return "ordinary_rebalance"
+    if buy_delta <= 1e-12 and sell_delta > 1e-12:
+        return "risk_reduce"
+    return "ordinary_rebalance"
+
+
+def _daily_command_limit(cfg: dict[str, Any], command_class: str) -> int:
+    base = int(cfg["max_daily_commands"])
+    if command_class == "risk_reduce":
+        return base + max(int(cfg.get("risk_reduce_reserved_commands") or 0), 0)
+    return base
+
+
+def _daily_turnover_limit(cfg: dict[str, Any], command_class: str) -> float:
+    base = float(cfg["max_gross_turnover_per_day"])
+    if command_class == "risk_reduce":
+        return base + max(float(cfg.get("risk_reduce_gross_turnover_per_day") or 0.0), 0.0)
+    return base
 
 
 def _format_check_value(check_name: str, value: Any) -> str:

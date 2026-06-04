@@ -2,6 +2,9 @@ import unittest
 from pathlib import Path
 
 from services.execution_preflight import (
+    _command_class_from_metrics,
+    _daily_command_limit,
+    _daily_turnover_limit,
     _policy_alignment_ok,
     _policy_sync_ack_status,
     command_weight_delta_metrics,
@@ -178,6 +181,64 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn("daily command cap exceeded: actual=3, threshold=3", text)
         self.assertIn("daily turnover cap exceeded: actual=53.50%, threshold=50.00%", text)
         self.assertIn("(daily_command_count_ok)", text)
+
+    def test_risk_reduce_command_gets_reserved_daily_budget(self):
+        cfg = {
+            "max_daily_commands": 2,
+            "max_gross_turnover_per_day": 0.10,
+            "risk_reduce_reserved_commands": 1,
+            "risk_reduce_gross_turnover_per_day": 0.05,
+        }
+
+        command_class = _command_class_from_metrics({
+            "buy_delta": 0.0,
+            "sell_delta": 0.0806,
+            "gross_turnover": 0.0403,
+        })
+
+        self.assertEqual(command_class, "risk_reduce")
+        self.assertEqual(_daily_command_limit(cfg, command_class), 3)
+        self.assertAlmostEqual(_daily_turnover_limit(cfg, command_class), 0.15)
+
+    def test_ordinary_command_does_not_get_risk_reduce_reserve(self):
+        cfg = {
+            "max_daily_commands": 2,
+            "max_gross_turnover_per_day": 0.10,
+            "risk_reduce_reserved_commands": 1,
+            "risk_reduce_gross_turnover_per_day": 0.05,
+        }
+
+        command_class = _command_class_from_metrics({
+            "buy_delta": 0.01,
+            "sell_delta": 0.0806,
+            "gross_turnover": 0.0453,
+        })
+
+        self.assertEqual(command_class, "ordinary_rebalance")
+        self.assertEqual(_daily_command_limit(cfg, command_class), 2)
+        self.assertEqual(_daily_turnover_limit(cfg, command_class), 0.10)
+
+    def test_risk_reduce_preflight_message_shows_reserve_applied(self):
+        text = format_command_preflight_blockers({
+            "blockers": ["daily_command_count_ok", "daily_gross_turnover_ok"],
+            "checks": {
+                "daily_command_count_ok": {
+                    "actual": 3,
+                    "threshold": 3,
+                    "bucket": "risk_reduce",
+                    "reserve_applied": 1,
+                },
+                "daily_gross_turnover_ok": {
+                    "actual": 0.155,
+                    "threshold": 0.15,
+                    "bucket": "risk_reduce",
+                    "reserve_applied": 0.05,
+                },
+            },
+        })
+
+        self.assertIn("reserve_applied=1", text)
+        self.assertIn("reserve_applied=5.00%", text)
 
     def test_policy_sync_success_requires_qc_ack_status(self):
         self.assertEqual(

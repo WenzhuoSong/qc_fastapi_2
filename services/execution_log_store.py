@@ -552,20 +552,43 @@ def summarize_execution_activity_rows(rows: list[Any]) -> dict[str, Any]:
     """Summarize execution rows using the same daily-cap counting rules."""
     command_rows = [row for row in rows if _counts_toward_daily_command(row)]
     gross_turnover = 0.0
+    risk_reduce_command_count = 0
+    risk_reduce_gross_turnover = 0.0
     for row in command_rows:
         if not _counts_toward_daily_turnover(row):
             continue
-        payload = getattr(row, "command_payload", None) or {}
-        preflight = payload.get("command_preflight") or {}
-        metrics = preflight.get("metrics") or {}
+        metrics = _command_preflight_metrics(row)
         try:
-            gross_turnover += float(metrics.get("gross_turnover") or 0.0)
+            row_turnover = float(metrics.get("gross_turnover") or 0.0)
         except (TypeError, ValueError):
             continue
+        gross_turnover += row_turnover
+        if _metrics_are_risk_reduce(metrics):
+            risk_reduce_command_count += 1
+            risk_reduce_gross_turnover += row_turnover
     return {
         "command_count": len(command_rows),
         "gross_turnover": round(gross_turnover, 6),
+        "risk_reduce_command_count": risk_reduce_command_count,
+        "risk_reduce_gross_turnover": round(risk_reduce_gross_turnover, 6),
+        "ordinary_command_count": len(command_rows) - risk_reduce_command_count,
+        "ordinary_gross_turnover": round(gross_turnover - risk_reduce_gross_turnover, 6),
     }
+
+
+def _command_preflight_metrics(row: Any) -> dict[str, Any]:
+    payload = getattr(row, "command_payload", None) or {}
+    preflight = payload.get("command_preflight") or {}
+    return preflight.get("metrics") or {}
+
+
+def _metrics_are_risk_reduce(metrics: dict[str, Any]) -> bool:
+    try:
+        buy_delta = float(metrics.get("buy_delta") or 0.0)
+        sell_delta = float(metrics.get("sell_delta") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return buy_delta <= 1e-12 and sell_delta > 1e-12
 
 
 def _counts_toward_daily_command(row: Any) -> bool:
@@ -637,15 +660,14 @@ async def reconcile_timeout_no_ack_commands(
         ).scalars().all()
 
         for row in timeout_rows:
-            snapshot = (
+            snapshots = (
                 await db.execute(
                     select(AccountStateSnapshot)
                     .where(AccountStateSnapshot.recorded_at > (row.qc_ack_at or row.executed_at))
-                    .order_by(desc(AccountStateSnapshot.recorded_at))
-                    .limit(1)
+                    .order_by(AccountStateSnapshot.recorded_at, AccountStateSnapshot.id)
                 )
-            ).scalar_one_or_none()
-            decision = _timeout_reconciliation_decision(row, snapshot)
+            ).scalars().all()
+            decision = _timeout_reconciliation_decision_from_snapshots(row, snapshots)
             if decision.get("status") != "timeout_no_execution_confirmed":
                 continue
 
@@ -671,6 +693,25 @@ async def reconcile_timeout_no_ack_commands(
             await db.commit()
 
     return reconciled
+
+
+def _timeout_reconciliation_decision_from_snapshots(
+    row: Any,
+    snapshots: list[Any],
+) -> dict[str, Any]:
+    """Return the first conclusive no-execution snapshot for a timeout row."""
+    if not snapshots:
+        return _timeout_reconciliation_decision(row, None)
+
+    last_pending: dict[str, Any] | None = None
+    for snapshot in snapshots:
+        decision = _timeout_reconciliation_decision(row, snapshot)
+        if decision.get("status") == "timeout_no_execution_confirmed":
+            return decision
+        last_pending = decision
+        if decision.get("reason") == "account_snapshot_reports_command_processed":
+            return decision
+    return last_pending or {"status": "pending", "reason": "no_later_account_snapshot"}
 
 
 def _timeout_reconciliation_decision(row: Any, snapshot: Any | None) -> dict[str, Any]:

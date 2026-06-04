@@ -62,6 +62,9 @@ async def _gather_stats() -> dict:
             "win_rate_30d":     win_days / total_days,
             "commands_used_today": int(cap_summary.get("command_count") or 0),
             "gross_turnover_today": float(cap_summary.get("gross_turnover") or 0.0),
+            "ordinary_commands_today": int(cap_summary.get("ordinary_command_count") or 0),
+            "risk_reduce_commands_today": int(cap_summary.get("risk_reduce_command_count") or 0),
+            "risk_reduce_turnover_today": float(cap_summary.get("risk_reduce_gross_turnover") or 0.0),
             "execution_log_rows_today": len(today_executions),
             "preflight_blocked_today": preflight_blocked_today,
         }
@@ -77,8 +80,10 @@ def _format_daily_report(s: dict) -> str:
         f"📉 Drawdown  -{s['drawdown']:.2%}\n"
         f"\nRegime  {s['regime_label']} 🟢\n"
         f"Win rate (30d) {s['win_rate_30d']:.0%}\n"
-        f"Commands used for cap  {s['commands_used_today']}\n"
+        f"Commands used for cap  {s['commands_used_today']} "
+        f"(ordinary {s['ordinary_commands_today']}, risk-reduce {s['risk_reduce_commands_today']})\n"
         f"Turnover used for cap  {s['gross_turnover_today']:.2%}\n"
+        f"Risk-reduce turnover  {s['risk_reduce_turnover_today']:.2%}\n"
         f"Execution log rows  {s['execution_log_rows_today']} "
         f"({s['preflight_blocked_today']} preflight blocked)"
     )
