@@ -10,6 +10,7 @@ from services.execution_log_store import (
     create_or_update_submitted_log,
     record_active_execution_wait,
     record_preflight_block,
+    record_recent_same_target_dedupe,
 )
 from services.execution_lifecycle import (
     evaluate_active_execution_gate,
@@ -17,6 +18,7 @@ from services.execution_lifecycle import (
 )
 from services.execution_policy import policy_snapshot
 from services.execution_preflight import (
+    check_recent_same_target_dedupe,
     format_command_preflight_blockers,
     preflight_execution_command,
     preflight_execution_weights,
@@ -354,6 +356,50 @@ async def run_executor_async(
                 rebalance_actions=risk_out.get("rebalance_actions") or [],
                 estimated_cost_pct=risk_out.get("estimated_cost_pct"),
                 reason="blocked_by_command_preflight",
+            ),
+        }
+
+    command_cfg = command_preflight.get("config") or {}
+    same_target_dedupe = await check_recent_same_target_dedupe(
+        proposed_target=weights,
+        command_id=command_id,
+        lookback_minutes=int(command_cfg.get("recent_same_target_dedupe_minutes") or 5),
+        tolerance=float(command_cfg.get("recent_same_target_dedupe_tolerance") or 0.005),
+    )
+    if not same_target_dedupe.get("should_send", True):
+        await record_recent_same_target_dedupe(
+            command_id=command_id,
+            analysis_id=analysis_id,
+            target_weights=weights,
+            dedupe_result=same_target_dedupe,
+            policy_version=policy_version,
+            preflight_result=command_preflight,
+        )
+        reference_id = same_target_dedupe.get("reference_command_id") or "unknown"
+        tolerance = float(same_target_dedupe.get("tolerance") or 0.0)
+        lookback = int(same_target_dedupe.get("lookback_minutes") or 0)
+        await tool_send_telegram({
+            "text": (
+                f"⏭ Command deduped `{_command_label(command_id)}`\n"
+                f"Recent reconciled command `{_command_label(reference_id)}` has the same target "
+                f"within {tolerance:.1%} tolerance.\n"
+                f"Window: {lookback}m | No command sent to QC."
+            )
+        })
+        return {
+            "execution_status": "deduped",
+            "command_id": command_id,
+            "same_target_dedupe": same_target_dedupe,
+            "preflight": command_preflight,
+            "policy_version": policy_version,
+            "policy_alignment": policy_alignment,
+            "execution_audit": build_execution_audit_payload(
+                action_status="skipped",
+                proposed_weights=desired_weights,
+                command_id=command_id,
+                rebalance_actions=risk_out.get("rebalance_actions") or [],
+                estimated_cost_pct=risk_out.get("estimated_cost_pct"),
+                reason="recent_same_target_reconciled",
             ),
         }
 

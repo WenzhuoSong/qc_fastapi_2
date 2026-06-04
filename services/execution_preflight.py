@@ -1,6 +1,7 @@
 """Final execution preflight checks before commands are sent to QC."""
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from services.execution_policy import evaluate_policy
@@ -13,6 +14,8 @@ DEFAULT_COMMAND_PREFLIGHT_CONFIG = {
     "risk_reduce_gross_turnover_per_day": 0.05,
     "max_buy_delta": 0.15,
     "max_sell_delta": 0.20,
+    "recent_same_target_dedupe_minutes": 5,
+    "recent_same_target_dedupe_tolerance": 0.005,
 }
 
 
@@ -157,6 +160,58 @@ async def preflight_execution_command(
     }
 
 
+async def check_recent_same_target_dedupe(
+    *,
+    proposed_target: dict[str, Any],
+    command_id: str,
+    lookback_minutes: int = 5,
+    tolerance: float = 0.005,
+) -> dict[str, Any]:
+    """Return a not-send decision when a recent reconciled command has the same target."""
+    from sqlalchemy import desc, select
+
+    from db.models import CommandLifecycleEvent, ExecutionLog
+    from db.session import AsyncSessionLocal
+    from services.execution_lifecycle import is_within_target_tolerance
+
+    clean_command_id = str(command_id or "").strip()
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=max(int(lookback_minutes or 0), 1))
+    async with AsyncSessionLocal() as db:
+        lifecycle_rows = (
+            await db.execute(
+                select(CommandLifecycleEvent)
+                .where(CommandLifecycleEvent.event_type == "reconciled")
+                .where(CommandLifecycleEvent.event_time >= cutoff)
+                .where(CommandLifecycleEvent.command_id != clean_command_id)
+                .order_by(desc(CommandLifecycleEvent.event_time), desc(CommandLifecycleEvent.id))
+                .limit(5)
+            )
+        ).scalars().all()
+        for event in lifecycle_rows:
+            row = (
+                await db.execute(
+                    select(ExecutionLog).where(ExecutionLog.command_id == event.command_id)
+                )
+            ).scalar_one_or_none()
+            recent_target = _target_weights_from_execution_row(row)
+            if recent_target and is_within_target_tolerance(proposed_target, recent_target, tolerance):
+                return {
+                    "should_send": False,
+                    "reason": "recent_same_target_reconciled",
+                    "reference_command_id": event.command_id,
+                    "reference_reconciled_at": _iso_or_none(getattr(event, "event_time", None)),
+                    "lookback_minutes": int(lookback_minutes),
+                    "tolerance": float(tolerance),
+                }
+
+    return {
+        "should_send": True,
+        "reason": None,
+        "lookback_minutes": int(lookback_minutes),
+        "tolerance": float(tolerance),
+    }
+
+
 def format_command_preflight_blockers(preflight_result: dict[str, Any]) -> str:
     """Return operator-facing failed checks with actual/threshold values."""
     blockers = list(preflight_result.get("blockers") or [])
@@ -268,6 +323,33 @@ def _command_config(config: dict[str, Any] | None) -> dict[str, Any]:
             parsed = default
         out[key] = parsed
     return out
+
+
+def _target_weights_from_execution_row(row: Any) -> dict[str, Any]:
+    payload = getattr(row, "command_payload", None) or {}
+    qc_response = getattr(row, "qc_response", None) or {}
+    if isinstance(qc_response, dict):
+        account_state = qc_response.get("account_state")
+        for value in (
+            qc_response.get("actual_target_weights"),
+            account_state.get("target_weights") if isinstance(account_state, dict) else None,
+        ):
+            if isinstance(value, dict) and value:
+                return value
+    if isinstance(payload, dict):
+        for key in ("sent_weights", "proposed_weights"):
+            value = payload.get(key)
+            if isinstance(value, dict) and value:
+                return value
+    return {}
+
+
+def _iso_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
 
 
 def _clean_weights(weights: dict[str, Any] | None) -> dict[str, float]:

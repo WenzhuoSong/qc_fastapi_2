@@ -234,6 +234,62 @@ async def record_preflight_block(
     )
 
 
+async def record_recent_same_target_dedupe(
+    *,
+    command_id: str,
+    analysis_id: int | None,
+    target_weights: dict[str, Any],
+    dedupe_result: dict[str, Any],
+    policy_version: str | None,
+    preflight_result: dict[str, Any] | None = None,
+) -> None:
+    """Record a same-target duplicate as not_sent without consuming daily caps."""
+    payload = {
+        "action_status": "deduped",
+        "command_id": command_id,
+        "sent_weights": {},
+        "proposed_weights": target_weights,
+        "policy_version": policy_version,
+        "command_preflight": preflight_result or {},
+        "reason": "recent_same_target_reconciled",
+        "same_target_dedupe": dedupe_result,
+        "recorded_at": datetime.now(UTC).isoformat(),
+    }
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(ExecutionLog).where(ExecutionLog.command_id == command_id))
+        row = result.scalar_one_or_none()
+        if row:
+            row.analysis_id = analysis_id or row.analysis_id
+            row.command_type = row.command_type or "weight_adjustment"
+            row.command_payload = payload
+            row.status = "deduped"
+            row.qc_status = "not_sent"
+            row.qc_rejection_reason = "recent_same_target_reconciled"
+        else:
+            row = ExecutionLog(
+                analysis_id=analysis_id,
+                command_id=command_id,
+                command_type="weight_adjustment",
+                command_payload=payload,
+                qc_response=None,
+                status="deduped",
+                qc_status="not_sent",
+                qc_rejection_reason="recent_same_target_reconciled",
+            )
+            db.add(row)
+        await append_command_lifecycle_event(
+            db,
+            command_id=command_id,
+            analysis_id=analysis_id,
+            event_type="execution_result",
+            event_status="deduped",
+            source="fastapi",
+            reason="recent_same_target_reconciled",
+            payload=payload,
+        )
+        await db.commit()
+
+
 async def record_active_execution_wait(
     *,
     command_id: str,

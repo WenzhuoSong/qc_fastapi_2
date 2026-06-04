@@ -3,8 +3,10 @@ from pathlib import Path
 
 from services.execution_preflight import (
     _command_class_from_metrics,
+    _command_config,
     _daily_command_limit,
     _daily_turnover_limit,
+    _target_weights_from_execution_row,
     _policy_alignment_ok,
     _policy_sync_ack_status,
     command_weight_delta_metrics,
@@ -64,6 +66,18 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn('"execution_status": "deferred_by_active_execution"', text)
         self.assertIn("active_execution_wait", text)
         self.assertIn("Will resume after reconciliation", text)
+
+    def test_executor_dedupes_recent_same_target_after_preflight_before_send(self):
+        text = Path("agents/executor.py").read_text()
+        preflight_pos = text.index("command_preflight = await preflight_execution_command")
+        dedupe_pos = text.index("same_target_dedupe = await check_recent_same_target_dedupe")
+        send_pos = text.index("result = await tool_send_weight_command")
+
+        self.assertLess(preflight_pos, dedupe_pos)
+        self.assertLess(dedupe_pos, send_pos)
+        self.assertIn("record_recent_same_target_dedupe", text)
+        self.assertIn('"execution_status": "deduped"', text)
+        self.assertIn("No command sent to QC", text)
 
     def test_executor_telegram_distinguishes_async_qc_lifecycle_states(self):
         text = Path("agents/executor.py").read_text()
@@ -262,6 +276,27 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn('"timeout_no_ack"', text)
         self.assertIn("if not _counts_toward_daily_turnover(row):", text)
 
+    def test_same_target_dedupe_config_defaults_are_stable(self):
+        config = _command_config({})
+
+        self.assertEqual(config["recent_same_target_dedupe_minutes"], 5)
+        self.assertEqual(config["recent_same_target_dedupe_tolerance"], 0.005)
+
+    def test_same_target_dedupe_extracts_sent_weights_as_fallback(self):
+        row = type(
+            "Row",
+            (),
+            {
+                "qc_response": {},
+                "command_payload": {
+                    "sent_weights": {"SPY": 0.1},
+                    "proposed_weights": {"SPY": 0.2},
+                },
+            },
+        )()
+
+        self.assertEqual(_target_weights_from_execution_row(row), {"SPY": 0.1})
+
     def test_executor_does_not_overwrite_duplicate_command_log(self):
         text = Path("agents/executor.py").read_text()
 
@@ -278,6 +313,14 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn("order_summary: dict[str, Any] | None", text)
         self.assertIn("fill_summary: dict[str, Any] | None", text)
         self.assertIn("account_state: dict[str, Any] | None", text)
+
+    def test_qc_ack_ingests_account_snapshot_when_present(self):
+        text = Path("api/execution.py").read_text()
+
+        self.assertIn("ingest_execution_ack_snapshot", text)
+        self.assertIn("ack.account_state", text)
+        self.assertIn("holdings_weights=ack.actual_holdings_weights", text)
+        self.assertIn("target_weights=ack.actual_target_weights", text)
 
     def test_executor_surfaces_transaction_cost_gate_summary(self):
         summary = format_transaction_cost_gate_summary({

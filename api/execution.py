@@ -1,16 +1,19 @@
 """Execution lifecycle endpoints."""
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Request
 
+from services.account_snapshot_store import ingest_execution_ack_snapshot
 from services.execution_log_store import update_qc_status
 from services.qc_webhook_auth import verify_qc_signature
 
 
 router = APIRouter(tags=["execution"])
+logger = logging.getLogger(__name__)
 
 VALID_QC_EXECUTION_STATUSES = {
     "accepted",
@@ -62,4 +65,26 @@ async def receive_qc_ack(request: Request, ack: QCExecutionAck):
         rejection_reason=ack.reason,
         qc_response=ack.model_dump(),
     )
-    return {"received": True}
+    snapshot_ingestion: dict[str, Any] = {"ingested": False, "reason": "no_account_state"}
+    if ack.account_state:
+        try:
+            snapshot_ingestion = await ingest_execution_ack_snapshot(
+                account_state=ack.account_state,
+                command_id=ack.cmd_id,
+                ack_status=status,
+                holdings_weights=ack.actual_holdings_weights,
+                target_weights=ack.actual_target_weights,
+            )
+        except Exception as exc:  # pragma: no cover - defensive; ACK must still return 200.
+            logger.warning(
+                "QC ACK account snapshot ingestion failed for %s: %s",
+                ack.cmd_id,
+                exc,
+                exc_info=True,
+            )
+            snapshot_ingestion = {
+                "ingested": False,
+                "reason": "snapshot_ingestion_failed",
+                "error": str(exc),
+            }
+    return {"received": True, "snapshot_ingestion": snapshot_ingestion}
