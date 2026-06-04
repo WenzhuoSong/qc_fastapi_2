@@ -218,13 +218,23 @@ async def _account_holdings_dashboard(latest_analysis: dict[str, Any]) -> dict[s
                     .order_by(HoldingsFactor.ticker)
                 )
             ).scalars().all()
+        recent_command_rows = (
+            await db.execute(
+                select(ExecutionLog)
+                .where(ExecutionLog.command_type == "weight_adjustment")
+                .order_by(desc(ExecutionLog.executed_at), desc(ExecutionLog.id))
+                .limit(10)
+            )
+        ).scalars().all()
 
     portfolio_series = [_compact_portfolio_timeseries_row(row) for row in reversed(portfolio_rows)]
     latest_portfolio = portfolio_series[-1] if portfolio_series else {}
+    latest_command_target = _latest_command_target_weights(recent_command_rows)
     holdings = _account_holdings_rows(
         latest_account=latest_account,
         factor_rows=factor_rows,
         latest_analysis=latest_analysis,
+        latest_command_target=latest_command_target,
     )
     account = _account_overview_from_rows(
         latest_account=latest_account,
@@ -241,7 +251,9 @@ async def _account_holdings_dashboard(latest_analysis: dict[str, Any]) -> dict[s
         "signals": _account_key_signals(holdings),
         "contract": {
             "truth_source": "latest account_state_snapshots holdings_weights",
+            "target_source": "account_state_snapshots target_weights, then latest execution_log command target",
             "return_source": "latest holdings_factors daily_return_pct",
+            "holding_days_source": "QC in-memory holding_days counter; resets when QC algorithm restarts",
             "contribution_formula": "contribution_pct = weight_current * daily_return_pct * 100",
             "sorting": "client-side by table data-sort-key",
         },
@@ -266,17 +278,26 @@ def _account_holdings_rows(
     latest_account: AccountStateSnapshot | None,
     factor_rows: list[HoldingsFactor],
     latest_analysis: dict[str, Any],
+    latest_command_target: dict[str, float],
 ) -> list[dict[str, Any]]:
     factors = {str(row.ticker or "").upper(): row for row in factor_rows if row.ticker}
+    factor_targets_available = any(
+        abs(_ratio_decimal(getattr(row, "weight_target", None)) or 0.0) > 0.00001
+        for row in factor_rows
+    )
     account_holdings = _weight_map_from_snapshot(getattr(latest_account, "holdings_weights", None))
     account_targets = _weight_map_from_snapshot(getattr(latest_account, "target_weights", None))
+    target_source = "account_snapshot" if account_targets else ""
+    if not account_targets and latest_command_target:
+        account_targets = dict(latest_command_target)
+        target_source = "latest_command"
     action_map = _governance_action_by_ticker(latest_analysis)
     tickers = set(factors) | set(account_holdings) | set(account_targets)
     cash_current = _ratio_decimal(getattr(latest_account, "cash_pct", None))
     if cash_current is not None:
         tickers.add("CASH")
         account_holdings.setdefault("CASH", cash_current)
-    if "CASH" not in account_targets:
+    if account_targets and "CASH" not in account_targets:
         target_cash = 1.0 - sum(value for ticker, value in account_targets.items() if ticker != "CASH")
         if target_cash >= 0:
             account_targets["CASH"] = target_cash
@@ -289,31 +310,51 @@ def _account_holdings_rows(
         if current is None and factor is not None:
             current = _ratio_decimal(getattr(factor, "weight_current", None))
         target = account_targets.get(ticker)
-        if target is None and factor is not None:
+        if target is None and not account_targets and factor_targets_available and factor is not None:
             target = _ratio_decimal(getattr(factor, "weight_target", None))
+            if target is not None and target > 0:
+                target_source = target_source or "holdings_factor"
         current = float(current or 0.0)
-        target = float(target or 0.0)
-        if ticker != "CASH" and abs(current) < 0.00001 and abs(target) < 0.00001:
+        target_value = float(target) if target is not None else None
+        if ticker != "CASH" and abs(current) < 0.00001 and abs(target_value or 0.0) < 0.00001:
             continue
         daily_return = _ratio_decimal(getattr(factor, "daily_return_pct", None)) if factor is not None else 0.0
         unrealized = _ratio_decimal(getattr(factor, "unrealized_pnl_pct", None)) if factor is not None else 0.0
         contribution = current * float(daily_return or 0.0) * 100.0
-        drift = _ratio_decimal(getattr(factor, "weight_drift", None)) if factor is not None else current - target
+        drift = (current - target_value) if target_value is not None else None
         rows.append({
             "ticker": ticker,
             "role": role,
             "weight_current": round(current * 100.0, 4),
-            "weight_target": round(target * 100.0, 4),
-            "weight_drift": round(float(drift or 0.0) * 100.0, 4),
+            "weight_target": round(target_value * 100.0, 4) if target_value is not None else None,
+            "weight_drift": round(float(drift) * 100.0, 4) if drift is not None else None,
             "daily_return_pct": round(float(daily_return or 0.0) * 100.0, 4),
             "contribution_pct": round(contribution, 6),
             "unrealized_pnl_pct": round(float(unrealized or 0.0) * 100.0, 4),
             "holding_days": int(getattr(factor, "holding_days", None) or 0),
+            "holding_days_source": "qc_in_memory_counter",
+            "target_source": target_source or "unavailable",
             "action": action_map.get(ticker, "normal_hold"),
             "price": _json_safe_number(getattr(factor, "price", None)) if factor is not None else None,
             "recorded_at": _iso(getattr(factor, "recorded_at", None)) if factor is not None else None,
         })
     return sorted(rows, key=lambda row: (-float(row.get("contribution_pct") or 0.0), str(row.get("ticker") or "")))
+
+
+def _latest_command_target_weights(rows: list[ExecutionLog]) -> dict[str, float]:
+    for row in rows or []:
+        payload = row.command_payload if isinstance(row.command_payload, dict) else {}
+        response = row.qc_response if isinstance(row.qc_response, dict) else {}
+        for candidate in (
+            response.get("actual_target_weights"),
+            payload.get("sent_weights"),
+            payload.get("proposed_weights"),
+            response.get("target_weights"),
+        ):
+            weights = _weight_map_from_snapshot(candidate)
+            if weights:
+                return weights
+    return {}
 
 
 def _account_overview_from_rows(
@@ -3194,7 +3235,8 @@ def _render_account_holdings_panel(data: dict[str, Any]) -> str:
         {_render_holdings_sort_controls()}
         {_render_account_holdings_table(holdings)}
         <p class="account-contract-note">
-          Contribution = weight_current * daily_return_pct * 100. Truth source: {escape(str(contract.get("truth_source") or ""))}; return source: {escape(str(contract.get("return_source") or ""))}.
+          Contribution = weight_current * daily_return_pct * 100. Truth source: {escape(str(contract.get("truth_source") or ""))}; target source: {escape(str(contract.get("target_source") or ""))}; return source: {escape(str(contract.get("return_source") or ""))}.
+          QC Days source: {escape(str(contract.get("holding_days_source") or ""))}.
         </p>
       </article>
     </section>
@@ -3236,11 +3278,20 @@ def _render_account_nav_chart(rows: list[dict[str, Any]]) -> str:
         f"<text x=\"{x_pos(idx):.2f}\" y=\"{height + 14}\" text-anchor=\"middle\">{escape(str(row.get('date_label') or '')[-2:])}</text>"
         for idx, row in enumerate(clean)
     )
+    hit_points = "".join(
+        (
+            f"<circle class=\"chart-hit-point\" cx=\"{x_pos(idx):.2f}\" cy=\"{y_pos(values[idx]):.2f}\" r=\"7\">"
+            f"<title>{escape(str(row.get('date_label') or ''))} NAV {_format_money_like(values[idx])}</title>"
+            "</circle>"
+        )
+        for idx, row in enumerate(clean)
+    )
     return f"""
       <svg class="account-nav-chart" viewBox="0 0 {width} {height + 18}" role="img" aria-label="NAV line chart">
         <polygon points="{area}" fill="{stroke}20"></polygon>
         <polyline points="{points}" fill="none" stroke="{stroke}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"></polyline>
         <circle cx="{x_pos(len(values)-1):.2f}" cy="{y_pos(values[-1]):.2f}" r="3.5" fill="{stroke}"></circle>
+        {hit_points}
         <g class="account-axis-labels">{labels}</g>
       </svg>
     """
@@ -3263,7 +3314,11 @@ def _render_account_pnl_bars(rows: list[dict[str, Any]]) -> str:
         y = mid - bar_height if value >= 0 else mid
         color = "#22d3a0" if value >= 0 else "#f04a5a"
         bars.append(
-            f"<rect x=\"{x:.2f}\" y=\"{y:.2f}\" width=\"{bar_width:.2f}\" height=\"{max(bar_height, 1):.2f}\" rx=\"2\" fill=\"{color}cc\"></rect>"
+            (
+                f"<rect x=\"{x:.2f}\" y=\"{y:.2f}\" width=\"{bar_width:.2f}\" height=\"{max(bar_height, 1):.2f}\" rx=\"2\" fill=\"{color}cc\">"
+                f"<title>{escape(str(row.get('date_label') or ''))} Daily PnL {_fmt_percent(value, sign=True, digits=3)}</title>"
+                "</rect>"
+            )
         )
         bars.append(
             f"<text x=\"{x + bar_width / 2:.2f}\" y=\"{height + 14}\" text-anchor=\"middle\">{escape(str(row.get('date_label') or '')[-2:])}</text>"
@@ -3287,12 +3342,17 @@ def _render_contribution_bars(holdings: list[dict[str, Any]]) -> str:
         width = min(abs(contribution) / max_abs * 42.0, 42.0)
         is_positive = contribution >= 0
         left = 50.0 if is_positive else 50.0 - width
+        tooltip = (
+            f"{row.get('ticker')}: contribution {_fmt_percent(contribution, sign=True, digits=3)}; "
+            f"weight {_fmt_percent(row.get('weight_current'))}; "
+            f"day return {_fmt_percent(row.get('daily_return_pct'), sign=True)}"
+        )
         rendered.append(f"""
           <div class="contrib-row">
             <strong>{escape(str(row.get("ticker") or ""))}</strong>
             <div class="contrib-track">
               <span class="contrib-midline"></span>
-              <span class="contrib-bar {'positive' if is_positive else 'negative'}" style="left:{left:.3f}%;width:{width:.3f}%"></span>
+              <span class="contrib-bar {'positive' if is_positive else 'negative'}" style="left:{left:.3f}%;width:{width:.3f}%" title="{escape(tooltip)}"></span>
             </div>
             <em class="{'positive' if is_positive else 'negative'}">{escape(_fmt_percent(contribution, sign=True, digits=3))}</em>
           </div>
@@ -3305,14 +3365,14 @@ def _render_account_key_signal_cards(signals: dict[str, Any]) -> str:
         ("Top Contributor", signals.get("top_contributor"), "contribution_pct", "ok"),
         ("Top Dragger", signals.get("top_dragger"), "contribution_pct", "bad"),
         ("Largest Drift", signals.get("largest_drift"), "weight_drift", "warn"),
-        ("Longest Hold", signals.get("longest_hold"), "holding_days", "info"),
+        ("Longest QC Hold", signals.get("longest_hold"), "holding_days", "info"),
     ]
     out = []
     for label, row, key, tone in cards:
         ticker = (row or {}).get("ticker") if isinstance(row, dict) else None
         raw = (row or {}).get(key) if isinstance(row, dict) else None
         if key == "holding_days":
-            detail = f"{int(raw or 0)} days" if ticker else "n/a"
+            detail = f"{int(raw or 0)} QC days" if ticker else "n/a"
         else:
             detail = _fmt_percent(raw, sign=True, digits=3 if key == "contribution_pct" else 1) if ticker else "n/a"
         out.append(f"""
@@ -3332,7 +3392,7 @@ def _render_holdings_sort_controls() -> str:
         ("drift", "Drift"),
         ("return", "Day Return"),
         ("unrealized", "Unrealized PnL"),
-        ("days", "Hold Days"),
+        ("days", "QC Days"),
     ]
     buttons = "".join(
         f"<button type=\"button\" data-sort-key=\"{escape(key)}\">{escape(label)}</button>"
@@ -3362,12 +3422,12 @@ def _render_account_holdings_table(holdings: list[dict[str, Any]]) -> str:
             <td><span class="role-chip {escape(str(row.get('role') or 'unknown'))}"></span><strong>{escape(str(row.get("ticker") or ""))}</strong></td>
             <td>{escape(str(row.get("role") or ""))}</td>
             <td class="num">{escape(_fmt_percent(row.get("weight_current")))}</td>
-            <td class="num muted-cell">{escape(_fmt_percent(row.get("weight_target")))}</td>
-            <td class="num {escape(_value_tone_abs(drift, 0.5))}">{escape(_fmt_percent(drift, sign=True))}</td>
+            <td class="num muted-cell" title="target_source={escape(str(row.get('target_source') or 'unavailable'))}">{escape(_fmt_percent(row.get("weight_target")))}</td>
+            <td class="num {escape(_value_tone_abs(drift, 0.5))}" title="target_source={escape(str(row.get('target_source') or 'unavailable'))}">{escape(_fmt_percent(drift, sign=True))}</td>
             <td class="num {escape(_value_tone(daily_return))}">{escape(_fmt_percent(daily_return, sign=True))}</td>
             <td class="num {escape(_value_tone(contribution))}">{escape(_fmt_percent(contribution, sign=True, digits=3))}</td>
             <td class="num {escape(_value_tone(unrealized))}">{escape(_fmt_percent(unrealized, sign=True))}</td>
-            <td class="num">{int(row.get("holding_days") or 0) or ""}</td>
+            <td class="num" title="QC in-memory holding_days counter; can reset on QC redeploy">{int(row.get("holding_days") or 0) or ""}</td>
             <td><span class="action-label {escape(str(row.get('action') or 'normal_hold'))}">{escape(str(row.get("action") or "normal_hold").replace("_", " "))}</span></td>
           </tr>
         """)
@@ -3384,7 +3444,7 @@ def _render_account_holdings_table(holdings: list[dict[str, Any]]) -> str:
               <th class="num"><button type="button" data-sort-key="return">Day Return</button></th>
               <th class="num"><button type="button" data-sort-key="contribution">Contribution</button></th>
               <th class="num"><button type="button" data-sort-key="unrealized">Unrealized PnL</button></th>
-              <th class="num"><button type="button" data-sort-key="days">Days</button></th>
+              <th class="num"><button type="button" data-sort-key="days" title="QC in-memory holding_days counter; can reset on QC redeploy">QC Days</button></th>
               <th>Action</th>
             </tr>
           </thead>
@@ -4908,6 +4968,7 @@ def _css() -> str:
     .account-nav-chart, .account-pnl-chart { display:block; width:100%; height:auto; overflow:visible; }
     .account-axis-labels text, .account-pnl-chart text { fill:#4a5f7a; font-size:8px; font-family:monospace; }
     .account-zero-line { stroke:#2a3348; stroke-width:1; }
+    .chart-hit-point { fill:transparent; pointer-events:all; }
     .contrib-bars { display:grid; gap:4px; }
     .contrib-row { display:grid; grid-template-columns:42px minmax(120px,1fr) 56px; gap:7px; align-items:center; min-width:0; }
     .contrib-row strong { color:#c8d8ec; font-size:10px; font-family:monospace; text-align:right; }

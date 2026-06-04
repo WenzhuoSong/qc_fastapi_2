@@ -59,6 +59,14 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("account-nav-chart", source)
         self.assertIn("account-pnl-chart", source)
         self.assertIn("contrib-midline", source)
+        self.assertIn("chart-hit-point", source)
+        self.assertIn("Daily PnL {_fmt_percent", source)
+        self.assertIn("QC Days", source)
+        self.assertIn("QC in-memory holding_days counter", source)
+        self.assertIn("def _latest_command_target_weights", source)
+        self.assertIn('"target_source": "account_state_snapshots target_weights, then latest execution_log command target"', source)
+        self.assertIn("factor_targets_available", source)
+        self.assertIn("target_source={escape", source)
 
     def test_displayed_dashboard_content_is_not_truncated(self):
         source = Path("dashboard/app.py").read_text()
