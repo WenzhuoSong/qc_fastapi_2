@@ -85,6 +85,8 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn("def _format_qc_lifecycle_ack_message", text)
         self.assertIn("QC_OWNERSHIP_STATUSES", text)
         self.assertIn("Accepted is not reconciled", text)
+        self.assertIn("No-op reconciled", text)
+        self.assertIn("Actual orders", text)
         self.assertIn("QC submitted orders", text)
         self.assertIn("Partial execution", text)
         self.assertIn("Reconciliation drift", text)

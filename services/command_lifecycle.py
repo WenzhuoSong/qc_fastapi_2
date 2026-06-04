@@ -384,6 +384,9 @@ def _partial_reason(order_summary: dict[str, Any], account: dict[str, Any]) -> s
 def _has_order_fill_evidence(order_summary: dict[str, Any]) -> bool:
     if not order_summary:
         return False
+    actual = _int_or_none(order_summary.get("actual_order_count"))
+    if actual == 0:
+        return False
     filled = _int_or_none(order_summary.get("filled_order_count"))
     submitted = _int_or_none(order_summary.get("submitted_order_count"))
     action_count = _int_or_none(order_summary.get("action_count"))
@@ -397,8 +400,13 @@ def _has_order_fill_evidence(order_summary: dict[str, Any]) -> bool:
 
 def _orders_submitted_evidence(order_summary: dict[str, Any], response: dict[str, Any]) -> bool:
     execution_state = str(response.get("execution_state") or "").lower().strip()
+    if execution_state == "noop_reconciled":
+        return False
     if execution_state == "orders_submitted":
         return True
+    actual = _int_or_none(order_summary.get("actual_order_count"))
+    if actual == 0:
+        return False
     submitted = _int_or_none(order_summary.get("submitted_order_count"))
     action_count = _int_or_none(order_summary.get("action_count"))
     return bool((submitted and submitted > 0) or (action_count and action_count > 0))

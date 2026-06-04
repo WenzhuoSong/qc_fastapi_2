@@ -50,6 +50,14 @@ def _format_qc_lifecycle_ack_message(command_id: str, qc_ack: dict) -> str:
     response = (qc_ack or {}).get("qc_response") if isinstance((qc_ack or {}).get("qc_response"), dict) else {}
     order_summary = response.get("order_summary") if isinstance(response.get("order_summary"), dict) else {}
     label = _command_label(command_id)
+    execution_state = str(response.get("execution_state") or "").lower().strip()
+    if execution_state == "noop_reconciled" or order_summary.get("is_noop") is True:
+        return (
+            f"✅ No-op reconciled `{label}`\n"
+            "Target matches current holdings — no orders needed.\n"
+            f"SetHoldings actions: {order_summary.get('action_count', 0)} | "
+            f"Actual orders: {order_summary.get('actual_order_count', 0)}"
+        )
     if status == "accepted":
         return (
             f"✅ QC accepted ownership `{label}`\n"

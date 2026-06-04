@@ -2424,7 +2424,9 @@ def _compact_active_execution_panel(
         "status": status,
         "qc_status": qc_status or None,
         "submitted_order_count": order_summary.get("submitted_order_count"),
+        "actual_order_count": order_summary.get("actual_order_count"),
         "filled_order_count": order_summary.get("filled_order_count"),
+        "is_noop": order_summary.get("is_noop"),
         "open_order_count": open_order_count if open_order_count is not None else order_summary.get("open_order_count_after"),
         "has_open_orders": has_open_orders,
         "started_at": _iso(started_at),
@@ -2546,7 +2548,9 @@ def _compact_lifecycle_event(row: Any) -> dict[str, Any]:
         "qc_status": payload.get("qc_status") or response.get("status"),
         "execution_state": payload.get("execution_state") or response.get("execution_state"),
         "submitted_order_count": order_summary.get("submitted_order_count"),
+        "actual_order_count": order_summary.get("actual_order_count"),
         "filled_order_count": order_summary.get("filled_order_count"),
+        "is_noop": order_summary.get("is_noop"),
         "open_order_count": order_summary.get("open_order_count_after") or order_summary.get("open_order_count"),
         "max_abs_diff": payload.get("max_abs_diff"),
         "diff_count": len(payload.get("diffs") or []) if isinstance(payload.get("diffs"), list) else None,
@@ -2628,7 +2632,9 @@ def _compact_execution_row(row: Any, *, lifecycle_status: dict[str, Any] | None 
         "execution_state": response.get("execution_state"),
         "active_command_id": response.get("active_command_id"),
         "submitted_order_count": order_summary.get("submitted_order_count"),
+        "actual_order_count": order_summary.get("actual_order_count"),
         "filled_order_count": order_summary.get("filled_order_count"),
+        "is_noop": order_summary.get("is_noop"),
         "open_order_count": order_summary.get("open_order_count_after") or order_summary.get("open_order_count"),
         "superseded_command_id": response.get("superseded_command_id"),
         "canceled_order_count": response.get("canceled_order_count"),
@@ -4074,16 +4080,16 @@ def _render_execution_control(control: dict[str, Any]) -> str:
         <article class="card"><h3>Account State Guard</h3>{_render_kv(guard, keys=["mode", "status", "allowed", "would_block", "pipeline_enforcement", "pipeline_effect_status", "execution_effect", "primary_blockers", "warnings"])}</article>
         <article class="card"><h3>Auto Pause</h3>{_render_kv(auto_pause, keys=["mode", "status", "would_pause", "should_pause", "execution_effect", "primary_trigger", "reason"])}</article>
         <article class="card"><h3>Latest Account Snapshot</h3>{_render_kv(latest_snapshot, keys=["available", "recorded_at", "account_timestamp", "source_packet_type", "contract_version", "account_status", "data_status", "policy_version", "total_value", "cash_pct", "buying_power", "open_order_count", "has_open_orders", "is_market_open", "last_command_id", "active_command_id", "active_execution_status", "processed_command_count", "holdings_count", "target_count", "explicit_account_state"])}</article>
-        <article class="card"><h3>Active Execution</h3>{_render_kv(active_execution, keys=["available", "active", "active_command_id", "status", "qc_status", "submitted_order_count", "filled_order_count", "open_order_count", "has_open_orders", "started_at", "elapsed_minutes", "latest_snapshot_at", "max_target_actual_drift", "can_ordinary_rebalance", "can_reduce_only", "execution_contract", "operator_note"])}</article>
+        <article class="card"><h3>Active Execution</h3>{_render_kv(active_execution, keys=["available", "active", "active_command_id", "status", "qc_status", "submitted_order_count", "actual_order_count", "filled_order_count", "is_noop", "open_order_count", "has_open_orders", "started_at", "elapsed_minutes", "latest_snapshot_at", "max_target_actual_drift", "can_ordinary_rebalance", "can_reduce_only", "execution_contract", "operator_note"])}</article>
         <article class="card"><h3>Deferred Execution Pressure</h3>{_render_kv(deferred, keys=["available", "open_count", "open_buy_delta", "open_sell_delta", "open_tickers"])}</article>
         <article class="card"><h3>Reconciliation Lag</h3>{_render_kv(reconciliation_lag, keys=["accepted_without_reconciled_count", "overdue_count", "pending_count", "max_age_minutes", "execution_effect"])}</article>
       </div>
       <h3>Active Execution Target vs Actual Drift</h3>{_render_table(active_execution.get("drift_rows") or [], ["ticker", "target", "actual", "diff"])}
-      <h3>Active Execution Events</h3>{_render_table(active_execution.get("recent_event_rows") or [], ["event_time", "command_id", "event_type", "event_status", "source", "reason", "execution_state", "submitted_order_count", "filled_order_count", "open_order_count", "max_abs_diff", "diff_count"])}
+      <h3>Active Execution Events</h3>{_render_table(active_execution.get("recent_event_rows") or [], ["event_time", "command_id", "event_type", "event_status", "source", "reason", "execution_state", "submitted_order_count", "actual_order_count", "filled_order_count", "is_noop", "open_order_count", "max_abs_diff", "diff_count"])}
       <h3>Account Guard Checks</h3>{_render_table(guard.get("checks") or [], ["check", "pass", "actual", "threshold", "reason"])}
       <h3>Auto Pause Triggers</h3>{_render_table(auto_pause.get("triggers") or [], ["trigger", "triggered", "value", "threshold", "severity", "details"])}
-      <h3>Recent QC Commands</h3>{_render_table(control.get("recent_commands") or [], ["executed_at", "command_id", "analysis_id", "command_type", "display_status", "lifecycle_display_status", "lifecycle_status_source", "latest_lifecycle_event", "status", "qc_status", "execution_state", "qc_ack_at", "qc_rejection_reason", "active_command_id", "submitted_order_count", "filled_order_count", "open_order_count", "superseded_command_id", "canceled_order_count", "policy_mismatch", "retry_count"])}
-      <h3>Command Lifecycle Events</h3>{_render_table(control.get("recent_command_events") or [], ["event_time", "command_id", "analysis_id", "event_type", "event_status", "source", "reason", "qc_status", "execution_state", "submitted_order_count", "filled_order_count", "open_order_count", "max_abs_diff", "diff_count", "policy_mismatch", "policy_version", "target_count", "payload_keys"])}
+      <h3>Recent QC Commands</h3>{_render_table(control.get("recent_commands") or [], ["executed_at", "command_id", "analysis_id", "command_type", "display_status", "lifecycle_display_status", "lifecycle_status_source", "latest_lifecycle_event", "status", "qc_status", "execution_state", "qc_ack_at", "qc_rejection_reason", "active_command_id", "submitted_order_count", "actual_order_count", "filled_order_count", "is_noop", "open_order_count", "superseded_command_id", "canceled_order_count", "policy_mismatch", "retry_count"])}
+      <h3>Command Lifecycle Events</h3>{_render_table(control.get("recent_command_events") or [], ["event_time", "command_id", "analysis_id", "event_type", "event_status", "source", "reason", "qc_status", "execution_state", "submitted_order_count", "actual_order_count", "filled_order_count", "is_noop", "open_order_count", "max_abs_diff", "diff_count", "policy_mismatch", "policy_version", "target_count", "payload_keys"])}
       <h3>Accepted Commands Without Reconciliation</h3>{_render_table(reconciliation_lag.get("rows") or [], ["command_id", "analysis_id", "qc_status", "accepted_at", "age_minutes", "max_age_minutes", "status", "latest_event_type", "latest_event_status", "reason"])}
       <h3>Deferred Execution Ledger</h3>{_render_table(deferred.get("recent_rows") or [], ["created_at", "updated_at", "resolved_at", "command_id", "analysis_id", "status", "side", "ticker", "original_delta", "remaining_delta", "current_weight", "desired_weight", "staged_weight", "latest_current_weight", "latest_desired_weight", "latest_staged_weight", "reason", "resolution_reason", "review_count"])}
     """

@@ -162,6 +162,29 @@ class CommandLifecycleTests(unittest.TestCase):
         self.assertEqual([event["event_type"] for event in events], ["failed_no_fill"])
         self.assertEqual(events[0]["reason"], "qc_reports_command_completed_without_fills")
 
+    def test_noop_reconciled_does_not_emit_order_events(self):
+        events = build_command_reconciliation_events(
+            command_id="cmd_1",
+            command_payload={"sent_weights": {"SPY": 0.2}},
+            qc_response={
+                "status": "accepted",
+                "execution_state": "noop_reconciled",
+                "actual_target_weights": {"SPY": 0.2},
+                "actual_holdings_weights": {"SPY": 0.2},
+                "order_summary": {
+                    "action_count": 1,
+                    "actual_order_count": 0,
+                    "submitted_order_count": 0,
+                    "filled_order_count": 0,
+                    "open_order_count_after": 0,
+                    "is_noop": True,
+                    "noop_reason": "target_matches_current",
+                },
+            },
+        )
+
+        self.assertEqual([event["event_type"] for event in events], ["reconciled"])
+
     def test_reconciliation_lag_report_flags_accepted_without_reconciled_event(self):
         report = build_reconciliation_lag_report(
             now=datetime(2026, 5, 28, 12, 45),

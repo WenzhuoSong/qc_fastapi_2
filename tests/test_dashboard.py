@@ -225,6 +225,8 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('"qc_rejection_reason": row.qc_rejection_reason', source)
         self.assertIn('"execution_state": response.get("execution_state")', source)
         self.assertIn('"submitted_order_count": order_summary.get("submitted_order_count")', source)
+        self.assertIn('"actual_order_count": order_summary.get("actual_order_count")', source)
+        self.assertIn('"is_noop": order_summary.get("is_noop")', source)
         self.assertIn('"open_order_count": order_summary.get("open_order_count_after")', source)
         self.assertIn('"event_type": row.event_type', source)
         self.assertIn('"payload_keys": sorted(payload.keys())', source)
