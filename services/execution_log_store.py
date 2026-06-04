@@ -545,6 +545,11 @@ async def summarize_today_execution_activity(now: datetime | None = None) -> dic
                 .where(ExecutionLog.executed_at >= start)
             )
         ).scalars().all()
+    return summarize_execution_activity_rows(rows)
+
+
+def summarize_execution_activity_rows(rows: list[Any]) -> dict[str, Any]:
+    """Summarize execution rows using the same daily-cap counting rules."""
     command_rows = [row for row in rows if _counts_toward_daily_command(row)]
     gross_turnover = 0.0
     for row in command_rows:

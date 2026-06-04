@@ -237,6 +237,37 @@ class ExecutionLogStoreTests(unittest.TestCase):
         self.assertFalse(execution_log_store._counts_toward_daily_command(row))
         self.assertFalse(execution_log_store._counts_toward_daily_turnover(row))
 
+    def test_daily_activity_summary_uses_cap_counting_rules(self):
+        sent = type(
+            "Row",
+            (),
+            {
+                "command_type": "weight_adjustment",
+                "status": "sent",
+                "qc_status": "reconciled",
+                "command_payload": {
+                    "command_preflight": {"metrics": {"gross_turnover": 0.12}}
+                },
+            },
+        )()
+        blocked = type(
+            "Row",
+            (),
+            {
+                "command_type": "weight_adjustment",
+                "status": "rejected",
+                "qc_status": "not_sent",
+                "command_payload": {
+                    "command_preflight": {"metrics": {"gross_turnover": 0.99}}
+                },
+            },
+        )()
+
+        summary = execution_log_store.summarize_execution_activity_rows([sent, blocked])
+
+        self.assertEqual(summary["command_count"], 1)
+        self.assertEqual(summary["gross_turnover"], 0.12)
+
     def test_record_active_execution_wait_contract_exists(self):
         text = Path("services/execution_log_store.py").read_text()
 

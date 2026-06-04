@@ -20,7 +20,11 @@ from services.execution_log_store import (
 )
 from services.execution_lifecycle import load_active_execution_command
 from services.execution_policy import policy_snapshot
-from services.execution_preflight import preflight_execution_command, preflight_execution_weights
+from services.execution_preflight import (
+    format_command_preflight_blockers,
+    preflight_execution_command,
+    preflight_execution_weights,
+)
 from services.account_state_guard import default_account_state_guard_config, load_latest_account_state_guard
 from services.policy_alignment import (
     default_manual_confirm_policy_alignment_config,
@@ -126,7 +130,7 @@ async def _cmd_confirm() -> str:
                 policy_version=policy.get("version"),
                 policy_sync_result=policy_sync,
             )
-        return f"❌ Command preflight blocked: {command_preflight.get('blockers')}"
+        return "❌ Command preflight blocked:\n" + format_command_preflight_blockers(command_preflight)
 
     result = await tool_send_weight_command({
         "weights": weights,

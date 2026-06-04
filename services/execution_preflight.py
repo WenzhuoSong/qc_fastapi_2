@@ -14,6 +14,26 @@ DEFAULT_COMMAND_PREFLIGHT_CONFIG = {
 }
 
 
+COMMAND_PREFLIGHT_BLOCKER_LABELS = {
+    "command_id_present": "missing command id",
+    "analysis_id_present": "missing analysis id",
+    "command_id_idempotent": "duplicate command id",
+    "analysis_id_not_submitted": "analysis already submitted",
+    "policy_version_present": "missing policy version",
+    "policy_alignment_confirmed": "policy alignment not confirmed",
+    "daily_command_count_ok": "daily command cap exceeded",
+    "daily_gross_turnover_ok": "daily turnover cap exceeded",
+    "buy_delta_ok": "buy delta cap exceeded",
+    "sell_delta_ok": "sell delta cap exceeded",
+}
+
+_PERCENT_CHECKS = {
+    "daily_gross_turnover_ok",
+    "buy_delta_ok",
+    "sell_delta_ok",
+}
+
+
 def preflight_execution_weights(weights: dict[str, Any]) -> dict[str, Any]:
     """Return blocking policy violations for a proposed execution payload."""
     policy = evaluate_policy(weights=weights)
@@ -125,6 +145,23 @@ async def preflight_execution_command(
     }
 
 
+def format_command_preflight_blockers(preflight_result: dict[str, Any]) -> str:
+    """Return operator-facing failed checks with actual/threshold values."""
+    blockers = list(preflight_result.get("blockers") or [])
+    checks = preflight_result.get("checks") or {}
+    if not blockers:
+        return "No failed command preflight checks."
+
+    lines: list[str] = []
+    for name in blockers:
+        check = checks.get(name) or {}
+        label = COMMAND_PREFLIGHT_BLOCKER_LABELS.get(name, str(name))
+        actual = _format_check_value(name, check.get("actual"))
+        threshold = _format_check_value(name, check.get("threshold"))
+        lines.append(f"- {label}: actual={actual}, threshold={threshold} ({name})")
+    return "\n".join(lines)
+
+
 def command_weight_delta_metrics(
     target_weights: dict[str, Any],
     current_weights: dict[str, Any] | None,
@@ -145,6 +182,19 @@ def command_weight_delta_metrics(
         "sell_delta": round(sell_delta, 6),
         "gross_turnover": round(gross / 2.0, 6),
     }
+
+
+def _format_check_value(check_name: str, value: Any) -> str:
+    if value is None:
+        return "none"
+    if check_name in _PERCENT_CHECKS:
+        try:
+            return f"{float(value) * 100:.2f}%"
+        except (TypeError, ValueError):
+            return str(value)
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    return str(value)
 
 
 def _policy_sync_ack_status(policy_sync_result: dict[str, Any] | None) -> str | None:

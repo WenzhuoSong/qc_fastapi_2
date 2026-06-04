@@ -5,6 +5,7 @@ from services.execution_preflight import (
     _policy_alignment_ok,
     _policy_sync_ack_status,
     command_weight_delta_metrics,
+    format_command_preflight_blockers,
     preflight_execution_weights,
 )
 from services.transaction_cost_gate import format_transaction_cost_gate_summary
@@ -164,6 +165,19 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertEqual(result["buy_delta"], 0.25)
         self.assertEqual(result["sell_delta"], 0.08)
         self.assertEqual(result["gross_turnover"], 0.165)
+
+    def test_command_preflight_blockers_are_operator_readable(self):
+        text = format_command_preflight_blockers({
+            "blockers": ["daily_command_count_ok", "daily_gross_turnover_ok"],
+            "checks": {
+                "daily_command_count_ok": {"actual": 3, "threshold": 3},
+                "daily_gross_turnover_ok": {"actual": 0.535, "threshold": 0.50},
+            },
+        })
+
+        self.assertIn("daily command cap exceeded: actual=3, threshold=3", text)
+        self.assertIn("daily turnover cap exceeded: actual=53.50%, threshold=50.00%", text)
+        self.assertIn("(daily_command_count_ok)", text)
 
     def test_policy_sync_success_requires_qc_ack_status(self):
         self.assertEqual(

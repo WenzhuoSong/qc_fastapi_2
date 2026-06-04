@@ -16,7 +16,11 @@ from services.execution_lifecycle import (
     load_active_execution_command,
 )
 from services.execution_policy import policy_snapshot
-from services.execution_preflight import preflight_execution_command, preflight_execution_weights
+from services.execution_preflight import (
+    format_command_preflight_blockers,
+    preflight_execution_command,
+    preflight_execution_weights,
+)
 from services.policy_alignment import policy_alignment_from_account_guard
 from services.transaction_cost_gate import format_transaction_cost_gate_summary
 
@@ -335,7 +339,7 @@ async def run_executor_async(
         await tool_send_telegram({
             "text": (
                 f"⛔ Command preflight blocked `{_command_label(command_id)}`\n"
-                f"blockers={command_preflight.get('blockers')}\n"
+                f"{format_command_preflight_blockers(command_preflight)}\n"
                 "No command sent to QC."
             )
         })
