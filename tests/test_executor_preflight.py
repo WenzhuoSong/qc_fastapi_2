@@ -79,6 +79,17 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn('"execution_status": "deduped"', text)
         self.assertIn("No command sent to QC", text)
 
+    def test_executor_budget_only_preflight_block_can_dedupe_before_blocking(self):
+        text = Path("agents/executor.py").read_text()
+        body = text[text.index("command_preflight = await preflight_execution_command") :]
+        budget_pos = body.index("budget_only_blockers = blockers")
+        dedupe_pos = body.index("same_target_dedupe = await check_recent_same_target_dedupe")
+        block_record_pos = body.index("await record_preflight_block")
+
+        self.assertLess(budget_pos, block_record_pos)
+        self.assertLess(dedupe_pos, block_record_pos)
+        self.assertIn('{"daily_command_count_ok", "daily_gross_turnover_ok"}', body)
+
     def test_executor_telegram_distinguishes_async_qc_lifecycle_states(self):
         text = Path("agents/executor.py").read_text()
 

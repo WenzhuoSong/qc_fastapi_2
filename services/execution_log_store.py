@@ -651,6 +651,8 @@ def _counts_toward_daily_command(row: Any) -> bool:
     """Count only weight commands that were actually sent or are pending/accepted."""
     if getattr(row, "command_type", None) != "weight_adjustment":
         return False
+    if _is_noop_execution(row):
+        return False
     status = str(getattr(row, "status", "") or "").lower()
     qc_status = str(getattr(row, "qc_status", "") or "").lower()
     if qc_status in {"not_sent", "rejected", "timeout_no_execution_confirmed"}:
@@ -682,6 +684,21 @@ def _counts_toward_daily_turnover(row: Any) -> bool:
         "reconciliation_drift",
         "timeout_no_ack",
     }
+
+
+def _is_noop_execution(row: Any) -> bool:
+    response = getattr(row, "qc_response", None) or {}
+    if not isinstance(response, dict):
+        return False
+    summary = response.get("order_summary") if isinstance(response.get("order_summary"), dict) else {}
+    execution_state = str(response.get("execution_state") or summary.get("execution_state") or "").lower().strip()
+    if execution_state == "noop_reconciled" or summary.get("is_noop") is True:
+        return True
+    try:
+        actual_order_count = int(summary.get("actual_order_count"))
+    except (TypeError, ValueError):
+        actual_order_count = None
+    return actual_order_count == 0 and execution_state == "noop_reconciled"
 
 
 async def mark_timeout(command_id: str) -> None:

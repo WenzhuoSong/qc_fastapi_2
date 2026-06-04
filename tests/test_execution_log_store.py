@@ -237,6 +237,30 @@ class ExecutionLogStoreTests(unittest.TestCase):
         self.assertFalse(execution_log_store._counts_toward_daily_command(row))
         self.assertFalse(execution_log_store._counts_toward_daily_turnover(row))
 
+    def test_noop_reconciled_does_not_count_toward_daily_caps(self):
+        row = type(
+            "Row",
+            (),
+            {
+                "command_type": "weight_adjustment",
+                "status": "sent",
+                "qc_status": "reconciled",
+                "qc_response": {
+                    "execution_state": "noop_reconciled",
+                    "order_summary": {
+                        "action_count": 11,
+                        "actual_order_count": 0,
+                        "submitted_order_count": 0,
+                        "filled_order_count": 0,
+                        "is_noop": True,
+                    },
+                },
+            },
+        )()
+
+        self.assertFalse(execution_log_store._counts_toward_daily_command(row))
+        self.assertFalse(execution_log_store._counts_toward_daily_turnover(row))
+
     def test_daily_activity_summary_uses_cap_counting_rules(self):
         sent = type(
             "Row",
