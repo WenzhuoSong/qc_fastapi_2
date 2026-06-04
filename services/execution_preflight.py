@@ -8,10 +8,10 @@ from services.execution_policy import evaluate_policy
 
 
 DEFAULT_COMMAND_PREFLIGHT_CONFIG = {
-    "max_daily_commands": 3,
-    "max_gross_turnover_per_day": 0.50,
-    "risk_reduce_reserved_commands": 1,
-    "risk_reduce_gross_turnover_per_day": 0.05,
+    "max_daily_commands": 12,
+    "max_gross_turnover_per_day": 1.50,
+    "risk_reduce_reserved_commands": 4,
+    "risk_reduce_gross_turnover_per_day": 0.25,
     "max_buy_delta": 0.15,
     "max_sell_delta": 0.20,
     "recent_same_target_dedupe_minutes": 5,

@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 
 from services.execution_preflight import (
+    DEFAULT_COMMAND_PREFLIGHT_CONFIG,
     _command_class_from_metrics,
     _command_config,
     _daily_command_limit,
@@ -17,6 +18,25 @@ from services.transaction_cost_gate import format_transaction_cost_gate_summary
 
 
 class ExecutorPreflightTests(unittest.TestCase):
+    def test_default_execution_command_limits_are_widened_for_live_calibration(self):
+        self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["max_daily_commands"], 12)
+        self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["max_gross_turnover_per_day"], 1.50)
+        self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["risk_reduce_reserved_commands"], 4)
+        self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["risk_reduce_gross_turnover_per_day"], 0.25)
+        self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["max_buy_delta"], 0.15)
+        self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["max_sell_delta"], 0.20)
+
+    def test_config_migration_relaxes_production_execution_command_limits(self):
+        sql = Path("db/migrations/20260605_relax_execution_command_canary_limits.sql").read_text()
+
+        self.assertIn('"max_daily_commands": 12', sql)
+        self.assertIn('"max_gross_turnover_per_day": 1.50', sql)
+        self.assertIn('"risk_reduce_reserved_commands": 4', sql)
+        self.assertIn('"risk_reduce_gross_turnover_per_day": 0.25', sql)
+        self.assertIn("ON CONFLICT (key) DO UPDATE", sql)
+        self.assertIn("max_buy_delta", sql)
+        self.assertIn("max_sell_delta", sql)
+
     def test_blocks_unknown_positive_weight(self):
         result = preflight_execution_weights({"COMPLETELY_UNKNOWN": 0.01, "CASH": 0.99})
 
