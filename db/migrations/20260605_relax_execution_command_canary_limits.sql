@@ -24,7 +24,7 @@ VALUES (
       "recent_same_target_dedupe_tolerance": 0.005
     }'::jsonb,
     now(),
-    'migration_20260605_relax_execution_command_canary_limits'
+    'migration_20260605_exec_limits'
 )
 ON CONFLICT (key) DO UPDATE
 SET
@@ -38,4 +38,4 @@ SET
           "recent_same_target_dedupe_tolerance": 0.005
         }'::jsonb,
     updated_at = now(),
-    updated_by = 'migration_20260605_relax_execution_command_canary_limits';
+    updated_by = 'migration_20260605_exec_limits';
