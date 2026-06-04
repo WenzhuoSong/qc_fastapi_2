@@ -38,7 +38,9 @@ from db.models import (
     DeferredExecutionLedger,
     CronRunLog,
     ExecutionLog,
+    HoldingsFactor,
     PerformanceAttribution,
+    PortfolioTimeseries,
     QCSnapshot,
     SystemConfig,
 )
@@ -143,11 +145,13 @@ async def build_dashboard_summary() -> dict[str, Any]:
     data_quality_audit = await _data_quality_audit_trend()
     execution = await _latest_execution()
     execution_control = await _execution_control_status(latest_analysis)
+    account_holdings = await _account_holdings_dashboard(latest_analysis)
     replay = await _replay_diagnostics()
     return {
         "generated_at": datetime.utcnow().isoformat(),
         "ops": ops,
         "latest_analysis": latest_analysis,
+        "account_holdings": account_holdings,
         "portfolio_construction_objective": pc_objective,
         "portfolio_construction_readiness": pc_readiness,
         "strategy_evidence": strategy_evidence,
@@ -180,6 +184,249 @@ def _weight_source_contract_dashboard() -> dict[str, Any]:
         "labels": dashboard_weight_source_labels(),
         "execution_authority": "display_contract_only",
     }
+
+
+async def _account_holdings_dashboard(latest_analysis: dict[str, Any]) -> dict[str, Any]:
+    async with AsyncSessionLocal() as db:
+        latest_account = (
+            await db.execute(
+                select(AccountStateSnapshot)
+                .order_by(desc(AccountStateSnapshot.recorded_at), desc(AccountStateSnapshot.id))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        portfolio_rows = (
+            await db.execute(
+                select(PortfolioTimeseries)
+                .order_by(desc(PortfolioTimeseries.recorded_at), desc(PortfolioTimeseries.id))
+                .limit(30)
+            )
+        ).scalars().all()
+        factor_snapshot_id = (
+            await db.execute(
+                select(HoldingsFactor.snapshot_id)
+                .order_by(desc(HoldingsFactor.recorded_at), desc(HoldingsFactor.id))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        factor_rows = []
+        if factor_snapshot_id is not None:
+            factor_rows = (
+                await db.execute(
+                    select(HoldingsFactor)
+                    .where(HoldingsFactor.snapshot_id == factor_snapshot_id)
+                    .order_by(HoldingsFactor.ticker)
+                )
+            ).scalars().all()
+
+    portfolio_series = [_compact_portfolio_timeseries_row(row) for row in reversed(portfolio_rows)]
+    latest_portfolio = portfolio_series[-1] if portfolio_series else {}
+    holdings = _account_holdings_rows(
+        latest_account=latest_account,
+        factor_rows=factor_rows,
+        latest_analysis=latest_analysis,
+    )
+    account = _account_overview_from_rows(
+        latest_account=latest_account,
+        latest_portfolio=latest_portfolio,
+        portfolio_series=portfolio_series,
+        holdings=holdings,
+    )
+    return {
+        "available": bool(latest_account or portfolio_series or holdings),
+        "account": account,
+        "nav_series": portfolio_series,
+        "pnl_series": portfolio_series,
+        "holdings": holdings,
+        "signals": _account_key_signals(holdings),
+        "contract": {
+            "truth_source": "latest account_state_snapshots holdings_weights",
+            "return_source": "latest holdings_factors daily_return_pct",
+            "contribution_formula": "contribution_pct = weight_current * daily_return_pct * 100",
+            "sorting": "client-side by table data-sort-key",
+        },
+    }
+
+
+def _compact_portfolio_timeseries_row(row: PortfolioTimeseries) -> dict[str, Any]:
+    return {
+        "recorded_at": _iso(row.recorded_at),
+        "date_label": row.recorded_at.strftime("%m-%d") if row.recorded_at else "",
+        "total_value": _json_safe_number(row.total_value),
+        "cash_pct": _ratio_decimal(row.cash_pct),
+        "daily_pnl_pct": _ratio_decimal(row.daily_pnl_pct),
+        "current_drawdown_pct": _ratio_decimal(row.current_drawdown_pct),
+        "regime_label": row.regime_label,
+        "vix": _json_safe_number(row.vix),
+    }
+
+
+def _account_holdings_rows(
+    *,
+    latest_account: AccountStateSnapshot | None,
+    factor_rows: list[HoldingsFactor],
+    latest_analysis: dict[str, Any],
+) -> list[dict[str, Any]]:
+    factors = {str(row.ticker or "").upper(): row for row in factor_rows if row.ticker}
+    account_holdings = _weight_map_from_snapshot(getattr(latest_account, "holdings_weights", None))
+    account_targets = _weight_map_from_snapshot(getattr(latest_account, "target_weights", None))
+    action_map = _governance_action_by_ticker(latest_analysis)
+    tickers = set(factors) | set(account_holdings) | set(account_targets)
+    cash_current = _ratio_decimal(getattr(latest_account, "cash_pct", None))
+    if cash_current is not None:
+        tickers.add("CASH")
+        account_holdings.setdefault("CASH", cash_current)
+    if "CASH" not in account_targets:
+        target_cash = 1.0 - sum(value for ticker, value in account_targets.items() if ticker != "CASH")
+        if target_cash >= 0:
+            account_targets["CASH"] = target_cash
+
+    rows: list[dict[str, Any]] = []
+    for ticker in sorted(tickers):
+        factor = factors.get(ticker)
+        role = "cash" if ticker == "CASH" else (getattr(factor, "universe_role", None) or "unknown")
+        current = account_holdings.get(ticker)
+        if current is None and factor is not None:
+            current = _ratio_decimal(getattr(factor, "weight_current", None))
+        target = account_targets.get(ticker)
+        if target is None and factor is not None:
+            target = _ratio_decimal(getattr(factor, "weight_target", None))
+        current = float(current or 0.0)
+        target = float(target or 0.0)
+        if ticker != "CASH" and abs(current) < 0.00001 and abs(target) < 0.00001:
+            continue
+        daily_return = _ratio_decimal(getattr(factor, "daily_return_pct", None)) if factor is not None else 0.0
+        unrealized = _ratio_decimal(getattr(factor, "unrealized_pnl_pct", None)) if factor is not None else 0.0
+        contribution = current * float(daily_return or 0.0) * 100.0
+        drift = _ratio_decimal(getattr(factor, "weight_drift", None)) if factor is not None else current - target
+        rows.append({
+            "ticker": ticker,
+            "role": role,
+            "weight_current": round(current * 100.0, 4),
+            "weight_target": round(target * 100.0, 4),
+            "weight_drift": round(float(drift or 0.0) * 100.0, 4),
+            "daily_return_pct": round(float(daily_return or 0.0) * 100.0, 4),
+            "contribution_pct": round(contribution, 6),
+            "unrealized_pnl_pct": round(float(unrealized or 0.0) * 100.0, 4),
+            "holding_days": int(getattr(factor, "holding_days", None) or 0),
+            "action": action_map.get(ticker, "normal_hold"),
+            "price": _json_safe_number(getattr(factor, "price", None)) if factor is not None else None,
+            "recorded_at": _iso(getattr(factor, "recorded_at", None)) if factor is not None else None,
+        })
+    return sorted(rows, key=lambda row: (-float(row.get("contribution_pct") or 0.0), str(row.get("ticker") or "")))
+
+
+def _account_overview_from_rows(
+    *,
+    latest_account: AccountStateSnapshot | None,
+    latest_portfolio: dict[str, Any],
+    portfolio_series: list[dict[str, Any]],
+    holdings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    total_value = _json_safe_number(getattr(latest_account, "total_value", None))
+    if total_value is None:
+        total_value = latest_portfolio.get("total_value")
+    cash_pct = _ratio_decimal(getattr(latest_account, "cash_pct", None))
+    if cash_pct is None:
+        cash_pct = latest_portfolio.get("cash_pct")
+    snapshot_age = _age_minutes(getattr(latest_account, "recorded_at", None))
+    return {
+        "nav": total_value,
+        "cash_pct": round(float(cash_pct or 0.0) * 100.0, 4),
+        "daily_pnl_pct": _series_latest_pct(latest_portfolio, "daily_pnl_pct"),
+        "week_pnl_pct": _series_window_return_pct(portfolio_series, 5),
+        "month_pnl_pct": _series_window_return_pct(portfolio_series, 22),
+        "drawdown_pct": _series_latest_pct(latest_portfolio, "current_drawdown_pct"),
+        "open_orders": int(getattr(latest_account, "open_order_count", None) or 0),
+        "snapshot_age_min": snapshot_age,
+        "source_packet_type": getattr(latest_account, "source_packet_type", None),
+        "last_command_id": getattr(latest_account, "last_command_id", None),
+        "holding_count": len([row for row in holdings if row.get("ticker") != "CASH"]),
+        "total_contribution_pct": round(sum(float(row.get("contribution_pct") or 0.0) for row in holdings), 6),
+    }
+
+
+def _account_key_signals(holdings: list[dict[str, Any]]) -> dict[str, Any]:
+    non_cash = [row for row in holdings if row.get("ticker") != "CASH"]
+    positives = [row for row in non_cash if float(row.get("contribution_pct") or 0.0) > 0]
+    negatives = [row for row in non_cash if float(row.get("contribution_pct") or 0.0) < 0]
+    return {
+        "top_contributor": max(positives, key=lambda row: float(row.get("contribution_pct") or 0.0), default=None),
+        "top_dragger": min(negatives, key=lambda row: float(row.get("contribution_pct") or 0.0), default=None),
+        "largest_drift": max(non_cash, key=lambda row: abs(float(row.get("weight_drift") or 0.0)), default=None),
+        "longest_hold": max(non_cash, key=lambda row: int(row.get("holding_days") or 0), default=None),
+        "contributor_count": len(positives),
+        "dragger_count": len(negatives),
+    }
+
+
+def _governance_action_by_ticker(latest_analysis: dict[str, Any]) -> dict[str, str]:
+    governance = latest_analysis.get("position_governance") or {}
+    rows = governance.get("position_explanations") or []
+    out: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or "").upper().strip()
+        if not ticker:
+            continue
+        action = (
+            row.get("position_state")
+            or row.get("decision")
+            or row.get("action_permission")
+            or row.get("strategy_intent")
+            or "normal_hold"
+        )
+        out[ticker] = str(action).lower().replace(" ", "_")
+    return out
+
+
+def _weight_map_from_snapshot(raw: Any) -> dict[str, float]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for key, value in raw.items():
+        ticker = str(key or "").upper().strip()
+        ratio = _ratio_decimal(value)
+        if ticker and ratio is not None:
+            out[ticker] = ratio
+    return out
+
+
+def _ratio_decimal(value: Any) -> float | None:
+    number = _json_safe_number(value)
+    if number is None:
+        return None
+    if abs(number) > 1.5:
+        return number / 100.0
+    return number
+
+
+def _age_minutes(value: Any) -> float | None:
+    if not hasattr(value, "replace"):
+        return None
+    try:
+        return round(max((datetime.utcnow() - value).total_seconds(), 0.0) / 60.0, 2)
+    except TypeError:
+        return None
+
+
+def _series_latest_pct(row: dict[str, Any], key: str) -> float | None:
+    value = row.get(key)
+    if value is None:
+        return None
+    return round(float(value) * 100.0, 4)
+
+
+def _series_window_return_pct(rows: list[dict[str, Any]], lookback_rows: int) -> float | None:
+    if len(rows) < 2:
+        return None
+    window = rows[-lookback_rows:] if len(rows) >= lookback_rows else rows
+    first = _json_safe_number(window[0].get("total_value"))
+    last = _json_safe_number(window[-1].get("total_value"))
+    if not first or last is None:
+        return None
+    return round((last / first - 1.0) * 100.0, 4)
 
 
 async def _latest_analysis() -> dict[str, Any]:
@@ -2842,7 +3089,7 @@ def render_dashboard(summary: dict[str, Any]) -> str:
   {_render_top_status_bar(summary)}
   <nav class="quick-nav" aria-label="Dashboard sections">
     <a href="#overview">Overview</a>
-    <a href="#account-window">Account</a>
+    <a href="#account-holdings">Account</a>
     <a href="#system-window">System</a>
     <a href="#actions-window">Actions</a>
     <a href="#data-window">Data</a>
@@ -2866,6 +3113,8 @@ def render_dashboard(summary: dict[str, Any]) -> str:
       {_render_operator_windows(summary)}
     </section>
 
+    {_render_account_holdings_panel(summary.get("account_holdings") or {})}
+
     <section id="operational-health" class="panel">
       <div class="section-heading">
         <h2>Operational Health</h2>
@@ -2886,9 +3135,337 @@ def render_dashboard(summary: dict[str, Any]) -> str:
 
     {section_html}
   </main>
+  <script>{_account_holdings_js()}</script>
 </body>
 </html>"""
     return html
+
+
+def _render_account_holdings_panel(data: dict[str, Any]) -> str:
+    if not data.get("available"):
+        return """
+        <section id="account-holdings" class="panel account-holdings-panel">
+          <div class="section-heading">
+            <h2>Account And Holdings</h2>
+            <p>No account holdings data is available yet.</p>
+          </div>
+        </section>
+        """
+    account = data.get("account") or {}
+    holdings = data.get("holdings") or []
+    signals = data.get("signals") or {}
+    contract = data.get("contract") or {}
+    return f"""
+    <section id="account-holdings" class="panel account-holdings-panel">
+      <div class="section-heading">
+        <h2>Account And Holdings</h2>
+        <p>Account truth, daily contribution, drift, and per-position return monitoring.</p>
+      </div>
+      <div class="account-top-strip">
+        {_render_account_stat("NAV", _format_money_like(account.get("nav")), "neutral")}
+        {_render_account_stat("Cash", _fmt_percent(account.get("cash_pct")), "neutral")}
+        {_render_account_stat("Day PnL", _fmt_percent(account.get("daily_pnl_pct"), sign=True), _value_tone(account.get("daily_pnl_pct")))}
+        {_render_account_stat("Week PnL", _fmt_percent(account.get("week_pnl_pct"), sign=True), _value_tone(account.get("week_pnl_pct")))}
+        {_render_account_stat("Month PnL", _fmt_percent(account.get("month_pnl_pct"), sign=True), _value_tone(account.get("month_pnl_pct")))}
+        {_render_account_stat("Drawdown", _fmt_percent(account.get("drawdown_pct"), sign=True), "warn" if abs(float(account.get("drawdown_pct") or 0.0)) > 5 else "neutral")}
+        {_render_account_stat("Open Orders", account.get("open_orders"), "ok" if int(account.get("open_orders") or 0) == 0 else "warn")}
+        {_render_account_stat("Snapshot Age", _fmt_minutes(account.get("snapshot_age_min")), "ok" if (account.get("snapshot_age_min") or 999) < 5 else "warn")}
+      </div>
+      <div class="account-chart-grid">
+        <article class="account-card account-nav-card">
+          <div class="account-card-title"><h3>NAV</h3><span>{escape(str(account.get("source_packet_type") or ""))}</span></div>
+          {_render_account_nav_chart(data.get("nav_series") or [])}
+        </article>
+        <article class="account-card">
+          <div class="account-card-title"><h3>Daily PnL</h3><span>{_fmt_percent(account.get("daily_pnl_pct"), sign=True)}</span></div>
+          {_render_account_pnl_bars(data.get("pnl_series") or [])}
+        </article>
+        <article class="account-card">
+          <div class="account-card-title"><h3>Contribution Today</h3><span>w x ret</span></div>
+          {_render_contribution_bars(holdings)}
+        </article>
+      </div>
+      {_render_account_key_signal_cards(signals)}
+      <article class="account-card holdings-table-card">
+        <div class="account-card-title">
+          <h3>Holdings</h3>
+          <span>{int(account.get("holding_count") or 0)} positions | total contribution {_fmt_percent(account.get("total_contribution_pct"), sign=True, digits=3)}</span>
+        </div>
+        {_render_holdings_sort_controls()}
+        {_render_account_holdings_table(holdings)}
+        <p class="account-contract-note">
+          Contribution = weight_current * daily_return_pct * 100. Truth source: {escape(str(contract.get("truth_source") or ""))}; return source: {escape(str(contract.get("return_source") or ""))}.
+        </p>
+      </article>
+    </section>
+    """
+
+
+def _render_account_stat(label: str, value: Any, tone: str) -> str:
+    return f"""
+      <div class="account-stat {escape(str(tone or 'neutral'))}">
+        <span>{escape(str(label))}</span>
+        <strong>{escape(_format_value(value))}</strong>
+      </div>
+    """
+
+
+def _render_account_nav_chart(rows: list[dict[str, Any]]) -> str:
+    clean = [row for row in rows if _json_safe_number(row.get("total_value")) is not None]
+    if len(clean) < 2:
+        return "<p class=\"muted\">No NAV series yet.</p>"
+    width, height = 640, 96
+    values = [float(row["total_value"]) for row in clean]
+    low = min(values)
+    high = max(values)
+    pad = max((high - low) * 0.12, 1.0)
+    low -= pad
+    high += pad
+    span = max(high - low, 1.0)
+
+    def x_pos(idx: int) -> float:
+        return 14 + idx / max(len(clean) - 1, 1) * (width - 28)
+
+    def y_pos(value: float) -> float:
+        return height - 10 - (value - low) / span * (height - 20)
+
+    points = " ".join(f"{x_pos(idx):.2f},{y_pos(value):.2f}" for idx, value in enumerate(values))
+    area = f"{points} {x_pos(len(values)-1):.2f},{height:.2f} 14,{height:.2f}"
+    stroke = "#22d3a0" if values[-1] >= values[0] else "#f04a5a"
+    labels = "".join(
+        f"<text x=\"{x_pos(idx):.2f}\" y=\"{height + 14}\" text-anchor=\"middle\">{escape(str(row.get('date_label') or '')[-2:])}</text>"
+        for idx, row in enumerate(clean)
+    )
+    return f"""
+      <svg class="account-nav-chart" viewBox="0 0 {width} {height + 18}" role="img" aria-label="NAV line chart">
+        <polygon points="{area}" fill="{stroke}20"></polygon>
+        <polyline points="{points}" fill="none" stroke="{stroke}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"></polyline>
+        <circle cx="{x_pos(len(values)-1):.2f}" cy="{y_pos(values[-1]):.2f}" r="3.5" fill="{stroke}"></circle>
+        <g class="account-axis-labels">{labels}</g>
+      </svg>
+    """
+
+
+def _render_account_pnl_bars(rows: list[dict[str, Any]]) -> str:
+    clean = [row for row in rows if _json_safe_number(row.get("daily_pnl_pct")) is not None]
+    if not clean:
+        return "<p class=\"muted\">No daily PnL series yet.</p>"
+    width, height = 420, 76
+    max_abs = max([abs(float(row.get("daily_pnl_pct") or 0.0) * 100.0) for row in clean] + [0.1])
+    bar_gap = 4
+    bar_width = max((width - 24) / max(len(clean), 1) - bar_gap, 3)
+    mid = height / 2
+    bars = []
+    for idx, row in enumerate(clean):
+        value = float(row.get("daily_pnl_pct") or 0.0) * 100.0
+        bar_height = abs(value) / max_abs * (mid - 5)
+        x = 12 + idx * (bar_width + bar_gap)
+        y = mid - bar_height if value >= 0 else mid
+        color = "#22d3a0" if value >= 0 else "#f04a5a"
+        bars.append(
+            f"<rect x=\"{x:.2f}\" y=\"{y:.2f}\" width=\"{bar_width:.2f}\" height=\"{max(bar_height, 1):.2f}\" rx=\"2\" fill=\"{color}cc\"></rect>"
+        )
+        bars.append(
+            f"<text x=\"{x + bar_width / 2:.2f}\" y=\"{height + 14}\" text-anchor=\"middle\">{escape(str(row.get('date_label') or '')[-2:])}</text>"
+        )
+    return f"""
+      <svg class="account-pnl-chart" viewBox="0 0 {width} {height + 18}" role="img" aria-label="Daily PnL bar chart">
+        <line x1="12" y1="{mid:.2f}" x2="{width - 12}" y2="{mid:.2f}" class="account-zero-line"></line>
+        {''.join(bars)}
+      </svg>
+    """
+
+
+def _render_contribution_bars(holdings: list[dict[str, Any]]) -> str:
+    rows = [row for row in holdings if row.get("ticker") != "CASH"]
+    if not rows:
+        return "<p class=\"muted\">No holdings contribution rows yet.</p>"
+    max_abs = max([abs(float(row.get("contribution_pct") or 0.0)) for row in rows] + [0.001])
+    rendered = []
+    for row in rows:
+        contribution = float(row.get("contribution_pct") or 0.0)
+        width = min(abs(contribution) / max_abs * 42.0, 42.0)
+        is_positive = contribution >= 0
+        left = 50.0 if is_positive else 50.0 - width
+        rendered.append(f"""
+          <div class="contrib-row">
+            <strong>{escape(str(row.get("ticker") or ""))}</strong>
+            <div class="contrib-track">
+              <span class="contrib-midline"></span>
+              <span class="contrib-bar {'positive' if is_positive else 'negative'}" style="left:{left:.3f}%;width:{width:.3f}%"></span>
+            </div>
+            <em class="{'positive' if is_positive else 'negative'}">{escape(_fmt_percent(contribution, sign=True, digits=3))}</em>
+          </div>
+        """)
+    return f"<div class=\"contrib-bars\">{''.join(rendered)}</div>"
+
+
+def _render_account_key_signal_cards(signals: dict[str, Any]) -> str:
+    cards = [
+        ("Top Contributor", signals.get("top_contributor"), "contribution_pct", "ok"),
+        ("Top Dragger", signals.get("top_dragger"), "contribution_pct", "bad"),
+        ("Largest Drift", signals.get("largest_drift"), "weight_drift", "warn"),
+        ("Longest Hold", signals.get("longest_hold"), "holding_days", "info"),
+    ]
+    out = []
+    for label, row, key, tone in cards:
+        ticker = (row or {}).get("ticker") if isinstance(row, dict) else None
+        raw = (row or {}).get(key) if isinstance(row, dict) else None
+        if key == "holding_days":
+            detail = f"{int(raw or 0)} days" if ticker else "n/a"
+        else:
+            detail = _fmt_percent(raw, sign=True, digits=3 if key == "contribution_pct" else 1) if ticker else "n/a"
+        out.append(f"""
+          <article class="account-signal-card {tone}">
+            <span>{escape(label)}</span>
+            <strong>{escape(str(ticker or 'None'))}</strong>
+            <em>{escape(detail)}</em>
+          </article>
+        """)
+    return f"<div class=\"account-signal-grid\">{''.join(out)}</div>"
+
+
+def _render_holdings_sort_controls() -> str:
+    controls = [
+        ("contribution", "Contribution"),
+        ("weight", "Weight"),
+        ("drift", "Drift"),
+        ("return", "Day Return"),
+        ("unrealized", "Unrealized PnL"),
+        ("days", "Hold Days"),
+    ]
+    buttons = "".join(
+        f"<button type=\"button\" data-sort-key=\"{escape(key)}\">{escape(label)}</button>"
+        for key, label in controls
+    )
+    return f"<div class=\"holdings-sort-controls\"><span>Sort by</span>{buttons}</div>"
+
+
+def _render_account_holdings_table(holdings: list[dict[str, Any]]) -> str:
+    if not holdings:
+        return "<p class=\"muted\">No holdings rows.</p>"
+    rows = []
+    for row in holdings:
+        contribution = float(row.get("contribution_pct") or 0.0)
+        daily_return = float(row.get("daily_return_pct") or 0.0)
+        unrealized = float(row.get("unrealized_pnl_pct") or 0.0)
+        drift = float(row.get("weight_drift") or 0.0)
+        rows.append(f"""
+          <tr data-holding-row
+              data-sort-contribution="{contribution:.8f}"
+              data-sort-weight="{float(row.get('weight_current') or 0.0):.8f}"
+              data-sort-target="{float(row.get('weight_target') or 0.0):.8f}"
+              data-sort-drift="{drift:.8f}"
+              data-sort-return="{daily_return:.8f}"
+              data-sort-unrealized="{unrealized:.8f}"
+              data-sort-days="{int(row.get('holding_days') or 0)}">
+            <td><span class="role-chip {escape(str(row.get('role') or 'unknown'))}"></span><strong>{escape(str(row.get("ticker") or ""))}</strong></td>
+            <td>{escape(str(row.get("role") or ""))}</td>
+            <td class="num">{escape(_fmt_percent(row.get("weight_current")))}</td>
+            <td class="num muted-cell">{escape(_fmt_percent(row.get("weight_target")))}</td>
+            <td class="num {escape(_value_tone_abs(drift, 0.5))}">{escape(_fmt_percent(drift, sign=True))}</td>
+            <td class="num {escape(_value_tone(daily_return))}">{escape(_fmt_percent(daily_return, sign=True))}</td>
+            <td class="num {escape(_value_tone(contribution))}">{escape(_fmt_percent(contribution, sign=True, digits=3))}</td>
+            <td class="num {escape(_value_tone(unrealized))}">{escape(_fmt_percent(unrealized, sign=True))}</td>
+            <td class="num">{int(row.get("holding_days") or 0) or ""}</td>
+            <td><span class="action-label {escape(str(row.get('action') or 'normal_hold'))}">{escape(str(row.get("action") or "normal_hold").replace("_", " "))}</span></td>
+          </tr>
+        """)
+    return f"""
+      <div class="account-table-wrap">
+        <table id="account-holdings-table" class="account-holdings-table">
+          <thead>
+            <tr>
+              <th><button type="button" data-sort-key="ticker">Ticker</button></th>
+              <th><button type="button" data-sort-key="role">Role</button></th>
+              <th class="num"><button type="button" data-sort-key="weight">Weight</button></th>
+              <th class="num"><button type="button" data-sort-key="target">Target</button></th>
+              <th class="num"><button type="button" data-sort-key="drift">Drift</button></th>
+              <th class="num"><button type="button" data-sort-key="return">Day Return</button></th>
+              <th class="num"><button type="button" data-sort-key="contribution">Contribution</button></th>
+              <th class="num"><button type="button" data-sort-key="unrealized">Unrealized PnL</button></th>
+              <th class="num"><button type="button" data-sort-key="days">Days</button></th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
+    """
+
+
+def _fmt_percent(value: Any, *, sign: bool = False, digits: int = 1) -> str:
+    number = _json_safe_number(value)
+    if number is None:
+        return "n/a"
+    prefix = "+" if sign and number > 0 else ""
+    return f"{prefix}{number:.{digits}f}%"
+
+
+def _fmt_minutes(value: Any) -> str:
+    number = _json_safe_number(value)
+    if number is None:
+        return "n/a"
+    return f"{number:.1f}m"
+
+
+def _value_tone(value: Any) -> str:
+    number = _json_safe_number(value) or 0.0
+    if number > 0:
+        return "positive"
+    if number < 0:
+        return "negative"
+    return "neutral"
+
+
+def _value_tone_abs(value: Any, threshold: float) -> str:
+    number = abs(_json_safe_number(value) or 0.0)
+    if number >= threshold:
+        return "warning"
+    return "neutral"
+
+
+def _account_holdings_js() -> str:
+    return """
+    (function () {
+      const table = document.getElementById("account-holdings-table");
+      if (!table) return;
+      const state = { key: "", dir: "desc" };
+      function valueFor(row, key) {
+        if (key === "ticker") return row.cells[0].innerText.trim();
+        if (key === "role") return row.cells[1].innerText.trim();
+        const raw = row.getAttribute("data-sort-" + key);
+        const number = Number(raw);
+        return Number.isFinite(number) ? number : raw;
+      }
+      function sortRows(key) {
+        state.dir = state.key === key && state.dir === "desc" ? "asc" : "desc";
+        state.key = key;
+        const tbody = table.tBodies[0];
+        const rows = Array.from(tbody.querySelectorAll("[data-holding-row]"));
+        rows.sort(function (a, b) {
+          const av = valueFor(a, key);
+          const bv = valueFor(b, key);
+          if (typeof av === "string" || typeof bv === "string") {
+            return state.dir === "desc"
+              ? String(bv).localeCompare(String(av))
+              : String(av).localeCompare(String(bv));
+          }
+          return state.dir === "desc" ? bv - av : av - bv;
+        });
+        rows.forEach(function (row) { tbody.appendChild(row); });
+        document.querySelectorAll("[data-sort-key]").forEach(function (button) {
+          button.classList.toggle("active", button.getAttribute("data-sort-key") === key);
+        });
+      }
+      document.querySelectorAll("[data-sort-key]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          sortRows(button.getAttribute("data-sort-key"));
+        });
+      });
+      sortRows("contribution");
+    })();
+    """
 
 
 def _render_dashboard_section(section_id: str, title: str, content: str, *, open_by_default: bool = False) -> str:
@@ -4311,4 +4888,72 @@ def _css() -> str:
     .stack-bar em { color:#64748b; font-size:9px; font-style:normal; max-width:44px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .legend { display:flex; align-items:center; gap:8px; margin-top:7px; color:#64748b; font-size:10px; }
     .legend span { width:8px; height:8px; border-radius:2px; display:inline-block; }
+    .account-holdings-panel { display:grid; gap:14px; background:#07090f; color:#c8d8ec; border-color:#1e2535; }
+    .account-holdings-panel .section-heading { margin-bottom:0; }
+    .account-holdings-panel .section-heading h2 { color:#e8f2ff; }
+    .account-holdings-panel .section-heading p { color:#6b7e9a; }
+    .account-top-strip { display:grid; grid-template-columns:repeat(8,minmax(0,1fr)); gap:0; border:1px solid #1e2535; border-radius:8px; background:#0c1018; overflow:hidden; }
+    .account-stat { min-width:0; padding:12px 14px; border-right:1px solid #1e2535; }
+    .account-stat:last-child { border-right:0; }
+    .account-stat span { display:block; color:#4a5f7a; font-size:9px; font-weight:800; text-transform:uppercase; letter-spacing:.07em; }
+    .account-stat strong { display:block; margin-top:3px; color:#c8d8ec; font-size:15px; font-weight:800; font-variant-numeric:tabular-nums; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .account-stat.ok strong, .account-stat.positive strong { color:#22d3a0; }
+    .account-stat.warn strong, .account-stat.warning strong { color:#f5c842; }
+    .account-stat.negative strong { color:#f04a5a; }
+    .account-chart-grid { display:grid; grid-template-columns:minmax(320px,1.55fr) minmax(260px,1fr) minmax(280px,1fr); gap:14px; }
+    .account-card { min-width:0; border:1px solid #1e2535; border-radius:8px; padding:15px; background:#0c1018; }
+    .account-card-title { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+    .account-card-title h3 { margin:0; color:#8fa3c0; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.08em; }
+    .account-card-title span { color:#4a5f7a; font-size:10px; font-family:monospace; white-space:nowrap; }
+    .account-nav-chart, .account-pnl-chart { display:block; width:100%; height:auto; overflow:visible; }
+    .account-axis-labels text, .account-pnl-chart text { fill:#4a5f7a; font-size:8px; font-family:monospace; }
+    .account-zero-line { stroke:#2a3348; stroke-width:1; }
+    .contrib-bars { display:grid; gap:4px; }
+    .contrib-row { display:grid; grid-template-columns:42px minmax(120px,1fr) 56px; gap:7px; align-items:center; min-width:0; }
+    .contrib-row strong { color:#c8d8ec; font-size:10px; font-family:monospace; text-align:right; }
+    .contrib-track { position:relative; height:15px; min-width:0; }
+    .contrib-midline { position:absolute; left:50%; top:0; width:1px; height:100%; background:#2a3348; }
+    .contrib-bar { position:absolute; top:50%; transform:translateY(-50%); height:8px; min-width:1px; border-radius:2px; }
+    .contrib-bar.positive { background:#22d3a0cc; }
+    .contrib-bar.negative { background:#f04a5acc; }
+    .contrib-row em { color:#6b7e9a; font-size:10px; font-family:monospace; font-style:normal; text-align:right; }
+    .account-holdings-panel .positive { color:#22d3a0 !important; }
+    .account-holdings-panel .negative { color:#f04a5a !important; }
+    .account-holdings-panel .warning { color:#f5c842 !important; }
+    .account-holdings-panel .neutral { color:#8fa3c0 !important; }
+    .account-signal-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+    .account-signal-card { min-width:0; border:1px solid #1e2535; border-radius:8px; padding:12px 14px; background:#0c1018; }
+    .account-signal-card span { display:block; color:#4a5f7a; font-size:9px; font-weight:800; letter-spacing:.07em; text-transform:uppercase; }
+    .account-signal-card strong { display:block; margin-top:4px; font-size:18px; font-family:monospace; color:#c8d8ec; }
+    .account-signal-card em { display:block; margin-top:2px; color:#6b7e9a; font-size:10px; font-style:normal; }
+    .account-signal-card.ok strong { color:#22d3a0; }
+    .account-signal-card.bad strong { color:#f04a5a; }
+    .account-signal-card.warn strong { color:#f5c842; }
+    .account-signal-card.info strong { color:#4a9eff; }
+    .holdings-sort-controls { display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin-bottom:10px; }
+    .holdings-sort-controls span { color:#4a5f7a; font-size:9px; font-weight:800; letter-spacing:.07em; text-transform:uppercase; }
+    .holdings-sort-controls button, .account-holdings-table th button { appearance:none; border:1px solid #1e2535; border-radius:4px; background:#111620; color:#8fa3c0; cursor:pointer; font:600 10px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; padding:4px 8px; }
+    .holdings-sort-controls button.active, .account-holdings-table th button.active { border-color:#4a9eff; color:#4a9eff; background:#4a9eff1f; }
+    .account-table-wrap { overflow:auto; max-height:62vh; border:1px solid #1e2535; border-radius:8px; }
+    .account-holdings-table { min-width:1060px; width:100%; border-collapse:separate; border-spacing:0; }
+    .account-holdings-table th, .account-holdings-table td { border-bottom:1px solid #1e2535; padding:8px 10px; color:#8fa3c0; background:#0c1018; }
+    .account-holdings-table th { position:sticky; top:0; z-index:2; background:#111620; }
+    .account-holdings-table tr:nth-child(even) td { background:#0f141d; }
+    .account-holdings-table td strong { color:#e8f2ff; font-family:monospace; font-size:12px; }
+    .account-holdings-table .num { text-align:right; font-family:monospace; font-variant-numeric:tabular-nums; }
+    .muted-cell { color:#6b7e9a !important; }
+    .role-chip { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:8px; background:#6b7e9a; }
+    .role-chip.core { background:#4a9eff; }
+    .role-chip.sector { background:#9b7eff; }
+    .role-chip.thematic { background:#22d3a0; }
+    .role-chip.satellite { background:#6b7e9a; }
+    .role-chip.hedge { background:#f04a5a; }
+    .role-chip.cash { background:#2a3348; }
+    .action-label { color:#8fa3c0; font-size:9px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
+    .action-label.supported_winner { color:#22d3a0; }
+    .action-label.loss_review, .action-label.hard_risk_review, .action-label.forced_trim { color:#f04a5a; }
+    .action-label.trim_candidate, .action-label.trim_review, .action-label.no_add { color:#f5c842; }
+    .account-contract-note { margin-top:9px; color:#4a5f7a; font-size:10px; }
+    @media (max-width: 1180px) { .account-top-strip { grid-template-columns:repeat(4,minmax(0,1fr)); } .account-chart-grid { grid-template-columns:1fr; } }
+    @media (max-width: 720px) { .account-top-strip, .account-signal-grid { grid-template-columns:1fr 1fr; } .account-stat { border-right:0; border-bottom:1px solid #1e2535; } }
     """

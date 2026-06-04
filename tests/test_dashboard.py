@@ -41,6 +41,25 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Residual Alpha Candidate", source)
         self.assertIn("Recent Command Status", source)
 
+    def test_dashboard_surfaces_account_holdings_and_contribution_monitoring(self):
+        source = Path("dashboard/app.py").read_text()
+
+        self.assertIn("PortfolioTimeseries", source)
+        self.assertIn("HoldingsFactor", source)
+        self.assertIn('"account_holdings": account_holdings', source)
+        self.assertIn("def _account_holdings_dashboard", source)
+        self.assertIn("def _render_account_holdings_panel", source)
+        self.assertIn("Account And Holdings", source)
+        self.assertIn("Contribution Today", source)
+        self.assertIn("contribution_pct = weight_current * daily_return_pct * 100", source)
+        self.assertIn("data-sort-key", source)
+        self.assertIn("data-holding-row", source)
+        self.assertIn("sortRows", source)
+        self.assertIn("account-holdings-table", source)
+        self.assertIn("account-nav-chart", source)
+        self.assertIn("account-pnl-chart", source)
+        self.assertIn("contrib-midline", source)
+
     def test_displayed_dashboard_content_is_not_truncated(self):
         source = Path("dashboard/app.py").read_text()
         governance_start = source.index("def _compact_governance")
