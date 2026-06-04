@@ -33,9 +33,9 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn('"max_gross_turnover_per_day": 1.50', sql)
         self.assertIn('"risk_reduce_reserved_commands": 4', sql)
         self.assertIn('"risk_reduce_gross_turnover_per_day": 0.25', sql)
+        self.assertGreaterEqual(sql.count('"max_buy_delta": 0.15'), 2)
+        self.assertGreaterEqual(sql.count('"max_sell_delta": 0.20'), 2)
         self.assertIn("ON CONFLICT (key) DO UPDATE", sql)
-        self.assertIn("max_buy_delta", sql)
-        self.assertIn("max_sell_delta", sql)
 
     def test_blocks_unknown_positive_weight(self):
         result = preflight_execution_weights({"COMPLETELY_UNKNOWN": 0.01, "CASH": 0.99})
