@@ -145,7 +145,11 @@ def build_decision_ledger(
             "policy_cap_events": target_builder_diagnostics.get("policy_cap_events") or [],
             "final_policy_version": risk.get("final_policy_version"),
             "final_policy_cap_events": risk.get("final_policy_cap_events") or [],
+            "minimum_weight_floor_events": risk.get("minimum_weight_floor_events") or [],
             "final_policy_cash_raised": risk.get("final_policy_cash_raised"),
+            "final_policy_cash_raised_by_minimum_weight_floor": risk.get(
+                "final_policy_cash_raised_by_minimum_weight_floor"
+            ),
             "final_policy_cap_triggered": bool(risk.get("final_policy_cap_triggered")),
             "hedge_intent": _compact_hedge_intent(hedge_intent),
             "portfolio_construction": _compact_portfolio_construction(risk.get("portfolio_construction_shadow")),
@@ -1051,6 +1055,7 @@ def _target_builder_diagnostics(risk: dict[str, Any]) -> dict[str, Any]:
     else:
         diagnostics = {}
     diagnostics["final_policy_cap_events"] = risk.get("final_policy_cap_events") or []
+    diagnostics["minimum_weight_floor_events"] = risk.get("minimum_weight_floor_events") or []
     diagnostics["final_policy_cash_raised"] = risk.get("final_policy_cash_raised")
     diagnostics["final_policy_version"] = risk.get("final_policy_version")
     diagnostics["final_policy_cap_triggered"] = bool(risk.get("final_policy_cap_triggered"))

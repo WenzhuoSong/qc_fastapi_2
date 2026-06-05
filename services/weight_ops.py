@@ -285,6 +285,56 @@ def tighten_sell_delta(
     return result, {"events": events}
 
 
+def apply_minimum_weight_floor(
+    weights: WeightMap | dict[str, Any] | None,
+    min_weight: float = 0.005,
+    *,
+    cash_key: str = "CASH",
+) -> tuple[WeightMap, Diagnostics]:
+    """Clear economically meaningless non-cash targets and move them to CASH.
+
+    This is an execution-efficiency constraint: positive non-cash weights below
+    the floor are too small to carry useful portfolio intent, but they still add
+    monitoring and transaction noise.
+    """
+    cash_key = _clean_ticker(cash_key) or "CASH"
+    floor = max(float(min_weight or 0.0), 0.0)
+    result = _clean_weights(weights)
+    result.setdefault(cash_key, float(result.get(cash_key, 0.0) or 0.0))
+    cleared: list[dict[str, float | str]] = []
+    total_released = 0.0
+
+    if floor <= 0.0:
+        return result, {
+            "cleared_positions": [],
+            "total_released": 0.0,
+            "min_weight": floor,
+        }
+
+    for ticker in sorted(set(result) - {cash_key}):
+        weight = float(result.get(ticker, 0.0) or 0.0)
+        if weight <= 0.0 or weight >= floor:
+            continue
+        result[ticker] = 0.0
+        total_released += weight
+        cleared.append(
+            {
+                "ticker": ticker,
+                "before": weight,
+                "after": 0.0,
+                "released": weight,
+                "reason": f"below_min_{floor:.2%}",
+            }
+        )
+
+    result[cash_key] = float(result.get(cash_key, 0.0) or 0.0) + total_released
+    return result, {
+        "cleared_positions": cleared,
+        "total_released": total_released,
+        "min_weight": floor,
+    }
+
+
 def assert_invariants(
     weights: WeightMap | dict[str, Any] | None,
     *,

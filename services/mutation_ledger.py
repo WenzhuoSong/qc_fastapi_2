@@ -22,6 +22,7 @@ MutationType = Literal[
     "decay_risk_auto_reduce",
     "execution_buy_delta_throttle",
     "loss_trim",
+    "min_executable_weight_floor",
     "regime_constraint_tighten",
     "sell_delta_throttle",
     "min_hold_defer_sell",
@@ -40,6 +41,7 @@ TIGHTEN_ONLY_TYPES = frozenset(
         "decay_risk_auto_reduce",
         "execution_buy_delta_throttle",
         "loss_trim",
+        "min_executable_weight_floor",
         "regime_constraint_tighten",
     }
 )

@@ -2723,7 +2723,13 @@ async def _apply_final_execution_policy_cap(
     cap_events = final_cap["cap_events"]
     risk_out["final_policy_version"] = final_cap["policy_version"]
     risk_out["final_policy_cap_events"] = cap_events
+    risk_out["minimum_weight_floor_events"] = final_cap.get("floor_events") or []
     risk_out["final_policy_cash_raised"] = final_cap["cash_raised"]
+    risk_out["final_policy_cash_raised_by_policy_cap"] = final_cap.get("cash_raised_by_policy_cap", 0.0)
+    risk_out["final_policy_cash_raised_by_minimum_weight_floor"] = final_cap.get(
+        "cash_raised_by_minimum_weight_floor",
+        0.0,
+    )
     risk_out["final_policy_cap_triggered"] = final_cap["triggered"]
     risk_out["final_policy_evaluation"] = final_cap.get("policy_evaluation") or {}
     if final_cap.get("mutation_types"):
@@ -2739,7 +2745,7 @@ async def _apply_final_execution_policy_cap(
     if final_cap_envelope_ledger.get("total_mutations", 0) > 0:
         risk_out.setdefault("post_risk_mutation_ledgers", []).append(final_cap_envelope_ledger)
 
-    if not cap_events:
+    if not final_cap["triggered"]:
         await _save_step_log(
             analysis_id,
             "6cb_final_policy_cap",
@@ -2749,6 +2755,7 @@ async def _apply_final_execution_policy_cap(
                 "target_weights": capped,
                 "policy_version": risk_out["final_policy_version"],
                 "cap_events": [],
+                "floor_events": [],
                 "cash_raised": 0.0,
                 "triggered": False,
                 "mutation_ledger": final_cap_envelope_ledger,
@@ -2760,9 +2767,10 @@ async def _apply_final_execution_policy_cap(
         return
 
     logger.warning(
-        "[FINAL_CAP] Post-governance weights required capping: %s. "
+        "[FINAL_CAP] Post-governance weights required final execution repair: caps=%s floors=%s. "
         "This indicates a policy gap upstream.",
         cap_events,
+        final_cap.get("floor_events") or [],
     )
     risk_out["target_weights"] = capped
     risk_out["rebalance_actions"] = final_cap["rebalance_actions"]
@@ -2779,7 +2787,13 @@ async def _apply_final_execution_policy_cap(
             "target_weights": capped,
             "policy_version": risk_out["final_policy_version"],
             "cap_events": cap_events,
+            "floor_events": final_cap.get("floor_events") or [],
             "cash_raised": final_cap["cash_raised"],
+            "cash_raised_by_policy_cap": final_cap.get("cash_raised_by_policy_cap", 0.0),
+            "cash_raised_by_minimum_weight_floor": final_cap.get(
+                "cash_raised_by_minimum_weight_floor",
+                0.0,
+            ),
             "triggered": True,
             "mutation_types": final_cap.get("mutation_types") or [],
             "mutation_ledger": final_cap_envelope_ledger,

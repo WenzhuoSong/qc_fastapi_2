@@ -1,6 +1,7 @@
 import unittest
 
 from services.weight_ops import (
+    apply_minimum_weight_floor,
     apply_group_caps_cash_first,
     apply_single_caps_cash_first,
     assert_invariants,
@@ -81,6 +82,23 @@ class WeightOpsTest(unittest.TestCase):
         self.assertAlmostEqual(out["SPY"], 0.15, places=12)
         self.assertGreater(out["SPY"], 0.0)
         self.assertEqual(diag["events"][0]["mutation_type"], "sell_delta_throttle")
+
+    def test_minimum_weight_floor_clears_small_positions_to_cash(self):
+        out, diag = apply_minimum_weight_floor(
+            {"XLU": 0.001, "XLRE": 0.0049, "XLI": 0.006, "CASH": 0.9881},
+            min_weight=0.005,
+        )
+
+        self.assertAlmostEqual(out["XLU"], 0.0, places=12)
+        self.assertAlmostEqual(out["XLRE"], 0.0, places=12)
+        self.assertAlmostEqual(out["XLI"], 0.006, places=12)
+        self.assertAlmostEqual(out["CASH"], 0.994, places=12)
+        self.assertAlmostEqual(sum(out.values()), 1.0, places=12)
+        self.assertAlmostEqual(diag["total_released"], 0.0059, places=12)
+        self.assertEqual(
+            [event["ticker"] for event in diag["cleared_positions"]],
+            ["XLRE", "XLU"],
+        )
 
     def test_assert_invariants_requires_cash_and_sum_at_most_one(self):
         assert_invariants({"SPY": 0.2, "CASH": 0.8}, label="ok")

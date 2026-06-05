@@ -1110,7 +1110,13 @@ def _format_decision_ledger_line(ledger: dict) -> str:
     rows = ledger.get("top_decisions") or []
     summary = ledger.get("portfolio_summary") or {}
     warnings = ledger.get("warnings") or []
-    if not rows and not warnings and not (summary.get("final_policy_cap_events") or []) and not summary.get("hedge_intent"):
+    if (
+        not rows
+        and not warnings
+        and not (summary.get("final_policy_cap_events") or [])
+        and not (summary.get("minimum_weight_floor_events") or [])
+        and not summary.get("hedge_intent")
+    ):
         return ""
     lines = ["<b>Decision ledger</b>"]
     status_bits = []
@@ -1128,6 +1134,8 @@ def _format_decision_ledger_line(ledger: dict) -> str:
         status_bits.append(f"policy={summary.get('policy_version')}")
     if summary.get("final_policy_cap_triggered"):
         status_bits.append("final_cap=true")
+    if summary.get("minimum_weight_floor_events"):
+        status_bits.append("min_floor=true")
     if summary.get("raw_llm_adjusted_weights_consumed") is not None:
         status_bits.append(f"raw_llm={bool(summary.get('raw_llm_adjusted_weights_consumed'))}")
     if status_bits:
@@ -1135,6 +1143,9 @@ def _format_decision_ledger_line(ledger: dict) -> str:
     final_cap_events = summary.get("final_policy_cap_events") or []
     if final_cap_events:
         lines.append("  " + _format_final_policy_cap_warning(final_cap_events))
+    floor_events = summary.get("minimum_weight_floor_events") or []
+    if floor_events:
+        lines.append("  " + _format_minimum_weight_floor_warning(floor_events))
     hedge_line = _format_hedge_intent_summary(summary.get("hedge_intent") or {})
     if hedge_line:
         lines.append(hedge_line)
@@ -1222,6 +1233,23 @@ def _format_final_policy_cap_warning(events: list[dict]) -> str:
         "WARNING: post-governance policy cap triggered for "
         f"{shown}. Upstream governance/position_manager introduced out-of-policy weights."
     )
+
+
+def _format_minimum_weight_floor_warning(events: list[dict]) -> str:
+    bits = []
+    for event in events[:5]:
+        if not isinstance(event, dict):
+            continue
+        ticker = str(event.get("ticker") or "").upper().strip()
+        original = event.get("original")
+        if not ticker or original is None:
+            continue
+        try:
+            bits.append(f"{ticker} {float(original):.2%}->0")
+        except (TypeError, ValueError):
+            bits.append(ticker)
+    shown = ", ".join(bits) if bits else "unknown"
+    return f"Minimum position floor cleared: {shown}"
 
 
 def _compact_portfolio_construction_evaluation(evaluation: dict) -> dict:

@@ -713,13 +713,13 @@ class CommunicatorScorecardTest(unittest.TestCase):
     def test_decision_ledger_line_warns_on_final_policy_cap(self):
         text = _fallback_template(
             {
-                "approved": True,
+                "approved": False,
                 "regime": "neutral",
                 "stance": "maintain",
                 "rebalance_actions": [],
                 "estimated_cost": 0,
                 "overlays_applied": ["final_execution_policy_cap"],
-                "rejection_reasons": [],
+                "rejection_reasons": ["diagnostic"],
                 "auth_mode": "FULL_AUTO",
                 "timeout_minutes": 20,
                 "debate_summary": {},
@@ -750,6 +750,46 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("XLK (17.22% -> 15.00%)", text)
         self.assertIn("XLE (15.66% -> 15.00%)", text)
         self.assertIn("out-of-policy weights", text)
+
+    def test_decision_ledger_line_warns_on_minimum_weight_floor(self):
+        text = _fallback_template(
+            {
+                "approved": False,
+                "regime": "neutral",
+                "stance": "maintain",
+                "rebalance_actions": [],
+                "estimated_cost": 0,
+                "overlays_applied": ["final_execution_policy_cap"],
+                "rejection_reasons": ["diagnostic"],
+                "auth_mode": "FULL_AUTO",
+                "timeout_minutes": 20,
+                "debate_summary": {},
+                "market_scorecard": {},
+                "scorecard_enforcement": {},
+                "news_evidence": {},
+                "decision_style": {},
+                "decision_ledger": {
+                    "portfolio_summary": {
+                        "risk_approved": True,
+                        "execution_status": "unknown",
+                        "governance_available": True,
+                        "target_construction_mode": "target_builder_gated",
+                        "policy_version": "sprint8a",
+                        "final_policy_cap_triggered": True,
+                        "minimum_weight_floor_events": [
+                            {"ticker": "XLU", "original": 0.001},
+                            {"ticker": "XLRE", "original": 0.0018},
+                        ],
+                    },
+                    "top_decisions": [],
+                },
+            }
+        )
+
+        self.assertIn("min_floor=true", text)
+        self.assertIn("Minimum position floor cleared", text)
+        self.assertIn("XLU 0.10%->0", text)
+        self.assertIn("XLRE 0.18%->0", text)
 
     def test_portfolio_construction_evaluation_line_shows_status_and_blockers(self):
         text = _fallback_template(

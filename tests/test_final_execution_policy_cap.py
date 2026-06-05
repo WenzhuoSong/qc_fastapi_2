@@ -78,12 +78,31 @@ class FinalExecutionPolicyCapTest(unittest.TestCase):
             ["XLE", "XLI", "XLK", "XLU"],
         )
 
+    def test_minimum_weight_floor_clears_subscale_targets(self):
+        out = apply_final_execution_policy_cap(
+            target_weights={"XLK": 0.063, "XLRE": 0.0018, "XLU": 0.001, "CASH": 0.9342},
+            current_weights={"XLK": 0.063, "XLRE": 0.0024, "XLU": 0.0013, "CASH": 0.9333},
+            rebalance_threshold=0.0001,
+        )
+
+        self.assertTrue(out["triggered"])
+        self.assertEqual([event["ticker"] for event in out["floor_events"]], ["XLRE", "XLU"])
+        self.assertAlmostEqual(out["target_weights"]["XLRE"], 0.0, places=12)
+        self.assertAlmostEqual(out["target_weights"]["XLU"], 0.0, places=12)
+        self.assertAlmostEqual(out["target_weights"]["CASH"], 0.937, places=12)
+        self.assertEqual(out["mutation_types"], ["min_executable_weight_floor"])
+        self.assertEqual(out["mutation_ledger"]["affected_tickers"], ["XLRE", "XLU"])
+        self.assertEqual(out["mutation_ledger"]["mutation_types"], ["min_executable_weight_floor"])
+        self.assertAlmostEqual(out["cash_raised_by_minimum_weight_floor"], 0.0028, places=12)
+        self.assertTrue(out["policy_evaluation"]["allowed"], out["policy_evaluation"])
+
     def test_final_cap_module_uses_weight_ops_not_private_normalizer(self):
         source = inspect.getsource(final_cap_module)
 
         self.assertIn("normalize_cash_first", source)
         self.assertIn("apply_single_caps_cash_first", source)
         self.assertIn("apply_group_caps_cash_first", source)
+        self.assertIn("apply_minimum_weight_floor", source)
         self.assertNotIn("def _normalize_preserving_policy_caps", source)
 
 

@@ -31,6 +31,7 @@ class RolePolicy:
 
 
 POLICY_VERSION = "sprint8a"
+MIN_EXECUTABLE_WEIGHT = 0.005
 
 
 ROLE_POLICIES: dict[TickerRole, RolePolicy] = {
@@ -451,6 +452,7 @@ def _scale_down_role(weights: dict[str, float], role: TickerRole, cap: float) ->
 def policy_snapshot() -> dict[str, Any]:
     return {
         "version": POLICY_VERSION,
+        "min_executable_weight": MIN_EXECUTABLE_WEIGHT,
         "roles": {ticker: role.value for ticker, role in sorted(TICKER_ROLES.items())},
         "caps": {
             role.value: {
