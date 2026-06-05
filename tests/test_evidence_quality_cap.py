@@ -35,6 +35,7 @@ class EvidenceQualityCapTests(unittest.TestCase):
         self.assertEqual(get_conviction_discount("calibrated"), 0.0)
         self.assertEqual(get_conviction_discount("indicative"), 0.35)
         self.assertEqual(get_conviction_discount("early_signal"), 0.10)
+        self.assertEqual(get_conviction_discount("monitoring_ready"), 0.10)
 
     def test_builds_observe_only_diagnostic_and_would_clip(self):
         out = evaluate_evidence_quality_caps(
@@ -126,7 +127,7 @@ class EvidenceQualityCapTests(unittest.TestCase):
         self.assertEqual(out["DRAM"]["static_cap"], 0.05)
         self.assertEqual(out["DRAM"]["evidence_adjusted_cap"], 0.01)
 
-    def test_calibrated_with_large_sample_maps_to_statistically_meaningful(self):
+    def test_calibrated_with_320_samples_maps_to_indicative(self):
         out = evaluate_evidence_quality_caps(
             vote_summary={
                 "SPY": {
@@ -150,8 +151,8 @@ class EvidenceQualityCapTests(unittest.TestCase):
 
         spy = out["SPY"]
         self.assertEqual(spy["operational_conviction_status"], "calibrated")
-        self.assertEqual(spy["conviction_status"], "statistically_meaningful")
-        self.assertEqual(spy["conviction_discount"], 1.0)
+        self.assertEqual(spy["conviction_status"], "indicative")
+        self.assertEqual(spy["conviction_discount"], 0.35)
 
 
 if __name__ == "__main__":

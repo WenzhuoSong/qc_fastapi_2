@@ -59,7 +59,7 @@ class EvidenceCapCalibrationTest(unittest.TestCase):
         self.assertEqual(report["observe_summary"]["observe_cycles"], 12)
         self.assertEqual(
             report["conviction_summary"]["statistical_status_counts"],
-            {"early_signal": 1, "indicative": 1, "statistically_meaningful": 1},
+            {"monitoring_ready": 1, "early_signal": 1, "indicative": 1},
         )
         self.assertAlmostEqual(report["observe_summary"]["would_clip_rate"], 2 / 24, places=6)
         self.assertEqual(report["young_etf_summary"]["cap_range_status"], "within_expected_range")

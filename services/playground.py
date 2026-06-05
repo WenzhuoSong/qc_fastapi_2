@@ -53,6 +53,7 @@ from services.strategy_independence import (
     build_strategy_independence_diagnostics_from_snapshots,
     empty_strategy_independence_summary,
 )
+from services.strategy_breadth_calibration import build_strategy_breadth_calibration_report
 from services.strategy_validation_dashboard import load_validation_dashboard_summary
 from services.universe_policy import filter_tradable_research_rows
 from services.walk_forward_validation import validate_walk_forward
@@ -729,11 +730,16 @@ def _compact_validation_summary_for_llm(summary: dict[str, Any]) -> dict[str, An
 
 
 def _compact_strategy_independence_for_llm(summary: dict[str, Any]) -> dict[str, Any]:
+    breadth = build_strategy_breadth_calibration_report(summary)
     return {
         "status": summary.get("status"),
         "strategy_count": summary.get("strategy_count"),
         "alpha_strategy_count": summary.get("alpha_strategy_count"),
         "effective_independent_alpha_count": summary.get("effective_independent_alpha_count"),
+        "estimated_independent_clusters": breadth.get("estimated_independent_clusters"),
+        "estimated_breadth_is_approximation": breadth.get("estimated_breadth_is_approximation"),
+        "duplicate_alpha_pair_count": len(breadth.get("high_correlation_pairs") or []),
+        "diversifying_pair_count": len(breadth.get("diversifying_pairs") or []),
         "high_correlation_pair_count": summary.get("high_correlation_pair_count"),
         "low_correlation_pair_count": summary.get("low_correlation_pair_count"),
         "warnings": (summary.get("warnings") or [])[:8],

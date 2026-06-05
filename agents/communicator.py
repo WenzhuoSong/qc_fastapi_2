@@ -276,6 +276,9 @@ def _build_payload(
         "portfolio_construction_promotion_gate": _compact_portfolio_construction_promotion_gate(
             risk_out.get("portfolio_construction_promotion_gate") or {}
         ),
+        "hedge_intent_outcome": _compact_hedge_intent_outcome(
+            risk_out.get("hedge_intent_outcome") or {}
+        ),
         "final_validation": _compact_final_validation(risk_out.get("final_validation") or {}),
         "auth_mode":        pipeline_context.get("auth_mode", "SEMI_AUTO"),
         "timeout_minutes":  settings.semi_auto_timeout_minutes,
@@ -311,6 +314,7 @@ def _fallback_template(p: dict) -> str:
     pc_eval = p.get("portfolio_construction_evaluation") or {}
     pc_readiness = p.get("portfolio_construction_readiness") or {}
     pc_gate = p.get("portfolio_construction_promotion_gate") or {}
+    hedge_outcome = p.get("hedge_intent_outcome") or {}
     final_validation = p.get("final_validation") or {}
 
     up, down = "\u25b2", "\u25bc"
@@ -347,6 +351,7 @@ def _fallback_template(p: dict) -> str:
     pc_eval_line = _format_portfolio_construction_evaluation_line(pc_eval)
     pc_readiness_line = _format_portfolio_construction_readiness_line(pc_readiness)
     pc_gate_line = _format_portfolio_construction_promotion_gate_line(pc_gate)
+    hedge_outcome_line = _format_hedge_intent_outcome_line(hedge_outcome)
     final_validation_line = _format_final_validation_line(final_validation)
     decision_ledger_line = _format_decision_ledger_line(decision_ledger)
     position_governance_line = _format_position_governance_line(position_governance)
@@ -378,6 +383,7 @@ def _fallback_template(p: dict) -> str:
             f"{pc_eval_line}"
             f"{pc_readiness_line}"
             f"{pc_gate_line}"
+            f"{hedge_outcome_line}"
             f"{final_validation_line}"
             f"{decision_ledger_line}"
             f"{position_governance_line}"
@@ -426,6 +432,7 @@ def _fallback_template(p: dict) -> str:
         f"{pc_eval_line}"
         f"{pc_readiness_line}"
         f"{pc_gate_line}"
+        f"{hedge_outcome_line}"
         f"{final_validation_line}"
         f"{decision_ledger_line}"
         f"{position_governance_line}"
@@ -1332,6 +1339,10 @@ def _compact_portfolio_construction_evaluation(evaluation: dict) -> dict:
         "mean_abs_weight_deviation": metrics.get("mean_abs_weight_deviation"),
         "turnover_delta": metrics.get("turnover_delta"),
         "shadow_policy_allowed": metrics.get("shadow_policy_allowed"),
+        "candidate_policy_allowed": metrics.get("candidate_policy_allowed"),
+        "basket_policy_ok": metrics.get("basket_policy_ok"),
+        "turnover_ok": metrics.get("turnover_ok"),
+        "subscale_count": metrics.get("subscale_count"),
         "shadow_high_risk_tickers_added": metrics.get("shadow_high_risk_tickers_added") or [],
     }
 
@@ -1342,8 +1353,14 @@ def _compact_portfolio_construction_readiness(readiness: dict) -> dict:
     return {
         "status": readiness.get("status"),
         "promotion_ready": bool(readiness.get("promotion_ready")),
+        "ready": bool(readiness.get("ready", readiness.get("promotion_ready"))),
         "cycles": readiness.get("cycles"),
         "pass_rate": readiness.get("pass_rate"),
+        "basket_policy_ok_rate": readiness.get("basket_policy_ok_rate"),
+        "policy_ok_rate": readiness.get("policy_ok_rate"),
+        "turnover_ok_rate": readiness.get("turnover_ok_rate"),
+        "subscale_position_rate": readiness.get("subscale_position_rate"),
+        "blockers": list(readiness.get("blockers") or []),
         "blocker_counts": readiness.get("blocker_counts") or {},
         "warning_counts": readiness.get("warning_counts") or {},
         "execution_authority": readiness.get("execution_authority"),
@@ -1362,6 +1379,27 @@ def _compact_portfolio_construction_promotion_gate(gate: dict) -> dict:
         "blockers": list(gate.get("blockers") or []),
         "would_promote_to": gate.get("would_promote_to"),
         "execution_authority": gate.get("execution_authority"),
+    }
+
+
+def _compact_hedge_intent_outcome(outcome: dict) -> dict:
+    if not outcome:
+        return {}
+    return {
+        "report_version": outcome.get("report_version"),
+        "date": outcome.get("date"),
+        "triggered": bool(outcome.get("triggered")),
+        "severity": outcome.get("severity"),
+        "add_hedge_etf": bool(outcome.get("add_hedge_etf")),
+        "selected_instrument": outcome.get("selected_instrument"),
+        "candidate_hedge_instrument": outcome.get("candidate_hedge_instrument"),
+        "why_not_add_hedge": outcome.get("why_not_add_hedge"),
+        "outcome_status": outcome.get("outcome_status"),
+        "spy_return_5d": outcome.get("spy_return_5d"),
+        "hedge_instrument_return_5d": outcome.get("hedge_instrument_return_5d"),
+        "hedge_would_have_helped": outcome.get("hedge_would_have_helped"),
+        "threshold_assessment": outcome.get("threshold_assessment"),
+        "execution_authority": outcome.get("execution_authority"),
     }
 
 
@@ -1398,8 +1436,11 @@ def _format_portfolio_construction_evaluation_line(evaluation: dict) -> str:
         f"ready={ready}",
         f"mean_dev={float(evaluation.get('mean_abs_weight_deviation') or 0.0):.2%}",
         f"turnover_delta={float(evaluation.get('turnover_delta') or 0.0):+.2%}",
-        f"policy_ok={bool(evaluation.get('shadow_policy_allowed'))}",
+        f"policy_ok={bool(evaluation.get('candidate_policy_allowed', evaluation.get('shadow_policy_allowed')))}",
+        f"basket_ok={bool(evaluation.get('basket_policy_ok'))}",
     ]
+    if evaluation.get("subscale_count") is not None:
+        parts.append(f"subscale={int(evaluation.get('subscale_count') or 0)}")
     if blockers:
         parts.append("blockers=" + ",".join(str(item) for item in blockers[:4]))
     if warnings:
@@ -1410,13 +1451,19 @@ def _format_portfolio_construction_evaluation_line(evaluation: dict) -> str:
 def _format_portfolio_construction_readiness_line(readiness: dict) -> str:
     if not readiness:
         return ""
-    blockers = readiness.get("blocker_counts") or {}
-    blocker_bits = ",".join(f"{key}:{value}" for key, value in sorted(blockers.items())[:4])
+    blockers = readiness.get("blockers") or []
+    blocker_counts = readiness.get("blocker_counts") or {}
+    blocker_bits = ",".join(str(item) for item in blockers[:4])
+    if not blocker_bits:
+        blocker_bits = ",".join(f"{key}:{value}" for key, value in sorted(blocker_counts.items())[:4])
     parts = [
         f"status={readiness.get('status') or 'unknown'}",
-        f"ready={bool(readiness.get('promotion_ready'))}",
+        f"ready={bool(readiness.get('ready', readiness.get('promotion_ready')))}",
         f"cycles={int(readiness.get('cycles') or 0)}",
         f"pass_rate={float(readiness.get('pass_rate') or 0.0):.0%}",
+        f"basket_ok={float(readiness.get('basket_policy_ok_rate') or 0.0):.0%}",
+        f"policy_ok={float(readiness.get('policy_ok_rate') or 0.0):.0%}",
+        f"turnover_ok={float(readiness.get('turnover_ok_rate') or 0.0):.0%}",
     ]
     if blocker_bits:
         parts.append(f"blockers={blocker_bits}")
@@ -1440,6 +1487,25 @@ def _format_portfolio_construction_promotion_gate_line(gate: dict) -> str:
     if blockers:
         parts.append("blockers=" + ",".join(str(item) for item in blockers[:4]))
     return "<b>Portfolio construction promotion gate</b>\n  " + " | ".join(parts) + "\n\n"
+
+
+def _format_hedge_intent_outcome_line(outcome: dict) -> str:
+    if not outcome:
+        return ""
+    parts = [
+        f"status={outcome.get('outcome_status') or 'unknown'}",
+        f"triggered={bool(outcome.get('triggered'))}",
+        f"add_hedge={bool(outcome.get('add_hedge_etf'))}",
+    ]
+    if outcome.get("candidate_hedge_instrument"):
+        parts.append(f"candidate={outcome.get('candidate_hedge_instrument')}")
+    if outcome.get("selected_instrument"):
+        parts.append(f"selected={outcome.get('selected_instrument')}")
+    if outcome.get("why_not_add_hedge"):
+        parts.append(f"reason={outcome.get('why_not_add_hedge')}")
+    if outcome.get("threshold_assessment"):
+        parts.append(f"assessment={outcome.get('threshold_assessment')}")
+    return "<b>Hedge intent outcome log</b>\n  " + " | ".join(parts) + "\n\n"
 
 
 def _format_final_validation_line(validation: dict) -> str:

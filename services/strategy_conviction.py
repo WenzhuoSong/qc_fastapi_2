@@ -38,12 +38,14 @@ STATUS_HISTORICAL_REQUIRES_LIVE = "historical_prior_requires_live_confirmation"
 STATUS_EARLY_LIVE_CONFIRMATION = "early_live_confirmation"
 
 STAT_STATUS_INSUFFICIENT = "insufficient"
+STAT_STATUS_MONITORING_READY = "monitoring_ready"
 STAT_STATUS_EARLY_SIGNAL = "early_signal"
 STAT_STATUS_INDICATIVE = "indicative"
 STAT_STATUS_STATISTICALLY_MEANINGFUL = "statistically_meaningful"
 STAT_INSUFFICIENT_SAMPLES = 30
-STAT_INDICATIVE_SAMPLES = 100
-STAT_MEANINGFUL_SAMPLES = 300
+STAT_EARLY_SIGNAL_SAMPLES = 100
+STAT_INDICATIVE_SAMPLES = 300
+STAT_MEANINGFUL_SAMPLES = 783
 
 MIN_SAMPLES = 10
 CALIBRATED_SAMPLES = 30
@@ -109,7 +111,8 @@ class ConvictionProfile:
         data = asdict(self)
         stats = statistical_interpretation(n=self.n, hit_rate=self.hit_rate)
         diagnostics = data.get("diagnostics") if isinstance(data.get("diagnostics"), dict) else {}
-        data["statistical_status"] = diagnostics.get("statistical_status") or stats["statistical_status"]
+        data["legacy_operational_status"] = data.get("status")
+        data["statistical_status"] = stats["statistical_status"]
         data["hit_rate_ci"] = diagnostics.get("hit_rate_ci") or stats["hit_rate_ci"]
         data["hit_rate_ci_width"] = diagnostics.get("hit_rate_ci_width", stats["hit_rate_ci_width"])
         data["statistical_sample_thresholds"] = stats["sample_thresholds"]
@@ -297,6 +300,8 @@ def statistical_status_for_samples(n: int) -> str:
     count = max(int(n or 0), 0)
     if count < STAT_INSUFFICIENT_SAMPLES:
         return STAT_STATUS_INSUFFICIENT
+    if count < STAT_EARLY_SIGNAL_SAMPLES:
+        return STAT_STATUS_MONITORING_READY
     if count < STAT_INDICATIVE_SAMPLES:
         return STAT_STATUS_EARLY_SIGNAL
     if count < STAT_MEANINGFUL_SAMPLES:
@@ -344,7 +349,8 @@ def statistical_interpretation(*, n: int, hit_rate: float | None) -> dict[str, A
         "hit_rate_ci_width": interval.get("width") if interval else None,
         "sample_thresholds": {
             STAT_STATUS_INSUFFICIENT: f"<{STAT_INSUFFICIENT_SAMPLES}",
-            STAT_STATUS_EARLY_SIGNAL: f"{STAT_INSUFFICIENT_SAMPLES}-{STAT_INDICATIVE_SAMPLES - 1}",
+            STAT_STATUS_MONITORING_READY: f"{STAT_INSUFFICIENT_SAMPLES}-{STAT_EARLY_SIGNAL_SAMPLES - 1}",
+            STAT_STATUS_EARLY_SIGNAL: f"{STAT_EARLY_SIGNAL_SAMPLES}-{STAT_INDICATIVE_SAMPLES - 1}",
             STAT_STATUS_INDICATIVE: f"{STAT_INDICATIVE_SAMPLES}-{STAT_MEANINGFUL_SAMPLES - 1}",
             STAT_STATUS_STATISTICALLY_MEANINGFUL: f">={STAT_MEANINGFUL_SAMPLES}",
         },

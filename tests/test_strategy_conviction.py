@@ -20,6 +20,7 @@ from services.strategy_conviction import (
     STAT_STATUS_EARLY_SIGNAL,
     STAT_STATUS_INDICATIVE,
     STAT_STATUS_INSUFFICIENT,
+    STAT_STATUS_MONITORING_READY,
     STAT_STATUS_STATISTICALLY_MEANINGFUL,
     compute_conviction_profiles,
     conviction_profile_content_hash,
@@ -177,7 +178,8 @@ class StrategyConvictionTest(unittest.TestCase):
 
         profile = _profile(result.profiles, source_bucket=SOURCE_BUCKET_HISTORICAL_PRIOR)
         self.assertEqual(profile.status, STATUS_CALIBRATED)
-        self.assertEqual(profile.to_dict()["statistical_status"], STAT_STATUS_EARLY_SIGNAL)
+        self.assertEqual(profile.to_dict()["legacy_operational_status"], STATUS_CALIBRATED)
+        self.assertEqual(profile.to_dict()["statistical_status"], STAT_STATUS_MONITORING_READY)
         self.assertEqual(profile.hit_rate, 1.0)
         self.assertGreater(profile.ic, 0.99)
         self.assertAlmostEqual(profile.conviction, 0.85, places=2)
@@ -185,9 +187,13 @@ class StrategyConvictionTest(unittest.TestCase):
 
     def test_statistical_status_thresholds_and_wilson_ci_are_exposed(self):
         self.assertEqual(statistical_status_for_samples(29), STAT_STATUS_INSUFFICIENT)
-        self.assertEqual(statistical_status_for_samples(30), STAT_STATUS_EARLY_SIGNAL)
-        self.assertEqual(statistical_status_for_samples(100), STAT_STATUS_INDICATIVE)
-        self.assertEqual(statistical_status_for_samples(300), STAT_STATUS_STATISTICALLY_MEANINGFUL)
+        self.assertEqual(statistical_status_for_samples(30), STAT_STATUS_MONITORING_READY)
+        self.assertEqual(statistical_status_for_samples(99), STAT_STATUS_MONITORING_READY)
+        self.assertEqual(statistical_status_for_samples(100), STAT_STATUS_EARLY_SIGNAL)
+        self.assertEqual(statistical_status_for_samples(299), STAT_STATUS_EARLY_SIGNAL)
+        self.assertEqual(statistical_status_for_samples(300), STAT_STATUS_INDICATIVE)
+        self.assertEqual(statistical_status_for_samples(782), STAT_STATUS_INDICATIVE)
+        self.assertEqual(statistical_status_for_samples(783), STAT_STATUS_STATISTICALLY_MEANINGFUL)
 
         ci = wilson_hit_rate_interval(hit_rate=0.60, n=100)
 

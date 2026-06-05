@@ -218,7 +218,7 @@ class StrategyValidationDashboardTest(unittest.TestCase):
         self.assertEqual(bull["profile_count"], 1)
         self.assertEqual(bull["total_n"], 30)
         self.assertEqual(bull["calibrated_profiles"], 1)
-        self.assertEqual(bull["statistical_status_counts"], {"early_signal": 1})
+        self.assertEqual(bull["statistical_status_counts"], {"monitoring_ready": 1})
         self.assertEqual(bull["hit_rate"], 0.60)
         self.assertGreater(bull["hit_rate_ci_width"], 0)
         self.assertEqual(bull["avg_excess_vs_spy"], 0.010)

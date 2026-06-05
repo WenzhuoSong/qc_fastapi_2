@@ -8,7 +8,12 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from services.execution_policy import evaluate_policy
+from services.active_basket_policy import (
+    ACTIVE_BASKET_POLICY,
+    GLOBAL_ACTIVE_COUNT_TARGET,
+    evaluate_active_basket_policy,
+)
+from services.execution_policy import MIN_EXECUTABLE_WEIGHT, TickerRole, apply_policy_caps, evaluate_policy, get_role
 from services.group_contract import GROUP_DEFINITIONS, calc_factor_exposure, get_factor_tags
 from services.alpha_decision_profile import redundancy_multiplier
 from services.alpha_decision_policy import (
@@ -25,14 +30,20 @@ from services.weight_ops import (
 
 NO_ADD_PERMISSIONS = {"hold_or_trim", "reduce_risk_only", "defensive_only", "cash_only"}
 ALPHA_DECISION_OBJECTIVE_CONTRACT_VERSION = "pc_alpha_decision_objective_v1"
+PC_BASKET_OBJECTIVE_VERSION = "maximize_effective_n_with_active_basket_v1"
+PC_MODE_SHADOW = "shadow"
 
 
 @dataclass
 class ConstructionObjective:
-    primary: str = "maximize_independence_adjusted_net_signal_effective_n"
+    primary: str = "maximize_effective_n_with_active_basket_policy"
     subject_to: list[str] = field(default_factory=lambda: [
         "signal_quality_not_diluted",
         "alpha_decision_quality_not_diluted",
+        "global_active_count_within_active_basket_policy",
+        "role_position_counts_within_active_basket_policy",
+        "sub_min_executable_positions_excluded",
+        "hedge_role_requires_hedge_intent",
         "factor_concentration_within_group_limits",
         "active_basket_exposure_within_multiplier_limit",
         "turnover_within_budget",
@@ -45,9 +56,11 @@ class ConstructionObjective:
     effective_n_target: int = 8
     allow_cash_raise: bool = True
     rationale: str = (
-        "Paper-live canary objective: improve diversification without diluting higher-quality "
-        "alpha-decision evidence, subject to factor concentration, active-basket, evidence-cap, "
-        "execution-policy, cost, cluster-exposure, and turnover constraints."
+        "Paper-live canary objective: maximize effective_N inside active_basket_policy "
+        "without diluting higher-quality alpha-decision evidence, subject to role/global "
+        "position counts, minimum executable weights, hedge intent, factor concentration, "
+        "active-basket, evidence-cap, execution-policy, cost, cluster-exposure, and turnover "
+        "constraints."
     )
 
     def to_dict(self) -> dict[str, Any]:
@@ -57,6 +70,14 @@ class ConstructionObjective:
 @dataclass
 class PortfolioConstructionResult:
     target_weights: dict[str, float]
+    pc_objective_version: str
+    execution_authority: str
+    target_weight_mutation: str
+    pc_mode: str
+    candidate_weights: dict[str, float]
+    basket_evaluation: dict[str, Any]
+    objective_terms: dict[str, Any]
+    ready_for_gated_review: bool
     factor_exposures: dict[str, float]
     factor_exposure_before: dict[str, float]
     factor_exposure_after: dict[str, float]
@@ -107,6 +128,7 @@ class PortfolioConstructionModel:
         scorecard_permission: str | None = None,
         turnover_budget: float | None = None,
         objective: ConstructionObjective | None = None,
+        hedge_intent: dict[str, Any] | None = None,
     ) -> PortfolioConstructionResult:
         base = _proportional_weights(_clean_weights(base_weights))
         current = _cash_first_weights(_clean_weights(current_weights))
@@ -196,9 +218,48 @@ class PortfolioConstructionModel:
                 "hedge_allowed": str(scorecard_permission or "") not in NO_ADD_PERMISSIONS,
             },
         )
+        candidate_weights, candidate_events = _build_active_basket_candidate_weights(
+            weights=weights,
+            hedge_intent=hedge_intent,
+        )
+        basket_evaluation = evaluate_active_basket_policy(
+            candidate_weights,
+            minimum_weight_floor_events=candidate_events.get("minimum_weight_floor_events") or [],
+            strategy_breadth_report=alpha_context.get("strategy_breadth_report")
+            if isinstance(alpha_context.get("strategy_breadth_report"), dict)
+            else None,
+        )
+        candidate_policy_evaluation = evaluate_policy(
+            weights=candidate_weights,
+            current_weights=current,
+            context={
+                "max_turnover_per_cycle": budget,
+                "hedge_allowed": bool((hedge_intent or {}).get("add_hedge_etf")),
+            },
+        )
+        basket_evaluation["candidate_policy_evaluation"] = candidate_policy_evaluation
+        basket_evaluation["candidate_policy_ok"] = bool(candidate_policy_evaluation.get("allowed"))
+        basket_evaluation["candidate_cleanup_events"] = candidate_events
+        objective_terms = _active_basket_objective_terms(
+            candidate_weights=candidate_weights,
+            current_weights=current,
+            alpha_metrics=alpha_metrics_after,
+            factor_exposures=factor_exposures,
+            basket_evaluation=basket_evaluation,
+            policy_evaluation=candidate_policy_evaluation,
+            turnover_budget=budget,
+        )
 
         return PortfolioConstructionResult(
             target_weights=weights,
+            pc_objective_version=PC_BASKET_OBJECTIVE_VERSION,
+            execution_authority="none",
+            target_weight_mutation="none",
+            pc_mode=PC_MODE_SHADOW,
+            candidate_weights=candidate_weights,
+            basket_evaluation=basket_evaluation,
+            objective_terms=objective_terms,
+            ready_for_gated_review=False,
             factor_exposures=factor_exposures,
             factor_exposure_before=factor_before,
             factor_exposure_after=factor_exposures,
@@ -236,6 +297,12 @@ class PortfolioConstructionModel:
                 "construction_source": "portfolio_construction",
                 "objective": objective.to_dict(),
                 "execution_effect": "diagnostic_only",
+                "execution_authority": "none",
+                "target_weight_mutation": "none",
+                "pc_mode": PC_MODE_SHADOW,
+                "pc_objective_version": PC_BASKET_OBJECTIVE_VERSION,
+                "pc_shadow_candidate_is_not_target_builder_input": True,
+                "ready_for_gated_review": False,
                 "deterministic": True,
                 "consumes_raw_llm_adjusted_weights": False,
                 "basket_limit_multiplier": self.basket_limit_multiplier,
@@ -350,6 +417,173 @@ class PortfolioConstructionModel:
             if exposure > reduced_limit + 1e-6:
                 violations.append(f"basket_limit_remaining:{group_name} {exposure:.2%}>{reduced_limit:.2%}")
         return violations
+
+
+def _build_active_basket_candidate_weights(
+    *,
+    weights: dict[str, float],
+    hedge_intent: dict[str, Any] | None,
+) -> tuple[dict[str, float], dict[str, Any]]:
+    """Build the basket-aware shadow candidate without changing execution target."""
+    capped, policy_cap_events, policy_cash_raised = apply_policy_caps(weights)
+    candidate = _cash_first_weights(capped)
+    events: dict[str, Any] = {
+        "policy_cap_events": policy_cap_events,
+        "policy_cash_raised": round(float(policy_cash_raised or 0.0), 6),
+        "minimum_weight_floor_events": [],
+        "role_max_trim_events": [],
+        "global_max_trim_events": [],
+        "hedge_clear_events": [],
+    }
+
+    hedge_allowed = bool((hedge_intent or {}).get("add_hedge_etf"))
+    for ticker, weight in sorted(candidate.items()):
+        if ticker == "CASH" or weight <= 0:
+            continue
+        role = get_role(ticker)
+        role_policy = ACTIVE_BASKET_POLICY.get(role)
+        if role_policy and role_policy.requires_hedge_intent and not hedge_allowed:
+            _clear_candidate_weight(
+                candidate,
+                ticker,
+                events["hedge_clear_events"],
+                reason="hedge_role_requires_hedge_intent",
+            )
+
+    for ticker, weight in sorted(candidate.items()):
+        if ticker == "CASH" or weight <= 0:
+            continue
+        if weight < MIN_EXECUTABLE_WEIGHT:
+            _clear_candidate_weight(
+                candidate,
+                ticker,
+                events["minimum_weight_floor_events"],
+                reason=f"below_minimum_executable_weight:{MIN_EXECUTABLE_WEIGHT:.4f}",
+            )
+
+    for role, role_policy in ACTIVE_BASKET_POLICY.items():
+        active = _active_role_positions(candidate, role)
+        if len(active) <= role_policy.max_positions:
+            continue
+        for ticker, _weight in active[role_policy.max_positions:]:
+            _clear_candidate_weight(
+                candidate,
+                ticker,
+                events["role_max_trim_events"],
+                reason=f"{role.value}_active_count_above_max:{len(active)}>{role_policy.max_positions}",
+            )
+
+    _target_min, target_max = GLOBAL_ACTIVE_COUNT_TARGET
+    active_positions = _active_positions(candidate)
+    if len(active_positions) > target_max:
+        for ticker, _weight in active_positions[target_max:]:
+            _clear_candidate_weight(
+                candidate,
+                ticker,
+                events["global_max_trim_events"],
+                reason=f"global_active_count_above_target:{len(active_positions)}>{target_max}",
+            )
+
+    return _cash_first_weights(candidate), events
+
+
+def _clear_candidate_weight(
+    weights: dict[str, float],
+    ticker: str,
+    event_bucket: list[dict[str, Any]],
+    *,
+    reason: str,
+) -> None:
+    weight = float(weights.get(ticker, 0.0) or 0.0)
+    if weight <= 0:
+        return
+    weights[ticker] = 0.0
+    weights["CASH"] = float(weights.get("CASH", 0.0) or 0.0) + weight
+    event_bucket.append(
+        {
+            "ticker": ticker,
+            "role": get_role(ticker).value,
+            "original": round(weight, 6),
+            "cleared_to": 0.0,
+            "released_to_cash": round(weight, 6),
+            "reason": reason,
+        }
+    )
+
+
+def _active_positions(weights: dict[str, float]) -> list[tuple[str, float]]:
+    rows = [
+        (ticker, float(weight or 0.0))
+        for ticker, weight in weights.items()
+        if ticker != "CASH" and float(weight or 0.0) >= MIN_EXECUTABLE_WEIGHT
+    ]
+    return sorted(rows, key=lambda item: (-item[1], item[0]))
+
+
+def _active_role_positions(weights: dict[str, float], role: TickerRole) -> list[tuple[str, float]]:
+    return [
+        (ticker, weight)
+        for ticker, weight in _active_positions(weights)
+        if get_role(ticker) == role
+    ]
+
+
+def _active_basket_objective_terms(
+    *,
+    candidate_weights: dict[str, float],
+    current_weights: dict[str, float],
+    alpha_metrics: dict[str, Any],
+    factor_exposures: dict[str, float],
+    basket_evaluation: dict[str, Any],
+    policy_evaluation: dict[str, Any],
+    turnover_budget: float | None,
+) -> dict[str, Any]:
+    target_min, target_max = GLOBAL_ACTIVE_COUNT_TARGET
+    alpha_support_score = _clamp01(_optional_float(alpha_metrics.get("signal_alignment_score")) or 0.0)
+    diversification_score = _clamp01(_effective_n(candidate_weights) / max(float(target_max), 1.0))
+    turnover = _turnover(candidate_weights, current_weights)
+    turnover_penalty = _clamp01(turnover / turnover_budget) if turnover_budget and turnover_budget > 0 else _clamp01(turnover)
+    max_factor_exposure = max([float(value or 0.0) for value in factor_exposures.values()] or [0.0])
+    concentration_penalty = _clamp01(max(max_factor_exposure - 0.35, 0.0) / 0.35)
+    warnings = list(basket_evaluation.get("warnings") or [])
+    active_basket_violation_penalty = _clamp01(len(warnings) * 0.10)
+    subscale_count = int(basket_evaluation.get("subscale_count") or 0)
+    subscale_position_penalty = _clamp01(subscale_count * 0.05)
+    policy_violations = list(policy_evaluation.get("violations") or [])
+    policy_violation_penalty = _clamp01(len(policy_violations) * 0.10)
+    score = (
+        alpha_support_score
+        + diversification_score
+        - turnover_penalty
+        - concentration_penalty
+        - active_basket_violation_penalty
+        - subscale_position_penalty
+        - policy_violation_penalty
+    )
+    return {
+        "pc_objective_version": PC_BASKET_OBJECTIVE_VERSION,
+        "execution_authority": "none",
+        "target_weight_mutation": "none",
+        "alpha_support_score": round(alpha_support_score, 6),
+        "diversification_score": round(diversification_score, 6),
+        "turnover_penalty": round(turnover_penalty, 6),
+        "concentration_penalty": round(concentration_penalty, 6),
+        "active_basket_violation_penalty": round(active_basket_violation_penalty, 6),
+        "subscale_position_penalty": round(subscale_position_penalty, 6),
+        "policy_violation_penalty": round(policy_violation_penalty, 6),
+        "score": round(score, 6),
+        "turnover": round(turnover, 6),
+        "candidate_active_count": int(basket_evaluation.get("active_count") or 0),
+        "target_active_count_min": target_min,
+        "target_active_count_max": target_max,
+        "candidate_policy_ok": bool(policy_evaluation.get("allowed")),
+        "warnings": warnings,
+        "policy_violations": policy_violations,
+    }
+
+
+def _clamp01(value: float) -> float:
+    return max(min(float(value or 0.0), 1.0), 0.0)
 
 
 def build_construction_signal_strengths(evidence_bundle: dict | None) -> dict[str, float]:

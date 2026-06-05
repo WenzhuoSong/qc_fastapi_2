@@ -96,17 +96,17 @@ def build_strategy_regime_gap_analysis(
 ) -> dict[str, Any]:
     profile_rows = _dedupe_profiles([_profile_row(item) for item in profiles])
     alpha_rows = [_alpha_run_row(row) for row in (alpha_validation_runs or [])]
-    calibrated_alpha = [
+    statistically_mature_alpha = [
         row for row in profile_rows
         if row["alpha_source"] and row["statistical_status"] in STATISTICALLY_MATURE_STATUSES
     ]
-    regime_rows = _regime_rows(calibrated_alpha)
-    family_rows = _family_rows(calibrated_alpha)
-    weak_rows = _weak_family_regime_rows(calibrated_alpha)
-    simultaneous_failure_rows = _simultaneous_failure_rows(calibrated_alpha)
+    regime_rows = _regime_rows(statistically_mature_alpha)
+    family_rows = _family_rows(statistically_mature_alpha)
+    weak_rows = _weak_family_regime_rows(statistically_mature_alpha)
+    simultaneous_failure_rows = _simultaneous_failure_rows(statistically_mature_alpha)
     actionable_families = sorted({
         row["canonical_family"]
-        for row in calibrated_alpha
+        for row in statistically_mature_alpha
         if row["canonical_family"] in ALPHA_FAMILIES
     })
     uncovered_regimes = [
@@ -140,8 +140,8 @@ def build_strategy_regime_gap_analysis(
         "expected_regimes": list(EXPECTED_REGIMES),
         "expected_alpha_families": list(ALPHA_FAMILIES),
         "profile_count": len(profile_rows),
-        "calibrated_alpha_profile_count": len(calibrated_alpha),
-        "statistically_mature_alpha_profile_count": len(calibrated_alpha),
+        "legacy_calibrated_alpha_profile_count": len(statistically_mature_alpha),
+        "statistically_mature_alpha_profile_count": len(statistically_mature_alpha),
         "actionable_alpha_families": actionable_families,
         "actionable_alpha_family_count": len(actionable_families),
         "momentum_overconcentration": momentum_overconcentration,
@@ -210,10 +210,10 @@ def _dedupe_profiles(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ))
 
 
-def _regime_rows(calibrated_alpha: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _regime_rows(statistically_mature_alpha: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     by_regime: dict[str, list[dict[str, Any]]] = {}
-    for row in calibrated_alpha:
+    for row in statistically_mature_alpha:
         by_regime.setdefault(row["regime"], []).append(row)
 
     for regime in EXPECTED_REGIMES:
@@ -221,14 +221,16 @@ def _regime_rows(calibrated_alpha: list[dict[str, Any]]) -> list[dict[str, Any]]
         families = sorted({row["canonical_family"] for row in items})
         expected = list(EXPECTED_FAMILIES_BY_REGIME.get(regime, ()))
         missing_expected = sorted(set(expected) - set(families))
-        coverage_status = "covered" if families else "missing_calibrated_coverage"
+        coverage_status = "covered" if families else "missing_statistically_mature_coverage"
         if families and not set(families) & set(expected):
             coverage_status = "covered_by_non_preferred_family"
         rows.append({
             "regime": regime,
             "coverage_status": coverage_status,
-            "calibrated_profile_count": len(items),
-            "calibrated_families": families,
+            "statistically_mature_profile_count": len(items),
+            "statistically_mature_families": families,
+            "legacy_calibrated_profile_count": len(items),
+            "legacy_calibrated_families": families,
             "expected_families": expected,
             "missing_expected_families": missing_expected,
             "hit_rate": _weighted_average(items, "hit_rate"),
@@ -239,9 +241,9 @@ def _regime_rows(calibrated_alpha: list[dict[str, Any]]) -> list[dict[str, Any]]
     return rows
 
 
-def _family_rows(calibrated_alpha: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _family_rows(statistically_mature_alpha: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_family: dict[str, list[dict[str, Any]]] = {}
-    for row in calibrated_alpha:
+    for row in statistically_mature_alpha:
         by_family.setdefault(row["canonical_family"], []).append(row)
     rows = []
     for family, items in sorted(by_family.items()):
@@ -252,7 +254,8 @@ def _family_rows(calibrated_alpha: list[dict[str, Any]]) -> list[dict[str, Any]]
         })
         rows.append({
             "family": family,
-            "calibrated_profile_count": len(items),
+            "statistically_mature_profile_count": len(items),
+            "legacy_calibrated_profile_count": len(items),
             "covered_regimes": sorted({row["regime"] for row in items}),
             "weak_regimes": weak_regimes,
             "hit_rate": _weighted_average(items, "hit_rate"),
@@ -263,9 +266,9 @@ def _family_rows(calibrated_alpha: list[dict[str, Any]]) -> list[dict[str, Any]]
     return rows
 
 
-def _weak_family_regime_rows(calibrated_alpha: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _weak_family_regime_rows(statistically_mature_alpha: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for row in calibrated_alpha:
+    for row in statistically_mature_alpha:
         grouped.setdefault((row["canonical_family"], row["regime"]), []).append(row)
     out = []
     for (family, regime), items in sorted(grouped.items()):
@@ -293,10 +296,10 @@ def _weak_family_regime_rows(calibrated_alpha: list[dict[str, Any]]) -> list[dic
     return out
 
 
-def _simultaneous_failure_rows(calibrated_alpha: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Identify regimes where every calibrated alpha profile is weak."""
+def _simultaneous_failure_rows(statistically_mature_alpha: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Identify regimes where every statistically mature alpha profile is weak."""
     grouped: dict[str, list[dict[str, Any]]] = {}
-    for row in calibrated_alpha:
+    for row in statistically_mature_alpha:
         grouped.setdefault(row["regime"], []).append(row)
     out: list[dict[str, Any]] = []
     for regime, items in sorted(grouped.items()):
@@ -314,7 +317,7 @@ def _simultaneous_failure_rows(calibrated_alpha: list[dict[str, Any]]) -> list[d
             "hit_rate": _weighted_average(items, "hit_rate"),
             "avg_excess_vs_spy": _weighted_average(items, "avg_excess_vs_spy"),
             "ic": _weighted_average(items, "ic"),
-            "reason": "all_calibrated_alpha_profiles_weak_in_regime",
+            "reason": "all_statistically_mature_alpha_profiles_weak_in_regime",
         })
     return out
 
@@ -336,7 +339,7 @@ def _research_queue(
                 continue
             seen.add(key)
             queue.append({
-                "priority": "high" if row["coverage_status"] == "missing_calibrated_coverage" else "medium",
+                "priority": "high" if row["coverage_status"] == "missing_statistically_mature_coverage" else "medium",
                 "regime": row["regime"],
                 "suggested_family": family,
                 "reason": row["coverage_status"],
@@ -373,7 +376,7 @@ def _warnings(
 ) -> list[str]:
     warnings = []
     for regime in uncovered_regimes:
-        warnings.append(f"missing_calibrated_regime_coverage:{regime}")
+        warnings.append(f"missing_statistically_mature_regime_coverage:{regime}")
     for row in weak_rows:
         warnings.append(f"family_regime_degraded:{row['family']}:{row['regime']}")
     for row in simultaneous_failure_rows:
@@ -402,7 +405,7 @@ def _alpha_run_row(row: Any) -> dict[str, Any]:
         "generated_at": _iso(_record_get(row, "generated_at")),
         "status": _record_get(row, "status"),
         "independent_alpha_family_count": _record_get(row, "independent_alpha_family_count"),
-        "calibrated_conviction_count": _record_get(row, "calibrated_conviction_count"),
+        "legacy_operational_calibrated_conviction_count": _record_get(row, "calibrated_conviction_count"),
     }
 
 

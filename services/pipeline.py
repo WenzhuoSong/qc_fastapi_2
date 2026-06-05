@@ -1487,7 +1487,13 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 evidence_bundle=evidence_bundle,
                 market_scorecard=market_scorecard,
             )
+            hedge_intent_outcome = _build_hedge_intent_outcome_record(
+                brief=brief,
+                evidence_bundle=evidence_bundle,
+                hedge_intent=hedge_intent,
+            )
             pipeline_context["hedge_intent"] = hedge_intent
+            pipeline_context["hedge_intent_outcome"] = hedge_intent_outcome
             await _save_step_log(
                 analysis_id, "5e_hedge_intent", "hedge_intent",
                 input_data={
@@ -1495,7 +1501,10 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                     "market": (evidence_bundle.get("market") or {}),
                     "market_scorecard": market_scorecard,
                 },
-                output_data=hedge_intent,
+                output_data={
+                    "hedge_intent": hedge_intent,
+                    "hedge_intent_outcome": hedge_intent_outcome,
+                },
                 duration_ms=0,
             )
             construction_input = await _target_builder_construction_input(
@@ -1578,6 +1587,10 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         risk_out["auto_pause"] = pipeline_context.get("auto_pause")
     if pipeline_context.get("evidence_cap_diagnostics"):
         risk_out["evidence_cap_diagnostics"] = pipeline_context.get("evidence_cap_diagnostics")
+    if pipeline_context.get("hedge_intent"):
+        risk_out["hedge_intent"] = pipeline_context.get("hedge_intent")
+    if pipeline_context.get("hedge_intent_outcome"):
+        risk_out["hedge_intent_outcome"] = pipeline_context.get("hedge_intent_outcome")
     if pipeline_context.get("portfolio_construction_shadow"):
         risk_out["portfolio_construction_shadow"] = pipeline_context.get("portfolio_construction_shadow")
     if pipeline_context.get("portfolio_construction_candidate"):
@@ -1601,6 +1614,9 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                 shadow_weights=(pc_payload or {}).get("target_weights") or {},
                 actual_weights=risk_out.get("target_weights") or {},
                 current_weights=brief.get("current_weights") or {},
+                candidate_weights=(pc_payload or {}).get("candidate_weights") or {},
+                basket_evaluation=(pc_payload or {}).get("basket_evaluation") or {},
+                objective_terms=(pc_payload or {}).get("objective_terms") or {},
                 hard_risk_tickers=_hard_risk_tickers_from_governance(risk_out.get("position_governance") or {}),
                 criteria=criteria_from_pc_promotion_config(pc_config),
             ).to_dict()
@@ -1618,6 +1634,12 @@ async def _run_pipeline_inner(trigger: str) -> dict:
                     limit=readiness_limits["limit"],
                     min_cycles=readiness_limits["min_cycles"],
                     min_pass_rate=readiness_limits["min_pass_rate"],
+                    min_basket_policy_ok_rate=readiness_limits["min_basket_policy_ok_rate"],
+                    min_policy_ok_rate=readiness_limits["min_policy_ok_rate"],
+                    min_turnover_ok_rate=readiness_limits["min_turnover_ok_rate"],
+                    max_mean_weight_deviation=readiness_limits["max_mean_weight_deviation"],
+                    max_subscale_position_rate=readiness_limits["max_subscale_position_rate"],
+                    require_no_unclassified_mutations=readiness_limits["require_no_unclassified_mutations"],
                 )
                 confirmed_cycles = await load_gated_semi_auto_confirmed_cycles(
                     limit=max(
@@ -3219,6 +3241,27 @@ def _build_hedge_intent_plan(
     return plan.to_dict()
 
 
+def _build_hedge_intent_outcome_record(
+    *,
+    brief: dict,
+    evidence_bundle: dict,
+    hedge_intent: dict,
+) -> dict:
+    from services.hedge_intent_outcome_log import build_hedge_intent_outcome_record
+
+    market = dict(evidence_bundle.get("market") or {})
+    key_facts = brief.get("key_facts") or {}
+    if "drawdown_pct" not in market and key_facts.get("drawdown_pct") is not None:
+        market["drawdown_pct"] = key_facts.get("drawdown_pct")
+    if "breadth_pct" not in market and key_facts.get("breadth_pct") is not None:
+        market["breadth_pct"] = key_facts.get("breadth_pct")
+    return build_hedge_intent_outcome_record(
+        hedge_intent=hedge_intent,
+        market_context=market,
+        current_weights=brief.get("current_weights") or {},
+    )
+
+
 def _hard_risk_tickers_from_governance(position_governance: dict | None) -> list[str]:
     tickers: list[str] = []
     for row in (position_governance or {}).get("position_decisions") or []:
@@ -3492,6 +3535,12 @@ async def _target_builder_construction_input(
                 limit=readiness_limits["limit"],
                 min_cycles=readiness_limits["min_cycles"],
                 min_pass_rate=readiness_limits["min_pass_rate"],
+                min_basket_policy_ok_rate=readiness_limits["min_basket_policy_ok_rate"],
+                min_policy_ok_rate=readiness_limits["min_policy_ok_rate"],
+                min_turnover_ok_rate=readiness_limits["min_turnover_ok_rate"],
+                max_mean_weight_deviation=readiness_limits["max_mean_weight_deviation"],
+                max_subscale_position_rate=readiness_limits["max_subscale_position_rate"],
+                require_no_unclassified_mutations=readiness_limits["require_no_unclassified_mutations"],
             )
             confirmed_cycles = await load_gated_semi_auto_confirmed_cycles(
                 limit=max(

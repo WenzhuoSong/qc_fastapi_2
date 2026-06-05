@@ -710,6 +710,39 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("trim SOXX,XLK", text)
         self.assertIn("raise_cash 5%", text)
 
+    def test_hedge_intent_outcome_line_is_visible(self):
+        text = _fallback_template(
+            {
+                "approved": False,
+                "regime": "neutral",
+                "stance": "maintain",
+                "rebalance_actions": [],
+                "estimated_cost": 0,
+                "overlays_applied": [],
+                "rejection_reasons": [],
+                "auth_mode": "FULL_AUTO",
+                "timeout_minutes": 20,
+                "debate_summary": {},
+                "market_scorecard": {},
+                "scorecard_enforcement": {},
+                "news_evidence": {},
+                "decision_style": {},
+                "style_enforcement": {},
+                "decision_ledger": {},
+                "hedge_intent_outcome": {
+                    "outcome_status": "pending_t5",
+                    "triggered": True,
+                    "add_hedge_etf": False,
+                    "candidate_hedge_instrument": "PSQ",
+                    "why_not_add_hedge": "severity_0.52_below_threshold_0.70",
+                },
+            }
+        )
+
+        self.assertIn("Hedge intent outcome log", text)
+        self.assertIn("status=pending_t5", text)
+        self.assertIn("candidate=PSQ", text)
+
     def test_decision_ledger_line_warns_on_final_policy_cap(self):
         text = _fallback_template(
             {

@@ -2,6 +2,7 @@ import inspect
 import unittest
 
 import services.portfolio_construction as portfolio_construction_module
+from services.portfolio_construction_gate import construction_input_for_target_builder
 from services.portfolio_construction import (
     PortfolioConstructionModel,
     build_construction_alpha_decision_context,
@@ -58,9 +59,18 @@ class PortfolioConstructionTests(unittest.TestCase):
         self.assertIn("factor_exposure_before", out)
         self.assertIn("factor_exposure_after", out)
         self.assertIn("policy_evaluation", out)
-        self.assertEqual(out["objective"]["primary"], "maximize_independence_adjusted_net_signal_effective_n")
+        self.assertEqual(out["objective"]["primary"], "maximize_effective_n_with_active_basket_policy")
+        self.assertEqual(out["pc_objective_version"], "maximize_effective_n_with_active_basket_v1")
+        self.assertEqual(out["execution_authority"], "none")
+        self.assertEqual(out["target_weight_mutation"], "none")
+        self.assertEqual(out["pc_mode"], "shadow")
+        self.assertFalse(out["ready_for_gated_review"])
         self.assertIn("signal_quality_not_diluted", out["objective"]["subject_to"])
         self.assertIn("alpha_decision_quality_not_diluted", out["objective"]["subject_to"])
+        self.assertIn("global_active_count_within_active_basket_policy", out["objective"]["subject_to"])
+        self.assertIn("role_position_counts_within_active_basket_policy", out["objective"]["subject_to"])
+        self.assertIn("sub_min_executable_positions_excluded", out["objective"]["subject_to"])
+        self.assertIn("hedge_role_requires_hedge_intent", out["objective"]["subject_to"])
         self.assertIn("max_cluster_exposure_by_correlated_strategy_group", out["objective"]["subject_to"])
         self.assertIn("factor_concentration_within_group_limits", out["objective"]["subject_to"])
         self.assertEqual(out["diagnostics"]["objective"]["effective_n_target"], 8)
@@ -74,9 +84,89 @@ class PortfolioConstructionTests(unittest.TestCase):
         self.assertIn("strategy_cluster_exposure_rows", out)
         self.assertTrue(out["diagnostics"]["signal_weighted_objective_enabled"])
         self.assertTrue(out["diagnostics"]["alpha_decision_objective_enabled"])
+        self.assertTrue(out["diagnostics"]["pc_shadow_candidate_is_not_target_builder_input"])
         self.assertGreater(out["target_weights"]["CASH"], 0.52)
+        self.assertIn("candidate_weights", out)
+        self.assertIn("basket_evaluation", out)
+        self.assertTrue(out["basket_evaluation"]["candidate_policy_ok"])
+        self.assertIn("objective_terms", out)
+        for key in [
+            "alpha_support_score",
+            "diversification_score",
+            "turnover_penalty",
+            "concentration_penalty",
+            "active_basket_violation_penalty",
+            "subscale_position_penalty",
+        ]:
+            self.assertIn(key, out["objective_terms"])
         self.assertTrue(any(item.startswith("factor_limit:tech_growth") for item in out["violations"]))
         self.assertFalse(out["diagnostics"]["consumes_raw_llm_adjusted_weights"])
+
+    def test_shadow_candidate_excludes_sub_min_executable_positions(self):
+        out = PortfolioConstructionModel().construct(
+            base_weights={"SPY": 0.20, "XLRE": 0.001, "CASH": 0.799},
+            current_weights={"SPY": 0.20, "XLRE": 0.001, "CASH": 0.799},
+            signal_strengths={},
+            basket_reviews=None,
+            scorecard_permission="normal_rebalance",
+            turnover_budget=None,
+        ).to_dict()
+
+        self.assertNotIn("XLRE", out["candidate_weights"])
+        self.assertAlmostEqual(out["candidate_weights"]["SPY"], 0.20)
+        self.assertGreater(out["candidate_weights"]["CASH"], out["target_weights"]["CASH"])
+        floor_events = out["basket_evaluation"]["candidate_cleanup_events"]["minimum_weight_floor_events"]
+        self.assertEqual(floor_events[0]["ticker"], "XLRE")
+
+    def test_shadow_candidate_respects_role_and_global_position_caps(self):
+        out = PortfolioConstructionModel().construct(
+            base_weights={
+                "SPY": 0.08,
+                "QQQ": 0.08,
+                "IWM": 0.08,
+                "RSP": 0.08,
+                "XLI": 0.06,
+                "XLE": 0.06,
+                "XLK": 0.06,
+                "XLV": 0.06,
+                "XLP": 0.06,
+                "XLY": 0.06,
+                "SOXX": 0.04,
+                "PSI": 0.04,
+                "FTXL": 0.04,
+                "CASH": 0.26,
+            },
+            current_weights={"CASH": 1.0},
+            signal_strengths={},
+            basket_reviews=None,
+            scorecard_permission="normal_rebalance",
+            turnover_budget=None,
+        ).to_dict()
+
+        self.assertLessEqual(out["basket_evaluation"]["active_count"], 10)
+        self.assertLessEqual(out["basket_evaluation"]["roles"]["sector"]["active_count"], 5)
+        self.assertTrue(out["basket_evaluation"]["candidate_policy_ok"])
+        self.assertTrue(out["basket_evaluation"]["candidate_cleanup_events"]["role_max_trim_events"])
+
+    def test_shadow_candidate_is_not_target_builder_input(self):
+        out = PortfolioConstructionModel().construct(
+            base_weights={"SPY": 0.20, "CASH": 0.80},
+            current_weights={"SPY": 0.20, "CASH": 0.80},
+            signal_strengths={},
+            basket_reviews=None,
+            scorecard_permission="normal_rebalance",
+            turnover_budget=None,
+        ).to_dict()
+
+        gate = construction_input_for_target_builder(
+            portfolio_construction_payload={"candidate_weights": out["candidate_weights"]},
+            promotion_gate={"status": "passed", "eligible": True, "blockers": []},
+            config={"portfolio_construction_mode": "gated", "enabled": True},
+        )
+
+        self.assertIsNone(gate["construction_weights"])
+        self.assertEqual(gate["blocked_reason"], "construction_weights_missing")
+        self.assertEqual(gate["construction_weight_source"], "pc_shadow_weights")
 
     def test_basket_review_tightens_group_to_multiplier_limit(self):
         out = PortfolioConstructionModel().construct(

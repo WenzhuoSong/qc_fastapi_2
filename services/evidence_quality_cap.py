@@ -24,6 +24,7 @@ CONVICTION_STATUS_PRIORITY = {
     "statistically_meaningful": 80,
     "indicative": 60,
     "early_signal": 40,
+    "monitoring_ready": 35,
     "insufficient": 30,
 }
 

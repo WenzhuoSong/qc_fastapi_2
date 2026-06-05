@@ -14,14 +14,16 @@ from services.portfolio_construction_evaluator import (
 class PortfolioConstructionEvaluatorTests(unittest.TestCase):
     def test_marks_clean_shadow_as_promotion_candidate(self):
         out = evaluate_portfolio_construction_shadow(
-            shadow_weights={"SPY": 0.20, "PSI": 0.05, "CASH": 0.75},
-            actual_weights={"SPY": 0.20, "PSI": 0.05, "CASH": 0.75},
-            current_weights={"SPY": 0.18, "PSI": 0.04, "CASH": 0.78},
+            shadow_weights={"SPY": 0.20, "QQQ": 0.10, "PSI": 0.05, "IWM": 0.05, "CASH": 0.60},
+            actual_weights={"SPY": 0.20, "QQQ": 0.10, "PSI": 0.05, "IWM": 0.05, "CASH": 0.60},
+            current_weights={"SPY": 0.18, "QQQ": 0.10, "PSI": 0.04, "IWM": 0.05, "CASH": 0.63},
         ).to_dict()
 
         self.assertTrue(out["promotion_ready"])
         self.assertEqual(out["status"], "promotion_candidate")
         self.assertEqual(out["execution_authority"], "none")
+        self.assertTrue(out["metrics"]["basket_policy_ok"])
+        self.assertTrue(out["metrics"]["candidate_policy_allowed"])
 
     def test_blocks_shadow_policy_violation(self):
         out = evaluate_portfolio_construction_shadow(
@@ -70,7 +72,15 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
                 "promotion_ready": True,
                 "blockers": [],
                 "warnings": [],
-                "metrics": {"mean_abs_weight_deviation": 0.01, "turnover_delta": 0.0},
+                "metrics": {
+                    "mean_abs_weight_deviation": 0.01,
+                    "turnover_delta": 0.0,
+                    "basket_policy_ok": True,
+                    "candidate_policy_allowed": True,
+                    "turnover_ok": True,
+                    "subscale_count": 0,
+                    "no_unclassified_mutations": True,
+                },
             }
             for _ in range(3)
         ]
@@ -78,9 +88,37 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
         out = summarize_portfolio_construction_readiness(evaluations, min_cycles=3, min_pass_rate=0.8)
 
         self.assertTrue(out["promotion_ready"])
+        self.assertTrue(out["ready"])
         self.assertEqual(out["status"], "rolling_promotion_candidate")
         self.assertEqual(out["cycles"], 3)
         self.assertEqual(out["pass_rate"], 1.0)
+        self.assertEqual(out["basket_policy_ok_rate"], 1.0)
+
+    def test_summarizes_basket_readiness_low_rate_blocker(self):
+        evaluations = [
+            {
+                "promotion_ready": True,
+                "blockers": [],
+                "warnings": [],
+                "metrics": {
+                    "mean_abs_weight_deviation": 0.01,
+                    "turnover_delta": 0.0,
+                    "basket_policy_ok": False,
+                    "candidate_policy_allowed": True,
+                    "turnover_ok": True,
+                    "subscale_count": 0,
+                    "no_unclassified_mutations": True,
+                },
+            }
+            for _ in range(3)
+        ]
+
+        out = summarize_portfolio_construction_readiness(evaluations, min_cycles=3, min_pass_rate=0.8)
+
+        self.assertFalse(out["promotion_ready"])
+        self.assertEqual(out["status"], "shadow_only")
+        self.assertEqual(out["basket_policy_ok_rate"], 0.0)
+        self.assertIn("basket_policy_ok_rate_below_threshold", out["blockers"])
 
     def test_summarizes_rolling_readiness_blockers(self):
         evaluations = [
@@ -162,6 +200,27 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
         self.assertEqual(gate["status"], "disabled")
         self.assertIn("promotion_gate_disabled", gate["blockers"])
 
+    def test_promotion_gate_inherits_basket_readiness_blockers(self):
+        readiness = {
+            "promotion_ready": False,
+            "ready": False,
+            "status": "shadow_only",
+            "cycles": 20,
+            "pass_rate": 1.0,
+            "blocker_counts": {},
+            "blockers": ["basket_policy_ok_rate_below_threshold"],
+        }
+
+        gate = build_portfolio_construction_promotion_gate(
+            readiness,
+            {"portfolio_construction_mode": "candidate", "enabled": True},
+        )
+
+        self.assertFalse(gate["eligible"])
+        self.assertEqual(gate["status"], "blocked")
+        self.assertIn("basket_policy_ok_rate_below_threshold", gate["blockers"])
+        self.assertIn("readiness_not_promoted", gate["blockers"])
+
     def test_criteria_and_readiness_limits_use_pr4_config_names(self):
         cfg = {
             "max_material_diff": 0.012,
@@ -184,6 +243,11 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
             "min_shadow_cycles": 0,
             "min_cycles": 0,
             "min_pass_rate": 0.0,
+            "min_basket_policy_ok_rate": 0.0,
+            "min_policy_ok_rate": 0.0,
+            "min_turnover_ok_rate": 0.0,
+            "max_subscale_position_rate": 1.0,
+            "require_no_unclassified_mutations": False,
         }
 
         limits = readiness_limits_from_pc_promotion_config(cfg)
@@ -191,6 +255,12 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
             [],
             min_cycles=limits["min_cycles"],
             min_pass_rate=limits["min_pass_rate"],
+            min_basket_policy_ok_rate=limits["min_basket_policy_ok_rate"],
+            min_policy_ok_rate=limits["min_policy_ok_rate"],
+            min_turnover_ok_rate=limits["min_turnover_ok_rate"],
+            max_mean_weight_deviation=limits["max_mean_weight_deviation"],
+            max_subscale_position_rate=limits["max_subscale_position_rate"],
+            require_no_unclassified_mutations=limits["require_no_unclassified_mutations"],
         )
         gate = build_portfolio_construction_rollout_gate(
             readiness,

@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from services.active_basket_policy import evaluate_active_basket_policy
 from services.execution_preflight import preflight_execution_weights
 from services.group_contract import GROUP_DEFINITIONS, calc_factor_exposure
 
@@ -12,6 +13,11 @@ from services.group_contract import GROUP_DEFINITIONS, calc_factor_exposure
 class PortfolioConstructionPromotionCriteria:
     max_mean_weight_deviation: float = 0.015
     max_turnover_delta: float = 0.02
+    min_basket_policy_ok_rate: float = 0.90
+    min_policy_ok_rate: float = 0.95
+    min_turnover_ok_rate: float = 0.80
+    max_subscale_position_rate: float = 0.10
+    require_no_unclassified_mutations: bool = True
 
 
 @dataclass(frozen=True)
@@ -33,6 +39,9 @@ def evaluate_portfolio_construction_shadow(
     shadow_weights: dict[str, Any],
     actual_weights: dict[str, Any],
     current_weights: dict[str, Any],
+    candidate_weights: dict[str, Any] | None = None,
+    basket_evaluation: dict[str, Any] | None = None,
+    objective_terms: dict[str, Any] | None = None,
     hard_risk_tickers: list[str] | set[str] | None = None,
     criteria: PortfolioConstructionPromotionCriteria | None = None,
 ) -> PortfolioConstructionEvaluation:
@@ -52,6 +61,23 @@ def evaluate_portfolio_construction_shadow(
     actual_turnover = _turnover(actual, current)
     turnover_delta = shadow_turnover - actual_turnover
     weight_diff = _weight_diff(shadow, actual)
+    candidate = _clean_weights(candidate_weights) if isinstance(candidate_weights, dict) else shadow
+    basket = (
+        basket_evaluation
+        if isinstance(basket_evaluation, dict) and basket_evaluation
+        else evaluate_active_basket_policy(candidate)
+    )
+    objective = objective_terms if isinstance(objective_terms, dict) else {}
+    candidate_policy = basket.get("candidate_policy_evaluation") if isinstance(basket.get("candidate_policy_evaluation"), dict) else {}
+    candidate_policy_allowed = _optional_bool(
+        basket.get("candidate_policy_ok"),
+        candidate_policy.get("allowed"),
+        shadow_preflight.get("allowed"),
+    )
+    basket_policy_ok = _basket_policy_ok(basket)
+    turnover_ok = turnover_delta <= cfg.max_turnover_delta + 1e-12
+    subscale_count = _safe_int(basket.get("subscale_count"), 0)
+    no_unclassified_mutations = _no_unclassified_mutations(basket, objective)
     high_risk_added = sorted(
         ticker
         for ticker in hard_risk
@@ -66,12 +92,18 @@ def evaluate_portfolio_construction_shadow(
         blockers.append("mean_weight_deviation_too_high")
     if not shadow_preflight["allowed"]:
         blockers.append("shadow_policy_violation")
+    if not candidate_policy_allowed:
+        blockers.append("candidate_policy_violation")
+    if not basket_policy_ok:
+        blockers.append("basket_policy_violation")
     if len(shadow_factor_violations) > len(actual_factor_violations):
         blockers.append("shadow_factor_exposure_worse")
-    if turnover_delta > cfg.max_turnover_delta + 1e-12:
+    if not turnover_ok:
         blockers.append("shadow_turnover_too_high")
     if high_risk_added:
         blockers.append("shadow_adds_hard_risk_ticker")
+    if cfg.require_no_unclassified_mutations and not no_unclassified_mutations:
+        blockers.append("unclassified_mutations_present")
 
     if actual_preflight["allowed"] is False and shadow_preflight["allowed"] is True:
         warnings.append("shadow_reduces_qc_rejection_risk")
@@ -94,6 +126,19 @@ def evaluate_portfolio_construction_shadow(
             "turnover_delta": round(turnover_delta, 6),
             "shadow_policy_allowed": bool(shadow_preflight["allowed"]),
             "actual_policy_allowed": bool(actual_preflight["allowed"]),
+            "candidate_policy_allowed": bool(candidate_policy_allowed),
+            "basket_policy_ok": bool(basket_policy_ok),
+            "turnover_ok": bool(turnover_ok),
+            "subscale_count": subscale_count,
+            "subscale_positions": basket.get("subscale_positions") or [],
+            "no_unclassified_mutations": bool(no_unclassified_mutations),
+            "candidate_active_count": basket.get("active_count"),
+            "candidate_within_target_active_count": basket.get("within_target_active_count"),
+            "candidate_weights_count": len([ticker for ticker, weight in candidate.items() if ticker != "CASH" and weight > 0]),
+            "candidate_objective_score": objective.get("score"),
+            "candidate_objective_terms": objective,
+            "basket_policy_warnings": basket.get("warnings") or [],
+            "candidate_policy_violations": candidate_policy.get("violations") or [],
             "shadow_policy_violations": shadow_preflight,
             "actual_policy_violations": actual_preflight,
             "shadow_factor_violations": shadow_factor_violations,
@@ -104,6 +149,11 @@ def evaluate_portfolio_construction_shadow(
             "max_mean_weight_deviation": cfg.max_mean_weight_deviation,
             "max_material_diff": cfg.max_mean_weight_deviation,
             "max_turnover_delta": cfg.max_turnover_delta,
+            "min_basket_policy_ok_rate": cfg.min_basket_policy_ok_rate,
+            "min_policy_ok_rate": cfg.min_policy_ok_rate,
+            "min_turnover_ok_rate": cfg.min_turnover_ok_rate,
+            "max_subscale_position_rate": cfg.max_subscale_position_rate,
+            "require_no_unclassified_mutations": cfg.require_no_unclassified_mutations,
         },
     )
 
@@ -113,6 +163,11 @@ def criteria_from_pc_promotion_config(config: dict[str, Any] | None) -> Portfoli
     return PortfolioConstructionPromotionCriteria(
         max_mean_weight_deviation=_safe_float(cfg.get("max_material_diff"), 0.015),
         max_turnover_delta=_safe_float(cfg.get("max_turnover_diff"), 0.02),
+        min_basket_policy_ok_rate=_safe_float(cfg.get("min_basket_policy_ok_rate"), 0.90),
+        min_policy_ok_rate=_safe_float(cfg.get("min_policy_ok_rate"), 0.95),
+        min_turnover_ok_rate=_safe_float(cfg.get("min_turnover_ok_rate"), 0.80),
+        max_subscale_position_rate=_safe_float(cfg.get("max_subscale_position_rate"), 0.10),
+        require_no_unclassified_mutations=bool(cfg.get("require_no_unclassified_mutations", True)),
     )
 
 
@@ -126,6 +181,12 @@ def readiness_limits_from_pc_promotion_config(config: dict[str, Any] | None) -> 
         "limit": max(min_cycles, 1),
         "min_cycles": min_cycles,
         "min_pass_rate": _safe_float(cfg.get("min_pass_rate"), 0.90),
+        "min_basket_policy_ok_rate": _safe_float(cfg.get("min_basket_policy_ok_rate"), 0.90),
+        "min_policy_ok_rate": _safe_float(cfg.get("min_policy_ok_rate"), 0.95),
+        "min_turnover_ok_rate": _safe_float(cfg.get("min_turnover_ok_rate"), 0.80),
+        "max_mean_weight_deviation": _safe_float(cfg.get("max_material_diff"), 0.015),
+        "max_subscale_position_rate": _safe_float(cfg.get("max_subscale_position_rate"), 0.10),
+        "require_no_unclassified_mutations": bool(cfg.get("require_no_unclassified_mutations", True)),
     }
 
 
@@ -134,6 +195,12 @@ def summarize_portfolio_construction_readiness(
     *,
     min_cycles: int = 20,
     min_pass_rate: float = 0.90,
+    min_basket_policy_ok_rate: float = 0.90,
+    min_policy_ok_rate: float = 0.95,
+    min_turnover_ok_rate: float = 0.80,
+    max_mean_weight_deviation: float = 0.015,
+    max_subscale_position_rate: float = 0.10,
+    require_no_unclassified_mutations: bool = True,
 ) -> dict[str, Any]:
     rows = [row for row in evaluations if isinstance(row, dict)]
     total = len(rows)
@@ -143,6 +210,11 @@ def summarize_portfolio_construction_readiness(
     warning_counts: dict[str, int] = {}
     mean_deviations: list[float] = []
     turnover_deltas: list[float] = []
+    basket_policy_ok_count = 0
+    policy_ok_count = 0
+    turnover_ok_count = 0
+    subscale_present_count = 0
+    unclassified_mutation_count = 0
 
     for row in rows:
         for blocker in row.get("blockers") or []:
@@ -154,25 +226,73 @@ def summarize_portfolio_construction_readiness(
         metrics = row.get("metrics") or {}
         mean_deviations.append(_safe_float(metrics.get("mean_abs_weight_deviation"), 0.0))
         turnover_deltas.append(_safe_float(metrics.get("turnover_delta"), 0.0))
+        if _metric_bool(metrics, "basket_policy_ok", fallback=False):
+            basket_policy_ok_count += 1
+        if _metric_bool(metrics, "candidate_policy_allowed", "shadow_policy_allowed", fallback=False):
+            policy_ok_count += 1
+        if _metric_bool(metrics, "turnover_ok", fallback=False):
+            turnover_ok_count += 1
+        if _safe_int(metrics.get("subscale_count"), 0) > 0:
+            subscale_present_count += 1
+        if not _metric_bool(metrics, "no_unclassified_mutations", fallback=False):
+            unclassified_mutation_count += 1
 
-    promotion_ready = total >= min_cycles and pass_rate >= min_pass_rate and not blocker_counts
-    status = "rolling_promotion_candidate" if promotion_ready else "collecting_evidence"
-    if total >= min_cycles and pass_rate < min_pass_rate:
-        status = "shadow_only"
+    basket_policy_ok_rate = basket_policy_ok_count / total if total else 0.0
+    policy_ok_rate = policy_ok_count / total if total else 0.0
+    turnover_ok_rate = turnover_ok_count / total if total else 0.0
+    subscale_position_rate = subscale_present_count / total if total else 0.0
+    mean_abs_weight_deviation_avg = (
+        sum(mean_deviations) / len(mean_deviations) if mean_deviations else 0.0
+    )
+    readiness_blockers: list[str] = []
+    if total < min_cycles:
+        readiness_blockers.append("insufficient_cycles")
+    if pass_rate < min_pass_rate:
+        readiness_blockers.append("pass_rate_below_threshold")
+    if basket_policy_ok_rate < min_basket_policy_ok_rate:
+        readiness_blockers.append("basket_policy_ok_rate_below_threshold")
+    if policy_ok_rate < min_policy_ok_rate:
+        readiness_blockers.append("policy_ok_rate_below_threshold")
+    if turnover_ok_rate < min_turnover_ok_rate:
+        readiness_blockers.append("turnover_ok_rate_below_threshold")
+    if mean_abs_weight_deviation_avg > max_mean_weight_deviation + 1e-12:
+        readiness_blockers.append("mean_abs_weight_deviation_above_threshold")
+    if subscale_position_rate > max_subscale_position_rate + 1e-12:
+        readiness_blockers.append("subscale_position_rate_above_threshold")
+    if require_no_unclassified_mutations and unclassified_mutation_count > 0:
+        readiness_blockers.append("unclassified_mutations_present")
     if blocker_counts:
+        readiness_blockers.append("rolling_blockers_present")
+
+    promotion_ready = not readiness_blockers
+    status = "rolling_promotion_candidate" if promotion_ready else "collecting_evidence"
+    if total >= min_cycles and readiness_blockers:
         status = "shadow_only"
 
     return {
         "status": status,
+        "ready": promotion_ready,
         "promotion_ready": promotion_ready,
         "cycles": total,
         "ready_count": ready_count,
         "pass_rate": round(pass_rate, 6),
         "min_cycles": min_cycles,
         "min_pass_rate": min_pass_rate,
+        "basket_policy_ok_rate": round(basket_policy_ok_rate, 6),
+        "min_basket_policy_ok_rate": min_basket_policy_ok_rate,
+        "policy_ok_rate": round(policy_ok_rate, 6),
+        "min_policy_ok_rate": min_policy_ok_rate,
+        "turnover_ok_rate": round(turnover_ok_rate, 6),
+        "min_turnover_ok_rate": min_turnover_ok_rate,
+        "subscale_position_rate": round(subscale_position_rate, 6),
+        "max_subscale_position_rate": max_subscale_position_rate,
+        "unclassified_mutation_count": unclassified_mutation_count,
+        "require_no_unclassified_mutations": require_no_unclassified_mutations,
+        "blockers": readiness_blockers,
         "blocker_counts": dict(sorted(blocker_counts.items())),
         "warning_counts": dict(sorted(warning_counts.items())),
-        "mean_abs_weight_deviation_avg": round(sum(mean_deviations) / len(mean_deviations), 6) if mean_deviations else 0.0,
+        "mean_abs_weight_deviation_avg": round(mean_abs_weight_deviation_avg, 6),
+        "max_mean_weight_deviation": max_mean_weight_deviation,
         "turnover_delta_avg": round(sum(turnover_deltas) / len(turnover_deltas), 6) if turnover_deltas else 0.0,
         "execution_authority": "none",
     }
@@ -208,6 +328,9 @@ def build_portfolio_construction_promotion_gate(
         blockers.append("rolling_blockers_present")
     if not bool(readiness.get("promotion_ready")):
         blockers.append("readiness_not_promoted")
+    for blocker in readiness.get("blockers") or []:
+        blockers.append(str(blocker))
+    blockers = _unique(blockers)
 
     eligible = mode != "shadow" and enabled and not blockers
     status = "eligible_for_manual_review" if eligible and require_manual_approval else "auto_approved"
@@ -295,6 +418,12 @@ async def load_portfolio_construction_readiness(
     limit: int = 20,
     min_cycles: int = 20,
     min_pass_rate: float = 0.90,
+    min_basket_policy_ok_rate: float = 0.90,
+    min_policy_ok_rate: float = 0.95,
+    min_turnover_ok_rate: float = 0.80,
+    max_mean_weight_deviation: float = 0.015,
+    max_subscale_position_rate: float = 0.10,
+    require_no_unclassified_mutations: bool = True,
 ) -> dict[str, Any]:
     from sqlalchemy import desc, select
 
@@ -320,6 +449,12 @@ async def load_portfolio_construction_readiness(
         evaluations,
         min_cycles=min_cycles,
         min_pass_rate=min_pass_rate,
+        min_basket_policy_ok_rate=min_basket_policy_ok_rate,
+        min_policy_ok_rate=min_policy_ok_rate,
+        min_turnover_ok_rate=min_turnover_ok_rate,
+        max_mean_weight_deviation=max_mean_weight_deviation,
+        max_subscale_position_rate=max_subscale_position_rate,
+        require_no_unclassified_mutations=require_no_unclassified_mutations,
     )
 
 
@@ -365,6 +500,58 @@ def is_gated_semi_auto_confirmed_risk_output(risk_output: Any) -> bool:
             or bool(gate.get("eligible"))
         )
     )
+
+
+def _basket_policy_ok(basket: dict[str, Any]) -> bool:
+    if not basket:
+        return False
+    roles = basket.get("roles") if isinstance(basket.get("roles"), dict) else {}
+    role_ok = all(
+        bool(row.get("within_count_range", True))
+        for row in roles.values()
+        if isinstance(row, dict)
+    )
+    return (
+        bool(basket.get("within_target_active_count"))
+        and role_ok
+        and not list(basket.get("warnings") or [])
+    )
+
+
+def _no_unclassified_mutations(basket: dict[str, Any], objective: dict[str, Any]) -> bool:
+    for payload in (basket, objective):
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("unclassified_mutations"):
+            return False
+        if payload.get("unclassified_mutation_count"):
+            return False
+        if payload.get("accounting_contract_violation"):
+            return False
+    return True
+
+
+def _optional_bool(*values: Any) -> bool:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        text = str(value).strip().lower()
+        if text in {"true", "1", "yes", "y", "pass", "passed", "ok"}:
+            return True
+        if text in {"false", "0", "no", "n", "fail", "failed"}:
+            return False
+    return False
+
+
+def _metric_bool(metrics: dict[str, Any], *keys: str, fallback: bool = False) -> bool:
+    for key in keys:
+        if key in metrics:
+            return _optional_bool(metrics.get(key))
+    return fallback
 
 
 def _factor_violations(weights: dict[str, float]) -> list[dict[str, Any]]:

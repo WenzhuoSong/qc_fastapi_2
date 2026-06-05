@@ -39,7 +39,7 @@ DEFAULT_VOTE_THRESHOLDS = {
 }
 
 MEANINGFUL_CONVICTION_STATUSES = {"statistically_meaningful", "indicative"}
-EARLY_CONVICTION_STATUSES = {"early_signal"}
+EARLY_CONVICTION_STATUSES = {"monitoring_ready", "early_signal"}
 REJECT_EVENT_TYPES = {"qc_rejected", "rejected", "command_rejected"}
 
 

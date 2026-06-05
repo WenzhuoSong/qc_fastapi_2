@@ -72,8 +72,11 @@ def build_validation_dashboard_summary(
         if profile.source_bucket == SOURCE_BUCKET_COMBINED and profile.requires_live_confirmation
     )
     status_counts: dict[str, int] = {}
+    statistical_status_counts: dict[str, int] = {}
     for profile in profile_rows:
         status_counts[profile.status] = status_counts.get(profile.status, 0) + 1
+        statistical_status = statistical_interpretation(n=profile.n, hit_rate=profile.hit_rate)["statistical_status"]
+        statistical_status_counts[statistical_status] = statistical_status_counts.get(statistical_status, 0) + 1
 
     return {
         "contract_version": "strategy_validation_dashboard_v1",
@@ -97,6 +100,8 @@ def build_validation_dashboard_summary(
         },
         "regime_level_profiles": sorted(profile_display, key=_regime_profile_sort_key)[: max(profile_limit * 3, profile_limit)],
         "regime_summary_rows": _regime_summary_rows(profile_display),
+        "legacy_operational_status_counts": dict(sorted(status_counts.items())),
+        "statistical_status_counts": dict(sorted(statistical_status_counts.items())),
         "status_counts": dict(sorted(status_counts.items())),
         "display_note": "observe_only_no_execution_authority",
     }
@@ -199,7 +204,7 @@ def _profile_display_row(profile: ConvictionProfile, signals: list[Any]) -> dict
     diagnostics = profile.diagnostics or {}
     construction_epoch = construction_epoch_from_diagnostics(diagnostics)
     stats = statistical_interpretation(n=profile.n, hit_rate=profile.hit_rate)
-    statistical_status = diagnostics.get("statistical_status") or stats["statistical_status"]
+    statistical_status = stats["statistical_status"]
     hit_rate_ci = diagnostics.get("hit_rate_ci") or stats["hit_rate_ci"]
     hit_rate_ci_width = diagnostics.get("hit_rate_ci_width", stats["hit_rate_ci_width"])
     return {

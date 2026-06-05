@@ -111,7 +111,7 @@ class TransactionCostGateTests(unittest.TestCase):
 
         row = out["rows"][0]
         self.assertEqual(row["conviction_status"], "calibrated")
-        self.assertEqual(row["conviction_statistical_status"], "early_signal")
+        self.assertEqual(row["conviction_statistical_status"], "monitoring_ready")
         self.assertEqual(row["conviction_discount"], 0.03)
         self.assertEqual(row["verdict"], "low_edge_to_cost")
 

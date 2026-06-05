@@ -14,7 +14,7 @@ def profile(
     horizon_days: int = 5,
     source_bucket: str = "combined",
     status: str = "calibrated",
-    n: int = 120,
+    n: int = 320,
     hit_rate: float = 0.6,
     avg_excess_vs_spy: float = 0.01,
     ic: float = 0.1,
@@ -91,16 +91,16 @@ class StrategyRegimeGapAnalysisTests(unittest.TestCase):
         self.assertEqual(summary["execution_authority"], "none")
         self.assertEqual(summary["target_weight_mutation"], "none")
         self.assertEqual(summary["profile_count"], 4)
-        self.assertEqual(summary["calibrated_alpha_profile_count"], 2)
+        self.assertEqual(summary["statistically_mature_alpha_profile_count"], 2)
         self.assertEqual(summary["actionable_alpha_families"], ["momentum"])
         self.assertTrue(summary["momentum_overconcentration"])
         self.assertIn("momentum_only_actionable_alpha_family", summary["warnings"])
-        self.assertIn("missing_calibrated_regime_coverage:mean_reverting", summary["warnings"])
+        self.assertIn("missing_statistically_mature_regime_coverage:mean_reverting", summary["warnings"])
         self.assertIn("family_regime_degraded:momentum:defensive", summary["warnings"])
 
         trending = next(row for row in summary["regime_rows"] if row["regime"] == "trending_bull")
         self.assertEqual(trending["coverage_status"], "covered")
-        self.assertEqual(trending["calibrated_families"], ["momentum"])
+        self.assertEqual(trending["statistically_mature_families"], ["momentum"])
         self.assertEqual(trending["hit_rate"], 0.62)
 
         defensive = next(row for row in summary["regime_rows"] if row["regime"] == "defensive")
@@ -121,7 +121,7 @@ class StrategyRegimeGapAnalysisTests(unittest.TestCase):
         self.assertIn(("mean_reverting", "mean_reversion"), suggestions)
         self.assertIn(("high_vol", "volatility_hedge"), suggestions)
 
-    def test_multiple_calibrated_alpha_families_clear_momentum_only_warning(self):
+    def test_multiple_statistically_mature_alpha_families_clear_momentum_only_warning(self):
         profiles = [
             profile("leveraged_etf_momentum_allocator", "trending_bull", ticker="TQQQ"),
             profile("low_vol_factor", "defensive", ticker="BSV", action="de_risk", hit_rate=0.57),
@@ -154,7 +154,7 @@ class StrategyRegimeGapAnalysisTests(unittest.TestCase):
         self.assertEqual(summary["profile_count"], 0)
         self.assertEqual(summary["execution_authority"], "none")
 
-    def test_flags_regime_where_all_calibrated_profiles_are_weak(self):
+    def test_flags_regime_where_all_statistically_mature_profiles_are_weak(self):
         summary = build_strategy_regime_gap_analysis(
             profiles=[
                 profile(
@@ -187,7 +187,7 @@ class StrategyRegimeGapAnalysisTests(unittest.TestCase):
         rows = summary["simultaneous_failure_regime_rows"]
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["regime"], "high_vol")
-        self.assertEqual(rows[0]["reason"], "all_calibrated_alpha_profiles_weak_in_regime")
+        self.assertEqual(rows[0]["reason"], "all_statistically_mature_alpha_profiles_weak_in_regime")
         self.assertIn("all_strategies_fail_simultaneously:high_vol", summary["warnings"])
 
 

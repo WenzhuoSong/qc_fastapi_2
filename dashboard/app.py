@@ -48,6 +48,9 @@ from db.session import AsyncSessionLocal
 from services.operational_health import build_operational_health_snapshot
 from services.playground import _recent_snapshot_row_limit
 from services.evidence_cap_calibration import load_evidence_cap_calibration_report
+from services.alpha_attribution_report import load_monthly_alpha_attribution_report
+from services.hedge_intent_outcome_log import summarize_hedge_threshold_assessments
+from services.strategy_breadth_calibration import build_strategy_breadth_calibration_report
 from services.command_lifecycle import build_reconciliation_lag_report
 from services.weight_source_contract import (
     classify_weight_column,
@@ -141,6 +144,15 @@ async def build_dashboard_summary() -> dict[str, Any]:
         performance_attribution=performance_attribution,
         strategy_evidence=strategy_evidence,
     )
+    hedge_calibration = await _hedge_intent_outcome_dashboard()
+    validation_overview = _validation_overview_dashboard(
+        strategy_evidence=strategy_evidence,
+        performance_attribution=performance_attribution,
+        portfolio_construction=pc_objective,
+        latest_analysis=latest_analysis,
+        hedge_calibration=hedge_calibration,
+        portfolio_risk_diagnostic=portfolio_risk_diagnostic,
+    )
     cron_runs = await _latest_cron_runs()
     data_quality_audit = await _data_quality_audit_trend()
     execution = await _latest_execution()
@@ -166,6 +178,8 @@ async def build_dashboard_summary() -> dict[str, Any]:
         "alpha_readiness_report": alpha_readiness_report,
         "alpha_decision_policy": alpha_decision_policy,
         "alpha_decision_review_surface": alpha_decision_review_surface,
+        "hedge_calibration": hedge_calibration,
+        "validation_overview": validation_overview,
         "cron_runs": cron_runs,
         "data_quality_audit": data_quality_audit,
         "execution": execution,
@@ -183,6 +197,180 @@ def _weight_source_contract_dashboard() -> dict[str, Any]:
         **contract,
         "labels": dashboard_weight_source_labels(),
         "execution_authority": "display_contract_only",
+    }
+
+
+async def _hedge_intent_outcome_dashboard(limit: int = 30) -> dict[str, Any]:
+    limit = max(min(int(limit or 30), 100), 1)
+    try:
+        async with AsyncSessionLocal() as db:
+            rows = (
+                await db.execute(
+                    select(AgentAnalysis.id, AgentAnalysis.analyzed_at, AgentAnalysis.risk_output)
+                    .order_by(desc(AgentAnalysis.analyzed_at), desc(AgentAnalysis.id))
+                    .limit(max(limit * 3, limit))
+                )
+            ).all()
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"{type(exc).__name__}: {exc}",
+            "summary": {},
+            "recent_rows": [],
+            "severity_distribution": {},
+            "no_hedge_followed_by_drawdown_count": 0,
+            "hedge_buy_followed_by_rebound_loss_count": 0,
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+        }
+
+    outcome_rows: list[dict[str, Any]] = []
+    for analysis_id, analyzed_at, risk_output in rows:
+        risk = risk_output if isinstance(risk_output, dict) else {}
+        outcome = risk.get("hedge_intent_outcome") if isinstance(risk, dict) else None
+        if not isinstance(outcome, dict) or not outcome:
+            continue
+        compact = _compact_hedge_intent_outcome(outcome)
+        compact["analysis_id"] = analysis_id
+        compact["analyzed_at"] = _iso(analyzed_at)
+        outcome_rows.append(compact)
+        if len(outcome_rows) >= limit:
+            break
+
+    summary = summarize_hedge_threshold_assessments(outcome_rows, limit=limit)
+    return {
+        "available": bool(outcome_rows),
+        "reason": "" if outcome_rows else "no hedge intent outcome rows found",
+        "summary": summary,
+        "recent_rows": outcome_rows,
+        "severity_distribution": _hedge_severity_distribution(outcome_rows),
+        "no_hedge_followed_by_drawdown_count": _count_no_hedge_followed_by_drawdown(outcome_rows),
+        "hedge_buy_followed_by_rebound_loss_count": _count_hedge_buy_followed_by_rebound_loss(outcome_rows),
+        "execution_authority": summary.get("execution_authority", "none"),
+        "target_weight_mutation": summary.get("target_weight_mutation", "none"),
+    }
+
+
+def _hedge_severity_distribution(rows: list[dict[str, Any]]) -> dict[str, int]:
+    buckets = {"lt_0_40": 0, "0_40_to_0_70": 0, "gte_0_70": 0, "missing": 0}
+    for row in rows:
+        severity = _json_safe_number(row.get("severity"))
+        if severity is None:
+            buckets["missing"] += 1
+        elif severity < 0.40:
+            buckets["lt_0_40"] += 1
+        elif severity < 0.70:
+            buckets["0_40_to_0_70"] += 1
+        else:
+            buckets["gte_0_70"] += 1
+    return buckets
+
+
+def _count_no_hedge_followed_by_drawdown(rows: list[dict[str, Any]]) -> int:
+    return sum(
+        1
+        for row in rows
+        if bool(row.get("triggered"))
+        and not bool(row.get("add_hedge_etf"))
+        and (_json_safe_number(row.get("spy_return_5d")) or 0.0) <= -0.03
+    )
+
+
+def _count_hedge_buy_followed_by_rebound_loss(rows: list[dict[str, Any]]) -> int:
+    return sum(
+        1
+        for row in rows
+        if bool(row.get("add_hedge_etf"))
+        and (_json_safe_number(row.get("spy_return_5d")) or 0.0) >= 0.02
+        and (_json_safe_number(row.get("hedge_instrument_return_5d")) or 0.0) < 0.0
+    )
+
+
+def _validation_overview_dashboard(
+    *,
+    strategy_evidence: dict[str, Any],
+    performance_attribution: dict[str, Any],
+    portfolio_construction: dict[str, Any],
+    latest_analysis: dict[str, Any],
+    hedge_calibration: dict[str, Any],
+    portfolio_risk_diagnostic: dict[str, Any],
+) -> dict[str, Any]:
+    monthly = performance_attribution.get("monthly_alpha_report") or {}
+    breadth = strategy_evidence.get("strategy_breadth_calibration") or {}
+    active_basket = portfolio_construction.get("active_basket_policy") or {}
+    basket_calibration = portfolio_construction.get("active_basket_calibration") or {}
+    readiness = portfolio_construction.get("readiness") or {}
+    hedge_outcome = latest_analysis.get("hedge_intent_outcome") or {}
+    hedge_summary = hedge_calibration.get("summary") or {}
+    risk_summary = (portfolio_risk_diagnostic or {}).get("summary") or {}
+
+    return {
+        "available": True,
+        "report_version": "alpha_basket_hedge_validation_overview_v1",
+        "execution_authority": "none",
+        "target_weight_mutation": "none",
+        "alpha_evidence_panel": {
+            "sample_status": monthly.get("sample_status"),
+            "sample_count": monthly.get("sample_count"),
+            "alpha_t_stat": monthly.get("alpha_t_stat"),
+            "beta_vs_spy": monthly.get("beta_vs_spy"),
+            "r_squared": monthly.get("r_squared"),
+            "meets_harvey_t3_threshold": monthly.get("meets_harvey_t3_threshold"),
+            "honest_interpretation": monthly.get("honest_interpretation"),
+            "estimated_independent_clusters": breadth.get("estimated_independent_clusters"),
+            "duplication_ratio": breadth.get("duplication_ratio"),
+            "high_correlation_pair_count": len(breadth.get("high_correlation_pairs") or []),
+            "diversifying_pair_count": len(breadth.get("diversifying_pairs") or []),
+        },
+        "active_basket_panel": {
+            "active_count": active_basket.get("active_count"),
+            "target_active_count_min": active_basket.get("target_active_count_min"),
+            "target_active_count_max": active_basket.get("target_active_count_max"),
+            "within_target_active_count": active_basket.get("within_target_active_count"),
+            "subscale_count": active_basket.get("subscale_count"),
+            "floor_cleared_count": active_basket.get("floor_cleared_count"),
+            "suggested_range": basket_calibration.get("suggested_range"),
+            "suggestion": basket_calibration.get("suggestion"),
+            "suggestion_reason": basket_calibration.get("suggestion_reason") or [],
+            "readiness_status": readiness.get("status"),
+            "readiness_ready": readiness.get("ready"),
+            "readiness_cycles": readiness.get("cycles"),
+            "readiness_blockers": readiness.get("blockers") or [],
+        },
+        "hedge_calibration_panel": {
+            "triggered": hedge_outcome.get("triggered"),
+            "severity": hedge_outcome.get("severity"),
+            "add_hedge_etf": hedge_outcome.get("add_hedge_etf"),
+            "selected_instrument": hedge_outcome.get("selected_instrument"),
+            "candidate_hedge_instrument": hedge_outcome.get("candidate_hedge_instrument"),
+            "why_not_add_hedge": hedge_outcome.get("why_not_add_hedge"),
+            "outcome_status": hedge_outcome.get("outcome_status"),
+            "threshold_assessment": hedge_outcome.get("threshold_assessment"),
+            "hedge_would_have_helped": hedge_outcome.get("hedge_would_have_helped"),
+            "recent_sampled": hedge_summary.get("sampled"),
+            "pending_count": hedge_summary.get("pending_count"),
+            "assessment_counts": hedge_summary.get("assessment_counts") or {},
+            "severity_distribution": hedge_calibration.get("severity_distribution") or {},
+            "no_hedge_followed_by_drawdown_count": hedge_calibration.get("no_hedge_followed_by_drawdown_count"),
+            "hedge_buy_followed_by_rebound_loss_count": hedge_calibration.get("hedge_buy_followed_by_rebound_loss_count"),
+        },
+        "stress_diagnostic_panel": {
+            "max_current_historical_scenario_loss": risk_summary.get("max_current_historical_scenario_loss"),
+            "max_target_historical_scenario_loss": risk_summary.get("max_target_historical_scenario_loss"),
+            "max_current_beta_shock_loss": risk_summary.get("max_current_beta_shock_loss"),
+            "max_target_beta_shock_loss": risk_summary.get("max_target_beta_shock_loss"),
+            "max_current_scenario_loss": risk_summary.get("max_current_scenario_loss"),
+            "max_target_scenario_loss": risk_summary.get("max_target_scenario_loss"),
+        },
+        "recent_hedge_outcome_rows": hedge_calibration.get("recent_rows") or [],
+        "diagnostics_first_contract": {
+            "alpha_authority": monthly.get("execution_authority"),
+            "breadth_authority": breadth.get("execution_authority"),
+            "basket_authority": basket_calibration.get("execution_authority"),
+            "hedge_authority": hedge_outcome.get("execution_authority"),
+            "portfolio_risk_authority": (portfolio_risk_diagnostic or {}).get("execution_authority"),
+            "no_execution_blocker_introduced": True,
+        },
     }
 
 
@@ -527,6 +715,9 @@ async def _latest_analysis() -> dict[str, Any]:
         ),
         "portfolio_construction_promotion_gate": _compact_portfolio_construction_promotion_gate(
             (risk.get("portfolio_construction_promotion_gate") if isinstance(risk, dict) else None) or {}
+        ),
+        "hedge_intent_outcome": _compact_hedge_intent_outcome(
+            (risk.get("hedge_intent_outcome") if isinstance(risk, dict) else None) or {}
         ),
         "final_validation": _compact_final_validation(
             (risk.get("final_validation") if isinstance(risk, dict) else None) or {}
@@ -924,6 +1115,10 @@ async def _live_signal_conviction_dashboard() -> dict[str, Any]:
 async def _performance_attribution_dashboard(limit: int = 12) -> dict[str, Any]:
     """Load read-only beta/factor/residual attribution rows."""
     limit = max(min(int(limit or 12), 52), 1)
+    monthly_report: dict[str, Any] = {
+        "available": False,
+        "reason": "monthly alpha report not loaded",
+    }
     try:
         async with AsyncSessionLocal() as db:
             rows = (
@@ -933,6 +1128,15 @@ async def _performance_attribution_dashboard(limit: int = 12) -> dict[str, Any]:
                     .limit(limit)
                 )
             ).scalars().all()
+            try:
+                monthly_report = await load_monthly_alpha_attribution_report(db)
+            except Exception as exc:
+                monthly_report = {
+                    "available": False,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                    "execution_authority": "none",
+                    "target_weight_mutation": "none",
+                }
     except Exception as exc:
         return {
             "available": False,
@@ -941,16 +1145,24 @@ async def _performance_attribution_dashboard(limit: int = 12) -> dict[str, Any]:
             "return_breakdown_rows": [],
             "recent_rows": [],
             "status_rows": [],
+            "monthly_alpha_report": monthly_report,
         }
 
     if not rows:
         return {
-            "available": False,
+            "available": bool(monthly_report.get("available")),
             "reason": "no performance attribution rows",
             "latest": {},
             "return_breakdown_rows": [],
             "recent_rows": [],
             "status_rows": [],
+            "monthly_alpha_report": monthly_report,
+            "residual_contract": {
+                "label": "residual_alpha_candidate",
+                "meaning": "unexplained return candidate after factor adjustment",
+                "not_proven_alpha": True,
+                "execution_authority": "none",
+            },
         }
 
     compact_rows = [_compact_performance_attribution_row(row) for row in rows]
@@ -961,6 +1173,7 @@ async def _performance_attribution_dashboard(limit: int = 12) -> dict[str, Any]:
         "return_breakdown_rows": _performance_attribution_breakdown_rows(latest),
         "recent_rows": compact_rows,
         "status_rows": _count_rows(compact_rows, "status", label="status"),
+        "monthly_alpha_report": monthly_report,
         "residual_contract": {
             "label": "residual_alpha_candidate",
             "meaning": "unexplained return candidate after SPY, QQQ, and momentum proxy",
@@ -1553,7 +1766,34 @@ def _compact_portfolio_construction_evaluation(evaluation: dict[str, Any]) -> di
         "max_turnover_delta": criteria.get("max_turnover_delta"),
         "shadow_policy_allowed": metrics.get("shadow_policy_allowed"),
         "actual_policy_allowed": metrics.get("actual_policy_allowed"),
+        "candidate_policy_allowed": metrics.get("candidate_policy_allowed"),
+        "basket_policy_ok": metrics.get("basket_policy_ok"),
+        "turnover_ok": metrics.get("turnover_ok"),
+        "subscale_count": metrics.get("subscale_count"),
+        "candidate_active_count": metrics.get("candidate_active_count"),
+        "candidate_within_target_active_count": metrics.get("candidate_within_target_active_count"),
         "shadow_high_risk_tickers_added": metrics.get("shadow_high_risk_tickers_added") or [],
+    }
+
+
+def _compact_hedge_intent_outcome(outcome: dict[str, Any]) -> dict[str, Any]:
+    if not outcome:
+        return {}
+    return {
+        "report_version": outcome.get("report_version"),
+        "date": outcome.get("date"),
+        "triggered": outcome.get("triggered"),
+        "severity": outcome.get("severity"),
+        "add_hedge_etf": outcome.get("add_hedge_etf"),
+        "selected_instrument": outcome.get("selected_instrument"),
+        "candidate_hedge_instrument": outcome.get("candidate_hedge_instrument"),
+        "why_not_add_hedge": outcome.get("why_not_add_hedge"),
+        "outcome_status": outcome.get("outcome_status"),
+        "spy_return_5d": outcome.get("spy_return_5d"),
+        "hedge_instrument_return_5d": outcome.get("hedge_instrument_return_5d"),
+        "hedge_would_have_helped": outcome.get("hedge_would_have_helped"),
+        "threshold_assessment": outcome.get("threshold_assessment"),
+        "execution_authority": outcome.get("execution_authority"),
     }
 
 
@@ -1574,6 +1814,11 @@ def _compact_portfolio_construction_payload(payload: dict[str, Any]) -> dict[str
     alpha_metrics = (
         payload.get("alpha_decision_objective_metrics")
         if isinstance(payload.get("alpha_decision_objective_metrics"), dict)
+        else {}
+    )
+    basket_evaluation = (
+        payload.get("basket_evaluation")
+        if isinstance(payload.get("basket_evaluation"), dict)
         else {}
     )
     return {
@@ -1618,6 +1863,19 @@ def _compact_portfolio_construction_payload(payload: dict[str, Any]) -> dict[str
         "turnover_within_budget": turnover.get("within_budget"),
         "basket_limit_multiplier": diagnostics.get("basket_limit_multiplier"),
         "active_basket_reviews": diagnostics.get("active_basket_reviews") or [],
+        "active_basket_policy": {
+            "contract_version": basket_evaluation.get("contract_version"),
+            "execution_effect": basket_evaluation.get("execution_effect"),
+            "active_count": basket_evaluation.get("active_count"),
+            "target_active_count_min": basket_evaluation.get("target_active_count_min"),
+            "target_active_count_max": basket_evaluation.get("target_active_count_max"),
+            "within_target_active_count": basket_evaluation.get("within_target_active_count"),
+            "subscale_count": basket_evaluation.get("subscale_count"),
+            "floor_cleared_count": basket_evaluation.get("floor_cleared_count"),
+            "estimated_independent_clusters": basket_evaluation.get("estimated_independent_clusters"),
+            "warnings": basket_evaluation.get("warnings") or [],
+        },
+        "active_basket_calibration": basket_evaluation.get("active_basket_calibration") or {},
         "ticker_count": diagnostics.get("ticker_count"),
         "construction_steps": payload.get("construction_steps") or [],
         "violations": payload.get("violations") or [],
@@ -1719,6 +1977,8 @@ def _portfolio_construction_objective_status(
             "deterministic": payload.get("deterministic"),
             "consumes_raw_llm_adjusted_weights": payload.get("consumes_raw_llm_adjusted_weights"),
         },
+        "active_basket_policy": payload.get("active_basket_policy") or {},
+        "active_basket_calibration": payload.get("active_basket_calibration") or {},
         "readiness": _compact_pc_readiness(readiness),
         "promotion_gate": gate,
         "evaluation": evaluation,
@@ -1754,14 +2014,26 @@ def _compact_pc_readiness(readiness: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": readiness.get("status"),
         "promotion_ready": readiness.get("promotion_ready"),
+        "ready": readiness.get("ready"),
         "cycles": readiness.get("cycles"),
         "ready_count": readiness.get("ready_count"),
         "pass_rate": readiness.get("pass_rate"),
         "min_cycles": readiness.get("min_cycles"),
         "min_pass_rate": readiness.get("min_pass_rate"),
+        "basket_policy_ok_rate": readiness.get("basket_policy_ok_rate"),
+        "min_basket_policy_ok_rate": readiness.get("min_basket_policy_ok_rate"),
+        "policy_ok_rate": readiness.get("policy_ok_rate"),
+        "min_policy_ok_rate": readiness.get("min_policy_ok_rate"),
+        "turnover_ok_rate": readiness.get("turnover_ok_rate"),
+        "min_turnover_ok_rate": readiness.get("min_turnover_ok_rate"),
+        "subscale_position_rate": readiness.get("subscale_position_rate"),
+        "max_subscale_position_rate": readiness.get("max_subscale_position_rate"),
+        "unclassified_mutation_count": readiness.get("unclassified_mutation_count"),
+        "blockers": readiness.get("blockers") or [],
         "blocker_counts": readiness.get("blocker_counts") or {},
         "warning_counts": readiness.get("warning_counts") or {},
         "mean_abs_weight_deviation_avg": readiness.get("mean_abs_weight_deviation_avg"),
+        "max_mean_weight_deviation": readiness.get("max_mean_weight_deviation"),
         "turnover_delta_avg": readiness.get("turnover_delta_avg"),
     }
 
@@ -1843,6 +2115,7 @@ def _compact_strategy_evidence(strategies: dict[str, Any]) -> dict[str, Any]:
     strategy_independence = _compact_strategy_independence(
         strategies.get("strategy_independence") if isinstance(strategies.get("strategy_independence"), dict) else {}
     )
+    strategy_breadth = strategy_independence.get("strategy_breadth_calibration") or {}
     card_rows: list[dict[str, Any]] = []
     strategy_rows: list[dict[str, Any]] = []
     for row in strategy_results:
@@ -1900,6 +2173,7 @@ def _compact_strategy_evidence(strategies: dict[str, Any]) -> dict[str, Any]:
         "evidence_summary": summary,
         "strategy_diversity": strategy_diversity,
         "strategy_independence": strategy_independence,
+        "strategy_breadth_calibration": strategy_breadth,
         "evidence_vote_summary": strategies.get("evidence_vote_summary") or {},
         "evidence_cap_observe": evidence_cap_observe,
         "diversity_family_rows": strategy_diversity.get("family_rows") or [],
@@ -1907,6 +2181,8 @@ def _compact_strategy_evidence(strategies: dict[str, Any]) -> dict[str, Any]:
         "independence_pair_rows": strategy_independence.get("pair_rows") or [],
         "independence_low_correlation_pairs": strategy_independence.get("low_correlation_pairs") or [],
         "independence_high_correlation_pairs": strategy_independence.get("high_correlation_pairs") or [],
+        "breadth_duplicate_pairs": strategy_breadth.get("high_correlation_pairs") or [],
+        "breadth_diversifying_pairs": strategy_breadth.get("diversifying_pairs") or [],
         "independence_family_rows": strategy_independence.get("family_correlation_rows") or [],
         "strategy_rows": strategy_rows,
         "evidence_matrix_display_policy": {
@@ -1942,6 +2218,7 @@ def _compact_strategy_independence(raw: dict[str, Any]) -> dict[str, Any]:
             "family_correlation_rows": [],
         }
     baseline = raw.get("baseline_review") if isinstance(raw.get("baseline_review"), dict) else {}
+    breadth_report = build_strategy_breadth_calibration_report(raw)
     return {
         "available": True,
         "contract_version": raw.get("contract_version"),
@@ -1965,6 +2242,7 @@ def _compact_strategy_independence(raw: dict[str, Any]) -> dict[str, Any]:
         "warnings": raw.get("warnings") or [],
         "execution_authority": raw.get("execution_authority"),
         "target_weight_mutation": raw.get("target_weight_mutation"),
+        "strategy_breadth_calibration": breadth_report,
         "pair_rows": raw.get("pair_rows") or [],
         "low_correlation_pairs": raw.get("low_correlation_pairs") or [],
         "high_correlation_pairs": raw.get("high_correlation_pairs") or [],
@@ -2296,9 +2574,17 @@ def _compact_live_signal_conviction_summary(raw: dict[str, Any]) -> dict[str, An
         "regime_summary_rows": _regime_summary_display_rows(raw.get("regime_summary_rows") or []),
         "profile_count_rows": _dict_count_rows(raw.get("profile_counts") or {}, label="source_bucket"),
         "status_count_rows": _dict_count_rows(raw.get("status_counts") or {}, label="status"),
+        "legacy_operational_status_count_rows": _dict_count_rows(
+            raw.get("legacy_operational_status_counts") or raw.get("status_counts") or {},
+            label="legacy_status",
+        ),
+        "statistical_status_count_rows": _dict_count_rows(
+            raw.get("statistical_status_counts") or {},
+            label="statistical_status",
+        ),
         "display_contract": {
             "conviction_number_policy": "no_naked_conviction",
-            "required_context": "conviction_display + source_bucket + n + status",
+            "required_context": "conviction_display + source_bucket + n + statistical_status",
             "execution_authority": "none",
         },
     }
@@ -2527,6 +2813,10 @@ def _compact_portfolio_risk_diagnostic(diagnostic: dict[str, Any]) -> dict[str, 
         "current_historical": diagnostic.get("current_historical") or {},
         "target_scenarios": diagnostic.get("target_scenarios") or [],
         "current_scenarios": diagnostic.get("current_scenarios") or [],
+        "target_scenario_stress": diagnostic.get("target_scenario_stress") or {},
+        "current_scenario_stress": diagnostic.get("current_scenario_stress") or {},
+        "target_beta_shock": diagnostic.get("target_beta_shock") or {},
+        "current_beta_shock": diagnostic.get("current_beta_shock") or {},
         "warnings": diagnostic.get("warnings") or [],
         "error": diagnostic.get("error"),
     }
@@ -3090,6 +3380,7 @@ def render_dashboard(summary: dict[str, Any]) -> str:
     sections = [
         ("execution", "Execution Control", _render_execution_control(summary.get("execution_control") or {}), True),
         ("latest", "Latest Decision", _render_latest_analysis(latest), True),
+        ("validation-overview", "Validation Overview", _render_validation_overview(summary.get("validation_overview") or {}), True),
         ("target-path", "Target Path", _render_target_path_visibility(latest.get("target_path_visibility") or {}), True),
         ("weight-source", "Weight Source Contract", _render_weight_source_contract(summary.get("weight_source_contract") or {}), False),
         ("pc", "Portfolio Construction Objective", _render_portfolio_construction_objective(summary.get("portfolio_construction_objective") or {}), False),
@@ -3137,6 +3428,7 @@ def render_dashboard(summary: dict[str, Any]) -> str:
     <a href="#alpha-window">Alpha</a>
     <a href="#execution">Execution</a>
     <a href="#latest">Decision</a>
+    <a href="#validation-overview">Validation</a>
     <a href="#pc">Portfolio Construction</a>
     <a href="#evidence">Evidence</a>
     <a href="#alpha-review">Alpha</a>
@@ -4147,6 +4439,7 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
     feature_sources = latest.get("feature_source_summary") or {}
     pc_eval = latest.get("portfolio_construction_evaluation") or {}
     pc_gate = latest.get("portfolio_construction_promotion_gate") or {}
+    hedge_outcome = latest.get("hedge_intent_outcome") or {}
     final_validation = latest.get("final_validation") or {}
     target_path = latest.get("target_path_visibility") or {}
     transaction_cost_gate = latest.get("transaction_cost_gate") or {}
@@ -4162,6 +4455,7 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
       <h3>Rejection Reasons</h3>{_render_list("", latest.get("rejection_reasons") or [])}
       <h3>Portfolio Construction Evaluation</h3>{_render_kv(pc_eval)}
       <h3>Portfolio Construction Promotion Gate</h3>{_render_kv(pc_gate)}
+      <h3>Hedge Intent Outcome Log</h3>{_render_kv(hedge_outcome)}
       <h3>Final Risk Validation</h3>{_render_kv(final_validation)}
       <h3>Target Path</h3>{_render_target_path_visibility(target_path)}
       <h3>Transaction Cost Gate</h3>{_render_kv(transaction_cost_gate, keys=["mode", "broker", "status", "execution_effect", "summary", "warnings"])}
@@ -4173,6 +4467,21 @@ def _render_latest_analysis(latest: dict[str, Any]) -> str:
       <h3>Weight Source Contract</h3>{_render_weight_source_contract(latest.get("weight_source_contract") or {})}
       <h3>Decision Ledger</h3>{_render_table((latest.get("decision_ledger") or {}).get("top_decisions") or [], ["ticker", "proposed_action", "final_action", "execution_status", "qc_status", "qc_rejection_reason", "risk_result", "ticker_role", "single_cap", "group_cap", "policy_version", "policy_cap_applied", "policy_cap_original", "cash_raised_by_policy_cap", "entered_via_hedge_path", "hedge_trigger_reasons", "final_target", "final_target_authority", "target_builder_target", "target_builder_target_authority", "portfolio_construction_target", "portfolio_construction_target_authority", "diagnostic_llm_target", "diagnostic_llm_target_authority", "validated_advisory_delta", "validated_advisory_delta_authority", "advisory_validator_result", "changed_by"])}
       <h3>Pipeline Stage Telemetry</h3>{_render_table(latest.get("stage_metrics") or [], ["stage", "agent", "duration_ms", "model", "prompt_tokens", "completion_tokens", "failed"])}
+    """
+
+
+def _render_validation_overview(report: dict[str, Any]) -> str:
+    if not report.get("available"):
+        return "<p class=\"muted\">Validation overview unavailable.</p>"
+    return f"""
+      <div class="grid">
+        <article class="card"><h3>Alpha Evidence Panel</h3>{_render_kv(report.get("alpha_evidence_panel") or {})}</article>
+        <article class="card"><h3>Active Basket Panel</h3>{_render_kv(report.get("active_basket_panel") or {})}</article>
+        <article class="card"><h3>Hedge Calibration Panel</h3>{_render_kv(report.get("hedge_calibration_panel") or {})}</article>
+        <article class="card"><h3>Stress Diagnostics Panel</h3>{_render_kv(report.get("stress_diagnostic_panel") or {})}</article>
+      </div>
+      <h3>Recent Hedge Outcomes</h3>{_render_table(report.get("recent_hedge_outcome_rows") or [], ["analyzed_at", "analysis_id", "triggered", "severity", "add_hedge_etf", "selected_instrument", "candidate_hedge_instrument", "why_not_add_hedge", "outcome_status", "spy_return_5d", "hedge_instrument_return_5d", "threshold_assessment"])}
+      <h3>Diagnostics-First Contract</h3>{_render_kv(report.get("diagnostics_first_contract") or {})}
     """
 
 
@@ -4236,6 +4545,8 @@ def _render_portfolio_construction_objective(pc: dict[str, Any]) -> str:
         <article class="card"><h3>Readiness</h3>{_render_kv(pc.get("readiness") or {})}</article>
         <article class="card"><h3>Promotion Gate</h3>{_render_kv(pc.get("promotion_gate") or {})}</article>
         <article class="card"><h3>Evaluation</h3>{_render_kv(pc.get("evaluation") or {})}</article>
+        <article class="card"><h3>Active Basket Policy</h3>{_render_kv(pc.get("active_basket_policy") or {})}</article>
+        <article class="card"><h3>Active Basket Calibration</h3>{_render_kv(pc.get("active_basket_calibration") or {})}</article>
       </div>
       <h3>Construction Steps</h3>{_render_list("", pc.get("construction_steps") or [])}
       <h3>Violations</h3>{_render_list("", pc.get("violations") or [])}
@@ -4280,6 +4591,7 @@ def _render_strategy_evidence(evidence: dict[str, Any]) -> str:
         "execution_authority": diversity.get("execution_authority"),
     }
     evidence_cap = evidence.get("evidence_cap_observe") or {}
+    breadth = evidence.get("strategy_breadth_calibration") or {}
     return f"""
       <div class="grid">
         <article class="card"><h3>Overview</h3>{_render_kv(overview)}</article>
@@ -4287,8 +4599,11 @@ def _render_strategy_evidence(evidence: dict[str, Any]) -> str:
         <article class="card"><h3>Conviction Display Contract</h3>{_render_kv(conviction_note)}</article>
         <article class="card"><h3>Strategy Diversity</h3>{_render_kv(diversity_note)}</article>
         <article class="card"><h3>Strategy Independence Baseline</h3>{_render_kv(independence, keys=["status", "baseline_established", "operator_review_required", "baseline_reason", "correlation_matrix_available", "strategy_count", "alpha_strategy_count", "effective_independent_alpha_count", "low_correlation_pair_count", "low_abs_correlation_threshold", "high_correlation_pair_count", "avg_alpha_positive_correlation", "execution_authority"])}</article>
+        <article class="card"><h3>Strategy Breadth Calibration</h3>{_render_kv(breadth, keys=["report_version", "status", "total_strategies", "alpha_strategy_count", "eligible_alpha_strategy_count", "estimated_independent_clusters", "estimated_breadth_is_approximation", "duplication_ratio", "minimum_overlap", "insufficient_overlap_pairs", "execution_authority", "target_weight_mutation"])}</article>
         <article class="card"><h3>Evidence Cap Observe</h3>{_render_kv(evidence_cap, keys=["available", "execution_effect", "ticker_count", "degraded_ticker_count", "would_clip_count", "mapping_error_count", "top_degraded_tickers"])}</article>
       </div>
+      <h3>Duplicate Alpha Pairs</h3>{_render_table(evidence.get("breadth_duplicate_pairs") or [], ["a", "b", "a_family", "b_family", "same_family", "overlap", "corr", "abs_corr"])}
+      <h3>Diversifying Strategy Pairs</h3>{_render_table(evidence.get("breadth_diversifying_pairs") or [], ["a", "b", "a_family", "b_family", "same_family", "overlap", "corr", "abs_corr"])}
       <h3>Low-Correlation Strategy Pairs</h3>{_render_table(evidence.get("independence_low_correlation_pairs") or [], ["left", "right", "left_family", "right_family", "same_family", "overlap", "correlation", "abs_correlation", "status"])}
       <h3>High-Correlation Strategy Pairs</h3>{_render_table(evidence.get("independence_high_correlation_pairs") or [], ["left", "right", "left_family", "right_family", "same_family", "overlap", "correlation", "abs_correlation", "status"])}
       <h3>Strategy Correlation Pair Rows</h3>{_render_table(evidence.get("independence_pair_rows") or [], ["left", "right", "left_family", "right_family", "same_family", "overlap", "correlation", "abs_correlation", "status"])}
@@ -4341,7 +4656,8 @@ def _render_evidence_cap_calibration(calibration: dict[str, Any]) -> str:
         <article class="card"><h3>Conviction / Execution</h3>{_render_kv({"profile_count": conviction.get("profile_count"), "meaningful_profile_ratio": conviction.get("meaningful_profile_ratio"), "median_n": conviction.get("median_n"), "event_count": execution.get("event_count"), "rejection_rate": execution.get("rejection_rate"), "top_rejection_reasons": execution.get("top_rejection_reasons")})}</article>
       </div>
       <h3>Recommended Vote Thresholds</h3>{_render_table(threshold_rows, ["action", "min_voted_count", "or_single_conviction_status", "min_confidence", "requires_regime"])}
-      <h3>Conviction Status Counts</h3>{_render_table(_dict_rows(conviction.get("status_counts") or {}, "status", "count"), ["status", "count"])}
+      <h3>Statistical Conviction Status Counts</h3>{_render_table(_dict_rows(conviction.get("statistical_status_counts") or {}, "statistical_status", "count"), ["statistical_status", "count"])}
+      <h3>Legacy Operational Conviction Status Counts</h3>{_render_table(_dict_rows(conviction.get("status_counts") or {}, "legacy_status", "count"), ["legacy_status", "count"])}
       <h3>Conviction Source Counts</h3>{_render_table(_dict_rows(conviction.get("source_counts") or {}, "source_bucket", "count"), ["source_bucket", "count"])}
     """
 
@@ -4377,7 +4693,8 @@ def _render_live_signal_conviction(conviction: dict[str, Any]) -> str:
       </div>
       <h3>Pending Outcomes By Horizon</h3>{_render_table(conviction.get("pending_by_horizon_rows") or [], ["horizon_days", "missing", "mature"])}
       <h3>Profile Counts</h3>{_render_table(conviction.get("profile_count_rows") or [], ["source_bucket", "count"])}
-      <h3>Conviction Status Counts</h3>{_render_table(conviction.get("status_count_rows") or [], ["status", "count"])}
+      <h3>Statistical Conviction Status Counts</h3>{_render_table(conviction.get("statistical_status_count_rows") or [], ["statistical_status", "count"])}
+      <h3>Legacy Operational Conviction Status Counts</h3>{_render_table(conviction.get("legacy_operational_status_count_rows") or [], ["legacy_status", "count"])}
       <h3>Regime-Level Conviction Summary</h3>{_render_table(conviction.get("regime_summary_rows") or [], ["regime_at_signal", "source_bucket", "profile_count", "total_n", "operational_calibrated_profiles", "early_profiles", "insufficient_profiles", "hit_rate", "avg_excess_vs_spy", "ic", "data_lag_filtered"])}
       <h3>Regime-Level Conviction Profiles</h3>{_render_table(conviction.get("regime_level_profiles") or [], profile_columns)}
       <h3>Historical Prior Profiles</h3>{_render_table(conviction.get("historical_prior_profiles") or [], profile_columns)}
@@ -4391,12 +4708,14 @@ def _render_performance_attribution(attribution: dict[str, Any]) -> str:
         reason = attribution.get("reason") or "No performance attribution rows available."
         return f"<p class=\"muted\">{escape(str(reason))}</p>"
     latest = attribution.get("latest") or {}
+    monthly = attribution.get("monthly_alpha_report") or {}
     return f"""
       <div class="grid">
         <article class="card"><h3>Latest Attribution</h3>{_render_kv(latest, keys=["period_key", "status", "portfolio_return", "arithmetic_portfolio_return", "residual_alpha_candidate", "r_squared", "sample_count", "data_quality"])}</article>
         <article class="card"><h3>Factor Model</h3>{_render_kv(latest, keys=["attribution_method", "benchmark_source", "momentum_proxy", "source_tickers"])}</article>
         <article class="card"><h3>Residual Contract</h3>{_render_kv(attribution.get("residual_contract") or {})}</article>
       </div>
+      <h3>Monthly Alpha Report</h3>{_render_kv(monthly, keys=["report_version", "status", "sample_count", "sample_status", "factor_model", "beta_vs_spy", "alpha_daily", "alpha_annualized", "alpha_t_stat", "alpha_p_value", "r_squared", "honest_interpretation", "meets_t2_suggestive", "meets_harvey_t3_threshold", "execution_authority", "target_weight_mutation"])}
       <h3>Return Breakdown</h3>{_render_table(attribution.get("return_breakdown_rows") or [], ["component", "source", "beta", "contribution"])}
       <h3>Recent Attribution Runs</h3>{_render_table(attribution.get("recent_rows") or [], ["period_key", "period_start", "period_end", "status", "portfolio_return", "spy_beta_contribution", "qqq_beta_contribution", "momentum_factor_contribution", "residual_alpha_candidate", "r_squared", "sample_count", "data_quality"])}
       <h3>Status Counts</h3>{_render_table(attribution.get("status_rows") or [], ["status", "count"])}
@@ -4417,6 +4736,10 @@ def _render_portfolio_risk_diagnostic(diagnostic: dict[str, Any]) -> str:
         "source": diagnostic.get("source"),
         "data_quality": diagnostic.get("data_quality"),
     }
+    target_stress = (diagnostic.get("target_scenario_stress") or {}).get("scenarios") or []
+    current_stress = (diagnostic.get("current_scenario_stress") or {}).get("scenarios") or []
+    target_beta = _flatten_beta_shock_rows(diagnostic.get("target_beta_shock") or {})
+    current_beta = _flatten_beta_shock_rows(diagnostic.get("current_beta_shock") or {})
     return f"""
       <div class="grid">
         <article class="card"><h3>Overview</h3>{_render_kv(overview)}</article>
@@ -4426,8 +4749,26 @@ def _render_portfolio_risk_diagnostic(diagnostic: dict[str, Any]) -> str:
       </div>
       <h3>Target Scenario Losses</h3>{_render_table(diagnostic.get("target_scenarios") or [], ["scenario", "portfolio_return", "estimated_loss", "description", "shock_returns"])}
       <h3>Current Scenario Losses</h3>{_render_table(diagnostic.get("current_scenarios") or [], ["scenario", "portfolio_return", "estimated_loss", "description", "shock_returns"])}
+      <h3>Target Historical Scenario Stress</h3>{_render_table(target_stress, ["scenario", "portfolio_return", "spy_return", "relative_return", "estimated_loss", "top_loss_summary"])}
+      <h3>Current Historical Scenario Stress</h3>{_render_table(current_stress, ["scenario", "portfolio_return", "spy_return", "relative_return", "estimated_loss", "top_loss_summary"])}
+      <h3>Target Beta Shock</h3>{_render_table(target_beta, ["shock_group", "shock_name", "reference", "role", "portfolio_return", "estimated_loss", "top_loss_summary"])}
+      <h3>Current Beta Shock</h3>{_render_table(current_beta, ["shock_group", "shock_name", "reference", "role", "portfolio_return", "estimated_loss", "top_loss_summary"])}
       <h3>Warnings</h3>{_render_list("", diagnostic.get("warnings") or [])}
     """
+
+
+def _flatten_beta_shock_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for key, label in (
+        ("spy_shocks", "SPY"),
+        ("qqq_shocks", "QQQ"),
+        ("role_shocks", "role"),
+    ):
+        for row in report.get(key) or []:
+            out = dict(row)
+            out["shock_group"] = label
+            rows.append(out)
+    return rows
 
 
 def _render_alpha_validation_trend(trend: dict[str, Any]) -> str:
@@ -4473,7 +4814,7 @@ def _render_strategy_regime_gap_analysis(analysis: dict[str, Any]) -> str:
         "as_of_date": analysis.get("as_of_date"),
         "latest_profile_date": analysis.get("latest_profile_date"),
         "profile_count": analysis.get("profile_count"),
-        "calibrated_alpha_profile_count": analysis.get("calibrated_alpha_profile_count"),
+        "statistically_mature_alpha_profile_count": analysis.get("statistically_mature_alpha_profile_count"),
         "actionable_alpha_family_count": analysis.get("actionable_alpha_family_count"),
         "actionable_alpha_families": analysis.get("actionable_alpha_families"),
         "momentum_overconcentration": analysis.get("momentum_overconcentration"),
@@ -4490,8 +4831,8 @@ def _render_strategy_regime_gap_analysis(analysis: dict[str, Any]) -> str:
         <article class="card"><h3>Diagnostics Contract</h3>{_render_kv(contract)}</article>
         <article class="card"><h3>Latest Alpha Validation</h3>{_render_kv(analysis.get("latest_alpha_validation") or {})}</article>
       </div>
-      <h3>Regime Coverage Rows</h3>{_render_table(analysis.get("regime_rows") or [], ["regime", "coverage_status", "calibrated_profile_count", "calibrated_families", "expected_families", "missing_expected_families", "hit_rate", "avg_excess_vs_spy", "ic", "total_n"])}
-      <h3>Family Coverage Rows</h3>{_render_table(analysis.get("family_rows") or [], ["family", "calibrated_profile_count", "covered_regimes", "weak_regimes", "hit_rate", "avg_excess_vs_spy", "ic", "total_n"])}
+      <h3>Regime Coverage Rows</h3>{_render_table(analysis.get("regime_rows") or [], ["regime", "coverage_status", "statistically_mature_profile_count", "statistically_mature_families", "expected_families", "missing_expected_families", "hit_rate", "avg_excess_vs_spy", "ic", "total_n"])}
+      <h3>Family Coverage Rows</h3>{_render_table(analysis.get("family_rows") or [], ["family", "statistically_mature_profile_count", "covered_regimes", "weak_regimes", "hit_rate", "avg_excess_vs_spy", "ic", "total_n"])}
       <h3>Weak Family / Regime Rows</h3>{_render_table(analysis.get("weak_family_regime_rows") or [], ["family", "regime", "profile_count", "hit_rate", "avg_excess_vs_spy", "ic", "total_n", "reasons"])}
       <h3>Simultaneous Failure Regime Rows</h3>{_render_table(analysis.get("simultaneous_failure_regime_rows") or [], ["regime", "profile_count", "weak_profile_count", "families", "strategies", "hit_rate", "avg_excess_vs_spy", "ic", "reason"])}
       <h3>Research Queue</h3>{_render_table(analysis.get("research_queue") or [], ["priority", "regime", "suggested_family", "reason"])}

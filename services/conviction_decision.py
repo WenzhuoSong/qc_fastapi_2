@@ -9,16 +9,19 @@ from typing import Any
 
 
 STAT_STATUS_INSUFFICIENT = "insufficient"
+STAT_STATUS_MONITORING_READY = "monitoring_ready"
 STAT_STATUS_EARLY_SIGNAL = "early_signal"
 STAT_STATUS_INDICATIVE = "indicative"
 STAT_STATUS_STATISTICALLY_MEANINGFUL = "statistically_meaningful"
 STAT_INSUFFICIENT_SAMPLES = 30
-STAT_INDICATIVE_SAMPLES = 100
-STAT_MEANINGFUL_SAMPLES = 300
+STAT_EARLY_SIGNAL_SAMPLES = 100
+STAT_INDICATIVE_SAMPLES = 300
+STAT_MEANINGFUL_SAMPLES = 783
 
 
 STATISTICAL_STATUS_SET = {
     STAT_STATUS_INSUFFICIENT,
+    STAT_STATUS_MONITORING_READY,
     STAT_STATUS_EARLY_SIGNAL,
     STAT_STATUS_INDICATIVE,
     STAT_STATUS_STATISTICALLY_MEANINGFUL,
@@ -28,6 +31,7 @@ DECISION_CONVICTION_DISCOUNT_MAP = {
     STAT_STATUS_STATISTICALLY_MEANINGFUL: 1.00,
     STAT_STATUS_INDICATIVE: 0.35,
     STAT_STATUS_EARLY_SIGNAL: 0.10,
+    STAT_STATUS_MONITORING_READY: 0.10,
     STAT_STATUS_INSUFFICIENT: 0.00,
     "missing_profile": 0.00,
 }
@@ -46,16 +50,18 @@ def decision_statistical_status(
         or status
         or ""
     ).strip()
-    if raw in STATISTICAL_STATUS_SET:
-        return raw
     if n is not None:
         return statistical_status_for_samples(max(int(n), 0))
+    if raw in STATISTICAL_STATUS_SET:
+        return raw
     return STAT_STATUS_INSUFFICIENT
 
 
 def statistical_status_for_samples(n: int) -> str:
     if n < STAT_INSUFFICIENT_SAMPLES:
         return STAT_STATUS_INSUFFICIENT
+    if n < STAT_EARLY_SIGNAL_SAMPLES:
+        return STAT_STATUS_MONITORING_READY
     if n < STAT_INDICATIVE_SAMPLES:
         return STAT_STATUS_EARLY_SIGNAL
     if n < STAT_MEANINGFUL_SAMPLES:

@@ -1,7 +1,12 @@
 import unittest
 from datetime import date, timedelta
+from pathlib import Path
 
-from services.portfolio_risk_diagnostic import evaluate_portfolio_var_cvar
+from services.portfolio_risk_diagnostic import (
+    build_beta_shock_report,
+    build_scenario_stress_report,
+    evaluate_portfolio_var_cvar,
+)
 
 
 class PortfolioRiskDiagnosticTest(unittest.TestCase):
@@ -67,6 +72,63 @@ class PortfolioRiskDiagnosticTest(unittest.TestCase):
 
         self.assertEqual(out["target_historical"]["sample_count"], 0)
         self.assertEqual(out["target_historical"]["data_quality"], "missing")
+
+    def test_historical_scenario_stress_reports_planned_windows(self):
+        out = evaluate_portfolio_var_cvar(
+            target_weights={"QQQ": 0.10, "XLE": 0.10, "CASH": 0.80},
+            current_weights={"QQQ": 0.05, "CASH": 0.95},
+            historical_return_rows=[],
+            min_samples=60,
+        )
+
+        stress = out["target_scenario_stress"]
+        self.assertEqual(stress["report_version"], "scenario_stress_v1")
+        self.assertEqual(stress["execution_authority"], "none")
+        self.assertEqual(stress["target_weight_mutation"], "none")
+        scenarios = {row["scenario"]: row for row in stress["scenarios"]}
+        self.assertEqual(
+            set(scenarios),
+            {
+                "covid_crash_2020_03",
+                "rate_shock_2022",
+                "q4_selloff_2018",
+                "tech_rebound_2023",
+            },
+        )
+        covid = scenarios["covid_crash_2020_03"]
+        self.assertLess(covid["portfolio_return"], 0.0)
+        self.assertGreater(covid["estimated_loss"], 0.0)
+        self.assertTrue(covid["top_loss_contributors"])
+        self.assertIn("XLE", covid["top_loss_summary"])
+        self.assertEqual(out["summary"]["max_target_historical_scenario_loss"], stress["summary"]["max_estimated_loss"])
+
+    def test_beta_shock_reports_spy_qqq_and_role_shocks(self):
+        report = build_beta_shock_report({"QQQ": 0.10, "SOXX": 0.05, "SH": 0.02, "CASH": 0.83})
+
+        self.assertEqual(report["report_version"], "beta_shock_v1")
+        self.assertEqual(report["execution_authority"], "none")
+        self.assertEqual(report["target_weight_mutation"], "none")
+        self.assertEqual(len(report["spy_shocks"]), 3)
+        self.assertEqual(len(report["qqq_shocks"]), 3)
+        self.assertEqual(len(report["role_shocks"]), 5)
+        self.assertTrue(report["spy_shocks"][0]["top_loss_contributors"])
+        thematic = {
+            row["shock_name"]: row
+            for row in report["role_shocks"]
+        }["thematic_role_minus_15pct"]
+        self.assertIn("SOXX", thematic["affected_tickers"])
+        self.assertIn("SOXX", thematic["top_loss_summary"])
+
+    def test_pr8_scenario_stress_avoids_covariance_estimation(self):
+        report = build_scenario_stress_report({"SPY": 0.50, "CASH": 0.50})
+        self.assertEqual(report["method"], "deterministic_historical_window_proxy")
+
+        source = Path("services/portfolio_risk_diagnostic.py").read_text()
+        scenario_source = source[source.index("def build_scenario_stress_report") : source.index("def build_beta_shock_report")]
+        beta_source = source[source.index("def build_beta_shock_report") : source.index("def _historical_var_cvar")]
+        for forbidden in ("np.cov", ".cov(", "covariance_matrix"):
+            self.assertNotIn(forbidden, scenario_source.lower())
+            self.assertNotIn(forbidden, beta_source.lower())
 
 
 if __name__ == "__main__":

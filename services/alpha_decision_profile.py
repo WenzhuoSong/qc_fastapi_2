@@ -17,6 +17,7 @@ from services.conviction_decision import (
     STAT_STATUS_EARLY_SIGNAL,
     STAT_STATUS_INDICATIVE,
     STAT_STATUS_INSUFFICIENT,
+    STAT_STATUS_MONITORING_READY,
     STAT_STATUS_STATISTICALLY_MEANINGFUL,
     decision_conviction_discount,
     decision_statistical_status,
@@ -694,7 +695,7 @@ def redundancy_multiplier(correlation: float | None) -> float:
 
 
 def _decision_status(statistical_status: str, residual_status: str, cost_status: str) -> str:
-    if statistical_status in {STAT_STATUS_INSUFFICIENT, STAT_STATUS_EARLY_SIGNAL}:
+    if statistical_status in {STAT_STATUS_INSUFFICIENT, STAT_STATUS_MONITORING_READY, STAT_STATUS_EARLY_SIGNAL}:
         return "needs_more_samples"
     if residual_status == "negative":
         return "degraded"

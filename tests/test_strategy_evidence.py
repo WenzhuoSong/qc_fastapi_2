@@ -269,7 +269,7 @@ class StrategyEvidenceTest(unittest.TestCase):
         )
 
         self.assertEqual(cards[0].conviction, 0.9)
-        self.assertEqual(cards[0].conviction_statistical_status, "early_signal")
+        self.assertEqual(cards[0].conviction_statistical_status, "monitoring_ready")
         self.assertAlmostEqual(cards[0].effective_confidence, 0.072)
         self.assertIn("historical_prior_requires_live_confirmation", cards[0].reason)
 

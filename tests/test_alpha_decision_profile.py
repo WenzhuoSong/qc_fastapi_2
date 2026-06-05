@@ -16,7 +16,7 @@ def profile(
     action: str = "increase",
     status: str = "calibrated",
     source_bucket: str = "combined",
-    n: int = 140,
+    n: int = 320,
     hit_rate: float = 0.61,
     avg_excess_vs_spy: float = 0.02,
     ic: float = 0.10,
@@ -146,7 +146,7 @@ class AlphaDecisionProfileTests(unittest.TestCase):
         )
 
         row = summary["rows"][0]
-        self.assertEqual(row["statistical_status"], "early_signal")
+        self.assertEqual(row["statistical_status"], "monitoring_ready")
         self.assertEqual(row["decision_status"], "needs_more_samples")
         self.assertEqual(row["statistical_credit"], 0.10)
 
