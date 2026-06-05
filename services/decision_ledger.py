@@ -146,6 +146,7 @@ def build_decision_ledger(
             "final_policy_version": risk.get("final_policy_version"),
             "final_policy_cap_events": risk.get("final_policy_cap_events") or [],
             "minimum_weight_floor_events": risk.get("minimum_weight_floor_events") or [],
+            "active_basket_policy": risk.get("active_basket_policy") or {},
             "final_policy_cash_raised": risk.get("final_policy_cash_raised"),
             "final_policy_cash_raised_by_minimum_weight_floor": risk.get(
                 "final_policy_cash_raised_by_minimum_weight_floor"

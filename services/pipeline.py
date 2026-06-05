@@ -2724,6 +2724,7 @@ async def _apply_final_execution_policy_cap(
     risk_out["final_policy_version"] = final_cap["policy_version"]
     risk_out["final_policy_cap_events"] = cap_events
     risk_out["minimum_weight_floor_events"] = final_cap.get("floor_events") or []
+    risk_out["active_basket_policy"] = final_cap.get("active_basket_policy") or {}
     risk_out["final_policy_cash_raised"] = final_cap["cash_raised"]
     risk_out["final_policy_cash_raised_by_policy_cap"] = final_cap.get("cash_raised_by_policy_cap", 0.0)
     risk_out["final_policy_cash_raised_by_minimum_weight_floor"] = final_cap.get(
@@ -2756,6 +2757,7 @@ async def _apply_final_execution_policy_cap(
                 "policy_version": risk_out["final_policy_version"],
                 "cap_events": [],
                 "floor_events": [],
+                "active_basket_policy": final_cap.get("active_basket_policy") or {},
                 "cash_raised": 0.0,
                 "triggered": False,
                 "mutation_ledger": final_cap_envelope_ledger,
@@ -2788,6 +2790,7 @@ async def _apply_final_execution_policy_cap(
             "policy_version": risk_out["final_policy_version"],
             "cap_events": cap_events,
             "floor_events": final_cap.get("floor_events") or [],
+            "active_basket_policy": final_cap.get("active_basket_policy") or {},
             "cash_raised": final_cap["cash_raised"],
             "cash_raised_by_policy_cap": final_cap.get("cash_raised_by_policy_cap", 0.0),
             "cash_raised_by_minimum_weight_floor": final_cap.get(

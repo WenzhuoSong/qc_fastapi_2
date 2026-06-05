@@ -574,6 +574,29 @@ class DecisionLedgerTests(unittest.TestCase):
         self.assertEqual(row["actual_execution_action"], "none")
         self.assertEqual(row["execution_audit"]["reason"], "aborted_no_token")
 
+    def test_ledger_exposes_active_basket_policy_summary(self):
+        ledger = build_decision_ledger(
+            risk_output={
+                "approved": True,
+                "target_weights": {"QQQ": 0.049, "SPY": 0.061, "CASH": 0.89},
+                "rebalance_actions": [],
+                "active_basket_policy": {
+                    "execution_effect": "diagnostic_only",
+                    "active_count": 2,
+                    "target_active_count_min": 4,
+                    "target_active_count_max": 10,
+                    "subscale_count": 1,
+                    "subscale_positions": [{"ticker": "QQQ", "weight": 0.049, "role": "core"}],
+                },
+            },
+            current_holdings={"QQQ": 0.049, "SPY": 0.061, "CASH": 0.89},
+        )
+
+        basket = ledger["portfolio_summary"]["active_basket_policy"]
+        self.assertEqual(basket["execution_effect"], "diagnostic_only")
+        self.assertEqual(basket["active_count"], 2)
+        self.assertEqual(basket["subscale_positions"][0]["ticker"], "QQQ")
+
     def test_ledger_exposes_policy_ack_and_hedge_path_fields(self):
         ledger = build_decision_ledger(
             risk_output={

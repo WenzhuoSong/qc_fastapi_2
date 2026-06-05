@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from services.active_basket_policy import evaluate_active_basket_policy
 from services.execution_policy import (
     MIN_EXECUTABLE_WEIGHT,
     ROLE_POLICIES,
@@ -36,6 +37,10 @@ def apply_final_execution_policy_cap(
         min_weight=MIN_EXECUTABLE_WEIGHT,
     )
     floor_events = _floor_events(floor_diagnostics)
+    active_basket_policy = evaluate_active_basket_policy(
+        floored,
+        minimum_weight_floor_events=floor_events,
+    )
     cash_raised = cap_cash_raised + float(floor_diagnostics.get("total_released") or 0.0)
     mutation_ledger = _mutation_ledger_for_final_policy(
         before_weights=pre_cap,
@@ -52,6 +57,7 @@ def apply_final_execution_policy_cap(
         "policy_version": policy_snapshot()["version"],
         "cap_events": cap_events,
         "floor_events": floor_events,
+        "active_basket_policy": active_basket_policy,
         "cash_raised": round(cash_raised, 6),
         "cash_raised_by_policy_cap": round(cap_cash_raised, 6),
         "cash_raised_by_minimum_weight_floor": round(

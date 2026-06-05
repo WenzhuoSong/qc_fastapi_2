@@ -1068,7 +1068,12 @@ def _compact_decision_ledger(ledger: dict) -> dict:
             "final_policy_version": summary.get("final_policy_version"),
             "final_policy_cap_triggered": summary.get("final_policy_cap_triggered"),
             "final_policy_cap_events": summary.get("final_policy_cap_events") or [],
+            "minimum_weight_floor_events": summary.get("minimum_weight_floor_events") or [],
             "final_policy_cash_raised": summary.get("final_policy_cash_raised"),
+            "final_policy_cash_raised_by_minimum_weight_floor": summary.get(
+                "final_policy_cash_raised_by_minimum_weight_floor"
+            ),
+            "active_basket_policy": summary.get("active_basket_policy") or {},
             "hedge_intent": summary.get("hedge_intent"),
             "ticker_count": summary.get("ticker_count"),
         },
@@ -1115,6 +1120,7 @@ def _format_decision_ledger_line(ledger: dict) -> str:
         and not warnings
         and not (summary.get("final_policy_cap_events") or [])
         and not (summary.get("minimum_weight_floor_events") or [])
+        and not summary.get("active_basket_policy")
         and not summary.get("hedge_intent")
     ):
         return ""
@@ -1146,6 +1152,9 @@ def _format_decision_ledger_line(ledger: dict) -> str:
     floor_events = summary.get("minimum_weight_floor_events") or []
     if floor_events:
         lines.append("  " + _format_minimum_weight_floor_warning(floor_events))
+    basket_line = _format_active_basket_policy_summary(summary.get("active_basket_policy") or {})
+    if basket_line:
+        lines.append("  " + basket_line)
     hedge_line = _format_hedge_intent_summary(summary.get("hedge_intent") or {})
     if hedge_line:
         lines.append(hedge_line)
@@ -1250,6 +1259,64 @@ def _format_minimum_weight_floor_warning(events: list[dict]) -> str:
             bits.append(ticker)
     shown = ", ".join(bits) if bits else "unknown"
     return f"Minimum position floor cleared: {shown}"
+
+
+def _format_active_basket_policy_summary(policy: dict) -> str:
+    if not isinstance(policy, dict) or not policy:
+        return ""
+    active_count = policy.get("active_count")
+    target_min = policy.get("target_active_count_min")
+    target_max = policy.get("target_active_count_max")
+    try:
+        count_part = f"{int(active_count)}/{int(target_min)}-{int(target_max)}"
+    except (TypeError, ValueError):
+        count_part = str(active_count or "unknown")
+
+    roles = policy.get("roles") or {}
+    role_bits = []
+    for role in ("core", "sector", "thematic", "satellite", "hedge"):
+        row = roles.get(role) or {}
+        if not row:
+            continue
+        role_policy = row.get("policy") or {}
+        try:
+            role_bits.append(f"{role}={int(row.get('active_count') or 0)}/{int(role_policy.get('max_positions'))}")
+        except (TypeError, ValueError):
+            role_bits.append(f"{role}={row.get('active_count')}")
+
+    suffix_bits = []
+    subscale = _format_basket_position_list(policy.get("subscale_positions") or [], max_items=4)
+    if subscale:
+        suffix_bits.append(f"subscale: {subscale}")
+    floor = _format_basket_position_list(policy.get("floor_cleared_positions") or [], max_items=4)
+    if floor:
+        suffix_bits.append(f"floor: {floor}")
+    warnings = [str(item) for item in (policy.get("warnings") or [])[:2] if str(item).strip()]
+    if warnings:
+        suffix_bits.append("warnings: " + ";".join(warnings))
+
+    parts = [f"Active basket: {count_part} diagnostic"]
+    if role_bits:
+        parts.append(" ".join(role_bits))
+    if suffix_bits:
+        parts.append(" | ".join(suffix_bits))
+    return " | ".join(parts)
+
+
+def _format_basket_position_list(rows: list[dict], *, max_items: int) -> str:
+    bits = []
+    for row in rows[:max_items]:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or "").upper().strip()
+        if not ticker:
+            continue
+        weight = row.get("weight")
+        try:
+            bits.append(f"{ticker} {float(weight):.2%}")
+        except (TypeError, ValueError):
+            bits.append(ticker)
+    return ", ".join(bits)
 
 
 def _compact_portfolio_construction_evaluation(evaluation: dict) -> dict:

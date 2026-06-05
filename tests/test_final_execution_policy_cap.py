@@ -94,6 +94,8 @@ class FinalExecutionPolicyCapTest(unittest.TestCase):
         self.assertEqual(out["mutation_ledger"]["affected_tickers"], ["XLRE", "XLU"])
         self.assertEqual(out["mutation_ledger"]["mutation_types"], ["min_executable_weight_floor"])
         self.assertAlmostEqual(out["cash_raised_by_minimum_weight_floor"], 0.0028, places=12)
+        self.assertEqual(out["active_basket_policy"]["floor_cleared_count"], 2)
+        self.assertEqual(out["active_basket_policy"]["active_count"], 1)
         self.assertTrue(out["policy_evaluation"]["allowed"], out["policy_evaluation"])
 
     def test_final_cap_module_uses_weight_ops_not_private_normalizer(self):

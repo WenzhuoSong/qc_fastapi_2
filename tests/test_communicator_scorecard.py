@@ -791,6 +791,55 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("XLU 0.10%->0", text)
         self.assertIn("XLRE 0.18%->0", text)
 
+    def test_decision_ledger_line_shows_active_basket_summary(self):
+        text = _fallback_template(
+            {
+                "approved": True,
+                "regime": "neutral",
+                "stance": "maintain",
+                "rebalance_actions": [],
+                "estimated_cost": 0,
+                "overlays_applied": [],
+                "rejection_reasons": [],
+                "auth_mode": "FULL_AUTO",
+                "timeout_minutes": 20,
+                "debate_summary": {},
+                "market_scorecard": {},
+                "scorecard_enforcement": {},
+                "news_evidence": {},
+                "decision_style": {},
+                "decision_ledger": {
+                    "portfolio_summary": {
+                        "risk_approved": True,
+                        "execution_status": "unknown",
+                        "governance_available": True,
+                        "target_construction_mode": "target_builder_gated",
+                        "active_basket_policy": {
+                            "execution_effect": "diagnostic_only",
+                            "active_count": 6,
+                            "target_active_count_min": 4,
+                            "target_active_count_max": 10,
+                            "roles": {
+                                "core": {"active_count": 2, "policy": {"max_positions": 3}},
+                                "sector": {"active_count": 2, "policy": {"max_positions": 5}},
+                                "thematic": {"active_count": 2, "policy": {"max_positions": 4}},
+                                "hedge": {"active_count": 0, "policy": {"max_positions": 2}},
+                            },
+                            "subscale_positions": [{"ticker": "QQQ", "weight": 0.049}],
+                            "floor_cleared_positions": [{"ticker": "XLU", "weight": 0.001}],
+                        },
+                    },
+                    "top_decisions": [],
+                },
+            }
+        )
+
+        self.assertIn("Active basket: 6/4-10 diagnostic", text)
+        self.assertIn("core=2/3", text)
+        self.assertIn("sector=2/5", text)
+        self.assertIn("subscale: QQQ 4.90%", text)
+        self.assertIn("floor: XLU 0.10%", text)
+
     def test_portfolio_construction_evaluation_line_shows_status_and_blockers(self):
         text = _fallback_template(
             {
