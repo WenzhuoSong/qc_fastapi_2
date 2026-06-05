@@ -81,6 +81,10 @@ class MigrationSafetyTests(unittest.TestCase):
         self.assertIn('class AlphaValidationRun', models)
         self.assertIn('__tablename__ = "alpha_validation_runs"', models)
         self.assertRegex(models, r"\bsignal_alignment_score\s*=\s*Column\(")
+        self.assertIn('class ValidationObservation', models)
+        self.assertIn('__tablename__ = "validation_observations"', models)
+        self.assertRegex(models, r"\bobservation_payload\s*=\s*Column\(JSONB,\s*nullable=False\)")
+        self.assertRegex(models, r"\boutcome_payload\s*=\s*Column\(JSONB\)")
 
     def test_holdings_factors_legacy_fields_remain_modeled(self):
         models = (REPO_ROOT / "db" / "models.py").read_text(encoding="utf-8")

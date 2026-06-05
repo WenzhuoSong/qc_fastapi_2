@@ -423,6 +423,18 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('"6e_alpha_validation_persistence"', pipeline_source)
         self.assertIn('"alpha_validation_run"', pipeline_source)
 
+    def test_dashboard_surfaces_validation_observation_loop(self):
+        source = Path("dashboard/app.py").read_text()
+        pipeline_source = Path("services/pipeline.py").read_text()
+
+        self.assertIn("load_validation_observation_summary", source)
+        self.assertIn("def _validation_observation_loop_dashboard", source)
+        self.assertIn('"validation_observation_loop": validation_observation_loop', source)
+        self.assertIn("Validation Observation Loop", source)
+        self.assertIn("persist_observations_for_analysis", pipeline_source)
+        self.assertIn('"6f_validation_observation_loop"', pipeline_source)
+        self.assertIn('"validation_observation_loop"', pipeline_source)
+
     def test_dashboard_surfaces_strategy_regime_gap_analysis(self):
         source = Path("dashboard/app.py").read_text()
 

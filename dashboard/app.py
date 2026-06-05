@@ -50,6 +50,7 @@ from services.playground import _recent_snapshot_row_limit
 from services.evidence_cap_calibration import load_evidence_cap_calibration_report
 from services.alpha_attribution_report import load_monthly_alpha_attribution_report
 from services.hedge_intent_outcome_log import summarize_hedge_threshold_assessments
+from services.validation_observation_loop import load_validation_observation_summary
 from services.strategy_breadth_calibration import build_strategy_breadth_calibration_report
 from services.command_lifecycle import build_reconciliation_lag_report
 from services.weight_source_contract import (
@@ -145,12 +146,14 @@ async def build_dashboard_summary() -> dict[str, Any]:
         strategy_evidence=strategy_evidence,
     )
     hedge_calibration = await _hedge_intent_outcome_dashboard()
+    validation_observation_loop = await _validation_observation_loop_dashboard()
     validation_overview = _validation_overview_dashboard(
         strategy_evidence=strategy_evidence,
         performance_attribution=performance_attribution,
         portfolio_construction=pc_objective,
         latest_analysis=latest_analysis,
         hedge_calibration=hedge_calibration,
+        validation_observation_loop=validation_observation_loop,
         portfolio_risk_diagnostic=portfolio_risk_diagnostic,
     )
     cron_runs = await _latest_cron_runs()
@@ -179,6 +182,7 @@ async def build_dashboard_summary() -> dict[str, Any]:
         "alpha_decision_policy": alpha_decision_policy,
         "alpha_decision_review_surface": alpha_decision_review_surface,
         "hedge_calibration": hedge_calibration,
+        "validation_observation_loop": validation_observation_loop,
         "validation_overview": validation_overview,
         "cron_runs": cron_runs,
         "data_quality_audit": data_quality_audit,
@@ -251,6 +255,23 @@ async def _hedge_intent_outcome_dashboard(limit: int = 30) -> dict[str, Any]:
     }
 
 
+async def _validation_observation_loop_dashboard(limit: int = 50) -> dict[str, Any]:
+    try:
+        async with AsyncSessionLocal() as db:
+            return await load_validation_observation_summary(db, limit=limit)
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"{type(exc).__name__}: {exc}",
+            "contract_version": "validation_observation_loop_v1",
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+            "observation_counts": {},
+            "hedge_threshold_summary": {},
+            "recent_observations": [],
+        }
+
+
 def _hedge_severity_distribution(rows: list[dict[str, Any]]) -> dict[str, int]:
     buckets = {"lt_0_40": 0, "0_40_to_0_70": 0, "gte_0_70": 0, "missing": 0}
     for row in rows:
@@ -293,6 +314,7 @@ def _validation_overview_dashboard(
     portfolio_construction: dict[str, Any],
     latest_analysis: dict[str, Any],
     hedge_calibration: dict[str, Any],
+    validation_observation_loop: dict[str, Any],
     portfolio_risk_diagnostic: dict[str, Any],
 ) -> dict[str, Any]:
     monthly = performance_attribution.get("monthly_alpha_report") or {}
@@ -302,6 +324,7 @@ def _validation_overview_dashboard(
     readiness = portfolio_construction.get("readiness") or {}
     hedge_outcome = latest_analysis.get("hedge_intent_outcome") or {}
     hedge_summary = hedge_calibration.get("summary") or {}
+    observation_summary = validation_observation_loop.get("hedge_threshold_summary") or {}
     risk_summary = (portfolio_risk_diagnostic or {}).get("summary") or {}
 
     return {
@@ -350,9 +373,19 @@ def _validation_overview_dashboard(
             "recent_sampled": hedge_summary.get("sampled"),
             "pending_count": hedge_summary.get("pending_count"),
             "assessment_counts": hedge_summary.get("assessment_counts") or {},
+            "durable_sampled": observation_summary.get("sampled"),
+            "durable_pending_count": observation_summary.get("pending_count"),
+            "durable_assessment_counts": observation_summary.get("assessment_counts") or {},
             "severity_distribution": hedge_calibration.get("severity_distribution") or {},
             "no_hedge_followed_by_drawdown_count": hedge_calibration.get("no_hedge_followed_by_drawdown_count"),
             "hedge_buy_followed_by_rebound_loss_count": hedge_calibration.get("hedge_buy_followed_by_rebound_loss_count"),
+        },
+        "validation_observation_panel": {
+            "sampled": validation_observation_loop.get("sampled"),
+            "observation_counts": validation_observation_loop.get("observation_counts") or {},
+            "recent_count": len(validation_observation_loop.get("recent_observations") or []),
+            "execution_authority": validation_observation_loop.get("execution_authority"),
+            "target_weight_mutation": validation_observation_loop.get("target_weight_mutation"),
         },
         "stress_diagnostic_panel": {
             "max_current_historical_scenario_loss": risk_summary.get("max_current_historical_scenario_loss"),
@@ -4478,6 +4511,7 @@ def _render_validation_overview(report: dict[str, Any]) -> str:
         <article class="card"><h3>Alpha Evidence Panel</h3>{_render_kv(report.get("alpha_evidence_panel") or {})}</article>
         <article class="card"><h3>Active Basket Panel</h3>{_render_kv(report.get("active_basket_panel") or {})}</article>
         <article class="card"><h3>Hedge Calibration Panel</h3>{_render_kv(report.get("hedge_calibration_panel") or {})}</article>
+        <article class="card"><h3>Validation Observation Loop</h3>{_render_kv(report.get("validation_observation_panel") or {})}</article>
         <article class="card"><h3>Stress Diagnostics Panel</h3>{_render_kv(report.get("stress_diagnostic_panel") or {})}</article>
       </div>
       <h3>Recent Hedge Outcomes</h3>{_render_table(report.get("recent_hedge_outcome_rows") or [], ["analyzed_at", "analysis_id", "triggered", "severity", "add_hedge_etf", "selected_instrument", "candidate_hedge_instrument", "why_not_add_hedge", "outcome_status", "spy_return_5d", "hedge_instrument_return_5d", "threshold_assessment"])}

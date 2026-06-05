@@ -242,6 +242,7 @@ affect the others or the main pipeline.
 | `python -m cron.yfinance_backfill` | after close | Research/backfill OHLCV feature store, no execution authority |
 | `python -m cron.daily_signal_freeze` | after playground/yfinance | Observe-only EvidenceCard signal ledger; no execution authority |
 | `python -m cron.daily_signal_validation_refresh` | after signal freeze | Label mature signal outcomes and refresh conviction profiles; no execution authority |
+| `python -m cron.validation_observation_refresh` | hourly or after yfinance | Backfill hedge/basket/execution validation observations and mature T+5 outcomes; no execution authority |
 | `python -m cron.morning_health` | 09:00 | Pre-open health notification |
 | `python -m cron.post_market_report` | 16:35 | Daily report |
 

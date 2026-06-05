@@ -328,6 +328,33 @@ class AlphaValidationRun(Base):
     created_at      = Column(DateTime, nullable=False, default=func.now())
 
 
+class ValidationObservation(Base):
+    __tablename__ = "validation_observations"
+    __table_args__ = (
+        UniqueConstraint("observation_id", name="uq_validation_observation_id"),
+    )
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    observation_id  = Column(String(120), nullable=False, index=True)
+    observation_type = Column(String(40), nullable=False, index=True)
+    analysis_id     = Column(BigInteger, ForeignKey("agent_analysis.id"), index=True)
+    command_id      = Column(String(64), index=True)
+    observed_at     = Column(DateTime, nullable=False, index=True)
+    observation_date = Column(Date, nullable=False, index=True)
+    horizon_days    = Column(Integer)
+    maturity_date   = Column(Date, index=True)
+    status          = Column(String(40), nullable=False, index=True)
+    execution_authority = Column(String(40), nullable=False, default="none")
+    target_weight_mutation = Column(String(40), nullable=False, default="none")
+    observation_payload = Column(JSONB, nullable=False)
+    outcome_payload = Column(JSONB)
+    metrics         = Column(JSONB)
+    recommendation  = Column(JSONB)
+    content_hash    = Column(String(64), nullable=False)
+    created_at      = Column(DateTime, nullable=False, default=func.now())
+    updated_at      = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+
 class AlertLog(Base):
     __tablename__ = "alerts_log"
     id           = Column(BigInteger, primary_key=True, autoincrement=True)

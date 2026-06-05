@@ -110,6 +110,7 @@ from services.evidence_cap_config import default_evidence_cap_config
 from services.alpha_decision_policy import default_alpha_decision_policy_config
 from services.portfolio_risk_diagnostic import load_portfolio_var_cvar_diagnostic
 from services.alpha_validation_persistence import persist_alpha_validation_run
+from services.validation_observation_loop import persist_observations_for_analysis
 from services.mutation_ownership import (
     REGIME_CONSTRAINT_MUTATION_TYPE,
     legacy_mutation_classification_summary,
@@ -2178,6 +2179,11 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         risk_out=risk_out,
         evidence_bundle=evidence_bundle,
     )
+    await _persist_validation_observations_snapshot(
+        analysis_id=analysis_id,
+        trigger_type=trigger,
+        risk_out=risk_out,
+    )
 
     risk_out_for_tracker = risk_out
 
@@ -3205,6 +3211,66 @@ async def _persist_alpha_validation_snapshot(
                 "execution_effect": "diagnostic_only",
             },
             output_data=risk_out["alpha_validation_run"],
+            duration_ms=0,
+            failed=True,
+        )
+
+
+async def _persist_validation_observations_snapshot(
+    *,
+    analysis_id: int,
+    trigger_type: str,
+    risk_out: dict,
+) -> None:
+    """Persist durable observe-only validation observations for calibration."""
+    try:
+        analysis_stub = {
+            "id": analysis_id,
+            "analyzed_at": datetime.utcnow(),
+            "trigger_type": trigger_type,
+            "risk_output": risk_out,
+            "execution_status": "pre_execution_diagnostic",
+        }
+        async with AsyncSessionLocal() as db:
+            written = await persist_observations_for_analysis(db, analysis_stub)
+        record = {
+            "status": "ok",
+            "observations_written": written,
+            "contract_version": "validation_observation_loop_v1",
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+        }
+        risk_out["validation_observation_loop"] = record
+        await _save_step_log(
+            analysis_id,
+            "6f_validation_observation_loop",
+            "validation_observation_loop",
+            input_data={
+                "analysis_id": analysis_id,
+                "trigger_type": trigger_type,
+                "execution_effect": "diagnostic_only",
+            },
+            output_data=record,
+            duration_ms=0,
+        )
+    except Exception as exc:
+        logger.warning("[Stage6] Validation observation persistence failed: %s", exc)
+        risk_out["validation_observation_loop"] = {
+            "status": "unavailable",
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+            "error": str(exc),
+        }
+        await _save_step_log(
+            analysis_id,
+            "6f_validation_observation_loop",
+            "validation_observation_loop",
+            input_data={
+                "analysis_id": analysis_id,
+                "trigger_type": trigger_type,
+                "execution_effect": "diagnostic_only",
+            },
+            output_data=risk_out["validation_observation_loop"],
             duration_ms=0,
             failed=True,
         )
