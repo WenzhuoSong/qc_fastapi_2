@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from services.json_safety import json_safe
+from services.command_lifecycle import build_command_lifecycle_event
 
 
 @dataclass
@@ -29,6 +30,19 @@ class JsonSafetyTest(unittest.TestCase):
         self.assertEqual(safe["dataclass_value"], {"tickers": ["DRAM"]})
         self.assertEqual(safe["datetime_value"], "2026-06-03T13:55:00")
         json.dumps(safe)
+
+    def test_command_lifecycle_event_payload_is_json_safe(self):
+        event = build_command_lifecycle_event(
+            command_id="analysis_1",
+            event_type="execution_result",
+            payload={"blockers": {"daily_command_count_ok", "daily_gross_turnover_ok"}},
+        )
+
+        self.assertEqual(
+            event["payload"]["blockers"],
+            ["daily_command_count_ok", "daily_gross_turnover_ok"],
+        )
+        json.dumps(event["payload"])
 
 
 if __name__ == "__main__":

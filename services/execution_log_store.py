@@ -10,6 +10,7 @@ from sqlalchemy import desc
 from db.models import AccountStateSnapshot, CommandLifecycleEvent, ExecutionLog
 from db.session import AsyncSessionLocal
 from services.command_lifecycle import append_command_lifecycle_event, build_command_reconciliation_events
+from services.json_safety import json_safe
 
 RECONCILIATION_ACTIVE_QC_STATUSES = {
     "accepted",
@@ -31,6 +32,11 @@ RECONCILIATION_TERMINAL_QC_STATUSES = {
 def _utcnow_db_naive() -> datetime:
     """Return UTC time in the naive form expected by DateTime columns."""
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _safe_json_payload(value: Any) -> Any:
+    """Normalize Python-only containers before JSONB persistence."""
+    return json_safe(value)
 
 
 async def create_or_update_submitted_log(
@@ -55,11 +61,13 @@ async def create_or_update_submitted_log(
             "policy_sync": policy_sync_result or {},
             "recorded_at": datetime.now(UTC).isoformat(),
         }
+        payload = _safe_json_payload(payload)
+        safe_qc_response = _safe_json_payload(qc_response) if qc_response is not None else None
         if row:
             row.analysis_id = analysis_id or row.analysis_id
             row.command_type = row.command_type or "weight_adjustment"
             row.command_payload = payload
-            row.qc_response = qc_response or row.qc_response
+            row.qc_response = safe_qc_response or row.qc_response
             row.status = "sent"
             row.qc_status = row.qc_status or "submitted"
         else:
@@ -69,7 +77,7 @@ async def create_or_update_submitted_log(
                     command_id=command_id,
                     command_type="weight_adjustment",
                     command_payload=payload,
-                    qc_response=qc_response,
+                    qc_response=safe_qc_response,
                     status="sent",
                     qc_status="submitted",
                 )
@@ -96,7 +104,7 @@ async def create_or_update_submitted_log(
             source="fastapi",
             payload={
                 "policy_sync_result": policy_sync_result or {},
-                "qc_response": qc_response or {},
+                "qc_response": safe_qc_response or {},
             },
         )
         await db.commit()
@@ -121,6 +129,8 @@ async def create_or_update_policy_sync_log(
         "qc_response": qc_response or {},
         "recorded_at": datetime.now(UTC).isoformat(),
     }
+    payload = _safe_json_payload(payload)
+    safe_qc_response = _safe_json_payload(qc_response) if qc_response is not None else None
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(ExecutionLog).where(ExecutionLog.command_id == command_id))
         row = result.scalar_one_or_none()
@@ -128,7 +138,7 @@ async def create_or_update_policy_sync_log(
             row.analysis_id = analysis_id or row.analysis_id
             row.command_type = row.command_type or "policy_sync"
             row.command_payload = payload
-            row.qc_response = qc_response or row.qc_response
+            row.qc_response = safe_qc_response or row.qc_response
             row.status = status
             if row.qc_status not in {"accepted", "rejected"}:
                 row.qc_status = qc_status
@@ -139,7 +149,7 @@ async def create_or_update_policy_sync_log(
                     command_id=command_id,
                     command_type="policy_sync",
                     command_payload=payload,
-                    qc_response=qc_response,
+                    qc_response=safe_qc_response,
                     status=status,
                     qc_status=qc_status,
                 )
@@ -164,6 +174,8 @@ async def update_execution_result(
     qc_response: dict[str, Any] | None,
     status: str,
 ) -> None:
+    audit_payload = _safe_json_payload(audit_payload)
+    qc_response = _safe_json_payload(qc_response) if qc_response is not None else None
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(ExecutionLog).where(ExecutionLog.command_id == command_id))
         row = result.scalar_one_or_none()
@@ -255,6 +267,7 @@ async def record_recent_same_target_dedupe(
         "same_target_dedupe": dedupe_result,
         "recorded_at": datetime.now(UTC).isoformat(),
     }
+    payload = _safe_json_payload(payload)
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(ExecutionLog).where(ExecutionLog.command_id == command_id))
         row = result.scalar_one_or_none()
@@ -308,6 +321,7 @@ async def record_active_execution_wait(
         "active_execution_gate": active_execution_gate,
         "recorded_at": datetime.now(UTC).isoformat(),
     }
+    payload = _safe_json_payload(payload)
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(ExecutionLog).where(ExecutionLog.command_id == command_id))
         row = result.scalar_one_or_none()
@@ -386,6 +400,7 @@ async def force_reconcile_command(
             "actual_holdings_weights": actual_weights,
             **drift,
         }
+        payload = _safe_json_payload(payload)
         row.command_payload = payload
         await append_command_lifecycle_event(
             db,
@@ -450,14 +465,15 @@ async def update_qc_status(
     qc_response: dict[str, Any] | None = None,
 ) -> None:
     ack_time = _utcnow_db_naive()
+    safe_qc_response = _safe_json_payload(qc_response) if qc_response is not None else None
     values: dict[str, Any] = {
         "qc_status": qc_status,
         "qc_ack_at": ack_time,
     }
     if rejection_reason is not None:
         values["qc_rejection_reason"] = rejection_reason
-    if qc_response is not None:
-        values["qc_response"] = qc_response
+    if safe_qc_response is not None:
+        values["qc_response"] = safe_qc_response
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(ExecutionLog).where(ExecutionLog.command_id == command_id))
         row = result.scalar_one_or_none()
@@ -466,21 +482,24 @@ async def update_qc_status(
             row.qc_ack_at = ack_time
             if rejection_reason is not None:
                 row.qc_rejection_reason = rejection_reason
-            if qc_response is not None:
-                row.qc_response = qc_response
+            if safe_qc_response is not None:
+                row.qc_response = safe_qc_response
         else:
+            command_payload = _safe_json_payload(
+                {
+                    "action_status": "qc_ack_without_local_row",
+                    "command_id": command_id,
+                    "reason": rejection_reason,
+                    "qc_response": safe_qc_response or {},
+                    "recorded_at": datetime.now(UTC).isoformat(),
+                }
+            )
             row = ExecutionLog(
                 analysis_id=_analysis_id_from_command_id(command_id),
                 command_id=command_id,
                 command_type=_command_type_from_id(command_id),
-                command_payload={
-                    "action_status": "qc_ack_without_local_row",
-                    "command_id": command_id,
-                    "reason": rejection_reason,
-                    "qc_response": qc_response or {},
-                    "recorded_at": datetime.now(UTC).isoformat(),
-                },
-                qc_response=qc_response,
+                command_payload=command_payload,
+                qc_response=safe_qc_response,
                 status="ack_received",
                 qc_status=qc_status,
                 qc_ack_at=ack_time,
@@ -495,10 +514,10 @@ async def update_qc_status(
             event_status=qc_status,
             source=_event_source_for_qc_status(qc_status),
             reason=rejection_reason,
-            payload=qc_response or {},
+            payload=safe_qc_response or {},
             event_time=ack_time,
         )
-        superseded = _superseded_lifecycle_payload_from_qc_response(command_id, qc_response or {})
+        superseded = _superseded_lifecycle_payload_from_qc_response(command_id, safe_qc_response or {})
         if superseded:
             await append_command_lifecycle_event(
                 db,
@@ -516,7 +535,7 @@ async def update_qc_status(
             command_id=command_id,
             analysis_id=getattr(row, "analysis_id", None),
             command_payload=(getattr(row, "command_payload", None) or {}),
-            qc_response=qc_response or {},
+            qc_response=safe_qc_response or {},
             event_time=ack_time,
         )
         await db.commit()
@@ -748,6 +767,7 @@ async def reconcile_timeout_no_ack_commands(
             row.qc_rejection_reason = decision["reason"]
             payload = dict(row.command_payload or {})
             payload["timeout_reconciliation"] = decision
+            payload = _safe_json_payload(payload)
             row.command_payload = payload
             await append_command_lifecycle_event(
                 db,
@@ -933,6 +953,7 @@ async def append_reconciliation_from_account_snapshot(db, account_state: dict[st
             "account_state": reconciliation_account_state,
             "recorded_at": str(account_state.get("recorded_at") or ""),
         }
+        payload = _safe_json_payload(payload)
         row.command_payload = payload
     return len(event_types)
 

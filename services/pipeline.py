@@ -3569,11 +3569,13 @@ async def _save_execution(analysis_id: int, result: dict) -> None:
         audit_payload["command_preflight"] = result.get("preflight")
     if result.get("policy_sync") is not None:
         audit_payload["policy_sync"] = result.get("policy_sync")
+    audit_payload = _json_safe(audit_payload)
+    qc_response = _json_safe(result.get("qc_response")) if result.get("qc_response") is not None else None
     await update_execution_result(
         command_id=command_id,
         analysis_id=analysis_id,
         audit_payload=audit_payload,
-        qc_response=result.get("qc_response"),
+        qc_response=qc_response,
         status=result.get("execution_status", "unknown"),
     )
     async with AsyncSessionLocal() as db:
@@ -3585,5 +3587,5 @@ async def _save_execution(analysis_id: int, result: dict) -> None:
                     risk_output.get("decision_ledger") or {},
                     audit_payload,
                 )
-                analysis.risk_output = risk_output
+                analysis.risk_output = _json_safe(risk_output)
         await db.commit()

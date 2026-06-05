@@ -4,6 +4,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from services.json_safety import json_safe
+
 
 VALID_EVENT_TYPES = {
     "created",
@@ -71,7 +73,7 @@ def build_command_lifecycle_event(
         "event_time": _strip_tz(event_time or datetime.now(UTC)),
         "source": str(source or "fastapi").strip(),
         "reason": reason,
-        "payload": payload or {},
+        "payload": json_safe(payload or {}),
     }
 
 

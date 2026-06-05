@@ -42,6 +42,13 @@ _utcnow_db_naive = execution_log_store._utcnow_db_naive
 
 
 class ExecutionLogStoreTests(unittest.TestCase):
+    def test_execution_log_json_payload_safety_converts_sets(self):
+        payload = execution_log_store._safe_json_payload({
+            "blockers": {"daily_command_count_ok", "daily_gross_turnover_ok"},
+        })
+
+        self.assertEqual(payload["blockers"], ["daily_command_count_ok", "daily_gross_turnover_ok"])
+
     def test_qc_ack_timestamp_is_naive_for_db_column(self):
         value = _utcnow_db_naive()
 
