@@ -381,7 +381,7 @@ Copy `.env.example` to `.env`. Required keys:
 - `OPENAI_API_KEY` — OpenAI API key
 - `OPENAI_MODEL` — light model (default: `gpt-4o-mini`) for news summary
   + COMMUNICATOR
-- `OPENAI_MODEL_HEAVY` — main reasoning model (default: `gpt-4o`) for
+- `OPENAI_MODEL_HEAVY` — main reasoning model (default: `gpt-5.4-mini`) for
   RESEARCHER
 - `FINNHUB_API_KEY` — news/calendar source for `pre_fetch_news`
 - `ALPHAVANTAGE_API_KEY` — (optional) Alpha Vantage news sentiment

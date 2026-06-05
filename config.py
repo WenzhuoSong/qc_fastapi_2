@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     # OpenAI
     openai_api_key: str
     openai_model: str = "gpt-4o-mini"        # OPENAI_MODEL (轻量任务)
-    openai_model_heavy: str = "gpt-4o"       # OPENAI_MODEL_HEAVY (主模型)
+    openai_model_heavy: str = "gpt-5.4-mini"  # OPENAI_MODEL_HEAVY (主模型)
 
     # Webhook鉴权
     webhook_user: str = "qc"
