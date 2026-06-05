@@ -2,7 +2,7 @@ id: inverse_equity_hedge_lite
 type: strategy
 category: event_risk_avoidance
 horizon: very_short_tactical
-summary: Hedge-only inverse equity ETF signal for short-term drawdown protection.
+summary: Hedge-only inverse equity ETF signal for short-term drawdown protection, preferring -1x inverse ETFs before leveraged inverse tools.
 best_regimes: [high_vol, defensive, risk_off, crash_breakdown]
 weak_regimes: [trending_bull, risk_on, sideways_chop, high_vol_chop]
 required_features: [hist_vol_20d, atr_pct, mom_20d, mom_60d, rsi_14]
@@ -11,13 +11,14 @@ positive_signals:
   - market stress is elevated
   - inverse ETF momentum confirms the hedge
 failure_modes:
-  - inverse leveraged ETFs decay rapidly through daily reset compounding
+  - inverse ETFs can decay through daily reset compounding; leveraged inverse ETFs decay faster
   - whipsaw losses are common in choppy markets
   - late hedges can lose after volatility has already repriced
 governance_implications:
   - hedge-only, never ordinary long exposure
+  - prefer -1x inverse ETFs before SQQQ/SPXS/SOXS style leveraged inverse products
   - keep max weights tiny and require explicit hedge intent
-  - full-auto production adds remain blocked by asset-level caps until separately certified
+  - credit/rates inverse ETFs require separate hedge logic and should not be scored as equity hedges
 compatibility_mappings:
   - role: inverse_equity
     horizon: very_short_tactical

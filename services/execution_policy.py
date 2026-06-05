@@ -102,6 +102,21 @@ TICKER_ROLES: dict[str, TickerRole] = {
     "SPXS": TickerRole.HEDGE,
     "UVXY": TickerRole.HEDGE,
     "VIXY": TickerRole.HEDGE,
+    # Lower-leverage inverse sleeves. Hedge-only; ordinary strategy scoring is blocked upstream.
+    "SH": TickerRole.HEDGE,
+    "PSQ": TickerRole.HEDGE,
+    "RWM": TickerRole.HEDGE,
+    "DOG": TickerRole.HEDGE,
+    "MYY": TickerRole.HEDGE,
+    "SBB": TickerRole.HEDGE,
+    "SEF": TickerRole.HEDGE,
+    "REK": TickerRole.HEDGE,
+    "EUM": TickerRole.HEDGE,
+    "EFZ": TickerRole.HEDGE,
+    "YXI": TickerRole.HEDGE,
+    "SJB": TickerRole.HEDGE,
+    "TBF": TickerRole.HEDGE,
+    "TBX": TickerRole.HEDGE,
 }
 
 

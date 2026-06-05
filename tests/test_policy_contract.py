@@ -21,7 +21,11 @@ class PolicyContractTests(unittest.TestCase):
         self.assertFalse(missing, f"Missing group definitions: {sorted(missing)}")
 
     def test_policy_has_no_watchlist_hedge_products(self):
-        for ticker in ["TQQQ", "SQQQ", "SOXL", "SOXS", "SPXL", "SPXS", "UVXY", "VIXY"]:
+        for ticker in [
+            "TQQQ", "SQQQ", "SOXL", "SOXS", "SPXL", "SPXS", "UVXY", "VIXY",
+            "SH", "PSQ", "RWM", "DOG", "MYY", "SBB", "SEF", "REK", "EUM", "EFZ", "YXI",
+            "SJB", "TBF", "TBX",
+        ]:
             self.assertEqual(TICKER_ROLES[ticker], TickerRole.HEDGE)
             self.assertEqual(PRIMARY_GROUP[ticker], "hedges")
 

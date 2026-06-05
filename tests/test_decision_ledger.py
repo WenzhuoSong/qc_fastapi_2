@@ -642,6 +642,37 @@ class DecisionLedgerTests(unittest.TestCase):
         self.assertEqual(updated_row["qc_rejection_reason"], "single weight rejected")
         self.assertEqual(updated["portfolio_summary"]["qc_status"], "rejected")
 
+    def test_ledger_exposes_hedge_intent_reason_when_severity_below_threshold(self):
+        ledger = build_decision_ledger(
+            risk_output={
+                "approved": True,
+                "target_weights": {"QQQ": 0.10, "CASH": 0.90},
+                "rebalance_actions": [],
+                "target_builder_input": {
+                    "target_weights": {"QQQ": 0.10, "CASH": 0.90},
+                    "diagnostics": {
+                        "hedge_intent": {
+                            "triggered": True,
+                            "applied": True,
+                            "severity": 0.52,
+                            "add_hedge_etf": False,
+                            "trim_targets": ["QQQ", "XLK"],
+                            "cash_raise_pct": 0.05,
+                            "reasons": ["weak_breadth"],
+                        },
+                    },
+                },
+            },
+            current_holdings={"QQQ": 0.12, "XLK": 0.10, "CASH": 0.78},
+        )
+
+        hedge = ledger["portfolio_summary"]["hedge_intent"]
+        self.assertTrue(hedge["triggered"])
+        self.assertFalse(hedge["add_hedge_etf"])
+        self.assertEqual(hedge["why_not_add_hedge"], "severity_0.52_below_threshold_0.70")
+        self.assertEqual(hedge["trim_targets"], ["QQQ", "XLK"])
+        self.assertEqual(hedge["cash_raise_pct"], 0.05)
+
 
 def _governance(
     *,

@@ -1,0 +1,23 @@
+id: EFZ
+type: asset
+asset_class: inverse_etf
+role: inverse_equity
+sector_group: international
+summary: -1x daily inverse EAFE ETF for tactical developed-international risk hedging.
+underlying: VEA
+leverage: -1
+inverse: true
+decay_risk: medium
+allowed_actions: [hedge, reduce, hold, watch, avoid, neutral]
+max_reasonable_weight: {playground: 1.0, semi_auto: 0.04, full_auto: 0.02}
+risk_budget_cost: 0.68
+intended_uses: [short_tactical_hedge, international_drawdown_hedge]
+risk_drivers: [inverse_daily_reset, developed_international_beta, fx_risk, whipsaw_risk]
+positive_regimes: [international_breakdown, dollar_strength, risk_off]
+weak_regimes: [international_rally, dollar_weakness, high_vol_chop]
+max_hold_days: 20
+auto_reduce_after_days: 10
+holding_policy: {allow_long_hold: false, max_holding_style: short_term_only, max_hold_days: 20, auto_reduce_after_days: 10}
+governance_notes: [require hedge intent before any production add]
+sources: [issuer_fact_sheet, leveraged_etf_policy]
+last_reviewed: 2026-06-05

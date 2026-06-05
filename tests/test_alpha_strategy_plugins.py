@@ -514,6 +514,26 @@ class AlphaStrategyPluginTests(unittest.TestCase):
         self.assertLessEqual(max(weight for ticker, weight in weights.items() if ticker != "CASH"), 0.02)
         self.assertGreaterEqual(weights["CASH"], 0.95)
 
+    def test_inverse_equity_hedge_scores_minus_one_candidates(self):
+        strategy = get_strategy("inverse_equity_hedge_lite")
+        holdings = [
+            defensive_holding("SPY", 0.20, 0.026, -0.060, -0.100, rsi=32.0) | {"close_price": 390.0, "sma_200": 420.0},
+            defensive_holding("QQQ", 0.25, 0.033, -0.080, -0.140, rsi=30.0) | {"close_price": 350.0, "sma_200": 390.0},
+            defensive_holding("IWM", 0.28, 0.038, -0.090, -0.150, rsi=29.0) | {"close_price": 175.0, "sma_200": 205.0},
+            defensive_holding("SH", 0.36, 0.030, 0.070, 0.090, rsi=58.0),
+            defensive_holding("PSQ", 0.42, 0.034, 0.100, 0.150, rsi=62.0),
+            defensive_holding("RWM", 0.45, 0.038, 0.110, 0.160, rsi=63.0),
+        ]
+        context = {"regime": "risk_off", "market_breakdown": True}
+
+        scored = strategy.score(holdings, context)
+        weights = strategy.optimize(scored, context)
+
+        self.assertGreater(len(scored), 0)
+        self.assertIn(scored[0].ticker, {"SH", "PSQ", "RWM"})
+        self.assertLessEqual(max(weight for ticker, weight in weights.items() if ticker != "CASH"), 0.02)
+        self.assertGreaterEqual(weights["CASH"], 0.95)
+
     def test_inverse_equity_hedge_stays_cash_in_risk_on(self):
         strategy = get_strategy("inverse_equity_hedge_lite")
         holdings = [

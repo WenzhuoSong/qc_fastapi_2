@@ -1,0 +1,25 @@
+id: SH
+type: asset
+asset_class: inverse_etf
+role: inverse_equity
+sector_group: broad_market
+summary: -1x daily inverse S&P 500 ETF for small tactical broad-market hedge sleeves.
+underlying: SPY
+leverage: -1
+inverse: true
+decay_risk: medium
+allowed_actions: [hedge, reduce, hold, watch, avoid, neutral]
+max_reasonable_weight: {playground: 1.0, semi_auto: 0.06, full_auto: 0.03}
+risk_budget_cost: 0.65
+intended_uses: [short_tactical_hedge, drawdown_hedge_signal]
+risk_drivers: [inverse_daily_reset, s_and_p_500_beta, whipsaw_risk, tracking_error]
+positive_regimes: [broad_market_breakdown, risk_off, defensive]
+weak_regimes: [trending_bull, high_vol_chop, mean_reverting]
+max_hold_days: 20
+auto_reduce_after_days: 10
+holding_policy: {allow_long_hold: false, max_holding_style: short_term_only, max_hold_days: 20, auto_reduce_after_days: 10}
+governance_notes:
+  - prefer over leveraged inverse ETFs for first-line equity hedges
+  - require hedge intent before any production add
+sources: [issuer_fact_sheet, leveraged_etf_policy]
+last_reviewed: 2026-06-05

@@ -73,6 +73,20 @@ PRIMARY_GROUP: dict[str, str] = {
     "SPXS": "hedges",
     "UVXY": "hedges",
     "VIXY": "hedges",
+    "SH": "hedges",
+    "PSQ": "hedges",
+    "RWM": "hedges",
+    "DOG": "hedges",
+    "MYY": "hedges",
+    "SBB": "hedges",
+    "SEF": "hedges",
+    "REK": "hedges",
+    "EUM": "hedges",
+    "EFZ": "hedges",
+    "YXI": "hedges",
+    "SJB": "hedges",
+    "TBF": "hedges",
+    "TBX": "hedges",
 }
 
 
@@ -130,6 +144,20 @@ FACTOR_TAGS: dict[str, tuple[str, ...]] = {
     "SPXS": ("inverse_equity", "broad_market", "hedges"),
     "UVXY": ("volatility", "hedges"),
     "VIXY": ("volatility", "hedges"),
+    "SH": ("inverse_equity", "broad_market", "hedges"),
+    "PSQ": ("inverse_equity", "tech_growth", "broad_market", "hedges"),
+    "RWM": ("inverse_equity", "small_cap", "hedges"),
+    "DOG": ("inverse_equity", "dow", "broad_market", "hedges"),
+    "MYY": ("inverse_equity", "mid_cap", "hedges"),
+    "SBB": ("inverse_equity", "small_cap", "hedges"),
+    "SEF": ("inverse_equity", "financials", "hedges"),
+    "REK": ("inverse_equity", "real_estate", "hedges"),
+    "EUM": ("inverse_equity", "emerging_markets", "hedges"),
+    "EFZ": ("inverse_equity", "international", "hedges"),
+    "YXI": ("inverse_equity", "china", "emerging_markets", "hedges"),
+    "SJB": ("inverse_credit", "high_yield", "hedges"),
+    "TBF": ("inverse_rates", "long_duration", "hedges"),
+    "TBX": ("inverse_rates", "intermediate_duration", "hedges"),
 }
 
 
@@ -297,7 +325,11 @@ GROUP_DEFINITIONS: dict[str, GroupDefinition] = {
     ),
     "hedges": GroupDefinition(
         name="hedges",
-        tickers=("TQQQ", "SQQQ", "SOXL", "SOXS", "SPXL", "SPXS", "UVXY", "VIXY"),
+        tickers=(
+            "TQQQ", "SQQQ", "SOXL", "SOXS", "SPXL", "SPXS", "UVXY", "VIXY",
+            "SH", "PSQ", "RWM", "DOG", "MYY", "SBB", "SEF", "REK", "EUM", "EFZ", "YXI",
+            "SJB", "TBF", "TBX",
+        ),
         limit_pct=0.08,
         loss_review_threshold=-0.03,
         asset_type="hedge",

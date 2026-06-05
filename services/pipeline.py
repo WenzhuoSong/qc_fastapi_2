@@ -307,7 +307,12 @@ def enforce_pm_constraints_v2(
 # ─────────────────────────────── Regime Constraint Validation ───────────────────────────────
 
 
-HEDGE_TICKERS = {"GLD", "TLT", "BND", "IEF"}
+HEDGE_TICKERS = {
+    "GLD", "TLT", "BND", "IEF",
+    "TQQQ", "SQQQ", "SOXL", "SOXS", "SPXL", "SPXS", "UVXY", "VIXY",
+    "SH", "PSQ", "RWM", "DOG", "MYY", "SBB", "SEF", "REK", "EUM", "EFZ", "YXI",
+    "SJB", "TBF", "TBX",
+}
 
 
 def apply_regime_constraints(

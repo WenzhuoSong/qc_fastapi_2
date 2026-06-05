@@ -1,0 +1,25 @@
+id: TBF
+type: asset
+asset_class: inverse_etf
+role: inverse_rates
+sector_group: rates
+summary: -1x daily inverse 20+ year Treasury ETF for tactical long-duration/rates hedging.
+underlying: TLT
+leverage: -1
+inverse: true
+decay_risk: medium
+allowed_actions: [hedge, reduce, hold, watch, avoid, neutral]
+max_reasonable_weight: {playground: 1.0, semi_auto: 0.04, full_auto: 0.02}
+risk_budget_cost: 0.55
+intended_uses: [duration_risk_hedge, rising_rates_hedge, short_tactical_hedge]
+risk_drivers: [inverse_daily_reset, long_duration_rates, curve_risk, tracking_error]
+positive_regimes: [rising_rates, duration_breakdown, inflation_shock]
+weak_regimes: [falling_rates, flight_to_quality, high_vol_chop]
+max_hold_days: 30
+auto_reduce_after_days: 15
+holding_policy: {allow_long_hold: false, max_holding_style: short_term_only, max_hold_days: 30, auto_reduce_after_days: 15}
+governance_notes:
+  - not scored by inverse_equity_hedge_lite; reserved for future rates hedge logic
+  - require explicit rates hedge intent before any production add
+sources: [issuer_fact_sheet, leveraged_etf_policy]
+last_reviewed: 2026-06-05

@@ -47,7 +47,22 @@ class HedgeIntentTests(unittest.TestCase):
 
         self.assertTrue(plan.triggered)
         self.assertTrue(plan.add_hedge_etf)
-        self.assertEqual(plan.hedge_instrument, "UVXY")
+        self.assertEqual(plan.hedge_instrument, "PSQ")
+        self.assertLessEqual(plan.hedge_weight, 0.03)
+
+    def test_severe_broad_stress_prefers_minus_one_broad_hedge(self):
+        plan = evaluate_hedge_intent(
+            vix_level=42,
+            portfolio_drawdown_pct=-0.11,
+            net_long_exposure=0.82,
+            market_regime_raw="defensive",
+            current_holdings={"SPY": 0.25},
+            scorecard_requires_human=True,
+            market_breadth_pct=0.12,
+        )
+
+        self.assertTrue(plan.add_hedge_etf)
+        self.assertEqual(plan.hedge_instrument, "SH")
         self.assertLessEqual(plan.hedge_weight, 0.03)
 
 

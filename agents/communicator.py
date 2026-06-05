@@ -1110,7 +1110,7 @@ def _format_decision_ledger_line(ledger: dict) -> str:
     rows = ledger.get("top_decisions") or []
     summary = ledger.get("portfolio_summary") or {}
     warnings = ledger.get("warnings") or []
-    if not rows and not warnings and not (summary.get("final_policy_cap_events") or []):
+    if not rows and not warnings and not (summary.get("final_policy_cap_events") or []) and not summary.get("hedge_intent"):
         return ""
     lines = ["<b>Decision ledger</b>"]
     status_bits = []
@@ -1135,6 +1135,9 @@ def _format_decision_ledger_line(ledger: dict) -> str:
     final_cap_events = summary.get("final_policy_cap_events") or []
     if final_cap_events:
         lines.append("  " + _format_final_policy_cap_warning(final_cap_events))
+    hedge_line = _format_hedge_intent_summary(summary.get("hedge_intent") or {})
+    if hedge_line:
+        lines.append(hedge_line)
     for row in rows[:5]:
         ticker = row.get("ticker")
         proposed = row.get("proposed_action") or "hold"
@@ -1167,6 +1170,38 @@ def _format_decision_ledger_line(ledger: dict) -> str:
     if warnings:
         lines.append("  warnings: " + "; ".join(str(item) for item in warnings[:3]))
     return "\n".join(lines) + "\n\n"
+
+
+def _format_hedge_intent_summary(hedge_intent: dict) -> str:
+    if not isinstance(hedge_intent, dict) or not hedge_intent:
+        return ""
+    triggered = bool(hedge_intent.get("triggered"))
+    severity = _float_or_zero(hedge_intent.get("severity"))
+    add_hedge = bool(hedge_intent.get("add_hedge_etf"))
+    reason = str(hedge_intent.get("why_not_add_hedge") or "").strip()
+    selected = str(hedge_intent.get("selected_hedge") or hedge_intent.get("hedge_instrument") or "").strip()
+    trim_targets = [
+        str(item or "").upper().strip()
+        for item in (hedge_intent.get("trim_targets") or [])
+        if str(item or "").strip()
+    ][:4]
+    cash_raise = _float_or_zero(hedge_intent.get("cash_raise_pct"))
+    parts = [
+        f"triggered={triggered}",
+        f"severity={severity:.2f}",
+        f"add_hedge={add_hedge}",
+    ]
+    if selected:
+        parts.append(f"selected={selected}")
+    if reason:
+        parts.append(f"reason={reason}")
+    action_bits = []
+    if trim_targets:
+        action_bits.append("trim " + ",".join(trim_targets))
+    if cash_raise > 0:
+        action_bits.append(f"raise_cash {cash_raise:.0%}")
+    action = " | action: " + " + ".join(action_bits) if action_bits else ""
+    return "  Hedge intent: " + " | ".join(parts) + action
 
 
 def _format_final_policy_cap_warning(events: list[dict]) -> str:

@@ -1159,13 +1159,33 @@ def _hedge_path_context(ticker: str, hedge_intent: dict[str, Any]) -> dict[str, 
 def _compact_hedge_intent(hedge_intent: dict[str, Any]) -> dict[str, Any] | None:
     if not hedge_intent:
         return None
+    triggered = bool(hedge_intent.get("triggered"))
+    add_hedge = bool(hedge_intent.get("add_hedge_etf"))
+    severity = _to_float(hedge_intent.get("severity"), 0.0)
     return {
-        "triggered": hedge_intent.get("triggered"),
+        "triggered": triggered,
         "applied": hedge_intent.get("applied"),
-        "severity": hedge_intent.get("severity"),
+        "severity": round(severity, 6),
+        "add_hedge_etf": add_hedge,
+        "selected_hedge": hedge_intent.get("hedge_instrument"),
         "hedge_instrument": hedge_intent.get("hedge_instrument"),
+        "hedge_weight": hedge_intent.get("hedge_weight"),
+        "why_not_add_hedge": _explain_hedge_decision(triggered=triggered, add_hedge=add_hedge, severity=severity),
         "reasons": list(hedge_intent.get("reasons") or hedge_intent.get("trigger_reasons") or []),
+        "trigger_reasons": list(hedge_intent.get("reasons") or hedge_intent.get("trigger_reasons") or []),
+        "trim_targets": list(hedge_intent.get("trim_targets") or []),
+        "cash_raise_pct": hedge_intent.get("cash_raise_pct") or hedge_intent.get("target_cash_raise_pct") or hedge_intent.get("cash_raise_target") or 0.0,
     }
+
+
+def _explain_hedge_decision(*, triggered: bool, add_hedge: bool, severity: float) -> str:
+    if not triggered:
+        return "hedge_intent_not_triggered"
+    if add_hedge:
+        return "hedge_etf_selected"
+    if severity < 0.70:
+        return f"severity_{severity:.2f}_below_threshold_0.70"
+    return "unknown"
 
 
 def _portfolio_construction_targets(risk: dict[str, Any]) -> dict[str, float]:

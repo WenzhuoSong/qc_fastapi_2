@@ -5,7 +5,8 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
-HIGH_BETA_TICKERS = {"SOXX", "PSI", "FTXL", "SMH", "XSD", "QQQ", "XLK", "VUG", "TQQQ", "SOXL"}
+HIGH_BETA_TICKERS = {"SOXX", "PSI", "FTXL", "SMH", "XSD", "QQQ", "XLK", "VUG", "IWM", "TQQQ", "SOXL"}
+TECH_BETA_TICKERS = {"SOXX", "PSI", "FTXL", "SMH", "XSD", "QQQ", "XLK", "VUG", "TQQQ", "SOXL"}
 DEFENSIVE_REGIMES = {"defensive", "alert", "risk_off", "bear", "high_vol", "DEFENSIVE", "ALERT"}
 
 
@@ -75,7 +76,7 @@ def evaluate_hedge_intent(
     cash_raise = _cash_raise_by_severity(severity)
     add_defensive = severity < 0.70
     add_hedge = severity >= 0.70
-    hedge_instrument, hedge_weight = _select_hedge_instrument(vix) if add_hedge else (None, 0.0)
+    hedge_instrument, hedge_weight = _select_hedge_instrument(vix, current_holdings) if add_hedge else (None, 0.0)
 
     return RiskReductionPlan(
         triggered=True,
@@ -120,10 +121,13 @@ def _cash_raise_by_severity(severity: float) -> float:
     return 0.15
 
 
-def _select_hedge_instrument(vix: float) -> tuple[str, float]:
-    if vix > 35.0:
-        return "UVXY", 0.02
-    return "SQQQ", 0.015
+def _select_hedge_instrument(vix: float, current_holdings: dict[str, Any]) -> tuple[str, float]:
+    ranked = _identify_high_beta(current_holdings)
+    if any(ticker in TECH_BETA_TICKERS for ticker in ranked[:3]):
+        return "PSQ", 0.025 if vix > 35.0 else 0.02
+    if "IWM" in ranked[:3]:
+        return "RWM", 0.02
+    return "SH", 0.025 if vix > 35.0 else 0.02
 
 
 def _is_defensive_regime(regime_raw: str) -> bool:

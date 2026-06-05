@@ -468,6 +468,29 @@ class TargetBuilderTest(unittest.TestCase):
         self.assertTrue(out["diagnostics"]["hedge_intent"]["applied"])
         self.assertTrue(any(item.startswith("hedge_intent_trim:QQQ") for item in out["violations"]))
 
+    def test_hedge_intent_overlay_accepts_plan_cash_raise_field(self):
+        out = build_target_weights(
+            base_weights={"QQQ": 0.12, "SPY": 0.60, "CASH": 0.28},
+            current_weights={"QQQ": 0.12, "SPY": 0.60, "CASH": 0.28},
+            market_scorecard={},
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[],
+            constraints={
+                "hedge_intent": {
+                    "triggered": True,
+                    "severity": 0.52,
+                    "trim_targets": ["QQQ"],
+                    "target_cash_raise_pct": 0.05,
+                    "add_hedge_etf": False,
+                }
+            },
+        ).to_dict()
+
+        self.assertLess(out["target_weights"]["QQQ"], 0.12)
+        self.assertEqual(out["diagnostics"]["hedge_intent"]["cash_raise_pct"], 0.05)
+        self.assertFalse(out["diagnostics"]["hedge_intent"]["add_hedge_etf"])
+
     def test_compare_target_weights_marks_review_thresholds(self):
         out = compare_target_weights(
             live_target_weights={"SPY": 0.10, "CASH": 0.90},

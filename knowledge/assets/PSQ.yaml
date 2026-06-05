@@ -1,0 +1,25 @@
+id: PSQ
+type: asset
+asset_class: inverse_etf
+role: inverse_equity
+sector_group: tech_growth
+summary: -1x daily inverse Nasdaq-100 ETF for small tactical technology/growth hedge sleeves.
+underlying: QQQ
+leverage: -1
+inverse: true
+decay_risk: medium
+allowed_actions: [hedge, reduce, hold, watch, avoid, neutral]
+max_reasonable_weight: {playground: 1.0, semi_auto: 0.06, full_auto: 0.03}
+risk_budget_cost: 0.70
+intended_uses: [short_tactical_hedge, tech_growth_drawdown_hedge]
+risk_drivers: [inverse_daily_reset, nasdaq_100_beta, whipsaw_risk, tracking_error]
+positive_regimes: [tech_breakdown, risk_off, defensive]
+weak_regimes: [trending_bull, high_vol_chop, mean_reverting]
+max_hold_days: 20
+auto_reduce_after_days: 10
+holding_policy: {allow_long_hold: false, max_holding_style: short_term_only, max_hold_days: 20, auto_reduce_after_days: 10}
+governance_notes:
+  - first-line hedge for concentrated QQQ/XLK/SOXX risk
+  - require hedge intent before any production add
+sources: [issuer_fact_sheet, leveraged_etf_policy]
+last_reviewed: 2026-06-05

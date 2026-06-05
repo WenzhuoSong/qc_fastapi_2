@@ -21,6 +21,7 @@ from services.execution_policy import POLICY_VERSION, ROLE_POLICIES, TICKER_ROLE
 
 
 POLICY_KEYS = ("POLICY_VERSION", "TICKER_ROLES", "ROLE_CAPS")
+QC_POLICY_ALIAS_KEYS = {"C", "R", "T", "A", "H"}
 
 
 def expected_qc_fallback_policy() -> dict[str, Any]:
@@ -65,8 +66,8 @@ def load_qc_fallback_policy(path: Path | str) -> dict[str, Any]:
         target = node.targets[0]
         if not isinstance(target, ast.Name):
             continue
-        if target.id in {"POLICY_VERSION", "TICKER_ROLES", "ROLE_CAPS"}:
-            env[target.id] = ast.literal_eval(node.value)
+        if target.id in set(POLICY_KEYS) | QC_POLICY_ALIAS_KEYS:
+            env[target.id] = _eval_policy_node(node.value, env)
 
     if "POLICY_VERSION" not in env:
         version = _find_compiled_policy_version(class_node)
@@ -191,6 +192,30 @@ def _normalize_role_caps(raw_caps: dict[str, Any]) -> dict[str, dict[str, float]
             "max_total_group": float(policy_dict.get("max_total_group", 0.0) or 0.0),
         }
     return normalized
+
+
+def _eval_policy_node(node: ast.AST, env: dict[str, Any]) -> Any:
+    """Evaluate the small literal subset used by QC policy constants."""
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Name):
+        return env[node.id]
+    if isinstance(node, ast.Dict):
+        return {
+            _eval_policy_node(key, env): _eval_policy_node(value, env)
+            for key, value in zip(node.keys, node.values)
+        }
+    if isinstance(node, ast.List):
+        return [_eval_policy_node(item, env) for item in node.elts]
+    if isinstance(node, ast.Tuple):
+        return tuple(_eval_policy_node(item, env) for item in node.elts)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "dict" and not node.args:
+        return {
+            str(keyword.arg): _eval_policy_node(keyword.value, env)
+            for keyword in node.keywords
+            if keyword.arg is not None
+        }
+    raise ValueError(f"Unsupported QC fallback policy expression: {ast.dump(node)}")
 
 
 def _dict_diff(expected: dict[str, Any], actual: dict[str, Any]) -> dict[str, Any]:

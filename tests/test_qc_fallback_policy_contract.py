@@ -58,7 +58,11 @@ class QCFallbackPolicyContractTest(unittest.TestCase):
 
         self.assertEqual(qc_policy["TICKER_ROLES"], expected)
         self.assertEqual(qc_policy["TICKER_ROLES"]["PSI"], "thematic")
-        for ticker in ["TQQQ", "SQQQ", "SOXL", "SOXS", "SPXL", "SPXS", "UVXY", "VIXY"]:
+        for ticker in [
+            "TQQQ", "SQQQ", "SOXL", "SOXS", "SPXL", "SPXS", "UVXY", "VIXY",
+            "SH", "PSQ", "RWM", "DOG", "MYY", "SBB", "SEF", "REK", "EUM", "EFZ", "YXI",
+            "SJB", "TBF", "TBX",
+        ]:
             self.assertEqual(qc_policy["TICKER_ROLES"][ticker], "hedge")
 
     def test_qc_fallback_caps_match_fastapi_policy(self):
@@ -242,6 +246,12 @@ def _eval_policy_node(node: ast.AST, env: dict[str, object]):
         }
     if isinstance(node, ast.List):
         return [_eval_policy_node(item, env) for item in node.elts]
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "dict" and not node.args:
+        return {
+            str(keyword.arg): _eval_policy_node(keyword.value, env)
+            for keyword in node.keywords
+            if keyword.arg is not None
+        }
     raise AssertionError(f"Unsupported QC policy node: {ast.dump(node)}")
 
 

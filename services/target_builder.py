@@ -407,7 +407,11 @@ def _apply_hedge_intent_overlay(
     result = dict(weights)
     violations: list[str] = []
     touched: set[str] = set()
-    cash_raise_target = max(float(hedge_intent.get("cash_raise_pct") or 0.0), 0.0)
+    cash_raise_target = max(float(
+        hedge_intent.get("cash_raise_pct")
+        or hedge_intent.get("target_cash_raise_pct")
+        or 0.0
+    ), 0.0)
     trim_targets = [str(t).upper().strip() for t in hedge_intent.get("trim_targets") or []]
     raised = 0.0
 
@@ -440,7 +444,9 @@ def _apply_hedge_intent_overlay(
             "applied": True,
             "reasons": list(hedge_intent.get("reasons") or hedge_intent.get("trigger_reasons") or []),
             "severity": hedge_intent.get("severity"),
+            "add_hedge_etf": bool(hedge_intent.get("add_hedge_etf")),
             "cash_raise_target": cash_raise_target,
+            "cash_raise_pct": cash_raise_target,
             "cash_raised_by_trim": round(raised, 6),
             "trim_targets": trim_targets,
             "hedge_instrument": hedge_instrument or None,

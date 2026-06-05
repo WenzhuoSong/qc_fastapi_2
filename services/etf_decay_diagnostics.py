@@ -18,6 +18,20 @@ DEFAULT_LOOKBACK_DAYS = 504
 DEFAULT_MIN_SAMPLES = 60
 VOLATILITY_ETPS = {"UVXY", "VIXY", "VXX", "UVIX", "SVXY"}
 LEVERAGED_PROXY_MAP = {
+    "SH": ("SPY", -1.0),
+    "PSQ": ("QQQ", -1.0),
+    "RWM": ("IWM", -1.0),
+    "DOG": ("SPY", -1.0),
+    "MYY": ("IWM", -1.0),
+    "SBB": ("IWM", -1.0),
+    "SEF": ("XLF", -1.0),
+    "REK": ("XLRE", -1.0),
+    "EUM": ("VWO", -1.0),
+    "EFZ": ("VEA", -1.0),
+    "YXI": ("VWO", -1.0),
+    "SJB": ("BND", -1.0),
+    "TBF": ("TLT", -1.0),
+    "TBX": ("IEF", -1.0),
     "TQQQ": ("QQQ", 3.0),
     "SQQQ": ("QQQ", -3.0),
     "SPXL": ("SPY", 3.0),
@@ -430,4 +444,3 @@ def _to_float(value: Any) -> float | None:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
-

@@ -1,0 +1,23 @@
+id: MYY
+type: asset
+asset_class: inverse_etf
+role: inverse_equity
+sector_group: mid_cap
+summary: -1x daily inverse S&P MidCap 400 ETF for tactical mid-cap hedge sleeves.
+underlying: MDY
+leverage: -1
+inverse: true
+decay_risk: medium
+allowed_actions: [hedge, reduce, hold, watch, avoid, neutral]
+max_reasonable_weight: {playground: 1.0, semi_auto: 0.04, full_auto: 0.02}
+risk_budget_cost: 0.68
+intended_uses: [short_tactical_hedge, mid_cap_drawdown_hedge]
+risk_drivers: [inverse_daily_reset, mid_cap_beta, whipsaw_risk, tracking_error]
+positive_regimes: [mid_cap_breakdown, risk_off]
+weak_regimes: [risk_on, high_vol_chop]
+max_hold_days: 20
+auto_reduce_after_days: 10
+holding_policy: {allow_long_hold: false, max_holding_style: short_term_only, max_hold_days: 20, auto_reduce_after_days: 10}
+governance_notes: [require hedge intent before any production add]
+sources: [issuer_fact_sheet, leveraged_etf_policy]
+last_reviewed: 2026-06-05

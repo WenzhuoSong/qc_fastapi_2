@@ -27,12 +27,15 @@ class InverseEquityHedgeLite(Strategy):
     bad_regimes = ("trending_bull", "risk_on", "sideways_chop", "high_vol_chop")
     signals_used = ("market_stress", "underlying_breakdown", "inverse_momentum", "hist_vol_20d", "atr_pct")
     failure_modes = (
-        "Inverse leveraged ETFs decay rapidly because of daily reset compounding.",
+        "Inverse ETFs can decay through daily reset compounding; leveraged inverse ETFs decay faster.",
         "Whipsaw losses can be large in choppy markets.",
         "Late entries after a selloff can lose even if broad risk remains high.",
     )
     agent_guidance = "Hedge-only. Do not use this strategy to justify ordinary long exposure or persistent inverse ETF holdings."
-    universe_tickers = ("SQQQ", "SPXS", "SOXS", "TECS")
+    universe_tickers = (
+        "SH", "PSQ", "RWM", "DOG", "MYY", "SBB", "SEF", "REK", "EUM", "EFZ", "YXI",
+        "SQQQ", "SPXS", "SOXS", "TECS",
+    )
     allow_hedge_research_tickers = True
 
     DEFAULT_PARAMS: dict[str, Any] = {
@@ -75,7 +78,7 @@ class InverseEquityHedgeLite(Strategy):
             breakdown = _underlying_breakdown_score(underlying, holdings, context)
             inverse_momentum = _clamp(0.50 + 0.25 * z_mom20[idx] + 0.25 * z_mom60[idx])
             chop_penalty = -0.25 if regime in {"trending_bull", "risk_on", "mean_reverting", "high_vol_chop"} else 0.0
-            decay_penalty = 0.18 if ticker in {"SQQQ", "SPXS"} else 0.22
+            decay_penalty = _decay_penalty(ticker)
             score = _clamp(
                 float(p["w_market_stress"]) * market_stress
                 + float(p["w_underlying_breakdown"]) * breakdown
@@ -141,11 +144,33 @@ class InverseEquityHedgeLite(Strategy):
 
 
 UNDERLYING_BY_INVERSE = {
+    "SH": "SPY",
+    "PSQ": "QQQ",
+    "RWM": "IWM",
+    "DOG": "SPY",
+    "MYY": "IWM",
+    "SBB": "IWM",
+    "SEF": "XLF",
+    "REK": "XLRE",
+    "EUM": "VWO",
+    "EFZ": "VEA",
+    "YXI": "VWO",
     "SQQQ": "QQQ",
     "SPXS": "SPY",
     "SOXS": "SOXX",
     "TECS": "XLK",
 }
+
+
+LOW_LEVERAGE_INVERSE = {"SH", "PSQ", "RWM", "DOG", "MYY", "SBB", "SEF", "REK", "EUM", "EFZ", "YXI"}
+
+
+def _decay_penalty(ticker: str) -> float:
+    if ticker in LOW_LEVERAGE_INVERSE:
+        return 0.08
+    if ticker in {"SQQQ", "SPXS"}:
+        return 0.18
+    return 0.22
 
 
 def _market_stress_score(holdings: list[dict], context: dict[str, Any]) -> float:

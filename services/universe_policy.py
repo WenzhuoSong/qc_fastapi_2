@@ -8,6 +8,8 @@ HEDGE_RESEARCH_TICKERS = {
     # Leveraged / inverse / volatility products: useful as stress indicators,
     # and tightly capped hedges, not eligible for ordinary strategy scoring.
     "TQQQ", "SQQQ", "SOXL", "SOXS", "SPXL", "SPXS", "UVXY", "VIXY",
+    "SH", "PSQ", "RWM", "DOG", "MYY", "SBB", "SEF", "REK", "EUM", "EFZ", "YXI",
+    "SJB", "TBF", "TBX",
 }
 
 

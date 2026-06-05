@@ -665,6 +665,51 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("hedge_path=true", text)
         self.assertIn("qc_reject=single weight rejected", text)
 
+    def test_decision_ledger_line_shows_hedge_intent_summary(self):
+        text = _fallback_template(
+            {
+                "approved": True,
+                "regime": "defensive",
+                "stance": "reduce risk",
+                "rebalance_actions": [],
+                "estimated_cost": 0,
+                "overlays_applied": [],
+                "rejection_reasons": [],
+                "auth_mode": "FULL_AUTO",
+                "timeout_minutes": 20,
+                "debate_summary": {},
+                "market_scorecard": {},
+                "scorecard_enforcement": {},
+                "news_evidence": {},
+                "decision_style": {},
+                "decision_ledger": {
+                    "portfolio_summary": {
+                        "risk_approved": True,
+                        "execution_status": "unknown",
+                        "governance_available": True,
+                        "target_construction_mode": "target_builder_gated",
+                        "hedge_intent": {
+                            "triggered": True,
+                            "severity": 0.52,
+                            "add_hedge_etf": False,
+                            "why_not_add_hedge": "severity_0.52_below_threshold_0.70",
+                            "trim_targets": ["SOXX", "XLK"],
+                            "cash_raise_pct": 0.05,
+                        },
+                    },
+                    "top_decisions": [],
+                },
+            }
+        )
+
+        self.assertIn("Hedge intent", text)
+        self.assertIn("triggered=True", text)
+        self.assertIn("severity=0.52", text)
+        self.assertIn("add_hedge=False", text)
+        self.assertIn("severity_0.52_below_threshold_0.70", text)
+        self.assertIn("trim SOXX,XLK", text)
+        self.assertIn("raise_cash 5%", text)
+
     def test_decision_ledger_line_warns_on_final_policy_cap(self):
         text = _fallback_template(
             {

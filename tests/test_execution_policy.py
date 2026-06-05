@@ -31,7 +31,11 @@ class ExecutionPolicyTests(unittest.TestCase):
         self.assertIn("hard cap", reason)
 
     def test_hedge_products_are_tradable_but_tightly_capped(self):
-        for ticker in ["TQQQ", "SQQQ", "SOXL", "SOXS", "SPXL", "SPXS", "UVXY", "VIXY"]:
+        for ticker in [
+            "TQQQ", "SQQQ", "SOXL", "SOXS", "SPXL", "SPXS", "UVXY", "VIXY",
+            "SH", "PSQ", "RWM", "DOG", "MYY", "SBB", "SEF", "REK", "EUM", "EFZ", "YXI",
+            "SJB", "TBF", "TBX",
+        ]:
             self.assertEqual(get_role(ticker), TickerRole.HEDGE)
             allowed, reason = check_weight_allowed(ticker, 0.03)
             self.assertTrue(allowed, reason)
