@@ -1,0 +1,169 @@
+from datetime import UTC, datetime
+import asyncio
+import unittest
+
+from cron.weekend_trading_review import (
+    build_ops_failure_message,
+    format_weekend_review_telegram,
+    run_weekend_trading_review,
+)
+from services.weekend_review_loader import build_weekend_review_dataset
+
+
+class WeekendTradingReviewCronTests(unittest.TestCase):
+    def test_skips_market_open_by_default(self):
+        calls = {"loader": 0}
+
+        async def fake_loader(**kwargs):
+            calls["loader"] += 1
+            return build_weekend_review_dataset()
+
+        result = asyncio.run(
+            run_weekend_trading_review(
+                now=datetime(2026, 6, 5, 14, 0, tzinfo=UTC),  # Friday 10:00 ET.
+                dataset_loader=fake_loader,
+                persist=False,
+            )
+        )
+
+        self.assertEqual(result.status, "skipped")
+        self.assertEqual(result.reason, "market_open")
+        self.assertEqual(result.execution_authority, "none")
+        self.assertEqual(result.target_weight_mutation, "none")
+        self.assertEqual(calls["loader"], 0)
+
+    def test_market_open_force_still_review_only(self):
+        persisted_payloads = []
+
+        async def fake_loader(**kwargs):
+            return build_weekend_review_dataset()
+
+        async def fake_persist(payload):
+            persisted_payloads.append(payload)
+            return "review-row-1"
+
+        result = asyncio.run(
+            run_weekend_trading_review(
+                now=datetime(2026, 6, 5, 14, 0, tzinfo=UTC),
+                allow_market_open=True,
+                dataset_loader=fake_loader,
+                artifact_persister=fake_persist,
+                persist=True,
+            )
+        )
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.execution_authority, "none")
+        self.assertEqual(result.target_weight_mutation, "none")
+        self.assertTrue(result.persisted)
+        self.assertEqual(result.persisted_ref, "review-row-1")
+        self.assertEqual(len(persisted_payloads), 1)
+        self.assertEqual(persisted_payloads[0]["execution_authority"], "none")
+        self.assertEqual(persisted_payloads[0]["target_weight_mutation"], "none")
+
+    def test_builds_metrics_artifacts_summary_persists_and_notifies(self):
+        persisted_payloads = []
+        notifications = []
+
+        async def fake_loader(**kwargs):
+            return build_weekend_review_dataset(
+                execution_logs=[
+                    {
+                        "command_id": "analysis_1",
+                        "command_type": "weight_adjustment",
+                        "lifecycle_state": "reconciled",
+                        "submitted_at": "2026-06-05T15:00:00+00:00",
+                        "command_payload": {"weights": {"SPY": 0.1}},
+                    }
+                ]
+            )
+
+        async def fake_persist(payload):
+            persisted_payloads.append(payload)
+            return 42
+
+        async def fake_notify(payload):
+            notifications.append(payload)
+
+        async def fake_llm(prompt: str) -> str:
+            self.assertIn("weekly_execution_truth_review_v1", prompt)
+            return "Execution truth: metrics are deterministic. Review-only follow-up: inspect blockers."
+
+        result = asyncio.run(
+            run_weekend_trading_review(
+                now=datetime(2026, 6, 6, 12, 0, tzinfo=UTC),
+                dataset_loader=fake_loader,
+                artifact_persister=fake_persist,
+                notifier=fake_notify,
+                llm_complete=fake_llm,
+                notify=True,
+                persist=True,
+            )
+        )
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.artifact_count, 8)
+        self.assertEqual(result.persisted_ref, 42)
+        self.assertTrue(result.notified)
+        self.assertEqual(len(persisted_payloads), 1)
+        payload = persisted_payloads[0]
+        self.assertEqual(payload["schema_version"], "weekend_trading_review_cron_v1")
+        self.assertEqual(payload["weekend_review_artifact_count"], 8)
+        self.assertIn("weekend_review_artifacts", payload)
+        self.assertIn("weekend_review_summary", payload)
+        self.assertIn("weekend_review_metrics", payload)
+        self.assertEqual(
+            payload["weekend_review_metrics"]["sections"]["execution_truth"]["metrics"]["commands_sent"],
+            1,
+        )
+        self.assertEqual(len(notifications), 1)
+        self.assertIn("execution_authority=none", notifications[0]["text"])
+
+    def test_telegram_summary_marks_review_only(self):
+        async def fake_loader(**kwargs):
+            return build_weekend_review_dataset()
+
+        result = asyncio.run(
+            run_weekend_trading_review(
+                now=datetime(2026, 6, 6, 12, 0, tzinfo=UTC),
+                dataset_loader=fake_loader,
+                persist=False,
+            )
+        )
+
+        text = format_weekend_review_telegram({
+            "week_start": result.week_start,
+            "week_end": result.week_end,
+            "weekend_review_artifact_count": result.artifact_count,
+            "weekend_review_metrics": result.metrics,
+            "weekend_review_summary": result.summary_report,
+        })
+
+        self.assertIn("Weekend trading review", text)
+        self.assertIn("execution_authority=none", text)
+        self.assertIn("target_weight_mutation=none", text)
+
+    def test_ops_failure_message_is_not_trading_failure(self):
+        message = build_ops_failure_message(RuntimeError("db unavailable"))
+
+        self.assertIn("ops failure", message)
+        self.assertIn("no trading action attempted", message)
+        self.assertNotIn("trading failed", message.lower())
+
+    def test_cron_source_does_not_import_execution_pipeline(self):
+        with open("cron/weekend_trading_review.py", "r", encoding="utf-8") as handle:
+            source = handle.read()
+
+        forbidden = [
+            "run_full_pipeline",
+            "run_executor_async",
+            "services.pipeline",
+            "agents.executor",
+            "qc_command",
+        ]
+        for token in forbidden:
+            self.assertNotIn(token, source)
+
+
+if __name__ == "__main__":
+    unittest.main()
