@@ -113,19 +113,35 @@ async def api_weekend_review_latest(
     include_full_report: bool = False,
     _: str = Depends(require_dashboard_auth),
 ) -> dict[str, Any]:
-    pack = await load_latest_weekend_review_operator_pack(
-        include_full_report=include_full_report,
-    )
+    try:
+        pack = await load_latest_weekend_review_operator_pack(
+            include_full_report=include_full_report,
+        )
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"weekend_review_unavailable:{type(exc).__name__}",
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+        }
     if not pack:
-        raise HTTPException(status_code=404, detail="No weekend review found")
-    return pack
+        return {
+            "available": False,
+            "reason": "no_weekend_review_found",
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+        }
+    return {"available": True, **pack}
 
 
 @app.get("/api/weekend-review/latest/text", response_class=PlainTextResponse)
 async def api_weekend_review_latest_text(_: str = Depends(require_dashboard_auth)) -> str:
-    pack = await load_latest_weekend_review_operator_pack(include_full_report=False)
+    try:
+        pack = await load_latest_weekend_review_operator_pack(include_full_report=False)
+    except Exception as exc:
+        return f"Weekend review unavailable: {type(exc).__name__}"
     if not pack:
-        raise HTTPException(status_code=404, detail="No weekend review found")
+        return "Weekend review unavailable: no_weekend_review_found"
     return str(pack.get("text") or "")
 
 
@@ -193,7 +209,6 @@ async def build_dashboard_summary() -> dict[str, Any]:
     account_holdings = await _account_holdings_dashboard(latest_analysis)
     account_truth = _account_truth_view(account_holdings, execution_control)
     account_holdings["truth"] = account_truth
-    weekend_review_operator = await _weekend_review_operator_dashboard()
     replay = await _replay_diagnostics()
     return {
         "generated_at": datetime.utcnow().isoformat(),
@@ -222,7 +237,6 @@ async def build_dashboard_summary() -> dict[str, Any]:
         "data_quality_audit": data_quality_audit,
         "execution": execution,
         "execution_control": execution_control,
-        "weekend_review_operator": weekend_review_operator,
         "replay": replay,
         "weight_source_contract": _weight_source_contract_dashboard(),
         "config": config,
@@ -236,29 +250,6 @@ def _weight_source_contract_dashboard() -> dict[str, Any]:
         **contract,
         "labels": dashboard_weight_source_labels(),
         "execution_authority": "display_contract_only",
-    }
-
-
-async def _weekend_review_operator_dashboard() -> dict[str, Any]:
-    try:
-        pack = await load_latest_weekend_review_operator_pack(include_full_report=False)
-    except Exception as exc:  # pragma: no cover - dashboard should degrade instead of failing.
-        return {
-            "available": False,
-            "reason": f"weekend_review_unavailable:{type(exc).__name__}",
-            "execution_authority": "none",
-            "target_weight_mutation": "none",
-        }
-    if not pack:
-        return {
-            "available": False,
-            "reason": "no_weekend_review_found",
-            "execution_authority": "none",
-            "target_weight_mutation": "none",
-        }
-    return {
-        "available": True,
-        **pack,
     }
 
 
@@ -3630,7 +3621,7 @@ def render_dashboard(summary: dict[str, Any]) -> str:
     sections = [
         ("execution", "Execution Control", _render_execution_control(summary.get("execution_control") or {}), True),
         ("latest", "Latest Decision", _render_latest_analysis(latest), True),
-        ("weekend-review", "Weekend Trading Review", _render_weekend_review_operator(summary.get("weekend_review_operator") or {}), True),
+        ("weekend-review", "Weekend Trading Review", _render_weekend_review_operator(), True),
         ("validation-overview", "Validation Overview", _render_validation_overview(summary.get("validation_overview") or {}), True),
         ("target-path", "Target Path", _render_target_path_visibility(latest.get("target_path_visibility") or {}), True),
         ("weight-source", "Weight Source Contract", _render_weight_source_contract(summary.get("weight_source_contract") or {}), False),
@@ -3720,7 +3711,7 @@ def render_dashboard(summary: dict[str, Any]) -> str:
 
     {section_html}
   </main>
-  <script>{_account_holdings_js()}</script>
+  <script>{_account_holdings_js()}{_weekend_review_js()}</script>
 </body>
 </html>"""
     return html
@@ -4128,6 +4119,26 @@ def _account_holdings_js() -> str:
         });
       });
       sortRows("contribution");
+    })();
+    """
+
+
+def _weekend_review_js() -> str:
+    return """
+    (function () {
+      const target = document.getElementById("weekend-review-text");
+      if (!target) return;
+      fetch("/api/weekend-review/latest/text", { credentials: "same-origin" })
+        .then(function (response) {
+          if (!response.ok) throw new Error("HTTP " + response.status);
+          return response.text();
+        })
+        .then(function (text) {
+          target.textContent = text || "Weekend review unavailable.";
+        })
+        .catch(function (error) {
+          target.textContent = "Weekend review unavailable: " + error.message;
+        });
     })();
     """
 
@@ -5390,55 +5401,23 @@ def _render_crons(rows: list[dict[str, Any]]) -> str:
     return _render_table(rows, ["job_name", "status", "started_at", "duration_ms", "error_message"])
 
 
-def _render_weekend_review_operator(pack: dict[str, Any]) -> str:
-    if not pack.get("available"):
-        return f"<p class=\"muted\">{escape(str(pack.get('reason') or 'Weekend review unavailable.'))}</p>"
-    view = pack.get("view") if isinstance(pack.get("view"), dict) else {}
-    headline = view.get("headline") if isinstance(view.get("headline"), dict) else {}
-    sections = view.get("sections") if isinstance(view.get("sections"), dict) else {}
-    blocker_section = sections.get("blocker_distribution") if isinstance(sections.get("blocker_distribution"), dict) else {}
-    labels = sections.get("label_maturity") if isinstance(sections.get("label_maturity"), dict) else {}
-    hedge = sections.get("hedge_review") if isinstance(sections.get("hedge_review"), dict) else {}
-    basket = sections.get("basket_portfolio") if isinstance(sections.get("basket_portfolio"), dict) else {}
-    recommendations = view.get("recommendations") if isinstance(view.get("recommendations"), list) else []
-    answers = view.get("acceptance_answers") if isinstance(view.get("acceptance_answers"), list) else []
+def _render_weekend_review_operator() -> str:
     text_url = "/api/weekend-review/latest/text"
     json_url = "/api/weekend-review/latest?include_full_report=true"
-    headline_payload = {
-        "week_start": view.get("week_start"),
-        "week_end": view.get("week_end"),
-        "review_as_of": view.get("review_as_of"),
-        "commands_sent": headline.get("commands_sent"),
-        "filled": headline.get("filled_count"),
-        "not_sent": headline.get("not_sent_count"),
-        "preflight": headline.get("preflight_blocked_count"),
-        "dedupe": headline.get("duplicate_target_count"),
-        "timeout_ack": headline.get("timeout_no_ack_count"),
-        "no_exec": headline.get("timeout_no_execution_confirmed_count"),
-        "top_blocker": headline.get("top_blocker"),
-    }
-    label_payload = labels.get("metrics") if isinstance(labels.get("metrics"), dict) else {}
-    hedge_payload = hedge.get("metrics") if isinstance(hedge.get("metrics"), dict) else {}
-    basket_payload = basket.get("metrics") if isinstance(basket.get("metrics"), dict) else {}
     return f"""
       <div class="grid">
-        <article class="card"><h3>Weekly Execution Truth</h3>{_render_kv(headline_payload)}</article>
-        <article class="card"><h3>Label Maturity</h3>{_render_kv(label_payload, keys=["eligible_label_count", "excluded_immature_count", "label_1d_mature_count", "label_5d_mature_count", "label_5d_pending_count", "fallback_label_count"])}</article>
-        <article class="card"><h3>Hedge Review</h3>{_render_kv(hedge_payload, keys=["hedge_trigger_count", "hedge_added_count", "false_negative_count", "missed_protection_count", "insufficient_counterfactual_count"])}</article>
-        <article class="card"><h3>Basket Health</h3>{_render_kv(basket_payload, keys=["active_count_avg", "active_count_out_of_range_count", "floor_cleared_count", "subscale_position_count"])}</article>
+        <article class="card">
+          <h3>Weekend Review Summary</h3>
+          <pre id="weekend-review-text" class="weekend-review-text">Loading weekend review...</pre>
+        </article>
+        <article class="card">
+          <h3>Report Links</h3>
+          <div class="kv"><span>Text</span><strong><a href="{escape(text_url)}">{escape(text_url)}</a></strong></div>
+          <div class="kv"><span>Full JSON</span><strong><a href="{escape(json_url)}">{escape(json_url)}</a></strong></div>
+          <p class="muted">Loaded asynchronously so weekend review cannot block dashboard startup.</p>
+        </article>
       </div>
-      <h3>Blocker Distribution</h3>{_render_table(_dict_rows(blocker_section.get("blocker_distribution") or {}), ["key", "value"])}
-      <h3>Review-Only Recommendations</h3>{_render_table(recommendations[:8], ["label", "text", "execution_authority", "target_weight_mutation"])}
-      <h3>Acceptance Questions</h3>{_render_table(answers, ["id", "question", "deterministic_source", "status", "answer_payload", "llm_computed"])}
-      <p class="muted">Full JSON: <a href="{escape(json_url)}">{escape(json_url)}</a> | Text: <a href="{escape(text_url)}">{escape(text_url)}</a></p>
     """
-
-
-def _dict_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
-        {"key": key, "value": value}
-        for key, value in sorted(data.items(), key=lambda item: str(item[0]))
-    ]
 
 
 def _render_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
@@ -5585,6 +5564,7 @@ def _css() -> str:
     .kv span { color:var(--muted); }
     .kv strong { text-align:right; overflow-wrap:anywhere; }
     .table-wrap { overflow:auto; max-width:100%; max-height:58vh; border:1px solid var(--line); border-radius:8px; }
+    .weekend-review-text { white-space:pre-wrap; overflow:auto; max-height:360px; margin-top:8px; padding:12px; border:1px solid var(--line); border-radius:8px; background:#f8fafc; color:var(--ink); font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace; }
     table { width:100%; border-collapse:separate; border-spacing:0; min-width:min(960px, 100%); }
     th, td { text-align:left; padding:9px 10px; border-bottom:1px solid #edf0f4; vertical-align:top; }
     th { position:sticky; top:0; z-index:1; color:var(--muted); font-weight:600; background:#fafbfc; }
