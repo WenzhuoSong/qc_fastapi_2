@@ -246,11 +246,24 @@ def format_weekend_review_telegram(payload: dict[str, Any]) -> str:
             f"stuck={execution.get('stuck_in_flight_count', 0)}"
         ),
         (
+            "Execution outcomes: "
+            f"qc_reject={execution.get('true_qc_rejected_count', execution.get('rejected_count', 0))} "
+            f"preflight={execution.get('preflight_blocked_count', 0)} "
+            f"not_sent={execution.get('not_sent_count', 0)} "
+            f"timeout_ack={execution.get('timeout_no_ack_count', 0)} "
+            f"no_exec={execution.get('timeout_no_execution_confirmed_count', 0)} "
+            f"dedupe={execution.get('duplicate_target_count', 0)}"
+        ),
+        (
             "Intent blockers: "
             f"risk={intent.get('risk_block_count', 0)} "
             f"final={intent.get('final_validation_block_count', 0)} "
             f"preflight={intent.get('execution_preflight_block_count', 0)} "
-            f"dedupe={intent.get('dedupe_count', 0)}"
+            f"daily_cap={intent.get('daily_command_cap_block_count', 0)} "
+            f"turnover_cap={intent.get('daily_turnover_cap_block_count', 0)} "
+            f"dedupe={intent.get('dedupe_count', 0)} "
+            f"timeout={intent.get('execution_timeout_count', 0)} "
+            f"qc_reject={intent.get('qc_reject_count', 0)}"
         ),
         (
             "Labels: "

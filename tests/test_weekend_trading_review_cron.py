@@ -143,6 +143,56 @@ class WeekendTradingReviewCronTests(unittest.TestCase):
         self.assertIn("execution_authority=none", text)
         self.assertIn("target_weight_mutation=none", text)
 
+    def test_telegram_summary_includes_split_execution_outcomes(self):
+        text = format_weekend_review_telegram({
+            "week_start": "2026-06-01",
+            "week_end": "2026-06-07",
+            "weekend_review_artifact_count": 8,
+            "weekend_review_metrics": {
+                "sections": {
+                    "execution_truth": {
+                        "metrics": {
+                            "commands_sent": 22,
+                            "filled_count": 12,
+                            "noop_count": 0,
+                            "stuck_in_flight_count": 0,
+                            "true_qc_rejected_count": 1,
+                            "preflight_blocked_count": 15,
+                            "not_sent_count": 15,
+                            "timeout_no_ack_count": 4,
+                            "timeout_no_execution_confirmed_count": 9,
+                            "duplicate_target_count": 4,
+                        }
+                    },
+                    "intent_execution": {
+                        "metrics": {
+                            "risk_block_count": 0,
+                            "final_validation_block_count": 0,
+                            "execution_preflight_block_count": 15,
+                            "daily_command_cap_block_count": 3,
+                            "daily_turnover_cap_block_count": 2,
+                            "dedupe_count": 4,
+                            "execution_timeout_count": 4,
+                            "qc_reject_count": 1,
+                        }
+                    },
+                    "label_maturity": {"metrics": {}},
+                    "hedge_review": {"metrics": {}},
+                }
+            },
+            "weekend_review_summary": {},
+        })
+
+        self.assertIn("Execution outcomes:", text)
+        self.assertIn("qc_reject=1", text)
+        self.assertIn("preflight=15", text)
+        self.assertIn("timeout_ack=4", text)
+        self.assertIn("no_exec=9", text)
+        self.assertIn("daily_cap=3", text)
+        self.assertIn("turnover_cap=2", text)
+        self.assertIn("timeout=4", text)
+        self.assertIn("qc_reject=1", text)
+
     def test_ops_failure_message_is_not_trading_failure(self):
         message = build_ops_failure_message(RuntimeError("db unavailable"))
 

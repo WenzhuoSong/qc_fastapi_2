@@ -44,6 +44,12 @@ def build_weekend_review_operator_view(payload: dict[str, Any]) -> dict[str, Any
             "filled_count": _metric(execution, "filled_count"),
             "noop_count": _metric(execution, "noop_count"),
             "stuck_in_flight_count": _metric(execution, "stuck_in_flight_count"),
+            "true_qc_rejected_count": _metric(execution, "true_qc_rejected_count"),
+            "preflight_blocked_count": _metric(execution, "preflight_blocked_count"),
+            "not_sent_count": _metric(execution, "not_sent_count"),
+            "timeout_no_ack_count": _metric(execution, "timeout_no_ack_count"),
+            "timeout_no_execution_confirmed_count": _metric(execution, "timeout_no_execution_confirmed_count"),
+            "duplicate_target_count": _metric(execution, "duplicate_target_count"),
             "top_blocker": _top_item(intent.get("blocker_distribution") or {}),
             "eligible_label_count": _metric(labels, "eligible_label_count"),
             "excluded_immature_count": _metric(labels, "excluded_immature_count"),
@@ -141,6 +147,15 @@ def format_weekend_review_operator_text(view: dict[str, Any]) -> str:
             f"filled={headline.get('filled_count', 0)} "
             f"noop={headline.get('noop_count', 0)} "
             f"stuck={headline.get('stuck_in_flight_count', 0)}"
+        ),
+        (
+            "Execution outcomes: "
+            f"qc_reject={headline.get('true_qc_rejected_count', 0)} "
+            f"preflight={headline.get('preflight_blocked_count', 0)} "
+            f"not_sent={headline.get('not_sent_count', 0)} "
+            f"timeout_ack={headline.get('timeout_no_ack_count', 0)} "
+            f"no_exec={headline.get('timeout_no_execution_confirmed_count', 0)} "
+            f"dedupe={headline.get('duplicate_target_count', 0)}"
         ),
         f"Top blocker: {headline.get('top_blocker') or 'none'}",
         f"Blocker distribution: {blockers}",

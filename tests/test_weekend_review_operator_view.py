@@ -75,6 +75,7 @@ class WeekendReviewOperatorViewTests(unittest.TestCase):
 
         self.assertIn("Weekend Review Operator View", text)
         self.assertIn("Execution truth:", text)
+        self.assertIn("Execution outcomes:", text)
         self.assertIn("Top blocker:", text)
         self.assertIn("Labels:", text)
         self.assertIn("Hedge:", text)
