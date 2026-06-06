@@ -54,6 +54,7 @@ async def tool_send_weight_command(inp: dict) -> dict:
         "analysis_id": inp.get("analysis_id"),
         "weights":    {k: v for k, v in weights.items() if k != "CASH"},
         "policy_version": policy_version,
+        "target_fingerprint": inp.get("target_fingerprint"),
     }
     body = {
         "projectId": int(settings.qc_project_id),

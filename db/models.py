@@ -393,9 +393,17 @@ class ExecutionLog(Base):
     __tablename__ = "execution_log"
     id              = Column(BigInteger, primary_key=True, autoincrement=True)
     analysis_id     = Column(BigInteger, ForeignKey("agent_analysis.id"))
+    source_analysis_id = Column(BigInteger, ForeignKey("agent_analysis.id"))
     executed_at     = Column(DateTime, nullable=False, default=func.now())
+    submitted_at    = Column(DateTime)
     command_id      = Column(String(64), index=True)
+    correlation_id  = Column(String(96), index=True)
     command_type    = Column(String(30))
+    policy_version  = Column(String(50))
+    target_fingerprint = Column(String(64), index=True)
+    lifecycle_state = Column(String(40), default="created", index=True)
+    latest_qc_ack_at = Column(DateTime)
+    lifecycle_metadata = Column("metadata", JSONB)
     command_payload = Column(JSONB, nullable=False)
     qc_response     = Column(JSONB)
     status          = Column(String(20))  # success|failed|timeout

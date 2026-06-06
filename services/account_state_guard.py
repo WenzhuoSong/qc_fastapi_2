@@ -5,11 +5,14 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from services.market_calendar import us_equity_market_status
+
 
 DEFAULT_ACCOUNT_STATE_GUARD_CONFIG: dict[str, Any] = {
     "enabled": True,
     "mode": "observe",
     "max_snapshot_age_seconds": 300,
+    "max_market_closed_stale_seconds": 259200,
     "max_reference_weight_diff": 0.01,
     "require_no_open_orders": True,
     "require_buying_power": True,
@@ -28,6 +31,10 @@ def default_account_state_guard_config(config: dict[str, Any] | None = None) -> 
     mode = str(merged.get("mode") or "observe").lower().strip()
     merged["mode"] = mode if mode in {"observe", "blocking", "off"} else "observe"
     merged["max_snapshot_age_seconds"] = _positive_float(merged.get("max_snapshot_age_seconds"), 300.0)
+    merged["max_market_closed_stale_seconds"] = _positive_float(
+        merged.get("max_market_closed_stale_seconds"),
+        259200.0,
+    )
     merged["max_reference_weight_diff"] = _positive_float(merged.get("max_reference_weight_diff"), 0.01)
     merged["ok_account_statuses"] = sorted(_string_set(merged.get("ok_account_statuses"), {"ok"}))
     merged["ok_data_statuses"] = sorted(_string_set(merged.get("ok_data_statuses"), {"ok"}))
@@ -144,15 +151,28 @@ def evaluate_account_state_guard(
 
     recorded_at = _parse_datetime(snapshot.get("recorded_at"))
     age_seconds = (now - recorded_at).total_seconds() if recorded_at else None
+    freshness = classify_account_snapshot_freshness(
+        age_seconds=age_seconds,
+        now=now,
+        config=cfg,
+    )
     _add_check(
         checks,
         blockers,
         "snapshot_fresh",
-        age_seconds is not None and age_seconds <= float(cfg["max_snapshot_age_seconds"]),
+        bool(freshness["pass"]),
         actual=round(age_seconds, 3) if age_seconds is not None else None,
         threshold=cfg["max_snapshot_age_seconds"],
-        reason="account_state_snapshot_stale_or_missing_time",
+        reason=str(freshness["blocker_reason"] or "account_state_snapshot_stale_or_missing_time"),
+        blocker=bool(freshness["blocking"]),
+        extra={
+            "classification": freshness["classification"],
+            "market_status": freshness["market_status"],
+            "max_market_closed_stale_seconds": cfg["max_market_closed_stale_seconds"],
+        },
     )
+    if freshness.get("warning"):
+        warnings.append(str(freshness["warning"]))
 
     raw = snapshot.get("raw_snapshot") if isinstance(snapshot.get("raw_snapshot"), dict) else {}
     explicit = bool(raw.get("explicit_account_state"))
@@ -272,7 +292,69 @@ def evaluate_account_state_guard(
         if isinstance(warning, str) and warning not in warnings:
             warnings.append(warning)
 
-    return _build_result(mode, blockers, warnings, checks, _snapshot_summary(snapshot, age_seconds), cfg)
+    return _build_result(mode, blockers, warnings, checks, _snapshot_summary(snapshot, age_seconds), cfg, freshness=freshness)
+
+
+def classify_account_snapshot_freshness(
+    *,
+    age_seconds: float | None,
+    now: datetime | None = None,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Classify snapshot staleness with market-closed semantics.
+
+    Market-open stale account truth is dangerous and remains blocking. Market
+    closed stale account truth is expected up to a generous closed-window
+    threshold and should not panic the operator or stop diagnostic analysis.
+    """
+    cfg = default_account_state_guard_config(config)
+    current = _strip_tz(now or datetime.now(UTC))
+    market_status = _market_status_dict(current)
+    if age_seconds is None:
+        return {
+            "classification": "missing_snapshot_time",
+            "pass": False,
+            "blocking": True,
+            "blocker_reason": "account_state_snapshot_stale_or_missing_time",
+            "warning": None,
+            "market_status": market_status,
+        }
+    age = max(float(age_seconds), 0.0)
+    if age <= float(cfg["max_snapshot_age_seconds"]):
+        return {
+            "classification": "fresh",
+            "pass": True,
+            "blocking": False,
+            "blocker_reason": None,
+            "warning": None,
+            "market_status": market_status,
+        }
+    if bool(market_status.get("is_open")):
+        return {
+            "classification": "unexpected_market_open_stale",
+            "pass": False,
+            "blocking": True,
+            "blocker_reason": "account_state_snapshot_stale_or_missing_time",
+            "warning": None,
+            "market_status": market_status,
+        }
+    if age <= float(cfg["max_market_closed_stale_seconds"]):
+        return {
+            "classification": "expected_market_closed_stale",
+            "pass": True,
+            "blocking": False,
+            "blocker_reason": None,
+            "warning": None,
+            "market_status": market_status,
+        }
+    return {
+        "classification": "extended_closed_stale",
+        "pass": False,
+        "blocking": False,
+        "blocker_reason": "extended_closed_stale",
+        "warning": "extended_closed_stale",
+        "market_status": market_status,
+    }
 
 
 def _build_result(
@@ -282,6 +364,8 @@ def _build_result(
     checks: dict[str, dict[str, Any]],
     snapshot: dict[str, Any] | None,
     cfg: dict[str, Any],
+    *,
+    freshness: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     would_block = bool(blockers)
     allowed = not would_block if mode == "blocking" else True
@@ -300,6 +384,7 @@ def _build_result(
         "warnings": warnings,
         "checks": checks,
         "snapshot": snapshot,
+        "freshness": freshness or {},
         "config": _public_config(cfg),
     }
 
@@ -357,6 +442,8 @@ def _add_check(
     actual: Any = None,
     threshold: Any = None,
     reason: str,
+    blocker: bool = True,
+    extra: dict[str, Any] | None = None,
 ) -> None:
     checks[name] = {
         "pass": bool(passed),
@@ -364,7 +451,9 @@ def _add_check(
         "threshold": threshold,
         "reason": None if passed else reason,
     }
-    if not passed:
+    if extra:
+        checks[name].update(extra)
+    if not passed and blocker:
         blockers.append(reason)
 
 
@@ -389,6 +478,7 @@ def _public_config(cfg: dict[str, Any]) -> dict[str, Any]:
     return {
         "mode": cfg.get("mode"),
         "max_snapshot_age_seconds": cfg.get("max_snapshot_age_seconds"),
+        "max_market_closed_stale_seconds": cfg.get("max_market_closed_stale_seconds"),
         "max_reference_weight_diff": cfg.get("max_reference_weight_diff"),
         "require_no_open_orders": cfg.get("require_no_open_orders"),
         "require_buying_power": cfg.get("require_buying_power"),
@@ -467,6 +557,11 @@ def _strip_tz(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value
     return value.astimezone(UTC).replace(tzinfo=None)
+
+
+def _market_status_dict(now: datetime) -> dict[str, Any]:
+    aware = _strip_tz(now).replace(tzinfo=UTC)
+    return us_equity_market_status(aware).to_dict()
 
 
 def _iso_or_none(value: Any) -> str | None:

@@ -28,11 +28,14 @@ async def get_qc_ack_detail(command_id: str) -> dict:
     row = await get_execution_log_by_command_id(command_id)
     if not row:
         return {"qc_status": None}
+    lifecycle_metadata = row.lifecycle_metadata if isinstance(row.lifecycle_metadata, dict) else {}
     return {
         "qc_status": row.qc_status,
         "qc_rejection_reason": row.qc_rejection_reason,
         "qc_response": row.qc_response,
         "qc_ack_at": row.qc_ack_at.isoformat() if row.qc_ack_at else None,
+        "lifecycle_state": getattr(row, "lifecycle_state", None),
+        "feedback_trust": lifecycle_metadata.get("feedback_trust"),
     }
 
 

@@ -25,6 +25,7 @@ from services.execution_preflight import (
 )
 from services.policy_alignment import policy_alignment_from_account_guard
 from services.transaction_cost_gate import format_transaction_cost_gate_summary
+from services.operator_messages import format_qc_lifecycle_ack_message
 
 logger = logging.getLogger("qc_fastapi_2.executor")
 
@@ -46,55 +47,7 @@ QC_OWNERSHIP_STATUSES = {
 
 
 def _format_qc_lifecycle_ack_message(command_id: str, qc_ack: dict) -> str:
-    status = str((qc_ack or {}).get("qc_status") or "").lower().strip()
-    response = (qc_ack or {}).get("qc_response") if isinstance((qc_ack or {}).get("qc_response"), dict) else {}
-    order_summary = response.get("order_summary") if isinstance(response.get("order_summary"), dict) else {}
-    label = _command_label(command_id)
-    execution_state = str(response.get("execution_state") or "").lower().strip()
-    if execution_state == "noop_reconciled" or order_summary.get("is_noop") is True:
-        return (
-            f"✅ No-op reconciled `{label}`\n"
-            "Target matches current holdings — no orders needed.\n"
-            f"SetHoldings actions: {order_summary.get('action_count', 0)} | "
-            f"Actual orders: {order_summary.get('actual_order_count', 0)}"
-        )
-    if status == "accepted":
-        return (
-            f"✅ QC accepted ownership `{label}`\n"
-            f"Execution state: {response.get('execution_state') or 'accepted'}\n"
-            "Accepted is not reconciled; awaiting fill/account reconciliation."
-        )
-    if status == "orders_submitted":
-        return (
-            f"📤 QC submitted orders `{label}`\n"
-            f"Orders submitted: {order_summary.get('submitted_order_count', 'n/a')}\n"
-            "Awaiting fills and heartbeat reconciliation."
-        )
-    if status == "partial":
-        return (
-            f"⏳ Partial execution `{label}`\n"
-            f"Filled: {order_summary.get('filled_order_count', 'n/a')}/"
-            f"{order_summary.get('submitted_order_count', 'n/a')} orders\n"
-            f"Open orders: {order_summary.get('open_order_count_after', order_summary.get('open_order_count', 'n/a'))}"
-        )
-    if status == "filled":
-        return f"✅ QC reports orders filled `{label}`\nAwaiting account reconciliation."
-    if status == "reconciled":
-        return f"✅ Reconciled `{label}`\nActual holdings match target within tolerance."
-    if status == "reconciliation_drift":
-        return (
-            f"⚠️ Reconciliation drift `{label}`\n"
-            "Actual holdings differ from target. Next cycle will use actual holdings as baseline."
-        )
-    if status == "failed_no_fill":
-        return f"⚠️ QC accepted `{label}` but reports no fill. Positions should be verified from account truth."
-    if status == "superseded":
-        return f"ℹ️ Command `{label}` was superseded by a later override."
-    return (
-        f"⚠️ QC ACK timeout `{label}`\n"
-        "No fast QC ownership confirmation within the wait window. "
-        "Lifecycle will reconcile from heartbeat; do not assume positions changed."
-    )
+    return format_qc_lifecycle_ack_message(command_id, qc_ack)
 
 
 async def run_executor_async(
@@ -344,6 +297,8 @@ async def run_executor_async(
             same_target_dedupe = await check_recent_same_target_dedupe(
                 proposed_target=weights,
                 command_id=command_id,
+                policy_version=policy_version,
+                command_type="SetWeights",
                 lookback_minutes=int(command_cfg.get("recent_same_target_dedupe_minutes") or 5),
                 tolerance=float(command_cfg.get("recent_same_target_dedupe_tolerance") or 0.005),
             )
@@ -359,11 +314,12 @@ async def run_executor_async(
                 reference_id = same_target_dedupe.get("reference_command_id") or "unknown"
                 tolerance = float(same_target_dedupe.get("tolerance") or 0.0)
                 lookback = int(same_target_dedupe.get("lookback_minutes") or 0)
+                fp = str(same_target_dedupe.get("target_fingerprint") or "")[:12] or "n/a"
                 await tool_send_telegram({
                     "text": (
                         f"⏭ Command deduped `{_command_label(command_id)}`\n"
-                        f"Recent reconciled command `{_command_label(reference_id)}` has the same target "
-                        f"within {tolerance:.1%} tolerance.\n"
+                        f"Recent reconciled command `{_command_label(reference_id)}` has the same target fingerprint "
+                        f"`{fp}` within {tolerance:.1%} tolerance.\n"
                         f"Window: {lookback}m | No command sent to QC."
                     )
                 })
@@ -417,6 +373,8 @@ async def run_executor_async(
     same_target_dedupe = await check_recent_same_target_dedupe(
         proposed_target=weights,
         command_id=command_id,
+        policy_version=policy_version,
+        command_type="SetWeights",
         lookback_minutes=int(command_cfg.get("recent_same_target_dedupe_minutes") or 5),
         tolerance=float(command_cfg.get("recent_same_target_dedupe_tolerance") or 0.005),
     )
@@ -432,11 +390,12 @@ async def run_executor_async(
         reference_id = same_target_dedupe.get("reference_command_id") or "unknown"
         tolerance = float(same_target_dedupe.get("tolerance") or 0.0)
         lookback = int(same_target_dedupe.get("lookback_minutes") or 0)
+        fp = str(same_target_dedupe.get("target_fingerprint") or "")[:12] or "n/a"
         await tool_send_telegram({
             "text": (
                 f"⏭ Command deduped `{_command_label(command_id)}`\n"
-                f"Recent reconciled command `{_command_label(reference_id)}` has the same target "
-                f"within {tolerance:.1%} tolerance.\n"
+                f"Recent reconciled command `{_command_label(reference_id)}` has the same target fingerprint "
+                f"`{fp}` within {tolerance:.1%} tolerance.\n"
                 f"Window: {lookback}m | No command sent to QC."
             )
         })
@@ -457,11 +416,13 @@ async def run_executor_async(
             ),
         }
 
+    target_fingerprint = same_target_dedupe.get("target_fingerprint")
     result = await tool_send_weight_command({
         "weights": weights,
         "command_id": command_id,
         "analysis_id": analysis_id,
         "policy_version": policy_version,
+        "target_fingerprint": target_fingerprint,
     })
 
     if result.get("success"):
@@ -512,6 +473,7 @@ async def run_executor_async(
             "qc_status": qc_status,
             "qc_rejection_reason": qc_ack.get("qc_rejection_reason"),
             "qc_ack": qc_ack,
+            "target_fingerprint": target_fingerprint,
             "policy_version": policy_version,
             "preflight": command_preflight,
             "active_execution_gate": active_execution_gate,

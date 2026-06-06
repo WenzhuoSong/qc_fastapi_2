@@ -164,6 +164,8 @@ async def check_recent_same_target_dedupe(
     *,
     proposed_target: dict[str, Any],
     command_id: str,
+    policy_version: str | None = None,
+    command_type: str = "SetWeights",
     lookback_minutes: int = 5,
     tolerance: float = 0.005,
 ) -> dict[str, Any]:
@@ -172,9 +174,16 @@ async def check_recent_same_target_dedupe(
 
     from db.models import CommandLifecycleEvent, ExecutionLog
     from db.session import AsyncSessionLocal
-    from services.execution_lifecycle import is_within_target_tolerance
+    from services.target_fingerprint import build_target_fingerprint
 
     clean_command_id = str(command_id or "").strip()
+    proposed_fingerprint = build_target_fingerprint(
+        proposed_target,
+        command_type=command_type,
+        policy_version=policy_version,
+        tolerance=tolerance,
+        metadata={"command_id": clean_command_id},
+    )
     cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=max(int(lookback_minutes or 0), 1))
     async with AsyncSessionLocal() as db:
         lifecycle_rows = (
@@ -193,8 +202,11 @@ async def check_recent_same_target_dedupe(
                     select(ExecutionLog).where(ExecutionLog.command_id == event.command_id)
                 )
             ).scalar_one_or_none()
-            recent_target = _target_weights_from_execution_row(row)
-            if recent_target and is_within_target_tolerance(proposed_target, recent_target, tolerance):
+            recent_fingerprint = _target_fingerprint_from_execution_row(
+                row,
+                tolerance=tolerance,
+            )
+            if recent_fingerprint and recent_fingerprint.get("fingerprint") == proposed_fingerprint.get("fingerprint"):
                 return {
                     "should_send": False,
                     "reason": "recent_same_target_reconciled",
@@ -202,6 +214,10 @@ async def check_recent_same_target_dedupe(
                     "reference_reconciled_at": _iso_or_none(getattr(event, "event_time", None)),
                     "lookback_minutes": int(lookback_minutes),
                     "tolerance": float(tolerance),
+                    "target_fingerprint": proposed_fingerprint.get("fingerprint"),
+                    "reference_target_fingerprint": recent_fingerprint.get("fingerprint"),
+                    "fingerprint_match": True,
+                    "fingerprint": proposed_fingerprint,
                 }
 
     return {
@@ -209,6 +225,8 @@ async def check_recent_same_target_dedupe(
         "reason": None,
         "lookback_minutes": int(lookback_minutes),
         "tolerance": float(tolerance),
+        "target_fingerprint": proposed_fingerprint.get("fingerprint"),
+        "fingerprint": proposed_fingerprint,
     }
 
 
@@ -342,6 +360,68 @@ def _target_weights_from_execution_row(row: Any) -> dict[str, Any]:
             if isinstance(value, dict) and value:
                 return value
     return {}
+
+
+def _target_fingerprint_from_execution_row(
+    row: Any,
+    *,
+    tolerance: float,
+) -> dict[str, Any] | None:
+    if not row:
+        return None
+    existing = str(getattr(row, "target_fingerprint", "") or "").strip()
+    payload = getattr(row, "command_payload", None) or {}
+    payload_fp = payload.get("target_fingerprint") if isinstance(payload, dict) else None
+    payload_tolerance = None
+    if isinstance(payload_fp, dict):
+        try:
+            payload_tolerance = float(payload_fp.get("dedupe_tolerance"))
+        except (TypeError, ValueError):
+            payload_tolerance = None
+    if existing and (payload_tolerance is None or abs(payload_tolerance - float(tolerance)) <= 1e-12):
+        return {
+            "fingerprint": existing,
+            "source": "execution_log.target_fingerprint",
+        }
+    target = _target_weights_from_execution_row(row)
+    if not target:
+        return None
+    from services.target_fingerprint import build_target_fingerprint
+
+    return {
+        **build_target_fingerprint(
+            target,
+            command_type=_fingerprint_command_type_from_execution_row(row),
+            policy_version=_policy_version_from_execution_row(row),
+            tolerance=tolerance,
+            metadata={
+                "command_id": getattr(row, "command_id", None),
+                "correlation_id": getattr(row, "correlation_id", None),
+                "analysis_id": getattr(row, "analysis_id", None),
+            },
+        ),
+        "source": "reconstructed_from_execution_log",
+    }
+
+
+def _fingerprint_command_type_from_execution_row(row: Any) -> str:
+    command_type = str(getattr(row, "command_type", "") or "").strip()
+    if command_type.lower() in {"weight_adjustment", "set_weights", "setweights"}:
+        return "SetWeights"
+    return command_type or "SetWeights"
+
+
+def _policy_version_from_execution_row(row: Any) -> str | None:
+    direct = getattr(row, "policy_version", None)
+    if direct:
+        return str(direct)
+    payload = getattr(row, "command_payload", None) or {}
+    if isinstance(payload, dict) and payload.get("policy_version"):
+        return str(payload.get("policy_version"))
+    qc_response = getattr(row, "qc_response", None) or {}
+    if isinstance(qc_response, dict) and qc_response.get("policy_version"):
+        return str(qc_response.get("policy_version"))
+    return None
 
 
 def _iso_or_none(value: Any) -> str | None:

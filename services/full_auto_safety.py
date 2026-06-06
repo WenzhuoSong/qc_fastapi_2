@@ -13,6 +13,7 @@ def full_auto_safety_precondition_violations(
     final_risk_validation_config: dict[str, Any],
     auto_pause_config: dict[str, Any],
     execution_lifecycle_config: dict[str, Any] | None = None,
+    reconciliation_guard_config: dict[str, Any] | None = None,
 ) -> list[str]:
     """Return configuration violations that make FULL_AUTO unsafe to enter."""
     if str(auth_mode or "").upper().strip() != "FULL_AUTO":
@@ -39,6 +40,14 @@ def full_auto_safety_precondition_violations(
         violations.append(
             "execution_lifecycle_config.mode must be active or strict in FULL_AUTO "
             f"(current: {lifecycle_mode})"
+        )
+
+    reconciliation_mode = str((reconciliation_guard_config or {}).get("mode") or "blocking").lower().strip()
+    reconciliation_enabled = bool((reconciliation_guard_config or {}).get("enabled", True))
+    if not reconciliation_enabled or reconciliation_mode != "blocking":
+        violations.append(
+            "reconciliation_guard_config.mode must be blocking in FULL_AUTO "
+            f"(current: {'disabled' if not reconciliation_enabled else reconciliation_mode})"
         )
 
     return violations

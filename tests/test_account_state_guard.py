@@ -40,7 +40,7 @@ class AccountStateGuardTests(unittest.TestCase):
         self.assertEqual(result["snapshot"]["holdings_count"], 2)
 
     def test_observe_mode_reports_would_block_but_allows_pipeline(self):
-        now = datetime(2026, 5, 24, 15, 0, 0)
+        now = datetime(2026, 5, 26, 15, 0, 0)
         result = evaluate_account_state_guard(
             {
                 "recorded_at": now - timedelta(minutes=10),
@@ -62,6 +62,106 @@ class AccountStateGuardTests(unittest.TestCase):
         self.assertTrue(result["allowed"])
         self.assertTrue(result["would_block"])
         self.assertIn("account_state_snapshot_stale_or_missing_time", result["blockers"])
+        self.assertEqual(
+            result["checks"]["snapshot_fresh"]["classification"],
+            "unexpected_market_open_stale",
+        )
+
+    def test_closed_market_stale_is_expected_no_action_needed(self):
+        now = datetime(2026, 6, 6, 3, 40, 0)
+        result = evaluate_account_state_guard(
+            {
+                "recorded_at": now - timedelta(hours=7),
+                "source_packet_type": "daily_feature_snapshot",
+                "contract_version": "v1",
+                "account_status": "ok",
+                "data_status": "ok",
+                "policy_version": "sprint8a",
+                "buying_power": 50000,
+                "open_order_count": 0,
+                "holdings_weights": {"SPY": 0.4},
+                "raw_snapshot": {"explicit_account_state": True},
+            },
+            config={
+                "mode": "blocking",
+                "max_snapshot_age_seconds": 1200,
+                "max_market_closed_stale_seconds": 72 * 3600,
+            },
+            now=now,
+        )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertTrue(result["allowed"])
+        self.assertFalse(result["would_block"])
+        self.assertNotIn("account_state_snapshot_stale_or_missing_time", result["blockers"])
+        self.assertEqual(
+            result["checks"]["snapshot_fresh"]["classification"],
+            "expected_market_closed_stale",
+        )
+        self.assertEqual(result["freshness"]["classification"], "expected_market_closed_stale")
+        self.assertNotIn("extended_closed_stale", result["warnings"])
+
+    def test_market_open_stale_remains_blocking(self):
+        now = datetime(2026, 6, 8, 15, 0, 0)
+        result = evaluate_account_state_guard(
+            {
+                "recorded_at": now - timedelta(minutes=30),
+                "source_packet_type": "heartbeat",
+                "contract_version": "v1",
+                "account_status": "ok",
+                "data_status": "ok",
+                "policy_version": "sprint8a",
+                "buying_power": 50000,
+                "open_order_count": 0,
+                "holdings_weights": {"SPY": 0.4},
+                "raw_snapshot": {"explicit_account_state": True},
+            },
+            config={"mode": "blocking", "max_snapshot_age_seconds": 1200},
+            now=now,
+        )
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertFalse(result["allowed"])
+        self.assertIn("account_state_snapshot_stale_or_missing_time", result["blockers"])
+        self.assertEqual(
+            result["checks"]["snapshot_fresh"]["classification"],
+            "unexpected_market_open_stale",
+        )
+        self.assertTrue(result["checks"]["snapshot_fresh"]["market_status"]["is_open"])
+
+    def test_extended_closed_stale_warns_without_blocking_diagnostic_analysis(self):
+        now = datetime(2026, 6, 6, 3, 40, 0)
+        result = evaluate_account_state_guard(
+            {
+                "recorded_at": now - timedelta(hours=96),
+                "source_packet_type": "daily_feature_snapshot",
+                "contract_version": "v1",
+                "account_status": "ok",
+                "data_status": "ok",
+                "policy_version": "sprint8a",
+                "buying_power": 50000,
+                "open_order_count": 0,
+                "holdings_weights": {"SPY": 0.4},
+                "raw_snapshot": {"explicit_account_state": True},
+            },
+            config={
+                "mode": "blocking",
+                "max_snapshot_age_seconds": 1200,
+                "max_market_closed_stale_seconds": 72 * 3600,
+            },
+            now=now,
+        )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertTrue(result["allowed"])
+        self.assertFalse(result["would_block"])
+        self.assertNotIn("extended_closed_stale", result["blockers"])
+        self.assertIn("extended_closed_stale", result["warnings"])
+        self.assertFalse(result["checks"]["snapshot_fresh"]["pass"])
+        self.assertEqual(
+            result["checks"]["snapshot_fresh"]["classification"],
+            "extended_closed_stale",
+        )
 
     def test_blocking_mode_disallows_open_orders(self):
         now = datetime(2026, 5, 24, 15, 0, 0)

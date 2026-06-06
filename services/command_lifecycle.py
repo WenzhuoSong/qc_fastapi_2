@@ -28,6 +28,7 @@ VALID_EVENT_TYPES = {
     "deferred_by_active_execution",
     "force_reconciled_by_operator",
     "cancel_orders_requested_by_operator",
+    "unknown_command_feedback",
 }
 
 DEFAULT_RECONCILIATION_TOLERANCE = 0.01
@@ -45,6 +46,79 @@ RECONCILIATION_ACTIVE_QC_STATUSES = {
     "partial",
     "timeout_no_ack",
 }
+COMMAND_LIFECYCLE_STATES = {
+    "created",
+    "pending_ack",
+    "accepted",
+    "rejected",
+    "orders_submitted",
+    "partial",
+    "filled",
+    "noop_reconciled",
+    "pending_reconcile",
+    "diverged",
+}
+TERMINAL_LIFECYCLE_STATES = {
+    "filled",
+    "rejected",
+    "noop_reconciled",
+    "diverged",
+}
+LIFECYCLE_STATE_RANK = {
+    "created": 0,
+    "pending_ack": 10,
+    "accepted": 20,
+    "orders_submitted": 30,
+    "partial": 40,
+    "pending_reconcile": 45,
+    "filled": 60,
+    "noop_reconciled": 70,
+    "diverged": 80,
+    "rejected": 90,
+}
+QC_STATUS_TO_LIFECYCLE_STATE = {
+    "submitted": "pending_ack",
+    "accepted": "accepted",
+    "orders_submitted": "orders_submitted",
+    "partial": "partial",
+    "filled": "filled",
+    "reconciled": "filled",
+    "reconciliation_drift": "diverged",
+    "rejected": "rejected",
+    "canceled": "rejected",
+    "failed_no_fill": "rejected",
+    "not_sent": "created",
+    "timeout_no_ack": "pending_reconcile",
+    "timeout_no_execution_confirmed": "rejected",
+}
+
+
+def next_lifecycle_state(
+    current_state: str | None,
+    proposed_state: str | None,
+) -> str:
+    """Return a monotonic lifecycle state for the shared command row.
+
+    Late/duplicate ACKs are common. A stale accepted ACK must not move a command
+    backward after account truth has already marked it filled, noop, or
+    diverged. The one allowed terminal escalation is filled -> diverged when a
+    later trusted reconciliation check proves drift.
+    """
+    current = str(current_state or "").lower().strip()
+    proposed = str(proposed_state or "").lower().strip()
+    if proposed not in COMMAND_LIFECYCLE_STATES:
+        return current if current in COMMAND_LIFECYCLE_STATES else "created"
+    if current not in COMMAND_LIFECYCLE_STATES:
+        return proposed
+    if current == proposed:
+        return current
+    if current == "filled" and proposed == "diverged":
+        return "diverged"
+    if current in TERMINAL_LIFECYCLE_STATES:
+        return current
+    if LIFECYCLE_STATE_RANK.get(proposed, -1) >= LIFECYCLE_STATE_RANK.get(current, -1):
+        return proposed
+    return current
 
 
 def build_command_lifecycle_event(
@@ -103,6 +177,38 @@ async def append_command_lifecycle_event(
         event_time=event_time,
     )
     db.add(CommandLifecycleEvent(**event))
+
+
+def lifecycle_state_from_status(
+    *,
+    status: str | None = None,
+    qc_status: str | None = None,
+    qc_response: dict[str, Any] | None = None,
+) -> str:
+    """Return the command-row lifecycle state for current status fields."""
+    response = qc_response if isinstance(qc_response, dict) else {}
+    execution_state = str(
+        response.get("execution_state")
+        or (response.get("order_summary") or {}).get("execution_state")
+        or ""
+    ).lower().strip()
+    if execution_state == "noop_reconciled":
+        return "noop_reconciled"
+
+    clean_qc = str(qc_status or "").lower().strip()
+    if clean_qc in QC_STATUS_TO_LIFECYCLE_STATE:
+        return QC_STATUS_TO_LIFECYCLE_STATE[clean_qc]
+
+    clean_status = str(status or "").lower().strip()
+    if clean_status in {"sent", "submitted", "pending_send"}:
+        return "pending_ack"
+    if clean_status in {"accepted"}:
+        return "accepted"
+    if clean_status in {"rejected", "failed", "skipped"}:
+        return "rejected"
+    if clean_status in COMMAND_LIFECYCLE_STATES:
+        return clean_status
+    return "created"
 
 
 def build_command_reconciliation_events(

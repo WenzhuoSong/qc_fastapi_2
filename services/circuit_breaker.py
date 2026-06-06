@@ -39,6 +39,7 @@ from db.queries import get_system_config, upsert_system_config
 from db.models import AgentAnalysis, AgentStepLog, PortfolioTimeseries
 from tools.notify_tools import tool_send_telegram
 from config import get_settings
+from services.operator_messages import format_circuit_state_change_message
 
 logger = logging.getLogger("qc_fastapi_2.circuit_breaker")
 settings = get_settings()
@@ -263,19 +264,11 @@ class CircuitBreakerMonitor:
                 "circuit_breaker",
             )
 
-        # Send Telegram alert
-        emoji = {
-            CircuitState.CLOSED: "🟢",
-            CircuitState.ALERT: "🟡",
-            CircuitState.DEFENSIVE: "🔴",
-        }.get(new_state, "⚪")
-
         await tool_send_telegram({
-            "text": (
-                f"{emoji} Circuit state changed to {new_state.value}\n"
-                f"Reason: {reason}\n"
-                f"Trigger: {primary_trigger or 'n/a'}\n"
-                f"Override mode is now {'DEFENSIVE' if new_state != CircuitState.CLOSED else 'none'}"
+            "text": format_circuit_state_change_message(
+                state=new_state.value,
+                reason=reason,
+                primary_trigger=primary_trigger,
             )
         })
 

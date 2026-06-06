@@ -5,10 +5,61 @@ from services.command_lifecycle import (
     build_command_lifecycle_event,
     build_command_reconciliation_events,
     build_reconciliation_lag_report,
+    lifecycle_state_from_status,
+    next_lifecycle_state,
 )
 
 
 class CommandLifecycleTests(unittest.TestCase):
+    def test_lifecycle_state_maps_submission_to_pending_ack(self):
+        self.assertEqual(
+            lifecycle_state_from_status(status="sent", qc_status="submitted"),
+            "pending_ack",
+        )
+
+    def test_lifecycle_state_maps_qc_accepted(self):
+        self.assertEqual(
+            lifecycle_state_from_status(status="sent", qc_status="accepted"),
+            "accepted",
+        )
+
+    def test_lifecycle_state_maps_noop_reconciled_from_qc_payload(self):
+        self.assertEqual(
+            lifecycle_state_from_status(
+                status="sent",
+                qc_status="reconciled",
+                qc_response={"order_summary": {"execution_state": "noop_reconciled"}},
+            ),
+            "noop_reconciled",
+        )
+
+    def test_lifecycle_state_maps_reconciliation_drift_to_diverged(self):
+        self.assertEqual(
+            lifecycle_state_from_status(status="sent", qc_status="reconciliation_drift"),
+            "diverged",
+        )
+
+    def test_lifecycle_state_maps_not_sent_to_created(self):
+        self.assertEqual(
+            lifecycle_state_from_status(status="deduped", qc_status="not_sent"),
+            "created",
+        )
+
+    def test_next_lifecycle_state_allows_forward_progress(self):
+        self.assertEqual(next_lifecycle_state("accepted", "orders_submitted"), "orders_submitted")
+        self.assertEqual(next_lifecycle_state("orders_submitted", "partial"), "partial")
+        self.assertEqual(next_lifecycle_state("partial", "filled"), "filled")
+
+    def test_next_lifecycle_state_blocks_late_ack_regression(self):
+        self.assertEqual(next_lifecycle_state("filled", "accepted"), "filled")
+        self.assertEqual(next_lifecycle_state("filled", "rejected"), "filled")
+        self.assertEqual(next_lifecycle_state("noop_reconciled", "pending_reconcile"), "noop_reconciled")
+        self.assertEqual(next_lifecycle_state("diverged", "accepted"), "diverged")
+        self.assertEqual(next_lifecycle_state("rejected", "accepted"), "rejected")
+
+    def test_next_lifecycle_state_allows_filled_to_diverged_escalation(self):
+        self.assertEqual(next_lifecycle_state("filled", "diverged"), "diverged")
+
     def test_build_command_lifecycle_event_normalizes_time_and_payload(self):
         event = build_command_lifecycle_event(
             command_id=" cmd_1 ",

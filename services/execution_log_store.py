@@ -9,8 +9,15 @@ from sqlalchemy import desc
 
 from db.models import AccountStateSnapshot, CommandLifecycleEvent, ExecutionLog
 from db.session import AsyncSessionLocal
-from services.command_lifecycle import append_command_lifecycle_event, build_command_reconciliation_events
+from services.command_lifecycle import (
+    append_command_lifecycle_event,
+    build_command_reconciliation_events,
+    lifecycle_state_from_status,
+    next_lifecycle_state,
+)
+from services.execution_lifecycle import classify_qc_feedback_trust
 from services.json_safety import json_safe
+from services.target_fingerprint import build_target_fingerprint
 
 RECONCILIATION_ACTIVE_QC_STATUSES = {
     "accepted",
@@ -39,6 +46,138 @@ def _safe_json_payload(value: Any) -> Any:
     return json_safe(value)
 
 
+def _apply_command_lifecycle_skeleton(
+    row: Any,
+    *,
+    command_id: str,
+    analysis_id: int | None = None,
+    command_type: str | None = None,
+    policy_version: str | None = None,
+    status: str | None = None,
+    qc_status: str | None = None,
+    qc_response: dict[str, Any] | None = None,
+    submitted_at: datetime | None = None,
+    latest_qc_ack_at: datetime | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Populate the shared command lifecycle row fields on execution_log."""
+    clean_command_id = str(command_id or getattr(row, "command_id", "") or "").strip()
+    if clean_command_id:
+        row.command_id = clean_command_id
+        row.correlation_id = getattr(row, "correlation_id", None) or clean_command_id
+    if analysis_id is not None:
+        row.analysis_id = analysis_id
+        row.source_analysis_id = getattr(row, "source_analysis_id", None) or analysis_id
+    elif getattr(row, "analysis_id", None) is not None:
+        row.source_analysis_id = getattr(row, "source_analysis_id", None) or getattr(row, "analysis_id", None)
+    if command_type:
+        row.command_type = command_type
+    if policy_version:
+        row.policy_version = policy_version
+    if submitted_at is not None:
+        row.submitted_at = submitted_at
+    elif getattr(row, "submitted_at", None) is None:
+        row.submitted_at = getattr(row, "executed_at", None) or _utcnow_db_naive()
+    if latest_qc_ack_at is not None:
+        row.latest_qc_ack_at = latest_qc_ack_at
+    lifecycle_metadata = dict(getattr(row, "lifecycle_metadata", None) or {})
+    if metadata:
+        lifecycle_metadata.update(_safe_json_payload(metadata))
+    if lifecycle_metadata:
+        row.lifecycle_metadata = lifecycle_metadata
+    proposed_lifecycle_state = lifecycle_state_from_status(
+        status=status if status is not None else getattr(row, "status", None),
+        qc_status=qc_status if qc_status is not None else getattr(row, "qc_status", None),
+        qc_response=qc_response if qc_response is not None else getattr(row, "qc_response", None),
+    )
+    row.lifecycle_state = next_lifecycle_state(
+        getattr(row, "lifecycle_state", None),
+        proposed_lifecycle_state,
+    )
+
+
+def _store_feedback_trust(row: Any, feedback_trust: dict[str, Any]) -> None:
+    """Store PR2a trust classification on the shared command lifecycle row."""
+    lifecycle_metadata = dict(getattr(row, "lifecycle_metadata", None) or {})
+    lifecycle_metadata["feedback_trust"] = _safe_json_payload(feedback_trust)
+    row.lifecycle_metadata = lifecycle_metadata
+    lifecycle_hint = str((feedback_trust or {}).get("lifecycle_state_hint") or "").strip()
+    if lifecycle_hint:
+        row.lifecycle_state = next_lifecycle_state(getattr(row, "lifecycle_state", None), lifecycle_hint)
+
+
+def _set_target_fingerprint(row: Any, fingerprint_payload: dict[str, Any] | None) -> None:
+    fingerprint = str((fingerprint_payload or {}).get("fingerprint") or "").strip()
+    if fingerprint and not str(getattr(row, "target_fingerprint", "") or "").strip():
+        row.target_fingerprint = fingerprint
+
+
+def _target_fingerprint_tolerance_from_preflight(preflight_result: dict[str, Any] | None) -> float | None:
+    config = (preflight_result or {}).get("config") if isinstance(preflight_result, dict) else None
+    if not isinstance(config, dict):
+        return None
+    try:
+        return float(config.get("recent_same_target_dedupe_tolerance"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_setweights_target_fingerprint(
+    target_weights: dict[str, Any] | None,
+    *,
+    policy_version: str | None,
+    command_id: str | None = None,
+    analysis_id: int | None = None,
+    correlation_id: str | None = None,
+    tolerance: float | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(target_weights, dict) or not target_weights:
+        return None
+    return build_target_fingerprint(
+        target_weights,
+        command_type="SetWeights",
+        policy_version=policy_version,
+        tolerance=tolerance,
+        metadata={
+            "command_id": command_id,
+            "analysis_id": analysis_id,
+            "correlation_id": correlation_id,
+        },
+    )
+
+
+def _target_fingerprint_from_command_payload(
+    payload: dict[str, Any] | None,
+    *,
+    command_id: str | None = None,
+    analysis_id: int | None = None,
+    row: Any | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    existing = payload.get("target_fingerprint")
+    if isinstance(existing, dict) and existing.get("fingerprint"):
+        return existing
+    target_weights = None
+    for key in ("sent_weights", "proposed_weights", "weights"):
+        value = payload.get(key)
+        if isinstance(value, dict) and value:
+            target_weights = value
+            break
+    if not target_weights:
+        return None
+    policy_version = payload.get("policy_version")
+    if not policy_version and row is not None:
+        policy_version = getattr(row, "policy_version", None)
+    return _build_setweights_target_fingerprint(
+        target_weights,
+        policy_version=policy_version,
+        command_id=command_id or payload.get("command_id") or getattr(row, "command_id", None),
+        analysis_id=analysis_id if analysis_id is not None else getattr(row, "analysis_id", None),
+        correlation_id=getattr(row, "correlation_id", None),
+    )
+
+
 async def create_or_update_submitted_log(
     *,
     command_id: str,
@@ -49,6 +188,14 @@ async def create_or_update_submitted_log(
     policy_sync_result: dict[str, Any] | None = None,
     qc_response: dict[str, Any] | None = None,
 ) -> None:
+    recorded_at = _utcnow_db_naive()
+    target_fingerprint = _build_setweights_target_fingerprint(
+        target_weights,
+        policy_version=policy_version,
+        command_id=command_id,
+        analysis_id=analysis_id,
+        tolerance=_target_fingerprint_tolerance_from_preflight(preflight_result),
+    )
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(ExecutionLog).where(ExecutionLog.command_id == command_id))
         row = result.scalar_one_or_none()
@@ -59,7 +206,8 @@ async def create_or_update_submitted_log(
             "policy_version": policy_version,
             "command_preflight": preflight_result or {},
             "policy_sync": policy_sync_result or {},
-            "recorded_at": datetime.now(UTC).isoformat(),
+            "target_fingerprint": target_fingerprint or {},
+            "recorded_at": recorded_at.isoformat(),
         }
         payload = _safe_json_payload(payload)
         safe_qc_response = _safe_json_payload(qc_response) if qc_response is not None else None
@@ -70,18 +218,43 @@ async def create_or_update_submitted_log(
             row.qc_response = safe_qc_response or row.qc_response
             row.status = "sent"
             row.qc_status = row.qc_status or "submitted"
-        else:
-            db.add(
-                ExecutionLog(
-                    analysis_id=analysis_id,
-                    command_id=command_id,
-                    command_type="weight_adjustment",
-                    command_payload=payload,
-                    qc_response=safe_qc_response,
-                    status="sent",
-                    qc_status="submitted",
-                )
+            _set_target_fingerprint(row, target_fingerprint)
+            _apply_command_lifecycle_skeleton(
+                row,
+                command_id=command_id,
+                analysis_id=analysis_id,
+                command_type="weight_adjustment",
+                policy_version=policy_version,
+                status=row.status,
+                qc_status=row.qc_status,
+                qc_response=row.qc_response,
+                submitted_at=recorded_at,
+                metadata={"source": "create_or_update_submitted_log"},
             )
+        else:
+            row = ExecutionLog(
+                analysis_id=analysis_id,
+                command_id=command_id,
+                command_type="weight_adjustment",
+                command_payload=payload,
+                qc_response=safe_qc_response,
+                status="sent",
+                qc_status="submitted",
+            )
+            _set_target_fingerprint(row, target_fingerprint)
+            _apply_command_lifecycle_skeleton(
+                row,
+                command_id=command_id,
+                analysis_id=analysis_id,
+                command_type="weight_adjustment",
+                policy_version=policy_version,
+                status="sent",
+                qc_status="submitted",
+                qc_response=safe_qc_response,
+                submitted_at=recorded_at,
+                metadata={"source": "create_or_update_submitted_log"},
+            )
+            db.add(row)
         await append_command_lifecycle_event(
             db,
             command_id=command_id,
@@ -93,6 +266,7 @@ async def create_or_update_submitted_log(
                 "target_weights": target_weights,
                 "policy_version": policy_version,
                 "preflight_result": preflight_result or {},
+                "target_fingerprint": target_fingerprint or {},
             },
         )
         await append_command_lifecycle_event(
@@ -121,13 +295,14 @@ async def create_or_update_policy_sync_log(
     qc_status: str = "pending",
 ) -> None:
     """Create a local row before PolicySync is sent so fast QC ACKs are not lost."""
+    recorded_at = _utcnow_db_naive()
     payload = {
         "action_status": status,
         "command_id": command_id,
         "policy_version": policy_version,
         "policy_payload": policy_payload or {},
         "qc_response": qc_response or {},
-        "recorded_at": datetime.now(UTC).isoformat(),
+        "recorded_at": recorded_at.isoformat(),
     }
     payload = _safe_json_payload(payload)
     safe_qc_response = _safe_json_payload(qc_response) if qc_response is not None else None
@@ -142,18 +317,41 @@ async def create_or_update_policy_sync_log(
             row.status = status
             if row.qc_status not in {"accepted", "rejected"}:
                 row.qc_status = qc_status
-        else:
-            db.add(
-                ExecutionLog(
-                    analysis_id=analysis_id,
-                    command_id=command_id,
-                    command_type="policy_sync",
-                    command_payload=payload,
-                    qc_response=safe_qc_response,
-                    status=status,
-                    qc_status=qc_status,
-                )
+            _apply_command_lifecycle_skeleton(
+                row,
+                command_id=command_id,
+                analysis_id=analysis_id,
+                command_type="policy_sync",
+                policy_version=policy_version,
+                status=row.status,
+                qc_status=row.qc_status,
+                qc_response=row.qc_response,
+                submitted_at=recorded_at,
+                metadata={"source": "create_or_update_policy_sync_log"},
             )
+        else:
+            row = ExecutionLog(
+                analysis_id=analysis_id,
+                command_id=command_id,
+                command_type="policy_sync",
+                command_payload=payload,
+                qc_response=safe_qc_response,
+                status=status,
+                qc_status=qc_status,
+            )
+            _apply_command_lifecycle_skeleton(
+                row,
+                command_id=command_id,
+                analysis_id=analysis_id,
+                command_type="policy_sync",
+                policy_version=policy_version,
+                status=status,
+                qc_status=qc_status,
+                qc_response=safe_qc_response,
+                submitted_at=recorded_at,
+                metadata={"source": "create_or_update_policy_sync_log"},
+            )
+            db.add(row)
         await append_command_lifecycle_event(
             db,
             command_id=command_id,
@@ -174,8 +372,20 @@ async def update_execution_result(
     qc_response: dict[str, Any] | None,
     status: str,
 ) -> None:
+    if isinstance(audit_payload, dict):
+        audit_payload = dict(audit_payload)
+        fingerprint_payload = _target_fingerprint_from_command_payload(
+            audit_payload,
+            command_id=command_id,
+            analysis_id=analysis_id,
+        )
+        if fingerprint_payload:
+            audit_payload["target_fingerprint"] = fingerprint_payload
+    else:
+        fingerprint_payload = None
     audit_payload = _safe_json_payload(audit_payload)
     qc_response = _safe_json_payload(qc_response) if qc_response is not None else None
+    policy_version = audit_payload.get("policy_version") if isinstance(audit_payload, dict) else None
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(ExecutionLog).where(ExecutionLog.command_id == command_id))
         row = result.scalar_one_or_none()
@@ -186,18 +396,42 @@ async def update_execution_result(
             row.status = status
             if status in {"failed", "rejected", "skipped"} and row.qc_ack_at is None and row.qc_status in {None, "submitted"}:
                 row.qc_status = "not_sent"
-        else:
-            db.add(
-                ExecutionLog(
-                    analysis_id=analysis_id,
-                    command_id=command_id,
-                    command_type="weight_adjustment",
-                    command_payload=audit_payload,
-                    qc_response=qc_response,
-                    status=status,
-                    qc_status="not_sent" if status in {"failed", "rejected", "skipped"} else "submitted",
-                )
+            _set_target_fingerprint(row, fingerprint_payload)
+            _apply_command_lifecycle_skeleton(
+                row,
+                command_id=command_id,
+                analysis_id=analysis_id,
+                command_type=row.command_type or "weight_adjustment",
+                policy_version=policy_version,
+                status=row.status,
+                qc_status=row.qc_status,
+                qc_response=row.qc_response,
+                metadata={"source": "update_execution_result"},
             )
+        else:
+            qc_status = "not_sent" if status in {"failed", "rejected", "skipped"} else "submitted"
+            row = ExecutionLog(
+                analysis_id=analysis_id,
+                command_id=command_id,
+                command_type="weight_adjustment",
+                command_payload=audit_payload,
+                qc_response=qc_response,
+                status=status,
+                qc_status=qc_status,
+            )
+            _set_target_fingerprint(row, fingerprint_payload)
+            _apply_command_lifecycle_skeleton(
+                row,
+                command_id=command_id,
+                analysis_id=analysis_id,
+                command_type="weight_adjustment",
+                policy_version=policy_version,
+                status=status,
+                qc_status=qc_status,
+                qc_response=qc_response,
+                metadata={"source": "update_execution_result"},
+            )
+            db.add(row)
         event_type = "execution_result"
         if status == "rejected":
             event_type = "preflight_blocked"
@@ -256,6 +490,13 @@ async def record_recent_same_target_dedupe(
     preflight_result: dict[str, Any] | None = None,
 ) -> None:
     """Record a same-target duplicate as not_sent without consuming daily caps."""
+    target_fingerprint = _build_setweights_target_fingerprint(
+        target_weights,
+        policy_version=policy_version,
+        command_id=command_id,
+        analysis_id=analysis_id,
+        tolerance=_target_fingerprint_tolerance_from_preflight(preflight_result),
+    )
     payload = {
         "action_status": "deduped",
         "command_id": command_id,
@@ -265,6 +506,7 @@ async def record_recent_same_target_dedupe(
         "command_preflight": preflight_result or {},
         "reason": "recent_same_target_reconciled",
         "same_target_dedupe": dedupe_result,
+        "target_fingerprint": target_fingerprint or {},
         "recorded_at": datetime.now(UTC).isoformat(),
     }
     payload = _safe_json_payload(payload)
@@ -278,6 +520,18 @@ async def record_recent_same_target_dedupe(
             row.status = "deduped"
             row.qc_status = "not_sent"
             row.qc_rejection_reason = "recent_same_target_reconciled"
+            _set_target_fingerprint(row, target_fingerprint)
+            _apply_command_lifecycle_skeleton(
+                row,
+                command_id=command_id,
+                analysis_id=analysis_id,
+                command_type="weight_adjustment",
+                policy_version=policy_version,
+                status=row.status,
+                qc_status=row.qc_status,
+                qc_response=row.qc_response,
+                metadata={"source": "record_recent_same_target_dedupe"},
+            )
         else:
             row = ExecutionLog(
                 analysis_id=analysis_id,
@@ -288,6 +542,18 @@ async def record_recent_same_target_dedupe(
                 status="deduped",
                 qc_status="not_sent",
                 qc_rejection_reason="recent_same_target_reconciled",
+            )
+            _set_target_fingerprint(row, target_fingerprint)
+            _apply_command_lifecycle_skeleton(
+                row,
+                command_id=command_id,
+                analysis_id=analysis_id,
+                command_type="weight_adjustment",
+                policy_version=policy_version,
+                status="deduped",
+                qc_status="not_sent",
+                qc_response=None,
+                metadata={"source": "record_recent_same_target_dedupe"},
             )
             db.add(row)
         await append_command_lifecycle_event(
@@ -311,6 +577,12 @@ async def record_active_execution_wait(
     active_execution_gate: dict[str, Any],
     policy_version: str | None,
 ) -> None:
+    target_fingerprint = _build_setweights_target_fingerprint(
+        target_weights,
+        policy_version=policy_version,
+        command_id=command_id,
+        analysis_id=analysis_id,
+    )
     payload = {
         "action_status": "deferred_by_active_execution",
         "command_id": command_id,
@@ -319,6 +591,7 @@ async def record_active_execution_wait(
         "policy_version": policy_version,
         "reason": "active_execution_wait",
         "active_execution_gate": active_execution_gate,
+        "target_fingerprint": target_fingerprint or {},
         "recorded_at": datetime.now(UTC).isoformat(),
     }
     payload = _safe_json_payload(payload)
@@ -332,6 +605,18 @@ async def record_active_execution_wait(
             row.status = "deferred_by_active_execution"
             row.qc_status = "not_sent"
             row.qc_rejection_reason = "active_execution_wait"
+            _set_target_fingerprint(row, target_fingerprint)
+            _apply_command_lifecycle_skeleton(
+                row,
+                command_id=command_id,
+                analysis_id=analysis_id,
+                command_type="weight_adjustment",
+                policy_version=policy_version,
+                status=row.status,
+                qc_status=row.qc_status,
+                qc_response=row.qc_response,
+                metadata={"source": "record_active_execution_wait"},
+            )
         else:
             row = ExecutionLog(
                 analysis_id=analysis_id,
@@ -342,6 +627,18 @@ async def record_active_execution_wait(
                 status="deferred_by_active_execution",
                 qc_status="not_sent",
                 qc_rejection_reason="active_execution_wait",
+            )
+            _set_target_fingerprint(row, target_fingerprint)
+            _apply_command_lifecycle_skeleton(
+                row,
+                command_id=command_id,
+                analysis_id=analysis_id,
+                command_type="weight_adjustment",
+                policy_version=policy_version,
+                status="deferred_by_active_execution",
+                qc_status="not_sent",
+                qc_response=None,
+                metadata={"source": "record_active_execution_wait"},
             )
             db.add(row)
         await append_command_lifecycle_event(
@@ -389,6 +686,8 @@ async def force_reconcile_command(
         drift = _weight_diff_for_force_reconcile(target_weights, actual_weights)
         terminal_status = "reconciled" if float(drift.get("max_abs_diff") or 0.0) <= 0.01 else "reconciliation_drift"
         row.qc_status = terminal_status
+        row.qc_ack_at = row.qc_ack_at or now
+        row.latest_qc_ack_at = now
         payload = dict(row.command_payload or {})
         payload["force_reconciliation"] = {
             "operator": operator,
@@ -402,6 +701,18 @@ async def force_reconcile_command(
         }
         payload = _safe_json_payload(payload)
         row.command_payload = payload
+        _apply_command_lifecycle_skeleton(
+            row,
+            command_id=clean_command_id,
+            analysis_id=getattr(row, "analysis_id", None),
+            command_type=getattr(row, "command_type", None) or _command_type_from_id(clean_command_id),
+            policy_version=getattr(row, "policy_version", None),
+            status=getattr(row, "status", None),
+            qc_status=terminal_status,
+            qc_response=getattr(row, "qc_response", None),
+            latest_qc_ack_at=now,
+            metadata={"source": "force_reconcile_command"},
+        )
         await append_command_lifecycle_event(
             db,
             command_id=clean_command_id,
@@ -463,27 +774,43 @@ async def update_qc_status(
     qc_status: str,
     rejection_reason: str | None = None,
     qc_response: dict[str, Any] | None = None,
-) -> None:
+) -> dict[str, Any]:
     ack_time = _utcnow_db_naive()
     safe_qc_response = _safe_json_payload(qc_response) if qc_response is not None else None
-    values: dict[str, Any] = {
-        "qc_status": qc_status,
-        "qc_ack_at": ack_time,
-    }
-    if rejection_reason is not None:
-        values["qc_rejection_reason"] = rejection_reason
-    if safe_qc_response is not None:
-        values["qc_response"] = safe_qc_response
+    response_policy_version = (
+        safe_qc_response.get("policy_version")
+        if isinstance(safe_qc_response, dict)
+        else None
+    )
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(ExecutionLog).where(ExecutionLog.command_id == command_id))
         row = result.scalar_one_or_none()
+        command_known = row is not None
+        feedback_trust = classify_qc_feedback_trust(
+            qc_response=safe_qc_response or {"status": qc_status},
+            command_known=command_known,
+        )
         if row:
             row.qc_status = qc_status
             row.qc_ack_at = ack_time
+            row.latest_qc_ack_at = ack_time
             if rejection_reason is not None:
                 row.qc_rejection_reason = rejection_reason
             if safe_qc_response is not None:
                 row.qc_response = safe_qc_response
+            _apply_command_lifecycle_skeleton(
+                row,
+                command_id=command_id,
+                analysis_id=getattr(row, "analysis_id", None),
+                command_type=getattr(row, "command_type", None) or _command_type_from_id(command_id),
+                policy_version=getattr(row, "policy_version", None) or response_policy_version,
+                status=getattr(row, "status", None),
+                qc_status=qc_status,
+                qc_response=row.qc_response,
+                latest_qc_ack_at=ack_time,
+                metadata={"source": "update_qc_status"},
+            )
+            _store_feedback_trust(row, feedback_trust)
         else:
             command_payload = _safe_json_payload(
                 {
@@ -491,6 +818,7 @@ async def update_qc_status(
                     "command_id": command_id,
                     "reason": rejection_reason,
                     "qc_response": safe_qc_response or {},
+                    "feedback_trust": feedback_trust,
                     "recorded_at": datetime.now(UTC).isoformat(),
                 }
             )
@@ -505,16 +833,32 @@ async def update_qc_status(
                 qc_ack_at=ack_time,
                 qc_rejection_reason=rejection_reason,
             )
+            _apply_command_lifecycle_skeleton(
+                row,
+                command_id=command_id,
+                analysis_id=_analysis_id_from_command_id(command_id),
+                command_type=_command_type_from_id(command_id),
+                policy_version=response_policy_version,
+                status="ack_received",
+                qc_status=qc_status,
+                qc_response=safe_qc_response,
+                latest_qc_ack_at=ack_time,
+                metadata={"source": "update_qc_status_without_local_row"},
+            )
+            _store_feedback_trust(row, feedback_trust)
             db.add(row)
-        event_type = _event_type_for_qc_status(qc_status)
+        event_type = "unknown_command_feedback" if not command_known else _event_type_for_qc_status(qc_status)
         await append_command_lifecycle_event(
             db,
             command_id=command_id,
             event_type=event_type,
             event_status=qc_status,
             source=_event_source_for_qc_status(qc_status),
-            reason=rejection_reason,
-            payload=safe_qc_response or {},
+            reason=rejection_reason or feedback_trust.get("reason"),
+            payload={
+                **(safe_qc_response or {}),
+                "feedback_trust": feedback_trust,
+            },
             event_time=ack_time,
         )
         superseded = _superseded_lifecycle_payload_from_qc_response(command_id, safe_qc_response or {})
@@ -530,15 +874,24 @@ async def update_qc_status(
                 payload=superseded["payload"],
                 event_time=ack_time,
             )
-        await _append_reconciliation_events(
-            db,
-            command_id=command_id,
-            analysis_id=getattr(row, "analysis_id", None),
-            command_payload=(getattr(row, "command_payload", None) or {}),
-            qc_response=safe_qc_response or {},
-            event_time=ack_time,
-        )
+        event_types: list[str] = []
+        if _feedback_trust_allows_reconciliation_event_derivation(feedback_trust):
+            event_types = await _append_reconciliation_events(
+                db,
+                command_id=command_id,
+                analysis_id=getattr(row, "analysis_id", None),
+                command_payload=(getattr(row, "command_payload", None) or {}),
+                qc_response=safe_qc_response or {},
+                event_time=ack_time,
+            )
         await db.commit()
+        return {
+            "command_id": command_id,
+            "known_command": command_known,
+            "feedback_trust": feedback_trust,
+            "lifecycle_state": getattr(row, "lifecycle_state", None),
+            "reconciliation_event_types": event_types,
+        }
 
 
 async def get_qc_status(command_id: str) -> str | None:
@@ -571,6 +924,19 @@ def _event_source_for_qc_status(qc_status: str) -> str:
     if status in {"timeout_no_ack", "timeout_no_execution_confirmed", "deferred_by_active_execution"}:
         return "fastapi"
     return "qc"
+
+
+def _feedback_trust_allows_reconciliation_event_derivation(feedback_trust: dict[str, Any] | None) -> bool:
+    """Only derive hard reconciliation events from trusted or explicitly in-flight ACKs."""
+    status = str((feedback_trust or {}).get("status") or "").strip()
+    if status in {
+        "trusted_for_reconciliation",
+        "trusted_noop_reconciled",
+        "trusted_terminal_no_fill",
+        "partial",
+    }:
+        return True
+    return False
 
 
 async def get_execution_log_by_command_id(command_id: str) -> ExecutionLog | None:
@@ -765,10 +1131,23 @@ async def reconcile_timeout_no_ack_commands(
 
             row.qc_status = "timeout_no_execution_confirmed"
             row.qc_rejection_reason = decision["reason"]
+            row.latest_qc_ack_at = now
             payload = dict(row.command_payload or {})
             payload["timeout_reconciliation"] = decision
             payload = _safe_json_payload(payload)
             row.command_payload = payload
+            _apply_command_lifecycle_skeleton(
+                row,
+                command_id=row.command_id,
+                analysis_id=getattr(row, "analysis_id", None),
+                command_type=getattr(row, "command_type", None) or _command_type_from_id(row.command_id),
+                policy_version=getattr(row, "policy_version", None),
+                status=getattr(row, "status", None),
+                qc_status=row.qc_status,
+                qc_response=getattr(row, "qc_response", None),
+                latest_qc_ack_at=now,
+                metadata={"source": "reconcile_timeout_no_ack_commands"},
+            )
             await append_command_lifecycle_event(
                 db,
                 command_id=row.command_id,
@@ -944,8 +1323,10 @@ async def append_reconciliation_from_account_snapshot(db, account_state: dict[st
     next_status = _qc_status_from_reconciliation_event_types(event_types, qc_status)
     if next_status != qc_status:
         row.qc_status = next_status
+        ack_time = account_state.get("recorded_at") or _utcnow_db_naive()
         if row.qc_ack_at is None and next_status in {"accepted", "orders_submitted", "partial"}:
-            row.qc_ack_at = account_state.get("recorded_at") or _utcnow_db_naive()
+            row.qc_ack_at = ack_time
+        row.latest_qc_ack_at = ack_time
         payload = dict(row.command_payload or {})
         payload["heartbeat_reconciliation"] = {
             "status": next_status,
@@ -955,6 +1336,18 @@ async def append_reconciliation_from_account_snapshot(db, account_state: dict[st
         }
         payload = _safe_json_payload(payload)
         row.command_payload = payload
+        _apply_command_lifecycle_skeleton(
+            row,
+            command_id=command_id,
+            analysis_id=getattr(row, "analysis_id", None),
+            command_type=getattr(row, "command_type", None) or _command_type_from_id(command_id),
+            policy_version=getattr(row, "policy_version", None),
+            status=getattr(row, "status", None),
+            qc_status=next_status,
+            qc_response=getattr(row, "qc_response", None),
+            latest_qc_ack_at=ack_time,
+            metadata={"source": "append_reconciliation_from_account_snapshot"},
+        )
     return len(event_types)
 
 

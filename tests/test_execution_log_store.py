@@ -22,6 +22,8 @@ def _load_utcnow_db_naive():
     lifecycle = type(sys)("services.command_lifecycle")
     lifecycle.append_command_lifecycle_event = None
     lifecycle.build_command_reconciliation_events = lambda **kwargs: []
+    lifecycle.lifecycle_state_from_status = lambda **kwargs: "created"
+    lifecycle.next_lifecycle_state = lambda current, proposed: proposed if current in (None, "") else current
 
     with patch.dict(
         "sys.modules",
@@ -42,6 +44,173 @@ _utcnow_db_naive = execution_log_store._utcnow_db_naive
 
 
 class ExecutionLogStoreTests(unittest.TestCase):
+    def test_apply_command_lifecycle_skeleton_sets_shared_row_fields(self):
+        row = type(
+            "Row",
+            (),
+            {
+                "command_id": None,
+                "correlation_id": None,
+                "analysis_id": None,
+                "source_analysis_id": None,
+                "command_type": None,
+                "policy_version": None,
+                "submitted_at": None,
+                "executed_at": None,
+                "latest_qc_ack_at": None,
+                "lifecycle_metadata": None,
+                "status": "sent",
+                "qc_status": "submitted",
+                "qc_response": None,
+            },
+        )()
+
+        execution_log_store._apply_command_lifecycle_skeleton(
+            row,
+            command_id="analysis_244",
+            analysis_id=244,
+            command_type="weight_adjustment",
+            policy_version="sprint8a",
+            status="sent",
+            qc_status="submitted",
+            metadata={"source": "test"},
+        )
+
+        self.assertEqual(row.command_id, "analysis_244")
+        self.assertEqual(row.correlation_id, "analysis_244")
+        self.assertEqual(row.analysis_id, 244)
+        self.assertEqual(row.source_analysis_id, 244)
+        self.assertEqual(row.command_type, "weight_adjustment")
+        self.assertEqual(row.policy_version, "sprint8a")
+        self.assertIsNotNone(row.submitted_at)
+        self.assertEqual(row.lifecycle_metadata["source"], "test")
+        self.assertEqual(row.lifecycle_state, "created")
+
+    def test_apply_command_lifecycle_skeleton_preserves_existing_correlation_id(self):
+        row = type(
+            "Row",
+            (),
+            {
+                "command_id": "analysis_244",
+                "correlation_id": "corr_existing",
+                "analysis_id": 244,
+                "source_analysis_id": 244,
+                "command_type": "weight_adjustment",
+                "policy_version": "sprint8a",
+                "submitted_at": None,
+                "executed_at": None,
+                "latest_qc_ack_at": None,
+                "lifecycle_metadata": {},
+                "status": "sent",
+                "qc_status": "submitted",
+                "qc_response": None,
+            },
+        )()
+
+        execution_log_store._apply_command_lifecycle_skeleton(
+            row,
+            command_id="analysis_244",
+            status="sent",
+            qc_status="submitted",
+        )
+
+        self.assertEqual(row.correlation_id, "corr_existing")
+
+    def test_apply_command_lifecycle_skeleton_uses_monotonic_transition(self):
+        with patch.object(
+            execution_log_store,
+            "lifecycle_state_from_status",
+            return_value="accepted",
+        ), patch.object(
+            execution_log_store,
+            "next_lifecycle_state",
+            return_value="filled",
+        ) as transition:
+            row = type(
+                "Row",
+                (),
+                {
+                    "command_id": "analysis_244",
+                    "correlation_id": "analysis_244",
+                    "analysis_id": 244,
+                    "source_analysis_id": 244,
+                    "command_type": "weight_adjustment",
+                    "policy_version": "sprint8a",
+                    "submitted_at": None,
+                    "executed_at": None,
+                    "latest_qc_ack_at": None,
+                    "lifecycle_metadata": {},
+                    "lifecycle_state": "filled",
+                    "status": "sent",
+                    "qc_status": "accepted",
+                    "qc_response": None,
+                },
+            )()
+
+            execution_log_store._apply_command_lifecycle_skeleton(
+                row,
+                command_id="analysis_244",
+                status="sent",
+                qc_status="accepted",
+            )
+
+        transition.assert_called_once_with("filled", "accepted")
+        self.assertEqual(row.lifecycle_state, "filled")
+
+    def test_setweights_target_fingerprint_ignores_lifecycle_metadata(self):
+        first = execution_log_store._build_setweights_target_fingerprint(
+            {"QQQ": 0.3001},
+            policy_version="sprint8a",
+            command_id="analysis_242",
+            analysis_id=242,
+            correlation_id="corr_a",
+            tolerance=0.005,
+        )
+        second = execution_log_store._build_setweights_target_fingerprint(
+            {"QQQ": 0.3001},
+            policy_version="sprint8a",
+            command_id="analysis_243",
+            analysis_id=243,
+            correlation_id="corr_b",
+            tolerance=0.005,
+        )
+
+        self.assertEqual(first["fingerprint"], second["fingerprint"])
+        self.assertEqual(first["command_type"], "SetWeights")
+        self.assertEqual(first["dedupe_tolerance"], 0.005)
+
+    def test_target_fingerprint_from_command_payload_prefers_sent_weights(self):
+        row = type(
+            "Row",
+            (),
+            {
+                "policy_version": "sprint8a",
+                "command_id": "analysis_242",
+                "correlation_id": "analysis_242",
+                "analysis_id": 242,
+            },
+        )()
+        payload = {
+            "sent_weights": {"SPY": 0.1001},
+            "proposed_weights": {"SPY": 0.20},
+            "policy_version": "sprint8a",
+        }
+
+        fingerprint = execution_log_store._target_fingerprint_from_command_payload(
+            payload,
+            row=row,
+        )
+
+        self.assertEqual(fingerprint["normalized_weights"]["SPY"], 0.1)
+        self.assertEqual(fingerprint["policy_version"], "sprint8a")
+
+    def test_target_fingerprint_setter_does_not_overwrite_existing_value(self):
+        row = type("Row", (), {"target_fingerprint": "existing"})()
+
+        execution_log_store._set_target_fingerprint(row, {"fingerprint": "new"})
+
+        self.assertEqual(row.target_fingerprint, "existing")
+
     def test_execution_log_json_payload_safety_converts_sets(self):
         payload = execution_log_store._safe_json_payload({
             "blockers": {"daily_command_count_ok", "daily_gross_turnover_ok"},
@@ -402,6 +571,15 @@ class ExecutionLogStoreTests(unittest.TestCase):
         self.assertIn("async def record_cancel_orders_requested", text)
         self.assertIn('event_type="cancel_orders_requested_by_operator"', text)
         self.assertIn("operator_cancel_orders", text)
+
+    def test_qc_feedback_trust_is_stored_on_lifecycle_row_contract(self):
+        text = Path("services/execution_log_store.py").read_text()
+
+        self.assertIn("classify_qc_feedback_trust", text)
+        self.assertIn('"feedback_trust"', text)
+        self.assertIn("unknown_command_feedback", text)
+        self.assertIn("_feedback_trust_allows_reconciliation_event_derivation", text)
+        self.assertIn("return {", text)
 
     def test_force_reconcile_drift_helper_excludes_cash(self):
         diff = execution_log_store._weight_diff_for_force_reconcile(

@@ -47,6 +47,12 @@ def build_account_state_snapshot(
         holdings_weights = _holdings_weights_from_rows(holdings_rows)
     else:
         holdings_weights = _clean_weight_map(holdings_weights)
+    holdings_detail_rows = _holding_detail_rows(
+        explicit.get("holdings")
+        or explicit.get("positions")
+        or payload.get("holdings")
+        or payload.get("features")
+    )
 
     target_weights = explicit.get("target_weights")
     if not isinstance(target_weights, dict):
@@ -115,6 +121,7 @@ def build_account_state_snapshot(
             "explicit_account_state": bool(explicit),
             "timestamp_utc": timestamp,
             "policy_source": explicit.get("policy_source"),
+            "holdings_detail_rows": holdings_detail_rows,
             "last_command_id": last_command_id,
             "active_command_id": active_command_id,
             "active_execution_status": active_execution_status,
@@ -140,6 +147,54 @@ def _holdings_weights_from_rows(rows: list[dict[str, Any]]) -> dict[str, float]:
         if weight is not None:
             out[ticker] = round(weight, 6)
     return out
+
+
+def _holding_detail_rows(value: Any) -> list[dict[str, Any]]:
+    """Preserve lightweight point-in-time holding facts for operator truth views."""
+    rows: list[dict[str, Any]] = []
+    for row in _rows(value):
+        ticker = str(row.get("ticker") or row.get("symbol") or "").upper().strip()
+        if not ticker:
+            continue
+        rows.append(
+            {
+                "ticker": ticker,
+                "quantity": _round_or_none(
+                    _first_row_number(row, ("quantity", "qty", "shares")),
+                    6,
+                ),
+                "average_price": _round_or_none(
+                    _first_row_number(row, ("average_price", "avg_price", "averagePrice", "avgPrice")),
+                    6,
+                ),
+                "market_price": _round_or_none(
+                    _first_row_number(row, ("market_price", "price", "current_price", "last_price")),
+                    6,
+                ),
+                "market_value": _round_or_none(
+                    _first_row_number(row, ("market_value", "value", "holdings_value")),
+                    2,
+                ),
+                "unrealized_pnl": _round_or_none(
+                    _first_row_number(row, ("unrealized_pnl", "unrealized", "unrealized_profit")),
+                    2,
+                ),
+                "unrealized_pnl_pct": _round_or_none(
+                    _first_row_number(row, ("unrealized_pnl_pct", "unrealized_pct", "unrealized_percentage")),
+                    6,
+                ),
+                "holding_days": _int_or_none(row.get("holding_days")),
+            }
+        )
+    return rows
+
+
+def _first_row_number(row: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = _number_or_none(row.get(key))
+        if value is not None:
+            return value
+    return None
 
 
 def _clean_weight_map(weights: dict[str, Any]) -> dict[str, float]:

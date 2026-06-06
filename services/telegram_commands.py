@@ -30,6 +30,11 @@ from services.policy_alignment import (
     default_manual_confirm_policy_alignment_config,
     policy_alignment_from_account_guard,
 )
+from services.operator_halt import (
+    CONFIG_KEY as OPERATOR_HALT_CONFIG_KEY,
+    build_operator_halt_state,
+    normalize_operator_halt_state,
+)
 from config             import get_settings
 
 logger   = logging.getLogger("qc_fastapi_2.tg_cmd")
@@ -49,6 +54,10 @@ async def handle_telegram_command(text: str, from_chat_id: str) -> str:
         return await _cmd_skip()
     if cmd == "/pause":
         return await _cmd_pause()
+    if cmd == "/halt":
+        return await _cmd_halt(text)
+    if cmd == "/resume":
+        return await _cmd_resume(text)
     if cmd == "/status":
         return await _cmd_status()
     if cmd == "/reset_circuit":
@@ -65,7 +74,7 @@ async def handle_telegram_command(text: str, from_chat_id: str) -> str:
         return await _cmd_force_reconcile(text)
     if cmd == "/cancel_orders":
         return await _cmd_cancel_orders(text)
-    return "Unknown command. Available: /confirm /skip /pause /status /reset_circuit /approve_strategy /skip_strategy /config /pc_promotion /force_reconcile /cancel_orders"
+    return "Unknown command. Available: /confirm /skip /pause /halt /resume /status /reset_circuit /approve_strategy /skip_strategy /config /pc_promotion /force_reconcile /cancel_orders"
 
 
 async def _cmd_confirm() -> str:
@@ -224,20 +233,57 @@ async def _cmd_pause() -> str:
     return "⏸️ Switched to MANUAL mode. Automatic analysis is paused.\nUse /confirm resume to resume."
 
 
+async def _cmd_halt(text: str) -> str:
+    reason = _command_reason(text) or "operator_halt"
+    state = build_operator_halt_state(
+        halted=True,
+        reason=reason,
+        updated_by="telegram",
+    )
+    async with AsyncSessionLocal() as db:
+        await upsert_system_config(db, OPERATOR_HALT_CONFIG_KEY, state, "telegram")
+    return (
+        "🛑 Operator halt enabled.\n"
+        "New SEMI_AUTO and FULL_AUTO pipeline runs will stop before analysis/execution.\n"
+        f"Reason: {reason}\n"
+        "Use /resume <reason> to clear only the operator halt latch."
+    )
+
+
+async def _cmd_resume(text: str) -> str:
+    reason = _command_reason(text) or "operator_resume"
+    state = build_operator_halt_state(
+        halted=False,
+        reason=reason,
+        updated_by="telegram",
+    )
+    async with AsyncSessionLocal() as db:
+        await upsert_system_config(db, OPERATOR_HALT_CONFIG_KEY, state, "telegram")
+    return (
+        "✅ Operator halt cleared.\n"
+        "Circuit and reconciliation halt, if active, are not cleared by /resume.\n"
+        f"Reason: {reason}"
+    )
+
+
 async def _cmd_status() -> str:
     async with AsyncSessionLocal() as db:
         auth_cfg    = await get_system_config(db, "authorization_mode")
         circuit_cfg = await get_system_config(db, "circuit_state")
+        halt_cfg    = await get_system_config(db, OPERATOR_HALT_CONFIG_KEY)
         latest      = await get_latest_portfolio(db)
 
     mode    = (auth_cfg.value    if auth_cfg    else {}).get("value", "SEMI_AUTO")
     circuit = (circuit_cfg.value if circuit_cfg else {}).get("value", "CLOSED")
+    halt_state = normalize_operator_halt_state(halt_cfg.value if halt_cfg else None)
     val     = float(latest.total_value or 0)          if latest else 0
     dd      = float(latest.current_drawdown_pct or 0) if latest else 0
     return (
         f"📊 System status\n"
         f"  Authorization mode: {mode}\n"
         f"  Circuit state: {circuit}\n"
+        f"  Operator halt: {'HALTED' if halt_state.get('halted') else 'running'}\n"
+        f"  Operator halt reason: {halt_state.get('reason') or 'none'}\n"
         f"  Portfolio value: ${val:,.0f}\n"
         f"  Drawdown: -{dd:.2%}"
     )
@@ -330,6 +376,13 @@ async def _cmd_cancel_orders(text: str) -> str:
 
 def _circuit_state_from_cfg(circuit_cfg) -> str:
     return str((circuit_cfg.value if circuit_cfg else {}).get("value", "CLOSED"))
+
+
+def _command_reason(text: str) -> str:
+    parts = text.strip().split(maxsplit=1)
+    if len(parts) < 2:
+        return ""
+    return parts[1].strip()[:240]
 
 
 async def _cmd_config(text: str) -> str:

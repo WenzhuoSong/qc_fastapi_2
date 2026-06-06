@@ -7,6 +7,7 @@ from services.execution_preflight import (
     _command_config,
     _daily_command_limit,
     _daily_turnover_limit,
+    _target_fingerprint_from_execution_row,
     _target_weights_from_execution_row,
     _policy_alignment_ok,
     _policy_sync_ack_status,
@@ -95,9 +96,12 @@ class ExecutorPreflightTests(unittest.TestCase):
 
         self.assertLess(preflight_pos, dedupe_pos)
         self.assertLess(dedupe_pos, send_pos)
+        self.assertIn("policy_version=policy_version", text)
+        self.assertIn('command_type="SetWeights"', text)
         self.assertIn("record_recent_same_target_dedupe", text)
         self.assertIn('"execution_status": "deduped"', text)
         self.assertIn("No command sent to QC", text)
+        self.assertIn("same target fingerprint", text)
 
     def test_executor_budget_only_preflight_block_can_dedupe_before_blocking(self):
         text = Path("agents/executor.py").read_text()
@@ -111,17 +115,20 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn('{"daily_command_count_ok", "daily_gross_turnover_ok"}', body)
 
     def test_executor_telegram_distinguishes_async_qc_lifecycle_states(self):
-        text = Path("agents/executor.py").read_text()
+        executor_text = Path("agents/executor.py").read_text()
+        message_text = Path("services/operator_messages.py").read_text()
 
-        self.assertIn("def _format_qc_lifecycle_ack_message", text)
-        self.assertIn("QC_OWNERSHIP_STATUSES", text)
-        self.assertIn("Accepted is not reconciled", text)
-        self.assertIn("No-op reconciled", text)
-        self.assertIn("Actual orders", text)
-        self.assertIn("QC submitted orders", text)
-        self.assertIn("Partial execution", text)
-        self.assertIn("Reconciliation drift", text)
-        self.assertIn("Lifecycle will reconcile from heartbeat", text)
+        self.assertIn("def _format_qc_lifecycle_ack_message", executor_text)
+        self.assertIn("format_qc_lifecycle_ack_message(command_id, qc_ack)", executor_text)
+        self.assertIn("QC_OWNERSHIP_STATUSES", executor_text)
+        self.assertIn("No-op reconciled", message_text)
+        self.assertIn("Actual orders", message_text)
+        self.assertIn("QC submitted orders", message_text)
+        self.assertIn("Partial execution", message_text)
+        self.assertIn("Reconciliation drift", message_text)
+        self.assertIn("ownership not confirmed", message_text)
+        self.assertIn("def _format_lifecycle_context", message_text)
+        self.assertIn("Lifecycle: ", message_text)
 
     def test_telegram_confirm_uses_policy_alignment_not_policy_sync(self):
         text = Path("services/telegram_commands.py").read_text()
@@ -141,6 +148,7 @@ class ExecutorPreflightTests(unittest.TestCase):
 
         self.assertIn("policy_version = inp.get(\"policy_version\") or policy_snapshot().get(\"version\")", text)
         self.assertIn('"policy_version": policy_version', text)
+        self.assertIn('"target_fingerprint": inp.get("target_fingerprint")', text)
         self.assertNotIn('"policy": policy', text)
 
     def test_policy_sync_command_has_json_fallback_contract(self):
@@ -329,6 +337,49 @@ class ExecutorPreflightTests(unittest.TestCase):
         )()
 
         self.assertEqual(_target_weights_from_execution_row(row), {"SPY": 0.1})
+
+    def test_same_target_dedupe_reconstructs_fingerprint_for_legacy_rows(self):
+        row = type(
+            "Row",
+            (),
+            {
+                "target_fingerprint": None,
+                "command_type": "weight_adjustment",
+                "policy_version": "sprint8a",
+                "command_id": "analysis_242",
+                "correlation_id": "analysis_242",
+                "analysis_id": 242,
+                "qc_response": {},
+                "command_payload": {
+                    "sent_weights": {"SPY": 0.1001},
+                    "policy_version": "sprint8a",
+                },
+            },
+        )()
+
+        result = _target_fingerprint_from_execution_row(row, tolerance=0.005)
+
+        self.assertEqual(result["command_type"], "SetWeights")
+        self.assertEqual(result["policy_version"], "sprint8a")
+        self.assertEqual(result["normalized_weights"]["SPY"], 0.1)
+        self.assertEqual(result["source"], "reconstructed_from_execution_log")
+
+    def test_same_target_dedupe_uses_stored_fingerprint_when_tolerance_matches(self):
+        row = type(
+            "Row",
+            (),
+            {
+                "target_fingerprint": "abc123",
+                "command_payload": {
+                    "target_fingerprint": {"dedupe_tolerance": 0.005},
+                },
+            },
+        )()
+
+        result = _target_fingerprint_from_execution_row(row, tolerance=0.005)
+
+        self.assertEqual(result["fingerprint"], "abc123")
+        self.assertEqual(result["source"], "execution_log.target_fingerprint")
 
     def test_executor_does_not_overwrite_duplicate_command_log(self):
         text = Path("agents/executor.py").read_text()

@@ -95,6 +95,11 @@ from services.auto_pause import (
     load_auto_pause_verdict,
 )
 from services.execution_lifecycle import default_execution_lifecycle_config
+from services.reconciliation_guard import (
+    default_reconciliation_guard_config,
+    format_reconciliation_guard_alert,
+    load_reconciliation_guard,
+)
 from services.policy_sync_recovery import (
     default_policy_sync_recovery_config,
     run_policy_sync_recovery,
@@ -111,6 +116,11 @@ from services.alpha_decision_policy import default_alpha_decision_policy_config
 from services.portfolio_risk_diagnostic import load_portfolio_var_cvar_diagnostic
 from services.alpha_validation_persistence import persist_alpha_validation_run
 from services.validation_observation_loop import persist_observations_for_analysis
+from services.diagnostic_artifacts import (
+    append_diagnostic_artifacts,
+    build_pipeline_diagnostic_artifacts,
+)
+from services.operator_halt import normalize_operator_halt_state
 from services.mutation_ownership import (
     REGIME_CONSTRAINT_MUTATION_TYPE,
     legacy_mutation_classification_summary,
@@ -460,6 +470,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         paused_cfg      = await get_system_config(db, "trading_paused")
         risk_cfg        = await get_system_config(db, "risk_params")
         auth_cfg        = await get_system_config(db, "authorization_mode")
+        operator_halt_cfg = await get_system_config(db, "operator_halt_state")
         circuit_cfg     = await get_system_config(db, "circuit_state")
         active_cfg      = await get_system_config(db, "active_strategy")
         alerts_cfg      = await get_system_config(db, "pending_critical_alerts")
@@ -469,6 +480,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         final_validation_cfg = await get_system_config(db, "final_risk_validation_config")
         execution_command_cfg = await get_system_config(db, "execution_command_config")
         account_guard_cfg = await get_system_config(db, "account_state_guard_config")
+        reconciliation_guard_cfg = await get_system_config(db, "reconciliation_guard_config")
         auto_pause_cfg    = await get_system_config(db, "auto_pause_config")
         execution_lifecycle_cfg = await get_system_config(db, "execution_lifecycle_config")
         policy_sync_recovery_cfg = await get_system_config(db, "policy_sync_recovery_config")
@@ -482,6 +494,17 @@ async def _guard_and_config(trigger: str) -> dict | None:
     paused = bool((paused_cfg.value if paused_cfg else {}).get("paused", False))
     if paused:
         logger.info("trading_paused=True — pipeline skipped")
+        return None
+
+    operator_halt_state = normalize_operator_halt_state(
+        operator_halt_cfg.value if operator_halt_cfg else None
+    )
+    if operator_halt_state.get("halted"):
+        logger.warning(
+            "operator_halt_state halted — pipeline skipped | reason=%s fail_safe=%s",
+            operator_halt_state.get("reason"),
+            operator_halt_state.get("fail_safe"),
+        )
         return None
 
     auth_mode = (auth_cfg.value if auth_cfg else {"value": "SEMI_AUTO"}).get("value", "SEMI_AUTO")
@@ -529,6 +552,9 @@ async def _guard_and_config(trigger: str) -> dict | None:
     execution_lifecycle_config = default_execution_lifecycle_config(
         (execution_lifecycle_cfg.value if execution_lifecycle_cfg else {}) or {}
     )
+    reconciliation_guard_config = default_reconciliation_guard_config(
+        (reconciliation_guard_cfg.value if reconciliation_guard_cfg else {}) or {}
+    )
     policy_sync_recovery_config = default_policy_sync_recovery_config(
         (policy_sync_recovery_cfg.value if policy_sync_recovery_cfg else {}) or {}
     )
@@ -551,6 +577,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         final_risk_validation_config=final_risk_validation_config,
         auto_pause_config=auto_pause_config,
         execution_lifecycle_config=execution_lifecycle_config,
+        reconciliation_guard_config=reconciliation_guard_config,
     )
     if full_auto_safety_violations:
         message = (
@@ -574,6 +601,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "trigger":           trigger,
         "plan_id":           f"P-{datetime.utcnow().strftime('%Y%m%d-%H%M')}",
         "auth_mode":         auth_mode,
+        "operator_halt_state": operator_halt_state,
         "circuit_state":     circuit,
         "circuit_override_consumed": circuit_override_consumed,
         "override_mode":     override_mode,
@@ -589,6 +617,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "account_state_guard_config": account_state_guard_config,
         "auto_pause_config": auto_pause_config,
         "execution_lifecycle_config": execution_lifecycle_config,
+        "reconciliation_guard_config": reconciliation_guard_config,
         "policy_sync_recovery_config": policy_sync_recovery_config,
         "transaction_cost_gate_config": transaction_cost_gate_config,
         "evidence_cap_config": evidence_cap_config,
@@ -842,6 +871,40 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         return {
             "status": "skipped_account_state_guard",
             "account_state_guard": account_state_guard,
+            "policy_sync_recovery": policy_sync_recovery,
+            "auto_pause": auto_pause,
+        }
+
+    try:
+        reconciliation_guard = await load_reconciliation_guard(
+            config=pipeline_context.get("reconciliation_guard_config") or {},
+            account_state_guard=account_state_guard,
+        )
+    except Exception as reconciliation_guard_error:
+        reconciliation_guard = {
+            "enabled": True,
+            "mode": "blocking",
+            "status": "unavailable",
+            "reason": "reconciliation_guard_unavailable",
+            "execution_effect": "blocking",
+            "should_block_current_run": True,
+            "should_set_reconciliation_halt": False,
+            "warnings": [str(reconciliation_guard_error)],
+        }
+        logger.warning("[reconciliation_guard] unavailable: %s", reconciliation_guard_error)
+    pipeline_context["reconciliation_guard"] = reconciliation_guard
+    if reconciliation_guard.get("should_block_current_run"):
+        logger.warning(
+            "[reconciliation_guard] blocked current run | status=%s reason=%s",
+            reconciliation_guard.get("status"),
+            reconciliation_guard.get("reason"),
+        )
+        await tool_send_telegram({"text": format_reconciliation_guard_alert(reconciliation_guard)})
+        tracker.end_run("skipped_reconciliation_guard")
+        return {
+            "status": "skipped_reconciliation_guard",
+            "account_state_guard": account_state_guard,
+            "reconciliation_guard": reconciliation_guard,
             "policy_sync_recovery": policy_sync_recovery,
             "auto_pause": auto_pause,
         }
@@ -1584,6 +1647,8 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     risk_out["legacy_mutation_classification"] = legacy_mutation_classification_summary()
     if pipeline_context.get("account_state_guard"):
         risk_out["account_state_guard"] = pipeline_context.get("account_state_guard")
+    if pipeline_context.get("reconciliation_guard"):
+        risk_out["reconciliation_guard"] = pipeline_context.get("reconciliation_guard")
     if pipeline_context.get("auto_pause"):
         risk_out["auto_pause"] = pipeline_context.get("auto_pause")
     if pipeline_context.get("evidence_cap_diagnostics"):
@@ -2184,6 +2249,45 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         trigger_type=trigger,
         risk_out=risk_out,
     )
+
+    try:
+        diagnostic_artifacts = build_pipeline_diagnostic_artifacts(
+            analysis_id=analysis_id,
+            as_of_time=datetime.utcnow(),
+            pipeline_context=pipeline_context,
+            brief=brief,
+            market_scorecard=market_scorecard,
+            synthesizer_out=synthesizer_out,
+            risk_out=risk_out,
+            base_weights=base_weights,
+        )
+        risk_out = append_diagnostic_artifacts(risk_out, diagnostic_artifacts)
+        risk_out["decision_feature_snapshot_id"] = next(
+            (
+                item.artifact_id
+                for item in diagnostic_artifacts
+                if item.schema_version == "decision_feature_snapshot_v1"
+            ),
+            None,
+        )
+        await _save_step_log(
+            analysis_id,
+            "6e_diagnostic_artifacts",
+            "diagnostic_artifacts",
+            input_data={
+                "artifact_count": len(diagnostic_artifacts),
+                "schemas": sorted({item.schema_version for item in diagnostic_artifacts}),
+            },
+            output_data={
+                "artifact_count": len(diagnostic_artifacts),
+                "decision_feature_snapshot_id": risk_out.get("decision_feature_snapshot_id"),
+                "execution_authority": "none",
+            },
+            duration_ms=0,
+        )
+    except Exception as e:
+        logger.warning("[pipeline] diagnostic artifact build failed: %s", e)
+        risk_out["diagnostic_artifacts_error"] = str(e)
 
     risk_out_for_tracker = risk_out
 

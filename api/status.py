@@ -6,6 +6,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.session import get_db
 from db.queries import get_latest_snapshots, get_latest_portfolio, get_system_config
 from services.feature_authority_mode import normalize_feature_authority_mode
+from services.operator_halt import (
+    CONFIG_KEY as OPERATOR_HALT_CONFIG_KEY,
+    normalize_operator_halt_state,
+)
 
 logger = logging.getLogger("qc_fastapi_2.status")
 
@@ -20,12 +24,16 @@ async def get_status(db: AsyncSession = Depends(get_db)):
     latest_snapshots = await get_latest_snapshots(db, limit=5)
     latest_portfolio = await get_latest_portfolio(db)
     trading_paused = await get_system_config(db, "trading_paused")
+    operator_halt = await get_system_config(db, OPERATOR_HALT_CONFIG_KEY)
     feature_mode = await get_system_config(db, "feature_authority_mode")
 
     return {
         "system": "QC FastAPI 2",
         "version": "1.0.0",
         "trading_paused": trading_paused.value if trading_paused else False,
+        "operator_halt_state": normalize_operator_halt_state(
+            operator_halt.value if operator_halt else None
+        ),
         "feature_authority_mode": normalize_feature_authority_mode(feature_mode.value if feature_mode else None),
         "latest_snapshots": [
             {

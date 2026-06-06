@@ -21,7 +21,25 @@ _DEFAULTS = {
     },
     "authorization_mode": {"value": "SEMI_AUTO"},
     "circuit_state":      {"value": "CLOSED"},
+    "operator_halt_state": {
+        "halted": False,
+        "reason": "",
+        "updated_at": None,
+        "updated_by": "seed",
+    },
     "feature_authority_mode": {"value": "audit_only"},
+    "reconciliation_guard_config": {
+        "enabled": True,
+        "mode": "blocking",
+        "relative_weight_tolerance": 0.0025,
+        "absolute_notional_tolerance_usd": 100.0,
+        "ignore_cash": True,
+        "cash_tolerance_mode": "residual",
+        "market_closed_behavior": "skip",
+        "auto_set_reconciliation_halt": False,
+        "max_pending_ack_age_seconds": 300,
+        "max_in_flight_age_seconds": 900,
+    },
 
     # 活跃策略指针
     "active_strategy": {"value": "momentum_lite_v1"},

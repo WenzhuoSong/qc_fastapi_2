@@ -37,6 +37,7 @@ DEFAULT_EXECUTION_LIFECYCLE_CONFIG: dict[str, Any] = {
 }
 
 ACTIVE_EXECUTION_STATUSES = {"accepted", "orders_submitted", "partial"}
+QC_FEEDBACK_TRUST_SCHEMA_VERSION = "qc_feedback_trust_v1"
 
 
 def default_execution_lifecycle_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -60,6 +61,262 @@ def default_execution_lifecycle_config(config: dict[str, Any] | None = None) -> 
     for key in ("ack_wait_seconds", "timeout_reconciliation_grace_minutes", "max_active_execution_minutes"):
         out[key] = max(int(_float_or_default(out.get(key), DEFAULT_EXECUTION_LIFECYCLE_CONFIG[key])), 1)
     return out
+
+
+def classify_qc_feedback_trust(
+    *,
+    qc_response: dict[str, Any] | None,
+    command_known: bool,
+) -> dict[str, Any]:
+    """Classify whether a QC ACK has enough facts for hard reconciliation.
+
+    This does not decide whether holdings match. It only answers whether the
+    feedback is structurally complete enough for a later reconciliation guard
+    to trust the account/holding facts.
+    """
+    response = qc_response if isinstance(qc_response, dict) else {}
+    status = str(response.get("status") or "").lower().strip()
+    execution_state = _execution_state_from_feedback(response)
+    order_summary = _order_summary_from_feedback(response)
+    account_state = response.get("account_state") if isinstance(response.get("account_state"), dict) else {}
+    holdings = _dict_from_any(account_state.get("holdings_weights") or response.get("actual_holdings_weights"))
+    target = _dict_from_any(account_state.get("target_weights") or response.get("actual_target_weights"))
+    open_order_count = _open_order_count_from_feedback(order_summary, account_state)
+    has_open_orders = _has_open_orders_from_feedback(order_summary, account_state)
+    per_leg_status = _has_per_leg_fill_status(order_summary)
+    is_noop = _is_noop_feedback(response, order_summary)
+    missing_fields: list[str] = []
+
+    evidence = {
+        "qc_status": status,
+        "execution_state": execution_state,
+        "has_account_state": bool(account_state),
+        "has_holdings_weights": bool(holdings),
+        "has_target_weights": bool(target),
+        "has_order_summary": bool(order_summary),
+        "has_per_leg_fill_status": per_leg_status,
+        "open_order_count": open_order_count,
+        "has_open_orders": has_open_orders,
+        "is_noop": is_noop,
+    }
+
+    if not command_known:
+        return _feedback_trust_result(
+            status="unknown_command_feedback",
+            reason="ack_did_not_match_known_command_lifecycle_row",
+            lifecycle_state_hint="pending_reconcile",
+            command_known=False,
+            trusted_feedback=False,
+            trusted_for_reconciliation=False,
+            missing_fields=[],
+            evidence=evidence,
+        )
+
+    if status in {"rejected", "canceled"}:
+        return _feedback_trust_result(
+            status="trusted_terminal_no_execution",
+            reason=f"qc_reported_{status}",
+            lifecycle_state_hint="rejected",
+            command_known=True,
+            trusted_feedback=True,
+            trusted_for_reconciliation=False,
+            missing_fields=[],
+            evidence=evidence,
+        )
+
+    if status == "failed_no_fill" or execution_state in {"failed_no_fill", "no_fill"}:
+        return _feedback_trust_result(
+            status="trusted_terminal_no_fill",
+            reason="qc_reported_failed_no_fill",
+            lifecycle_state_hint="rejected",
+            command_known=True,
+            trusted_feedback=True,
+            trusted_for_reconciliation=False,
+            missing_fields=[],
+            evidence=evidence,
+        )
+
+    if is_noop:
+        if not holdings:
+            missing_fields.append("holdings_weights")
+        if not target:
+            missing_fields.append("target_weights")
+        if missing_fields:
+            return _feedback_trust_result(
+                status="pending_reconcile",
+                reason="noop_ack_missing_account_truth",
+                lifecycle_state_hint="pending_reconcile",
+                command_known=True,
+                trusted_feedback=False,
+                trusted_for_reconciliation=False,
+                missing_fields=missing_fields,
+                evidence=evidence,
+            )
+        return _feedback_trust_result(
+            status="trusted_noop_reconciled",
+            reason="noop_target_matches_current",
+            lifecycle_state_hint="noop_reconciled",
+            command_known=True,
+            trusted_feedback=True,
+            trusted_for_reconciliation=True,
+            missing_fields=[],
+            evidence=evidence,
+        )
+
+    if status == "partial" or execution_state == "partial" or has_open_orders:
+        return _feedback_trust_result(
+            status="partial",
+            reason="qc_feedback_reports_partial_or_open_orders",
+            lifecycle_state_hint="partial",
+            command_known=True,
+            trusted_feedback=True,
+            trusted_for_reconciliation=False,
+            missing_fields=[],
+            evidence=evidence,
+        )
+
+    if execution_state == "orders_submitted" or status == "orders_submitted":
+        return _feedback_trust_result(
+            status="pending_reconcile",
+            reason="orders_submitted_waiting_for_fill_or_snapshot",
+            lifecycle_state_hint="orders_submitted",
+            command_known=True,
+            trusted_feedback=True,
+            trusted_for_reconciliation=False,
+            missing_fields=[],
+            evidence=evidence,
+        )
+
+    if not holdings:
+        missing_fields.append("holdings_weights")
+    if not target:
+        missing_fields.append("target_weights")
+    if open_order_count is None:
+        missing_fields.append("open_order_count")
+    if not per_leg_status and status in {"accepted", "filled", "reconciled", "reconciliation_drift"}:
+        missing_fields.append("per_leg_fill_status")
+
+    if missing_fields:
+        return _feedback_trust_result(
+            status="pending_reconcile",
+            reason="qc_feedback_incomplete_for_hard_reconciliation",
+            lifecycle_state_hint="pending_reconcile",
+            command_known=True,
+            trusted_feedback=False,
+            trusted_for_reconciliation=False,
+            missing_fields=missing_fields,
+            evidence=evidence,
+        )
+
+    return _feedback_trust_result(
+        status="trusted_for_reconciliation",
+        reason="qc_feedback_has_account_truth_and_fill_status",
+        lifecycle_state_hint="filled",
+        command_known=True,
+        trusted_feedback=True,
+        trusted_for_reconciliation=True,
+        missing_fields=[],
+        evidence=evidence,
+    )
+
+
+def _feedback_trust_result(
+    *,
+    status: str,
+    reason: str,
+    lifecycle_state_hint: str,
+    command_known: bool,
+    trusted_feedback: bool,
+    trusted_for_reconciliation: bool,
+    missing_fields: list[str],
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema_version": QC_FEEDBACK_TRUST_SCHEMA_VERSION,
+        "status": status,
+        "reason": reason,
+        "command_known": bool(command_known),
+        "trusted_feedback": bool(trusted_feedback),
+        "trusted_for_reconciliation": bool(trusted_for_reconciliation),
+        "lifecycle_state_hint": lifecycle_state_hint,
+        "missing_fields": sorted(set(missing_fields)),
+        "evidence": evidence,
+    }
+
+
+def _execution_state_from_feedback(response: dict[str, Any]) -> str:
+    order_summary = _order_summary_from_feedback(response)
+    return str(
+        response.get("execution_state")
+        or order_summary.get("execution_state")
+        or ""
+    ).lower().strip()
+
+
+def _order_summary_from_feedback(response: dict[str, Any]) -> dict[str, Any]:
+    for key in ("order_summary", "fill_summary"):
+        value = response.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _dict_from_any(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _open_order_count_from_feedback(order_summary: dict[str, Any], account_state: dict[str, Any]) -> int | None:
+    for source in (order_summary, account_state):
+        if not isinstance(source, dict):
+            continue
+        for key in ("open_order_count_after", "open_order_count", "open_orders_count"):
+            if key in source:
+                return _int_or_none(source.get(key))
+    return None
+
+
+def _has_open_orders_from_feedback(order_summary: dict[str, Any], account_state: dict[str, Any]) -> bool:
+    count = _open_order_count_from_feedback(order_summary, account_state)
+    if count is not None:
+        return count > 0
+    for source in (order_summary, account_state):
+        if not isinstance(source, dict):
+            continue
+        if "has_open_orders" in source:
+            return bool(source.get("has_open_orders"))
+    return False
+
+
+def _has_per_leg_fill_status(order_summary: dict[str, Any]) -> bool:
+    if not isinstance(order_summary, dict) or not order_summary:
+        return False
+    if order_summary.get("per_leg_status_present") is True:
+        return True
+    for key in ("orders", "order_events", "fills", "legs", "leg_statuses", "per_leg_status", "order_details"):
+        value = order_summary.get(key)
+        if isinstance(value, list) and value:
+            return any(_leg_has_status(item) for item in value)
+        if isinstance(value, dict) and value:
+            return any(_leg_has_status(item) for item in value.values())
+    return False
+
+
+def _leg_has_status(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    return any(key in item for key in ("status", "fill_status", "order_status", "state", "filled_quantity", "quantity"))
+
+
+def _is_noop_feedback(response: dict[str, Any], order_summary: dict[str, Any]) -> bool:
+    execution_state = _execution_state_from_feedback(response)
+    if execution_state == "noop_reconciled":
+        return True
+    if order_summary.get("is_noop") is True:
+        return True
+    actual = _int_or_none(order_summary.get("actual_order_count"))
+    if actual == 0 and execution_state in {"noop", "noop_reconciled", "target_matches_current"}:
+        return True
+    return False
 
 
 def classify_new_command_vs_active(

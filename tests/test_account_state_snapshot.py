@@ -26,6 +26,16 @@ class AccountStateSnapshotTests(unittest.TestCase):
                     "active_execution_status": "orders_submitted",
                     "processed_command_count": 12,
                     "holdings_weights": {"spy": 0.4, "QQQ": "0.35"},
+                    "holdings": [
+                        {
+                            "ticker": "SPY",
+                            "quantity": 12,
+                            "average_price": 500.25,
+                            "market_price": 510.5,
+                            "market_value": 6126.0,
+                            "unrealized_pnl": 123.4,
+                        }
+                    ],
                     "target_weights": {"SPY": 0.45},
                 },
             },
@@ -52,6 +62,9 @@ class AccountStateSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["raw_snapshot"]["last_command_id"], "analysis_214")
         self.assertEqual(snapshot["raw_snapshot"]["active_command_id"], "analysis_214")
         self.assertEqual(snapshot["raw_snapshot"]["warnings"], [])
+        self.assertEqual(snapshot["raw_snapshot"]["holdings_detail_rows"][0]["ticker"], "SPY")
+        self.assertEqual(snapshot["raw_snapshot"]["holdings_detail_rows"][0]["quantity"], 12.0)
+        self.assertEqual(snapshot["raw_snapshot"]["holdings_detail_rows"][0]["average_price"], 500.25)
 
     def test_legacy_heartbeat_derives_account_state_without_blocking(self):
         snapshot = build_account_state_snapshot(
@@ -64,7 +77,7 @@ class AccountStateSnapshotTests(unittest.TestCase):
                     "is_market_open": False,
                 },
                 "holdings": [
-                    {"ticker": "SPY", "weight_current": 0.55},
+                    {"ticker": "SPY", "weight_current": 0.55, "quantity": 2, "avg_price": 700.0},
                     {"ticker": "QQQ", "weight_current": "0.35"},
                 ],
                 "target_weights": {"SPY": 0.6, "QQQ": 0.3},
@@ -79,6 +92,8 @@ class AccountStateSnapshotTests(unittest.TestCase):
         self.assertIn("legacy_payload_without_explicit_account_state", snapshot["raw_snapshot"]["warnings"])
         self.assertIn("missing_buying_power", snapshot["raw_snapshot"]["warnings"])
         self.assertIn("missing_open_order_count", snapshot["raw_snapshot"]["warnings"])
+        self.assertEqual(snapshot["raw_snapshot"]["holdings_detail_rows"][0]["quantity"], 2.0)
+        self.assertEqual(snapshot["raw_snapshot"]["holdings_detail_rows"][0]["average_price"], 700.0)
 
 
 if __name__ == "__main__":

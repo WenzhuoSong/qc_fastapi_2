@@ -99,6 +99,14 @@ async def api_summary(_: str = Depends(require_dashboard_auth)) -> dict[str, Any
     return await build_dashboard_summary()
 
 
+@app.get("/api/account-truth")
+async def api_account_truth(_: str = Depends(require_dashboard_auth)) -> dict[str, Any]:
+    latest_analysis = await _latest_analysis()
+    execution_control = await _execution_control_status(latest_analysis)
+    account_holdings = await _account_holdings_dashboard(latest_analysis)
+    return _account_truth_view(account_holdings, execution_control)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(_: str = Depends(require_dashboard_auth)) -> str:
     summary = await build_dashboard_summary()
@@ -161,12 +169,15 @@ async def build_dashboard_summary() -> dict[str, Any]:
     execution = await _latest_execution()
     execution_control = await _execution_control_status(latest_analysis)
     account_holdings = await _account_holdings_dashboard(latest_analysis)
+    account_truth = _account_truth_view(account_holdings, execution_control)
+    account_holdings["truth"] = account_truth
     replay = await _replay_diagnostics()
     return {
         "generated_at": datetime.utcnow().isoformat(),
         "ops": ops,
         "latest_analysis": latest_analysis,
         "account_holdings": account_holdings,
+        "account_truth": account_truth,
         "portfolio_construction_objective": pc_objective,
         "portfolio_construction_readiness": pc_readiness,
         "strategy_evidence": strategy_evidence,
@@ -481,6 +492,111 @@ async def _account_holdings_dashboard(latest_analysis: dict[str, Any]) -> dict[s
     }
 
 
+def _account_truth_view(
+    account_holdings: dict[str, Any],
+    execution_control: dict[str, Any],
+) -> dict[str, Any]:
+    """Single read-only account truth contract for operator API and dashboard UI."""
+    account = account_holdings.get("account") or {}
+    holdings = account_holdings.get("holdings") or []
+    active = execution_control.get("active_execution") or {}
+    snapshot = execution_control.get("latest_account_snapshot") or {}
+    recent_commands = execution_control.get("recent_commands") or []
+    latest_command = recent_commands[0] if recent_commands else {}
+    drift_rows = _account_truth_drift_rows(holdings)
+    max_abs_drift = max((abs(float(row.get("weight_drift") or 0.0)) for row in drift_rows), default=0.0)
+    reconciliation_status = _account_truth_reconciliation_status(
+        account=account,
+        active=active,
+        drift_rows=drift_rows,
+        execution_control=execution_control,
+    )
+    execution_state = (
+        active.get("status")
+        or latest_command.get("display_status")
+        or latest_command.get("execution_state")
+        or snapshot.get("active_execution_status")
+        or "unknown"
+    )
+    last_command_id = (
+        account.get("last_command_id")
+        or snapshot.get("last_command_id")
+        or latest_command.get("command_id")
+    )
+    return {
+        "schema_version": "account_truth_view_v1",
+        "available": bool(account_holdings.get("available") or execution_control.get("available")),
+        "truth_source": "qc_account_state_snapshot",
+        "snapshot_id": snapshot.get("id"),
+        "source_packet_type": account.get("source_packet_type") or snapshot.get("source_packet_type"),
+        "snapshot_recorded_at": snapshot.get("recorded_at"),
+        "snapshot_age_min": account.get("snapshot_age_min"),
+        "nav": account.get("nav"),
+        "cash_pct": account.get("cash_pct"),
+        "buying_power": account.get("buying_power") or snapshot.get("buying_power"),
+        "open_orders": account.get("open_orders"),
+        "holding_count": account.get("holding_count"),
+        "last_command_id": last_command_id,
+        "active_command_id": active.get("active_command_id") or snapshot.get("active_command_id"),
+        "active_execution_status": snapshot.get("active_execution_status"),
+        "execution_state": execution_state,
+        "latest_command": latest_command,
+        "reconciliation_status": reconciliation_status,
+        "max_abs_drift_pct": round(max_abs_drift, 4),
+        "drift_rows": drift_rows[:12],
+        "operator_questions": {
+            "qc_actual_holdings": "Holdings table is sourced from latest AccountStateSnapshot holdings_weights plus QC holding detail rows when present.",
+            "fastapi_expected_reconciled": (
+                "reconciliation_status answers whether FastAPI target and QC actual holdings are aligned within dashboard drift tolerance."
+            ),
+        },
+    }
+
+
+def _account_truth_drift_rows(holdings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = []
+    for row in holdings or []:
+        ticker = str(row.get("ticker") or "").upper().strip()
+        if not ticker or ticker == "CASH":
+            continue
+        drift = _json_safe_number(row.get("weight_drift"))
+        if drift is None:
+            continue
+        rows.append(
+            {
+                "ticker": ticker,
+                "weight_current": row.get("weight_current"),
+                "weight_target": row.get("weight_target"),
+                "weight_drift": round(float(drift), 4),
+                "target_source": row.get("target_source"),
+            }
+        )
+    rows.sort(key=lambda item: (-abs(float(item.get("weight_drift") or 0.0)), str(item.get("ticker") or "")))
+    return rows
+
+
+def _account_truth_reconciliation_status(
+    *,
+    account: dict[str, Any],
+    active: dict[str, Any],
+    drift_rows: list[dict[str, Any]],
+    execution_control: dict[str, Any],
+) -> str:
+    if not account:
+        return "no_account_snapshot"
+    if active.get("active"):
+        return "active_execution"
+    lag = execution_control.get("reconciliation_lag") or {}
+    if int(lag.get("overdue_count") or 0) > 0:
+        return "pending_reconciliation"
+    if not any(row.get("weight_target") is not None for row in drift_rows):
+        return "no_target"
+    max_abs_drift = max((abs(float(row.get("weight_drift") or 0.0)) for row in drift_rows), default=0.0)
+    if max_abs_drift > 0.5:
+        return "drift_present"
+    return "reconciled"
+
+
 def _compact_portfolio_timeseries_row(row: PortfolioTimeseries) -> dict[str, Any]:
     return {
         "recorded_at": _iso(row.recorded_at),
@@ -502,6 +618,7 @@ def _account_holdings_rows(
     latest_command_target: dict[str, float],
 ) -> list[dict[str, Any]]:
     factors = {str(row.ticker or "").upper(): row for row in factor_rows if row.ticker}
+    holding_details = _account_holding_detail_by_ticker(latest_account)
     factor_targets_available = any(
         abs(_ratio_decimal(getattr(row, "weight_target", None)) or 0.0) > 0.00001
         for row in factor_rows
@@ -526,6 +643,7 @@ def _account_holdings_rows(
     rows: list[dict[str, Any]] = []
     for ticker in sorted(tickers):
         factor = factors.get(ticker)
+        detail = holding_details.get(ticker) or {}
         role = "cash" if ticker == "CASH" else (getattr(factor, "universe_role", None) or "unknown")
         current = account_holdings.get(ticker)
         if current is None and factor is not None:
@@ -556,10 +674,56 @@ def _account_holdings_rows(
             "holding_days_source": "qc_in_memory_counter",
             "target_source": target_source or "unavailable",
             "action": action_map.get(ticker, "normal_hold"),
-            "price": _json_safe_number(getattr(factor, "price", None)) if factor is not None else None,
+            "quantity": detail.get("quantity"),
+            "average_price": detail.get("average_price"),
+            "market_value": detail.get("market_value"),
+            "unrealized_pnl": detail.get("unrealized_pnl"),
+            "price": detail.get("market_price") or (_json_safe_number(getattr(factor, "price", None)) if factor is not None else None),
             "recorded_at": _iso(getattr(factor, "recorded_at", None)) if factor is not None else None,
         })
     return sorted(rows, key=lambda row: (-float(row.get("contribution_pct") or 0.0), str(row.get("ticker") or "")))
+
+
+def _account_holding_detail_by_ticker(latest_account: AccountStateSnapshot | None) -> dict[str, dict[str, Any]]:
+    if not latest_account:
+        return {}
+    raw = latest_account.raw_snapshot if isinstance(getattr(latest_account, "raw_snapshot", None), dict) else {}
+    containers = [
+        raw.get("holdings_detail_rows"),
+        raw.get("holdings"),
+        raw.get("positions"),
+    ]
+    account_state = raw.get("account_state") if isinstance(raw.get("account_state"), dict) else {}
+    containers.extend([
+        account_state.get("holdings"),
+        account_state.get("positions"),
+    ])
+    out: dict[str, dict[str, Any]] = {}
+    for container in containers:
+        if not isinstance(container, list):
+            continue
+        for row in container:
+            if not isinstance(row, dict):
+                continue
+            ticker = str(row.get("ticker") or row.get("symbol") or "").upper().strip()
+            if not ticker:
+                continue
+            out[ticker] = {
+                "quantity": _first_json_number(row, ("quantity", "qty", "shares")),
+                "average_price": _first_json_number(row, ("average_price", "avg_price", "averagePrice", "avgPrice")),
+                "market_price": _first_json_number(row, ("market_price", "price", "current_price", "last_price")),
+                "market_value": _first_json_number(row, ("market_value", "value", "holdings_value")),
+                "unrealized_pnl": _first_json_number(row, ("unrealized_pnl", "unrealized", "unrealized_profit")),
+            }
+    return out
+
+
+def _first_json_number(row: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = _json_safe_number(row.get(key))
+        if value is not None:
+            return value
+    return None
 
 
 def _latest_command_target_weights(rows: list[ExecutionLog]) -> dict[str, float]:
@@ -595,6 +759,7 @@ def _account_overview_from_rows(
     return {
         "nav": total_value,
         "cash_pct": round(float(cash_pct or 0.0) * 100.0, 4),
+        "buying_power": _json_safe_number(getattr(latest_account, "buying_power", None)),
         "daily_pnl_pct": _series_latest_pct(latest_portfolio, "daily_pnl_pct"),
         "week_pnl_pct": _series_window_return_pct(portfolio_series, 5),
         "month_pnl_pct": _series_window_return_pct(portfolio_series, 22),
@@ -603,6 +768,11 @@ def _account_overview_from_rows(
         "snapshot_age_min": snapshot_age,
         "source_packet_type": getattr(latest_account, "source_packet_type", None),
         "last_command_id": getattr(latest_account, "last_command_id", None),
+        "active_command_id": getattr(latest_account, "active_command_id", None),
+        "active_execution_status": getattr(latest_account, "active_execution_status", None),
+        "account_status": getattr(latest_account, "account_status", None),
+        "data_status": getattr(latest_account, "data_status", None),
+        "policy_version": getattr(latest_account, "policy_version", None),
         "holding_count": len([row for row in holdings if row.get("ticker") != "CASH"]),
         "total_contribution_pct": round(sum(float(row.get("contribution_pct") or 0.0) for row in holdings), 6),
     }
@@ -3521,22 +3691,24 @@ def _render_account_holdings_panel(data: dict[str, Any]) -> str:
     holdings = data.get("holdings") or []
     signals = data.get("signals") or {}
     contract = data.get("contract") or {}
+    truth = data.get("truth") or {}
     return f"""
     <section id="account-holdings" class="panel account-holdings-panel">
       <div class="section-heading">
         <h2>Account And Holdings</h2>
-        <p>Account truth, daily contribution, drift, and per-position return monitoring.</p>
+        <p>QC account truth, expected-target reconciliation, daily contribution, drift, and per-position return monitoring.</p>
       </div>
       <div class="account-top-strip">
         {_render_account_stat("NAV", _format_money_like(account.get("nav")), "neutral")}
         {_render_account_stat("Cash", _fmt_percent(account.get("cash_pct")), "neutral")}
+        {_render_account_stat("Buying Power", _format_money_like(account.get("buying_power")), "neutral")}
         {_render_account_stat("Day PnL", _fmt_percent(account.get("daily_pnl_pct"), sign=True), _value_tone(account.get("daily_pnl_pct")))}
         {_render_account_stat("Week PnL", _fmt_percent(account.get("week_pnl_pct"), sign=True), _value_tone(account.get("week_pnl_pct")))}
-        {_render_account_stat("Month PnL", _fmt_percent(account.get("month_pnl_pct"), sign=True), _value_tone(account.get("month_pnl_pct")))}
         {_render_account_stat("Drawdown", _fmt_percent(account.get("drawdown_pct"), sign=True), "warn" if abs(float(account.get("drawdown_pct") or 0.0)) > 5 else "neutral")}
         {_render_account_stat("Open Orders", account.get("open_orders"), "ok" if int(account.get("open_orders") or 0) == 0 else "warn")}
         {_render_account_stat("Snapshot Age", _fmt_minutes(account.get("snapshot_age_min")), "ok" if (account.get("snapshot_age_min") or 999) < 5 else "warn")}
       </div>
+      {_render_account_truth_strip(truth)}
       <div class="account-chart-grid">
         <article class="account-card account-nav-card">
           <div class="account-card-title"><h3>NAV</h3><span>{escape(str(account.get("source_packet_type") or ""))}</span></div>
@@ -3566,6 +3738,48 @@ def _render_account_holdings_panel(data: dict[str, Any]) -> str:
       </article>
     </section>
     """
+
+
+def _render_account_truth_strip(truth: dict[str, Any]) -> str:
+    if not truth.get("available"):
+        return """
+        <div class="account-truth-strip">
+          <div class="account-truth-question"><span>QC actual holdings</span><strong>n/a</strong><em>No account truth snapshot yet.</em></div>
+          <div class="account-truth-question"><span>FastAPI expected target reconciled?</span><strong>n/a</strong><em>No reconciliation truth available yet.</em></div>
+        </div>
+        """
+    reconciliation = str(truth.get("reconciliation_status") or "unknown")
+    execution_state = str(truth.get("execution_state") or "unknown")
+    return f"""
+      <div class="account-truth-strip" data-account-truth-view>
+        <div class="account-truth-question">
+          <span>QC actual holdings</span>
+          <strong>{int(truth.get("holding_count") or 0)} positions | {escape(str(truth.get("source_packet_type") or "unknown"))}</strong>
+          <em>Snapshot age {_fmt_minutes(truth.get("snapshot_age_min"))}; last command {escape(str(truth.get("last_command_id") or "none"))}</em>
+        </div>
+        <div class="account-truth-question">
+          <span>FastAPI expected target reconciled?</span>
+          <strong class="{escape(_truth_status_tone(reconciliation))}">{escape(reconciliation.replace("_", " "))}</strong>
+          <em>Max target vs actual drift {_fmt_percent(truth.get("max_abs_drift_pct"), digits=2)}; cash treated as residual.</em>
+        </div>
+        <div class="account-truth-question">
+          <span>Execution state</span>
+          <strong class="{escape(_truth_status_tone(execution_state))}">{escape(execution_state.replace("_", " "))}</strong>
+          <em>Active command {escape(str(truth.get("active_command_id") or "none"))}; ACK is not reconciliation.</em>
+        </div>
+      </div>
+    """
+
+
+def _truth_status_tone(status: str) -> str:
+    normalized = str(status or "").lower().strip()
+    if normalized in {"reconciled", "idle", "filled", "noop_reconciled"}:
+        return "positive"
+    if normalized in {"drift_present", "pending_reconciliation", "active_execution", "orders_submitted", "partial"}:
+        return "warning"
+    if normalized in {"diverged", "rejected", "failed", "failed_no_fill", "timeout_no_ack"}:
+        return "negative"
+    return "neutral"
 
 
 def _render_account_stat(label: str, value: Any, tone: str) -> str:
@@ -3714,6 +3928,7 @@ def _render_holdings_sort_controls() -> str:
     controls = [
         ("contribution", "Contribution"),
         ("weight", "Weight"),
+        ("quantity", "Quantity"),
         ("drift", "Drift"),
         ("return", "Day Return"),
         ("unrealized", "Unrealized PnL"),
@@ -3740,12 +3955,16 @@ def _render_account_holdings_table(holdings: list[dict[str, Any]]) -> str:
               data-sort-contribution="{contribution:.8f}"
               data-sort-weight="{float(row.get('weight_current') or 0.0):.8f}"
               data-sort-target="{float(row.get('weight_target') or 0.0):.8f}"
+              data-sort-quantity="{float(row.get('quantity') or 0.0):.8f}"
+              data-sort-average-price="{float(row.get('average_price') or 0.0):.8f}"
               data-sort-drift="{drift:.8f}"
               data-sort-return="{daily_return:.8f}"
               data-sort-unrealized="{unrealized:.8f}"
               data-sort-days="{int(row.get('holding_days') or 0)}">
             <td><span class="role-chip {escape(str(row.get('role') or 'unknown'))}"></span><strong>{escape(str(row.get("ticker") or ""))}</strong></td>
             <td>{escape(str(row.get("role") or ""))}</td>
+            <td class="num" title="QC reported quantity">{escape(_fmt_plain_number(row.get("quantity"), digits=3))}</td>
+            <td class="num" title="QC reported average price">{escape(_format_money_like(row.get("average_price")) or "n/a")}</td>
             <td class="num">{escape(_fmt_percent(row.get("weight_current")))}</td>
             <td class="num muted-cell" title="target_source={escape(str(row.get('target_source') or 'unavailable'))}">{escape(_fmt_percent(row.get("weight_target")))}</td>
             <td class="num {escape(_value_tone_abs(drift, 0.5))}" title="target_source={escape(str(row.get('target_source') or 'unavailable'))}">{escape(_fmt_percent(drift, sign=True))}</td>
@@ -3763,6 +3982,8 @@ def _render_account_holdings_table(holdings: list[dict[str, Any]]) -> str:
             <tr>
               <th><button type="button" data-sort-key="ticker">Ticker</button></th>
               <th><button type="button" data-sort-key="role">Role</button></th>
+              <th class="num"><button type="button" data-sort-key="quantity">Quantity</button></th>
+              <th class="num"><button type="button" data-sort-key="average-price">Avg Price</button></th>
               <th class="num"><button type="button" data-sort-key="weight">Weight</button></th>
               <th class="num"><button type="button" data-sort-key="target">Target</button></th>
               <th class="num"><button type="button" data-sort-key="drift">Drift</button></th>
@@ -3777,6 +3998,15 @@ def _render_account_holdings_table(holdings: list[dict[str, Any]]) -> str:
         </table>
       </div>
     """
+
+
+def _fmt_plain_number(value: Any, *, digits: int = 2) -> str:
+    number = _json_safe_number(value)
+    if number is None:
+        return "n/a"
+    if abs(number - round(number)) < 1e-9:
+        return f"{number:,.0f}"
+    return f"{number:,.{digits}f}"
 
 
 def _fmt_percent(value: Any, *, sign: bool = False, digits: int = 1) -> str:
@@ -5335,6 +5565,11 @@ def _css() -> str:
     .account-stat.ok strong, .account-stat.positive strong { color:#22d3a0; }
     .account-stat.warn strong, .account-stat.warning strong { color:#f5c842; }
     .account-stat.negative strong { color:#f04a5a; }
+    .account-truth-strip { display:grid; grid-template-columns:1.25fr 1fr 1fr; gap:10px; }
+    .account-truth-question { min-width:0; border:1px solid #1e2535; border-radius:8px; padding:12px 14px; background:#0c1018; }
+    .account-truth-question span { display:block; color:#4a5f7a; font-size:9px; font-weight:800; letter-spacing:.07em; text-transform:uppercase; }
+    .account-truth-question strong { display:block; margin-top:4px; color:#c8d8ec; font-size:14px; font-family:monospace; overflow-wrap:anywhere; }
+    .account-truth-question em { display:block; margin-top:3px; color:#6b7e9a; font-size:10px; font-style:normal; overflow-wrap:anywhere; }
     .account-chart-grid { display:grid; grid-template-columns:minmax(320px,1.55fr) minmax(260px,1fr) minmax(280px,1fr); gap:14px; }
     .account-card { min-width:0; border:1px solid #1e2535; border-radius:8px; padding:15px; background:#0c1018; }
     .account-card-title { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
@@ -5371,7 +5606,7 @@ def _css() -> str:
     .holdings-sort-controls button, .account-holdings-table th button { appearance:none; border:1px solid #1e2535; border-radius:4px; background:#111620; color:#8fa3c0; cursor:pointer; font:600 10px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; padding:4px 8px; }
     .holdings-sort-controls button.active, .account-holdings-table th button.active { border-color:#4a9eff; color:#4a9eff; background:#4a9eff1f; }
     .account-table-wrap { overflow:auto; max-height:62vh; border:1px solid #1e2535; border-radius:8px; }
-    .account-holdings-table { min-width:1060px; width:100%; border-collapse:separate; border-spacing:0; }
+    .account-holdings-table { min-width:1220px; width:100%; border-collapse:separate; border-spacing:0; }
     .account-holdings-table th, .account-holdings-table td { border-bottom:1px solid #1e2535; padding:8px 10px; color:#8fa3c0; background:#0c1018; }
     .account-holdings-table th { position:sticky; top:0; z-index:2; background:#111620; }
     .account-holdings-table tr:nth-child(even) td { background:#0f141d; }
@@ -5390,6 +5625,6 @@ def _css() -> str:
     .action-label.loss_review, .action-label.hard_risk_review, .action-label.forced_trim { color:#f04a5a; }
     .action-label.trim_candidate, .action-label.trim_review, .action-label.no_add { color:#f5c842; }
     .account-contract-note { margin-top:9px; color:#4a5f7a; font-size:10px; }
-    @media (max-width: 1180px) { .account-top-strip { grid-template-columns:repeat(4,minmax(0,1fr)); } .account-chart-grid { grid-template-columns:1fr; } }
+    @media (max-width: 1180px) { .account-top-strip { grid-template-columns:repeat(4,minmax(0,1fr)); } .account-truth-strip, .account-chart-grid { grid-template-columns:1fr; } }
     @media (max-width: 720px) { .account-top-strip, .account-signal-grid { grid-template-columns:1fr 1fr; } .account-stat { border-right:0; border-bottom:1px solid #1e2535; } }
     """

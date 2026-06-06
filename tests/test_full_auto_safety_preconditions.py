@@ -11,6 +11,7 @@ class FullAutoSafetyPreconditionTests(unittest.TestCase):
             final_risk_validation_config={"mode": "observe"},
             auto_pause_config={"mode": "observe"},
             execution_lifecycle_config={"mode": "observe"},
+            reconciliation_guard_config={"mode": "observe"},
         )
 
         self.assertEqual(violations, [])
@@ -22,6 +23,7 @@ class FullAutoSafetyPreconditionTests(unittest.TestCase):
             final_risk_validation_config={"mode": "observe"},
             auto_pause_config={"mode": "observe"},
             execution_lifecycle_config={"mode": "observe"},
+            reconciliation_guard_config={"mode": "observe"},
         )
 
         self.assertIn("account_state_guard.mode must be blocking in FULL_AUTO", violations)
@@ -29,6 +31,10 @@ class FullAutoSafetyPreconditionTests(unittest.TestCase):
         self.assertIn("auto_pause.mode must be active in FULL_AUTO", violations)
         self.assertIn(
             "execution_lifecycle_config.mode must be active or strict in FULL_AUTO (current: observe)",
+            violations,
+        )
+        self.assertIn(
+            "reconciliation_guard_config.mode must be blocking in FULL_AUTO (current: observe)",
             violations,
         )
 
@@ -39,6 +45,7 @@ class FullAutoSafetyPreconditionTests(unittest.TestCase):
             final_risk_validation_config={"mode": "auto", "full_auto_effective_mode": "blocking"},
             auto_pause_config={"mode": "active"},
             execution_lifecycle_config={"mode": "active"},
+            reconciliation_guard_config={"mode": "blocking"},
         )
 
         self.assertEqual(violations, [])
@@ -50,6 +57,7 @@ class FullAutoSafetyPreconditionTests(unittest.TestCase):
             final_risk_validation_config={"mode": "blocking"},
             auto_pause_config={"mode": "active"},
             execution_lifecycle_config={"mode": "strict"},
+            reconciliation_guard_config={"mode": "blocking"},
         )
 
         self.assertEqual(violations, [])

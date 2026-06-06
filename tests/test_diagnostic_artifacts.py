@@ -1,0 +1,154 @@
+from datetime import UTC, datetime
+import json
+import unittest
+
+from pydantic import ValidationError
+
+from services.diagnostic_artifacts import (
+    CandidateEvent,
+    DecisionFeatureSnapshot,
+    MarketRiskAssessment,
+    append_diagnostic_artifacts,
+    build_pipeline_diagnostic_artifacts,
+    serialize_artifact,
+)
+
+
+class DiagnosticArtifactTests(unittest.TestCase):
+    def test_serializer_includes_schema_version_and_no_execution_authority(self):
+        artifact = MarketRiskAssessment(
+            analysis_id=123,
+            created_at=datetime(2026, 6, 6, 1, 0, tzinfo=UTC),
+            market_regime="neutral",
+        )
+
+        payload = serialize_artifact(artifact)
+
+        self.assertEqual(payload["schema_version"], "market_risk_assessment_v1")
+        self.assertEqual(payload["execution_authority"], "none")
+        self.assertEqual(payload["analysis_id"], 123)
+        json.dumps(payload)
+
+    def test_missing_required_fields_fail_validation(self):
+        with self.assertRaises(ValidationError):
+            MarketRiskAssessment(market_regime="neutral")
+
+    def test_non_none_execution_authority_is_rejected(self):
+        with self.assertRaises(ValidationError):
+            MarketRiskAssessment(
+                analysis_id=123,
+                market_regime="neutral",
+                execution_authority="gated",
+            )
+
+    def test_append_only_embedding_preserves_previous_observations(self):
+        first = MarketRiskAssessment(analysis_id=1, market_regime="neutral")
+        second = MarketRiskAssessment(analysis_id=1, market_regime="defensive")
+        payload = append_diagnostic_artifacts({}, [first])
+        updated = append_diagnostic_artifacts(payload, [second])
+
+        self.assertEqual(len(updated["diagnostic_artifacts"]), 2)
+        self.assertEqual(
+            updated["diagnostic_artifacts"][0]["market_regime"],
+            "neutral",
+        )
+        self.assertEqual(
+            updated["diagnostic_artifacts"][1]["market_regime"],
+            "defensive",
+        )
+
+    def test_mixed_feature_snapshot_is_training_limited(self):
+        snapshot = DecisionFeatureSnapshot(
+            analysis_id=7,
+            created_at=datetime(2026, 6, 6, 1, 0, tzinfo=UTC),
+            as_of_time=datetime(2026, 6, 6, 1, 0, tzinfo=UTC),
+            price_source="mixed",
+            feature_authority="mixed",
+            feature_values={"SPY": {"mom_60d": 0.02}},
+            raw_source_refs=["account_snapshot:250", "yfinance_batch:latest"],
+        )
+
+        payload = serialize_artifact(snapshot)
+
+        self.assertEqual(payload["schema_version"], "decision_feature_snapshot_v1")
+        self.assertEqual(payload["training_authority"], "feature_scope_limited")
+        self.assertIn("mixed_feature_authority", payload["scope_limit_reasons"])
+        self.assertIn("mixed_price_source", payload["scope_limit_reasons"])
+
+    def test_candidate_event_links_to_decision_feature_snapshot(self):
+        feature = DecisionFeatureSnapshot(
+            analysis_id=7,
+            as_of_time=datetime(2026, 6, 6, 1, 0, tzinfo=UTC),
+            price_source="qc_snapshot",
+            feature_authority="qc_live",
+            feature_values={"SPY": {"weight_current": 0.1}},
+            raw_source_refs=["account_snapshot:250"],
+        )
+        candidate = CandidateEvent(
+            analysis_id=7,
+            feature_snapshot_id=str(feature.artifact_id),
+            ticker="SPY",
+            candidate_weight=0.1,
+        )
+
+        self.assertEqual(candidate.feature_snapshot_id, feature.artifact_id)
+        self.assertEqual(candidate.execution_authority, "none")
+
+    def test_pipeline_artifacts_link_candidate_ranking_and_mix_to_feature_snapshot(self):
+        artifacts = build_pipeline_diagnostic_artifacts(
+            analysis_id=42,
+            as_of_time=datetime(2026, 6, 6, 1, 0, tzinfo=UTC),
+            pipeline_context={
+                "account_state_guard": {
+                    "snapshot": {
+                        "id": 250,
+                        "qc_snapshot_id": 1099,
+                        "source_packet_type": "heartbeat",
+                    }
+                }
+            },
+            brief={
+                "current_weights": {"SPY": 0.1},
+                "feature_provenance": {"sources": ["QC heartbeat", "yfinance"]},
+                "holdings": [
+                    {
+                        "ticker": "SPY",
+                        "weight_current": 0.1,
+                        "mom_60d": 0.02,
+                        "atr_pct": 0.01,
+                    }
+                ],
+            },
+            market_scorecard={"permission": "small_overweight_only"},
+            synthesizer_out={"market_judgment": {"regime": "neutral"}},
+            risk_out={
+                "approved": False,
+                "target_weights": {"SPY": 0.1, "QQQ": 0.05, "CASH": 0.85},
+            },
+            base_weights={"SPY": 0.1},
+        )
+
+        serialized = [serialize_artifact(item) for item in artifacts]
+        feature = next(
+            item for item in serialized
+            if item["schema_version"] == "decision_feature_snapshot_v1"
+        )
+        linked = [
+            item for item in serialized
+            if item["schema_version"] in {
+                "candidate_event_v1",
+                "ranking_event_v1",
+                "portfolio_mix_event_v1",
+            }
+        ]
+
+        self.assertTrue(feature["artifact_id"])
+        self.assertEqual(feature["training_authority"], "feature_scope_limited")
+        self.assertTrue(linked)
+        self.assertTrue(
+            all(item["feature_snapshot_id"] == feature["artifact_id"] for item in linked)
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

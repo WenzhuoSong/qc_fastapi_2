@@ -68,6 +68,26 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("factor_targets_available", source)
         self.assertIn("target_source={escape", source)
 
+    def test_dashboard_surfaces_account_truth_view_contract(self):
+        source = Path("dashboard/app.py").read_text()
+
+        self.assertIn('@app.get("/api/account-truth")', source)
+        self.assertIn('"account_truth": account_truth', source)
+        self.assertIn("def _account_truth_view", source)
+        self.assertIn('"schema_version": "account_truth_view_v1"', source)
+        self.assertIn('"reconciliation_status": reconciliation_status', source)
+        self.assertIn('"execution_state": execution_state', source)
+        self.assertIn('"buying_power": account.get("buying_power")', source)
+        self.assertIn("data-account-truth-view", source)
+        self.assertIn("QC actual holdings", source)
+        self.assertIn("FastAPI expected target reconciled?", source)
+        self.assertIn("ACK is not reconciliation", source)
+        self.assertIn("cash treated as residual", source)
+        self.assertIn("quantity", source)
+        self.assertIn("average_price", source)
+        self.assertIn("Avg Price", source)
+        self.assertIn("target vs actual drift", source)
+
     def test_dashboard_surfaces_alpha_basket_hedge_validation_overview(self):
         source = Path("dashboard/app.py").read_text()
 

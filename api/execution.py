@@ -59,7 +59,7 @@ async def receive_qc_ack(request: Request, ack: QCExecutionAck):
     if status not in VALID_QC_EXECUTION_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid QC status")
 
-    await update_qc_status(
+    qc_status_update = await update_qc_status(
         ack.cmd_id,
         status,
         rejection_reason=ack.reason,
@@ -87,4 +87,9 @@ async def receive_qc_ack(request: Request, ack: QCExecutionAck):
                 "reason": "snapshot_ingestion_failed",
                 "error": str(exc),
             }
-    return {"received": True, "snapshot_ingestion": snapshot_ingestion}
+    return {
+        "received": True,
+        "snapshot_ingestion": snapshot_ingestion,
+        "qc_status_update": qc_status_update,
+        "feedback_trust": qc_status_update.get("feedback_trust") if isinstance(qc_status_update, dict) else None,
+    }

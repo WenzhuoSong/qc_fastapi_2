@@ -3,6 +3,7 @@ import unittest
 
 from services.execution_lifecycle import (
     ExecutionSkipReason,
+    classify_qc_feedback_trust,
     classify_new_command_vs_active,
     default_execution_lifecycle_config,
     evaluate_active_execution_gate,
@@ -13,6 +14,101 @@ from services.execution_lifecycle import (
 
 
 class ExecutionLifecycleTests(unittest.TestCase):
+    def test_feedback_trust_marks_unknown_command_untrusted(self):
+        result = classify_qc_feedback_trust(
+            command_known=False,
+            qc_response={"status": "accepted", "actual_holdings_weights": {"SPY": 0.1}},
+        )
+
+        self.assertEqual(result["status"], "unknown_command_feedback")
+        self.assertFalse(result["trusted_for_reconciliation"])
+        self.assertEqual(result["lifecycle_state_hint"], "pending_reconcile")
+
+    def test_feedback_trust_requires_per_leg_status_for_hard_reconciliation(self):
+        result = classify_qc_feedback_trust(
+            command_known=True,
+            qc_response={
+                "status": "reconciled",
+                "actual_target_weights": {"SPY": 0.1},
+                "actual_holdings_weights": {"SPY": 0.1},
+                "order_summary": {
+                    "actual_order_count": 1,
+                    "filled_order_count": 1,
+                    "open_order_count_after": 0,
+                },
+            },
+        )
+
+        self.assertEqual(result["status"], "pending_reconcile")
+        self.assertFalse(result["trusted_for_reconciliation"])
+        self.assertIn("per_leg_fill_status", result["missing_fields"])
+
+    def test_feedback_trust_accepts_full_holdings_with_per_leg_status(self):
+        result = classify_qc_feedback_trust(
+            command_known=True,
+            qc_response={
+                "status": "filled",
+                "actual_target_weights": {"SPY": 0.1},
+                "actual_holdings_weights": {"SPY": 0.1},
+                "order_summary": {
+                    "actual_order_count": 1,
+                    "filled_order_count": 1,
+                    "open_order_count_after": 0,
+                    "orders": [{"ticker": "SPY", "status": "Filled", "filled_quantity": 3}],
+                },
+            },
+        )
+
+        self.assertEqual(result["status"], "trusted_for_reconciliation")
+        self.assertTrue(result["trusted_for_reconciliation"])
+        self.assertEqual(result["lifecycle_state_hint"], "filled")
+
+    def test_feedback_trust_keeps_partial_as_in_flight(self):
+        result = classify_qc_feedback_trust(
+            command_known=True,
+            qc_response={
+                "status": "partial",
+                "actual_target_weights": {"SPY": 0.1},
+                "actual_holdings_weights": {"SPY": 0.05},
+                "order_summary": {
+                    "actual_order_count": 1,
+                    "filled_order_count": 0,
+                    "open_order_count_after": 1,
+                },
+            },
+        )
+
+        self.assertEqual(result["status"], "partial")
+        self.assertFalse(result["trusted_for_reconciliation"])
+        self.assertEqual(result["lifecycle_state_hint"], "partial")
+
+    def test_feedback_trust_rejection_is_trusted_feedback_not_reconciliation_truth(self):
+        result = classify_qc_feedback_trust(
+            command_known=True,
+            qc_response={"status": "rejected", "reason": "policy_mismatch"},
+        )
+
+        self.assertEqual(result["status"], "trusted_terminal_no_execution")
+        self.assertTrue(result["trusted_feedback"])
+        self.assertFalse(result["trusted_for_reconciliation"])
+        self.assertEqual(result["lifecycle_state_hint"], "rejected")
+
+    def test_feedback_trust_distinguishes_noop_from_fill(self):
+        result = classify_qc_feedback_trust(
+            command_known=True,
+            qc_response={
+                "status": "accepted",
+                "execution_state": "noop_reconciled",
+                "actual_target_weights": {"SPY": 0.1},
+                "actual_holdings_weights": {"SPY": 0.1},
+                "order_summary": {"actual_order_count": 0, "is_noop": True},
+            },
+        )
+
+        self.assertEqual(result["status"], "trusted_noop_reconciled")
+        self.assertTrue(result["trusted_for_reconciliation"])
+        self.assertEqual(result["lifecycle_state_hint"], "noop_reconciled")
+
     def test_skip_reason_contract_values_are_stable(self):
         self.assertEqual(ExecutionSkipReason.THROTTLE_DEFERRED.value, "throttle_deferred")
         self.assertEqual(ExecutionSkipReason.ACTIVE_EXECUTION_WAIT.value, "active_execution_wait")
