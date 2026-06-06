@@ -712,13 +712,34 @@ def _dedupe_command_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _execution_state(row: dict[str, Any]) -> str:
-    for key in ("lifecycle_state", "qc_status", "status"):
-        value = str(row.get(key) or "").lower().strip()
-        if value:
-            if value == "success":
-                return "filled"
-            return value
+    lifecycle = _normalize_execution_state(row.get("lifecycle_state"))
+    if lifecycle and lifecycle != "created":
+        return lifecycle
+
+    # Legacy rows often keep lifecycle_state at the default "created" while
+    # qc_status/status carry the real outcome. Prefer explicit not-sent/dedupe
+    # statuses before QC ownership states so old dedupe rows do not count as
+    # commands sent.
+    status = _normalize_execution_state(row.get("status"))
+    qc_status = _normalize_execution_state(row.get("qc_status"))
+    if status == "deduped":
+        return status
+    if qc_status:
+        return qc_status
+    if status:
+        return status
     return "unknown"
+
+
+def _normalize_execution_state(value: Any) -> str:
+    state = str(value or "").lower().strip()
+    if not state:
+        return ""
+    aliases = {
+        "success": "filled",
+        "timeout_no_execution_confirmed": "timeout_no_ack",
+    }
+    return aliases.get(state, state)
 
 
 def _is_noop(row: dict[str, Any]) -> bool:

@@ -74,6 +74,69 @@ class WeekendReviewMetricsTests(unittest.TestCase):
         self.assertEqual(metrics["target_weight_mutation"], "none")
         self.assertIn("2026-06-01..2026-06-07", metrics["sections"]["execution_truth"]["week_buckets"])
 
+    def test_execution_truth_uses_qc_status_when_legacy_lifecycle_is_created(self):
+        dataset = build_weekend_review_dataset(
+            execution_logs=[
+                {
+                    "command_id": "analysis_accepted",
+                    "command_type": "weight_adjustment",
+                    "lifecycle_state": "created",
+                    "qc_status": "accepted",
+                    "status": "accepted",
+                    "executed_at": "2026-06-05T15:00:00+00:00",
+                    "qc_ack_at": "2026-06-05T15:00:01+00:00",
+                    "command_payload": {"weights": {"SPY": 0.1}},
+                },
+                {
+                    "command_id": "analysis_timeout",
+                    "command_type": "weight_adjustment",
+                    "lifecycle_state": "created",
+                    "qc_status": "timeout_no_execution_confirmed",
+                    "status": "timeout_no_ack",
+                    "executed_at": "2026-06-05T16:00:00+00:00",
+                    "command_payload": {"weights": {"QQQ": 0.1}},
+                },
+                {
+                    "command_id": "analysis_rejected",
+                    "command_type": "weight_adjustment",
+                    "lifecycle_state": "created",
+                    "qc_status": "rejected",
+                    "status": "rejected",
+                    "executed_at": "2026-06-05T17:00:00+00:00",
+                    "command_payload": {"weights": {"IWM": 0.1}},
+                },
+                {
+                    "command_id": "analysis_not_sent",
+                    "command_type": "weight_adjustment",
+                    "lifecycle_state": "created",
+                    "qc_status": "not_sent",
+                    "status": "rejected",
+                    "executed_at": "2026-06-05T18:00:00+00:00",
+                    "command_payload": {"weights": {"XLE": 0.1}},
+                },
+                {
+                    "command_id": "analysis_deduped",
+                    "command_type": "weight_adjustment",
+                    "lifecycle_state": "created",
+                    "qc_status": "not_sent",
+                    "status": "deduped",
+                    "executed_at": "2026-06-05T19:00:00+00:00",
+                    "command_payload": {"reason": "recent_same_target_reconciled"},
+                },
+            ]
+        )
+
+        metrics = build_weekly_review_metrics(
+            dataset,
+            review_as_of=datetime(2026, 6, 6, 12, 0, tzinfo=UTC),
+        )
+        execution = metrics["sections"]["execution_truth"]["metrics"]
+
+        self.assertEqual(execution["commands_sent"], 3)
+        self.assertEqual(execution["accepted_count"], 1)
+        self.assertEqual(execution["duplicate_target_count"], 1)
+        self.assertEqual(execution["rejected_count"], 3)
+
     def test_intent_execution_counts_blocker_categories(self):
         dataset = build_weekend_review_dataset(
             validation_observations=[
