@@ -42,6 +42,11 @@ REJECTED_STATES = {
     "failed",
 }
 
+PREFLIGHT_BLOCKER_CATEGORY = {
+    "daily_command_count_ok": "execution_daily_cap",
+    "daily_gross_turnover_ok": "execution_turnover_cap",
+}
+
 EVENT_STATE_PRIORITY: dict[str, tuple[str, int]] = {
     "reconciliation_drift": ("diverged", 100),
     "reconciled": ("reconciled", 95),
@@ -182,7 +187,7 @@ def build_execution_truth_metrics(
             counts["timeout_no_execution_confirmed_count"] += 1
         if state == "failed_no_fill" or "failed_no_fill" in event_types:
             counts["failed_no_fill_count"] += 1
-        if state in {"deduped", "duplicate_target"} or _contains_any(row, {"recent_same_target", "dedupe"}):
+        if _is_deduped_execution_row(row):
             counts["duplicate_target_count"] += 1
         if state == "diverged" or _contains_any(row, {"reconciliation_divergence", "diverged"}):
             counts["reconciliation_divergence_count"] += 1
@@ -924,28 +929,55 @@ def _preflight_categories_from_lifecycle_events(events: list[dict[str, Any]]) ->
     for event in events:
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         audit_payload = payload.get("audit_payload") if isinstance(payload.get("audit_payload"), dict) else {}
-        for value in _walk_json_values(audit_payload):
-            text = str(value or "").lower().strip()
-            if text == "daily_command_count_ok":
-                categories.add("execution_daily_cap")
-            elif text == "daily_gross_turnover_ok":
-                categories.add("execution_turnover_cap")
+        for blocker in _preflight_blocker_codes(audit_payload):
+            category = PREFLIGHT_BLOCKER_CATEGORY.get(blocker)
+            if category:
+                categories.add(category)
     return categories
 
 
-def _walk_json_values(value: Any) -> list[Any]:
-    if isinstance(value, dict):
-        out: list[Any] = []
-        for key, item in value.items():
-            out.append(key)
-            out.extend(_walk_json_values(item))
-        return out
-    if isinstance(value, list):
-        out = []
-        for item in value:
-            out.extend(_walk_json_values(item))
-        return out
-    return [value]
+def _preflight_blocker_codes(audit_payload: dict[str, Any]) -> set[str]:
+    codes: set[str] = set()
+    containers = [audit_payload]
+    for key in ("command_preflight", "preflight_result", "execution_preflight"):
+        value = audit_payload.get(key)
+        if isinstance(value, dict):
+            containers.append(value)
+
+    for container in containers:
+        blockers = container.get("blockers")
+        if isinstance(blockers, list):
+            codes.update(str(item or "").lower().strip() for item in blockers if str(item or "").strip())
+
+        checks = container.get("checks")
+        if isinstance(checks, dict):
+            for code, check in checks.items():
+                if _preflight_check_failed(check):
+                    clean_code = str(code or "").lower().strip()
+                    if clean_code:
+                        codes.add(clean_code)
+
+        blocker_events = container.get("blocker_events")
+        if isinstance(blocker_events, list):
+            for event in blocker_events:
+                if not isinstance(event, dict):
+                    continue
+                clean_code = str(event.get("code") or "").lower().strip()
+                if clean_code:
+                    codes.add(clean_code)
+    return codes
+
+
+def _preflight_check_failed(check: Any) -> bool:
+    if not isinstance(check, dict):
+        return False
+    if "pass" in check:
+        return check.get("pass") is False
+    if "passed" in check:
+        return check.get("passed") is False
+    if "ok" in check:
+        return check.get("ok") is False
+    return False
 
 
 def _count_distribution(target: dict[str, int], key: str) -> None:
@@ -970,6 +1002,33 @@ def _execution_state(row: dict[str, Any]) -> str:
     if status:
         return status
     return "unknown"
+
+
+def _is_deduped_execution_row(row: dict[str, Any]) -> bool:
+    state = _execution_state(row)
+    if state in {"deduped", "duplicate_target"}:
+        return True
+
+    event_types = set(_event_types(row))
+    event_statuses = set(_event_statuses(row))
+    if "execution_result" in event_types and "deduped" in event_statuses:
+        return True
+
+    payload = row.get("command_payload") if isinstance(row.get("command_payload"), dict) else {}
+    qc_response = row.get("qc_response") if isinstance(row.get("qc_response"), dict) else {}
+    for source in (row, payload, qc_response):
+        if str(source.get("action_status") or "").lower().strip() == "deduped":
+            return True
+        reason = str(source.get("not_sent_reason") or source.get("reason") or "").lower().strip()
+        if reason in {"deduped", "recent_same_target_reconciled", "same_target_deduped"}:
+            return True
+        same_target = source.get("same_target_dedupe")
+        if isinstance(same_target, dict):
+            dedupe_reason = str(same_target.get("reason") or "").lower().strip()
+            should_send = same_target.get("should_send")
+            if dedupe_reason == "recent_same_target_reconciled" or should_send is False:
+                return True
+    return False
 
 
 def _normalize_execution_state(value: Any) -> str:
