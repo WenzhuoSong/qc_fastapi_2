@@ -14,7 +14,7 @@ from html import escape
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy import desc, func, select, text
 
@@ -106,6 +106,27 @@ async def api_account_truth(_: str = Depends(require_dashboard_auth)) -> dict[st
     execution_control = await _execution_control_status(latest_analysis)
     account_holdings = await _account_holdings_dashboard(latest_analysis)
     return _account_truth_view(account_holdings, execution_control)
+
+
+@app.get("/api/weekend-review/latest")
+async def api_weekend_review_latest(
+    include_full_report: bool = False,
+    _: str = Depends(require_dashboard_auth),
+) -> dict[str, Any]:
+    pack = await load_latest_weekend_review_operator_pack(
+        include_full_report=include_full_report,
+    )
+    if not pack:
+        raise HTTPException(status_code=404, detail="No weekend review found")
+    return pack
+
+
+@app.get("/api/weekend-review/latest/text", response_class=PlainTextResponse)
+async def api_weekend_review_latest_text(_: str = Depends(require_dashboard_auth)) -> str:
+    pack = await load_latest_weekend_review_operator_pack(include_full_report=False)
+    if not pack:
+        raise HTTPException(status_code=404, detail="No weekend review found")
+    return str(pack.get("text") or "")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -5381,8 +5402,8 @@ def _render_weekend_review_operator(pack: dict[str, Any]) -> str:
     basket = sections.get("basket_portfolio") if isinstance(sections.get("basket_portfolio"), dict) else {}
     recommendations = view.get("recommendations") if isinstance(view.get("recommendations"), list) else []
     answers = view.get("acceptance_answers") if isinstance(view.get("acceptance_answers"), list) else []
-    text_url = "/api/ops/weekend-review/latest/text"
-    json_url = "/api/ops/weekend-review/latest?include_full_report=true"
+    text_url = "/api/weekend-review/latest/text"
+    json_url = "/api/weekend-review/latest?include_full_report=true"
     headline_payload = {
         "week_start": view.get("week_start"),
         "week_end": view.get("week_end"),

@@ -100,8 +100,10 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Weekly Execution Truth", source)
         self.assertIn("Blocker Distribution", source)
         self.assertIn("Acceptance Questions", source)
-        self.assertIn("/api/ops/weekend-review/latest?include_full_report=true", source)
-        self.assertIn("/api/ops/weekend-review/latest/text", source)
+        self.assertIn('@app.get("/api/weekend-review/latest")', source)
+        self.assertIn('@app.get("/api/weekend-review/latest/text"', source)
+        self.assertIn("/api/weekend-review/latest?include_full_report=true", source)
+        self.assertIn("/api/weekend-review/latest/text", source)
         self.assertIn('"execution_authority": "none"', source)
         self.assertIn('"target_weight_mutation": "none"', source)
 
