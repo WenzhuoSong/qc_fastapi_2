@@ -13,6 +13,7 @@ from services.weekend_review_loader import EXECUTION_AUTHORITY, TARGET_WEIGHT_MU
 
 
 OPERATOR_VIEW_SCHEMA_VERSION = "weekend_review_operator_view_v1"
+OPERATOR_PACK_SCHEMA_VERSION = "weekend_review_operator_pack_v1"
 
 
 def build_weekend_review_operator_view(payload: dict[str, Any]) -> dict[str, Any]:
@@ -100,6 +101,25 @@ def build_weekend_review_operator_view(payload: dict[str, Any]) -> dict[str, Any
     return json_safe(view)
 
 
+def build_weekend_review_operator_pack(
+    payload: dict[str, Any],
+    *,
+    include_full_report: bool = False,
+) -> dict[str, Any]:
+    """Build the read-only operator pack exposed by API/dashboard surfaces."""
+    view = build_weekend_review_operator_view(payload)
+    pack = {
+        "schema_version": OPERATOR_PACK_SCHEMA_VERSION,
+        "execution_authority": EXECUTION_AUTHORITY,
+        "target_weight_mutation": TARGET_WEIGHT_MUTATION,
+        "review_only": True,
+        "text": format_weekend_review_operator_text(view),
+        "view": view,
+        "full_report": payload if include_full_report else None,
+    }
+    return json_safe(pack)
+
+
 async def load_latest_weekend_review_operator_view(*, limit: int = 1) -> list[dict[str, Any]]:
     """Load latest weekend review rows as read-only operator views."""
     from sqlalchemy import desc, select
@@ -120,6 +140,35 @@ async def load_latest_weekend_review_operator_view(*, limit: int = 1) -> list[di
         build_weekend_review_operator_view(row.risk_output or {})
         for row in rows
     ]
+
+
+async def load_latest_weekend_review_operator_pack(
+    *,
+    include_full_report: bool = False,
+) -> dict[str, Any] | None:
+    """Load the latest weekend review row as a stable operator pack."""
+    from sqlalchemy import desc, select
+
+    from db.models import AgentAnalysis
+    from db.session import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as db:
+        row = (
+            await db.execute(
+                select(AgentAnalysis)
+                .where(AgentAnalysis.trigger_type == "weekend_review")
+                .order_by(desc(AgentAnalysis.analyzed_at), desc(AgentAnalysis.id))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+    if row is None:
+        return None
+    payload = row.risk_output or {}
+    pack = build_weekend_review_operator_pack(payload, include_full_report=include_full_report)
+    pack["agent_analysis_id"] = int(row.id)
+    pack["analyzed_at"] = row.analyzed_at.isoformat() if row.analyzed_at else None
+    return json_safe(pack)
 
 
 def format_weekend_review_operator_text(view: dict[str, Any]) -> str:

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from pathlib import Path
 import unittest
 
 from cron.weekend_trading_review import build_weekend_review_payload
@@ -6,6 +7,7 @@ from services.weekend_review_artifacts import build_weekly_review_artifacts, ser
 from services.weekend_review_loader import build_weekend_review_dataset
 from services.weekend_review_metrics import build_weekly_review_metrics
 from services.weekend_review_operator_view import (
+    build_weekend_review_operator_pack,
     build_weekend_review_operator_view,
     format_weekend_review_operator_text,
 )
@@ -98,6 +100,32 @@ class WeekendReviewOperatorViewTests(unittest.TestCase):
         self.assertIn("debate_value", sources[8])
         self.assertIn("basket_portfolio", sources[9])
         self.assertIn("prior_review_self_assessment", sources[10])
+
+    def test_operator_pack_contains_text_view_and_optional_full_report(self):
+        payload = _sample_review_payload()
+
+        compact = build_weekend_review_operator_pack(payload)
+        full = build_weekend_review_operator_pack(payload, include_full_report=True)
+
+        self.assertEqual(compact["schema_version"], "weekend_review_operator_pack_v1")
+        self.assertTrue(compact["review_only"])
+        self.assertEqual(compact["execution_authority"], "none")
+        self.assertEqual(compact["target_weight_mutation"], "none")
+        self.assertIn("Weekend Review Operator View", compact["text"])
+        self.assertIn("acceptance_answers", compact["view"])
+        self.assertIsNone(compact["full_report"])
+        self.assertEqual(full["full_report"]["schema_version"], "weekend_trading_review_cron_v1")
+
+    def test_ops_api_routes_are_registered_as_read_only_weekend_review_entrypoints(self):
+        main_source = Path("main.py").read_text(encoding="utf-8")
+        api_source = Path("api/ops.py").read_text(encoding="utf-8")
+
+        self.assertIn("from api.ops import router as ops_router", main_source)
+        self.assertIn("app.include_router(ops_router, prefix=\"/api\")", main_source)
+        self.assertIn("@router.get(\"/weekend-review/latest\")", api_source)
+        self.assertIn("@router.get(\"/weekend-review/latest/text\"", api_source)
+        self.assertNotIn("SetWeights", api_source)
+        self.assertNotIn("execute_weights", api_source)
 
 
 def _sample_review_payload(summary_text: str = "Review-only follow-up: inspect blockers.") -> dict:

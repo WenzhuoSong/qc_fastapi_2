@@ -12,6 +12,7 @@ from api.command import router as command_router
 from api.status import router as status_router
 from api.telegram_webhook import router as telegram_router
 from api.execution import router as execution_router
+from api.ops import router as ops_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,6 +51,7 @@ app.include_router(command_router, prefix="/api")
 app.include_router(status_router,  prefix="/api")
 app.include_router(telegram_router, prefix="/api")
 app.include_router(execution_router, prefix="/api")
+app.include_router(ops_router, prefix="/api")
 
 
 @app.get("/health")
