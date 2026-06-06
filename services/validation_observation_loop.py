@@ -30,12 +30,27 @@ OBS_HEDGE_INTENT = "hedge_intent"
 OBS_ACTIVE_BASKET = "active_basket"
 OBS_EXECUTION_TRUTH = "execution_truth"
 OBS_INTENT_EXECUTION = "intent_vs_execution"
+BLOCKER_SCHEMA_VERSION = "intent_blocker_events_v1"
 STATUS_OBSERVED = "observed"
 STATUS_PENDING_OUTCOME = "pending_outcome"
 STATUS_COMPLETED = "completed"
 STATUS_INSUFFICIENT_DATA = "insufficient_data"
 HEDGE_OUTCOME_HORIZON_DAYS = 5
 INTENT_EXECUTION_SCHEMA_VERSION = "intent_vs_execution_v1"
+
+
+PREFLIGHT_BLOCKER_CATEGORIES = {
+    "command_id_present": "execution_preflight_identity",
+    "analysis_id_present": "execution_preflight_identity",
+    "command_id_idempotent": "execution_preflight_identity",
+    "analysis_id_not_submitted": "execution_preflight_identity",
+    "policy_version_present": "execution_policy_alignment",
+    "policy_alignment_confirmed": "execution_policy_alignment",
+    "daily_command_count_ok": "execution_daily_cap",
+    "daily_gross_turnover_ok": "execution_turnover_cap",
+    "buy_delta_ok": "execution_delta_cap",
+    "sell_delta_ok": "execution_delta_cap",
+}
 
 
 @dataclass(frozen=True)
@@ -58,7 +73,11 @@ class ValidationObservationRefreshResult:
         }
 
 
-def build_validation_observation_records_from_analysis(analysis: Any) -> list[dict[str, Any]]:
+def build_validation_observation_records_from_analysis(
+    analysis: Any,
+    *,
+    execution_log: Any | None = None,
+) -> list[dict[str, Any]]:
     """Build observe-only records from one AgentAnalysis-like row."""
     analysis_id = _to_int(_record_get(analysis, "id"))
     if analysis_id is None:
@@ -75,6 +94,7 @@ def build_validation_observation_records_from_analysis(analysis: Any) -> list[di
         trigger_type=trigger_type,
         execution_status=execution_status,
         risk=risk if isinstance(risk, dict) else {},
+        execution_log=execution_log,
     )
     if intent_record:
         records.append(intent_record)
@@ -150,6 +170,7 @@ def _build_intent_vs_execution_record(
     trigger_type: Any,
     execution_status: Any,
     risk: dict[str, Any],
+    execution_log: Any | None = None,
 ) -> dict[str, Any] | None:
     """Record what the system intended versus what it actually sent."""
     risk_approved = bool(risk.get("approved"))
@@ -158,7 +179,13 @@ def _build_intent_vs_execution_record(
     final_validation = risk.get("final_validation") if isinstance(risk.get("final_validation"), dict) else {}
     hedge_intent = risk.get("hedge_intent") if isinstance(risk.get("hedge_intent"), dict) else {}
     hedge_outcome = risk.get("hedge_intent_outcome") if isinstance(risk.get("hedge_intent_outcome"), dict) else {}
-    blockers = _risk_blockers(risk, final_validation)
+    execution_context = _execution_context(execution_log, execution_status=execution_status)
+    blocker_events = _blocker_events(
+        risk=risk,
+        final_validation=final_validation,
+        execution_context=execution_context,
+    )
+    blockers = _blocker_codes(blocker_events)
     command_sent = _execution_sent(execution_status)
     unexecuted_intents = _unexecuted_intents(
         risk_approved=risk_approved,
@@ -168,6 +195,7 @@ def _build_intent_vs_execution_record(
         hedge_intent=hedge_intent,
         hedge_outcome=hedge_outcome,
         command_sent=command_sent,
+        blocker_events=blocker_events,
     )
     intended_action = _intended_action(
         risk_approved=risk_approved,
@@ -188,7 +216,10 @@ def _build_intent_vs_execution_record(
         "target_weights": target_weights,
         "target_active_count": active_count,
         "blockers": blockers,
+        "blocker_events_schema_version": BLOCKER_SCHEMA_VERSION,
+        "blocker_events": blocker_events,
         "unexecuted_intents": unexecuted_intents,
+        "execution_context": execution_context,
         "hedge_intent": {
             "triggered": bool(hedge_intent.get("triggered")),
             "severity": _to_float(hedge_intent.get("severity"), 0.0),
@@ -237,6 +268,7 @@ def _build_intent_vs_execution_record(
             "command_sent": command_sent,
             "target_active_count": active_count,
             "blocker_count": len(blockers),
+            "blocker_categories": _blocker_category_counts(blocker_events),
             "unexecuted_intent_count": len(unexecuted_intents),
             "hedge_triggered": bool(hedge_intent.get("triggered")),
             "hedge_add_requested": bool(hedge_intent.get("add_hedge_etf")),
@@ -461,10 +493,21 @@ async def refresh_validation_observation_loop(
             )
         ).scalars().all()
     )
+    execution_by_analysis: dict[int, Any] = {}
+    for row in execution_rows:
+        analysis_id = _to_int(_record_get(row, "analysis_id"))
+        if analysis_id is not None and analysis_id not in execution_by_analysis:
+            execution_by_analysis[analysis_id] = row
 
     records: list[dict[str, Any]] = []
     for analysis in analysis_rows:
-        records.extend(build_validation_observation_records_from_analysis(analysis))
+        analysis_id = _to_int(_record_get(analysis, "id"))
+        records.extend(
+            build_validation_observation_records_from_analysis(
+                analysis,
+                execution_log=execution_by_analysis.get(analysis_id) if analysis_id is not None else None,
+            )
+        )
     for row in execution_rows:
         exec_record = build_execution_truth_observation_record(row)
         if exec_record:
@@ -760,6 +803,7 @@ def _unexecuted_intents(
     hedge_intent: dict[str, Any],
     hedge_outcome: dict[str, Any],
     command_sent: bool,
+    blocker_events: list[dict[str, Any]],
 ) -> list[str]:
     intents: list[str] = []
     if hedge_intent.get("triggered") and not hedge_intent.get("add_hedge_etf"):
@@ -774,22 +818,133 @@ def _unexecuted_intents(
     if risk_approved and target_weights and not command_sent:
         status = execution_status or "unknown"
         intents.append(f"approved_target_not_sent:{status}")
+        if any(str(event.get("source")) == "execution_preflight" for event in blocker_events):
+            intents.append("approved_target_blocked_by_execution_preflight")
+        if any(str(event.get("category")) == "execution_daily_cap" for event in blocker_events):
+            intents.append("approved_target_blocked_by_daily_command_cap")
+        if any(str(event.get("category")) == "execution_turnover_cap" for event in blocker_events):
+            intents.append("approved_target_blocked_by_daily_turnover_cap")
     return _unique_strings(intents)
 
 
-def _risk_blockers(risk: dict[str, Any], final_validation: dict[str, Any]) -> list[str]:
-    blockers: list[str] = []
-    for value in (
-        risk.get("blockers"),
-        risk.get("failed_checks"),
-        final_validation.get("blockers") if isinstance(final_validation, dict) else None,
-        final_validation.get("details") if isinstance(final_validation, dict) else None,
-    ):
-        blockers.extend(_string_list(value))
-    reason = final_validation.get("reason") if isinstance(final_validation, dict) else None
-    if reason:
-        blockers.append(str(reason))
-    return _unique_strings(blockers)
+def _blocker_events(
+    *,
+    risk: dict[str, Any],
+    final_validation: dict[str, Any],
+    execution_context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for value in (risk.get("blockers"), risk.get("failed_checks")):
+        for code in _string_list(value):
+            events.append(_blocker_event(source="risk", category="risk_validation", code=code))
+
+    if isinstance(final_validation, dict):
+        for value in (final_validation.get("blockers"), final_validation.get("details")):
+            for code in _string_list(value):
+                events.append(_blocker_event(source="final_validation", category="final_validation", code=code))
+        reason = final_validation.get("reason")
+        if reason:
+            events.append(_blocker_event(source="final_validation", category="final_validation", code=str(reason)))
+
+    preflight = execution_context.get("command_preflight") if isinstance(execution_context, dict) else {}
+    if isinstance(preflight, dict):
+        checks = preflight.get("checks") if isinstance(preflight.get("checks"), dict) else {}
+        for code in _string_list(preflight.get("blockers")):
+            check = checks.get(code) if isinstance(checks.get(code), dict) else {}
+            events.append(
+                _blocker_event(
+                    source="execution_preflight",
+                    category=PREFLIGHT_BLOCKER_CATEGORIES.get(code, "execution_preflight"),
+                    code=code,
+                    actual=check.get("actual"),
+                    threshold=check.get("threshold"),
+                    details={
+                        key: check.get(key)
+                        for key in ("base_threshold", "reserve_applied", "bucket")
+                        if check.get(key) is not None
+                    },
+                )
+            )
+
+    reason = execution_context.get("reason") if isinstance(execution_context, dict) else None
+    if reason == "recent_same_target_reconciled" or execution_context.get("dedupe"):
+        events.append(_blocker_event(source="execution", category="dedupe", code="recent_same_target_reconciled"))
+    elif reason and reason not in {"blocked_by_command_preflight"}:
+        events.append(_blocker_event(source="execution", category="execution_state", code=str(reason)))
+
+    return _dedupe_blocker_events(events)
+
+
+def _blocker_event(
+    *,
+    source: str,
+    category: str,
+    code: str,
+    actual: Any = None,
+    threshold: Any = None,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    event = {
+        "schema_version": BLOCKER_SCHEMA_VERSION,
+        "source": str(source),
+        "category": str(category),
+        "code": str(code),
+    }
+    if actual is not None:
+        event["actual"] = actual
+    if threshold is not None:
+        event["threshold"] = threshold
+    if details:
+        event["details"] = details
+    return json_safe(event)
+
+
+def _dedupe_blocker_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for event in events:
+        key = (
+            str(event.get("source") or ""),
+            str(event.get("category") or ""),
+            str(event.get("code") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(event)
+    return out
+
+
+def _blocker_codes(events: list[dict[str, Any]]) -> list[str]:
+    return _unique_strings([event.get("code") for event in events])
+
+
+def _blocker_category_counts(events: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for event in events:
+        category = str(event.get("category") or "unknown")
+        counts[category] = counts.get(category, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _execution_context(execution_log: Any | None, *, execution_status: Any) -> dict[str, Any]:
+    if execution_log is None:
+        return {"execution_status": execution_status}
+    payload = _record_get(execution_log, "command_payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    preflight = payload.get("command_preflight") if isinstance(payload.get("command_preflight"), dict) else {}
+    dedupe = payload.get("same_target_dedupe") if isinstance(payload.get("same_target_dedupe"), dict) else {}
+    return {
+        "execution_status": execution_status,
+        "execution_log_status": _record_get(execution_log, "status"),
+        "qc_status": _record_get(execution_log, "qc_status"),
+        "qc_rejection_reason": _record_get(execution_log, "qc_rejection_reason"),
+        "reason": payload.get("reason"),
+        "command_id": _record_get(execution_log, "command_id"),
+        "command_preflight": preflight,
+        "dedupe": dedupe,
+    }
 
 
 def _execution_sent(execution_status: Any) -> bool:

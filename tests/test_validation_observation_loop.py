@@ -104,6 +104,75 @@ class ValidationObservationLoopTests(unittest.TestCase):
         )
         self.assertEqual(intent["recommendation"]["operator_action"], "review_unexecuted_intent")
 
+    def test_intent_vs_execution_classifies_preflight_cap_blockers(self):
+        records = build_validation_observation_records_from_analysis(
+            {
+                "id": 46,
+                "analyzed_at": datetime(2026, 6, 6, 11, 30, 0),
+                "trigger_type": "scheduled",
+                "execution_status": "rejected",
+                "risk_output": {
+                    "approved": True,
+                    "target_weights": {"QQQ": 0.10, "CASH": 0.90},
+                    "final_validation": {"approved": True},
+                },
+            },
+            execution_log={
+                "analysis_id": 46,
+                "command_id": "analysis_46",
+                "status": "rejected",
+                "qc_status": "not_sent",
+                "qc_rejection_reason": "blocked_by_command_preflight",
+                "command_payload": {
+                    "reason": "blocked_by_command_preflight",
+                    "command_preflight": {
+                        "allowed": False,
+                        "blockers": ["daily_command_count_ok", "daily_gross_turnover_ok"],
+                        "checks": {
+                            "daily_command_count_ok": {
+                                "actual": 3,
+                                "threshold": 3,
+                                "base_threshold": 3,
+                                "reserve_applied": 1,
+                                "bucket": "ordinary",
+                            },
+                            "daily_gross_turnover_ok": {
+                                "actual": 0.81,
+                                "threshold": 0.80,
+                                "base_threshold": 0.80,
+                                "reserve_applied": 0.0,
+                                "bucket": "ordinary",
+                            },
+                        },
+                    },
+                },
+            },
+        )
+
+        intent = next(row for row in records if row["observation_type"] == OBS_INTENT_EXECUTION)
+        payload = intent["observation_payload"]
+
+        self.assertEqual(payload["blocker_events_schema_version"], "intent_blocker_events_v1")
+        self.assertIn("daily_command_count_ok", payload["blockers"])
+        self.assertIn("daily_gross_turnover_ok", payload["blockers"])
+        categories = {event["code"]: event["category"] for event in payload["blocker_events"]}
+        self.assertEqual(categories["daily_command_count_ok"], "execution_daily_cap")
+        self.assertEqual(categories["daily_gross_turnover_ok"], "execution_turnover_cap")
+        self.assertIn(
+            "approved_target_blocked_by_execution_preflight",
+            payload["unexecuted_intents"],
+        )
+        self.assertIn(
+            "approved_target_blocked_by_daily_command_cap",
+            payload["unexecuted_intents"],
+        )
+        self.assertIn(
+            "approved_target_blocked_by_daily_turnover_cap",
+            payload["unexecuted_intents"],
+        )
+        self.assertEqual(intent["metrics"]["blocker_categories"]["execution_daily_cap"], 1)
+        self.assertEqual(intent["metrics"]["blocker_categories"]["execution_turnover_cap"], 1)
+
     def test_forward_return_uses_future_price_path(self):
         rows = [
             {"ticker": "SPY", "trading_date": "2026-06-01", "adj_close_price": 100.0},

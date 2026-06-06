@@ -24,12 +24,15 @@ def outcome_label_contract_summary() -> dict[str, Any]:
         "preferred_training_source": "qc_execution",
         "preferred_training_price_source": "fill_price",
         "fallback_sources": ["qc_snapshot", "yfinance"],
+        "fallback_training_authority": "feature_scope_limited",
         "training_authority_requires": [
             "decision_feature_snapshot_id",
             "decision_feature_snapshot_schema_version=decision_feature_snapshot_v1",
             "decision_feature_snapshot_as_of_time<=decision_time",
             "non_mixed_feature_authority",
             "non_mixed_price_source",
+            "preferred_label_source=qc_execution",
+            "preferred_price_source=fill_price",
         ],
         "point_in_time_rule": (
             "features must be observed at or before decision_time; outcomes are "

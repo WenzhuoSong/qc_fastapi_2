@@ -45,6 +45,7 @@ class OutcomeLabelContractTests(unittest.TestCase):
         self.assertEqual(summary["label_schema_version"], "outcome_label_v1")
         self.assertEqual(summary["preferred_training_source"], "qc_execution")
         self.assertEqual(summary["preferred_training_price_source"], "fill_price")
+        self.assertEqual(summary["fallback_training_authority"], "feature_scope_limited")
         self.assertEqual(
             summary["label_source_price_sources"]["yfinance"],
             ["yfinance_adjusted_close"],
@@ -147,6 +148,29 @@ class OutcomeLabelContractTests(unittest.TestCase):
         )
         self.assertEqual(label.label_source, "yfinance")
         self.assertEqual(label.price_source, "yfinance_adjusted_close")
+        payload = serialize_outcome_label(label)
+        self.assertEqual(payload["training_authority"], "feature_scope_limited")
+        self.assertIn("fallback_label_source", payload["scope_limit_reasons"])
+        self.assertEqual(payload["source_metadata"]["label_source_role"], "fallback")
+
+    def test_qc_snapshot_fallback_label_is_marked_scope_limited(self):
+        label = build_outcome_label(
+            decision_time=self.decision_time,
+            as_of_time=self.as_of_time,
+            horizon="5d",
+            label_source="qc_snapshot",
+            price_source="qc_market_price",
+            return_value=0.01,
+            max_drawdown_after_decision=-0.02,
+            decision_feature_snapshot=self.feature_snapshot,
+        )
+
+        payload = serialize_outcome_label(label)
+
+        self.assertEqual(payload["training_authority"], "feature_scope_limited")
+        self.assertIn("fallback_label_source", payload["scope_limit_reasons"])
+        self.assertEqual(payload["source_metadata"]["label_source_role"], "fallback")
+        self.assertFalse(label_has_training_authority(payload))
 
     def test_mixed_feature_authority_prevents_training_authority(self):
         feature_snapshot = dict(self.feature_snapshot)

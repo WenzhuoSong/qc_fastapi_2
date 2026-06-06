@@ -76,6 +76,11 @@ class OutcomeLabel(BaseModel):
             )
 
         reasons = list(self.scope_limit_reasons or [])
+        metadata = dict(self.source_metadata or {})
+        preferred_label_source = self.label_source == "qc_execution" and self.price_source == "fill_price"
+        metadata.setdefault("label_source_role", "preferred" if preferred_label_source else "fallback")
+        if not preferred_label_source:
+            reasons.append("fallback_label_source")
         if not self.decision_feature_snapshot_id:
             reasons.append("missing_decision_feature_snapshot")
         if (
@@ -95,6 +100,7 @@ class OutcomeLabel(BaseModel):
         if self.source_metadata.get("price_source_mixed") is True:
             reasons.append("mixed_price_source")
 
+        self.source_metadata = metadata
         if reasons:
             self.scope_limit_reasons = sorted(set(reasons))
             self.training_authority = "feature_scope_limited"
