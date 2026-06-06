@@ -1,6 +1,7 @@
 import importlib
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -314,6 +315,56 @@ class ExecutionLogStoreTests(unittest.TestCase):
             execution_log_store._qc_status_from_reconciliation_event_types([], "timeout_no_ack"),
             "timeout_no_ack",
         )
+        self.assertEqual(
+            execution_log_store._qc_status_from_reconciliation_event_types(
+                ["timeout_reconciled_no_execution"],
+                "timeout_no_ack",
+            ),
+            "timeout_no_execution_confirmed",
+        )
+
+    def test_sync_execution_log_from_reconciliation_events_updates_stale_row(self):
+        row = type(
+            "Row",
+            (),
+            {
+                "command_id": "analysis_242",
+                "correlation_id": "analysis_242",
+                "analysis_id": 242,
+                "source_analysis_id": 242,
+                "command_type": "weight_adjustment",
+                "policy_version": "sprint8a",
+                "submitted_at": None,
+                "executed_at": None,
+                "latest_qc_ack_at": None,
+                "qc_ack_at": datetime(2026, 6, 5, 15, 0, 0),
+                "lifecycle_metadata": {},
+                "status": "accepted",
+                "qc_status": "accepted",
+                "qc_response": {},
+                "command_payload": {"weights": {"SPY": 0.1}},
+                "lifecycle_state": "created",
+            },
+        )()
+
+        with patch.object(
+            execution_log_store,
+            "next_lifecycle_state",
+            return_value="filled",
+        ):
+            changed = execution_log_store._sync_execution_log_from_reconciliation_events(
+                row,
+                command_id="analysis_242",
+                event_types=["filled", "reconciled"],
+                event_time=datetime(2026, 6, 5, 15, 1, 0),
+                source="test",
+            )
+
+        self.assertTrue(changed)
+        self.assertEqual(row.qc_status, "reconciled")
+        self.assertEqual(row.lifecycle_state, "filled")
+        self.assertEqual(row.latest_qc_ack_at, datetime(2026, 6, 5, 15, 1, 0))
+        self.assertEqual(row.command_payload["reconciliation_row_cache_sync"]["source"], "test")
 
     def test_heartbeat_reconciliation_response_forces_accepted_contract(self):
         response = execution_log_store._qc_response_for_heartbeat_reconciliation(

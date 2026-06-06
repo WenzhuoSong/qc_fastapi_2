@@ -157,6 +157,32 @@ class WeekendReviewLoaderTests(unittest.TestCase):
         self.assertEqual(dataset.source_counts["execution_log"], 1)
         self.assertEqual(dataset.exclusion_counts["missing_command_type"], 1)
 
+    def test_accepts_command_lifecycle_events_and_rejects_missing_event_time(self):
+        dataset = build_weekend_review_dataset(
+            command_lifecycle_events=[
+                {
+                    "id": 10,
+                    "command_id": "analysis_242",
+                    "event_type": "reconciled",
+                    "event_status": "reconciled",
+                    "event_time": datetime(2026, 6, 5, 15, 0, tzinfo=UTC),
+                    "source": "fastapi",
+                    "payload": {"max_abs_diff": 0.0},
+                },
+                {
+                    "id": 11,
+                    "command_id": "analysis_243",
+                    "event_type": "reconciled",
+                    "source": "fastapi",
+                },
+            ]
+        )
+
+        self.assertEqual(len(dataset.command_lifecycle_events), 1)
+        self.assertEqual(dataset.command_lifecycle_events[0]["event_type"], "reconciled")
+        self.assertEqual(dataset.source_counts["command_lifecycle_event"], 1)
+        self.assertEqual(dataset.exclusion_counts["missing_event_time"], 1)
+
     def test_account_snapshot_requires_source_tags(self):
         dataset = build_weekend_review_dataset(
             account_snapshots=[

@@ -29,6 +29,7 @@ class WeekendReviewDataset:
     validation_observations: list[dict[str, Any]] = field(default_factory=list)
     diagnostic_artifacts: list[dict[str, Any]] = field(default_factory=list)
     execution_logs: list[dict[str, Any]] = field(default_factory=list)
+    command_lifecycle_events: list[dict[str, Any]] = field(default_factory=list)
     account_snapshots: list[dict[str, Any]] = field(default_factory=list)
     market_features: list[dict[str, Any]] = field(default_factory=list)
     outcome_labels: list[dict[str, Any]] = field(default_factory=list)
@@ -46,6 +47,7 @@ class WeekendReviewDataset:
             "validation_observations": self.validation_observations,
             "diagnostic_artifacts": self.diagnostic_artifacts,
             "execution_logs": self.execution_logs,
+            "command_lifecycle_events": self.command_lifecycle_events,
             "account_snapshots": self.account_snapshots,
             "market_features": self.market_features,
             "outcome_labels": self.outcome_labels,
@@ -63,6 +65,7 @@ def build_weekend_review_dataset(
     diagnostic_artifacts: list[Any] | None = None,
     agent_analyses: list[Any] | None = None,
     execution_logs: list[Any] | None = None,
+    command_lifecycle_events: list[Any] | None = None,
     account_snapshots: list[Any] | None = None,
     market_features: list[Any] | None = None,
     outcome_labels: list[Any] | None = None,
@@ -83,6 +86,9 @@ def build_weekend_review_dataset(
 
     for row in execution_logs or []:
         _add_execution_log(dataset, row)
+
+    for row in command_lifecycle_events or []:
+        _add_command_lifecycle_event(dataset, row)
 
     for row in account_snapshots or []:
         _add_account_snapshot(dataset, row)
@@ -114,6 +120,7 @@ async def load_weekend_review_dataset(
     from db.models import (
         AccountStateSnapshot,
         AgentAnalysis,
+        CommandLifecycleEvent,
         ExecutionLog,
         MarketDailyFeature,
         ValidationObservation,
@@ -149,6 +156,15 @@ async def load_weekend_review_dataset(
                 .limit(limit)
             )
         ).scalars().all())
+        lifecycle_events = list((
+            await db.execute(
+                select(CommandLifecycleEvent)
+                .where(CommandLifecycleEvent.event_time >= datetime.combine(start, datetime.min.time()))
+                .where(CommandLifecycleEvent.event_time <= datetime.combine(end, datetime.max.time()))
+                .order_by(desc(CommandLifecycleEvent.event_time), desc(CommandLifecycleEvent.id))
+                .limit(limit * 10)
+            )
+        ).scalars().all())
         snapshots = list((
             await db.execute(
                 select(AccountStateSnapshot)
@@ -172,6 +188,7 @@ async def load_weekend_review_dataset(
         validation_observations=observations,
         agent_analyses=analyses,
         execution_logs=executions,
+        command_lifecycle_events=lifecycle_events,
         account_snapshots=snapshots,
         market_features=features,
     )
@@ -216,6 +233,22 @@ def _add_execution_log(dataset: WeekendReviewDataset, row: Any) -> None:
         return
     dataset.execution_logs.append(json_safe(payload))
     _count(dataset.source_counts, "execution_log")
+
+
+def _add_command_lifecycle_event(dataset: WeekendReviewDataset, row: Any) -> None:
+    payload = _command_lifecycle_event_payload(row)
+    reasons: list[str] = []
+    if not payload.get("command_id"):
+        reasons.append("missing_command_id")
+    if not payload.get("event_type"):
+        reasons.append("missing_event_type")
+    if not payload.get("event_time"):
+        reasons.append("missing_event_time")
+    if reasons:
+        _exclude(dataset, "command_lifecycle_event", payload, reasons)
+        return
+    dataset.command_lifecycle_events.append(json_safe(payload))
+    _count(dataset.source_counts, "command_lifecycle_event")
 
 
 def _add_account_snapshot(dataset: WeekendReviewDataset, row: Any) -> None:
@@ -317,6 +350,21 @@ def _execution_log_payload(row: Any) -> dict[str, Any]:
         "status": _record_get(row, "status"),
         "qc_status": _record_get(row, "qc_status"),
         "qc_rejection_reason": _record_get(row, "qc_rejection_reason"),
+    }
+
+
+def _command_lifecycle_event_payload(row: Any) -> dict[str, Any]:
+    return {
+        "id": _record_get(row, "id"),
+        "analysis_id": _record_get(row, "analysis_id"),
+        "command_id": _record_get(row, "command_id"),
+        "event_type": _record_get(row, "event_type"),
+        "event_status": _record_get(row, "event_status"),
+        "event_time": _iso_or_none(_record_get(row, "event_time")),
+        "source": _record_get(row, "source"),
+        "reason": _record_get(row, "reason"),
+        "payload": _record_get(row, "payload") or {},
+        "created_at": _iso_or_none(_record_get(row, "created_at")),
     }
 
 

@@ -43,6 +43,23 @@ REJECTED_STATES = {
     "not_sent",
     "blocked",
     "timeout_no_ack",
+    "timeout_no_execution_confirmed",
+    "failed_no_fill",
+}
+
+EVENT_STATE_PRIORITY: dict[str, tuple[str, int]] = {
+    "reconciliation_drift": ("diverged", 100),
+    "reconciled": ("reconciled", 95),
+    "filled": ("filled", 90),
+    "failed_no_fill": ("failed_no_fill", 85),
+    "qc_rejected": ("rejected", 85),
+    "timeout_reconciled_no_execution": ("timeout_no_execution_confirmed", 82),
+    "partial": ("partial", 75),
+    "orders_submitted": ("orders_submitted", 65),
+    "qc_accepted": ("accepted", 55),
+    "submitted_to_qc": ("accepted", 45),
+    "qc_timeout": ("timeout_no_ack", 40),
+    "preflight_blocked": ("not_sent", 35),
 }
 
 
@@ -114,11 +131,13 @@ def build_execution_truth_metrics(
     data = _dataset_dict(dataset)
     as_of = _ensure_utc(review_as_of or datetime.now(timezone.utc))
     logs = list(data.get("execution_logs") or [])
+    lifecycle_events = list(data.get("command_lifecycle_events") or [])
+    event_summary = _command_lifecycle_event_summary(lifecycle_events)
     observations = [
         row for row in data.get("validation_observations") or []
         if row.get("observation_type") == "execution_truth"
     ]
-    rows = _dedupe_command_rows(logs)
+    rows = _merge_execution_rows_with_lifecycle_events(_dedupe_command_rows(logs), event_summary)
     counts = {
         "commands_sent": 0,
         "accepted_count": 0,
@@ -161,6 +180,8 @@ def build_execution_truth_metrics(
         evidence_refs.append({
             "command_id": command_id,
             "state": state,
+            "event_state": row.get("event_state"),
+            "event_types": row.get("event_types") or [],
             "week_bucket": bucket,
         })
 
@@ -711,6 +732,97 @@ def _dedupe_command_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [*by_id.values(), *anonymous]
 
 
+def _merge_execution_rows_with_lifecycle_events(
+    rows: list[dict[str, Any]],
+    event_summary: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        command_id = str(row.get("command_id") or "").strip()
+        summary = event_summary.get(command_id)
+        if not summary:
+            merged.append(row)
+            if command_id:
+                seen.add(command_id)
+            continue
+        enriched = dict(row)
+        enriched["event_state"] = summary.get("state")
+        enriched["event_types"] = summary.get("event_types") or []
+        enriched["event_time"] = summary.get("event_time")
+        if summary.get("state"):
+            enriched["lifecycle_state"] = summary["state"]
+        if summary.get("event_time") and not enriched.get("latest_qc_ack_at"):
+            enriched["latest_qc_ack_at"] = summary["event_time"]
+        merged.append(enriched)
+        if command_id:
+            seen.add(command_id)
+
+    for command_id, summary in event_summary.items():
+        if command_id in seen:
+            continue
+        merged.append({
+            "command_id": command_id,
+            "command_type": "weight_adjustment",
+            "lifecycle_state": summary.get("state") or "unknown",
+            "event_state": summary.get("state"),
+            "event_types": summary.get("event_types") or [],
+            "event_time": summary.get("event_time"),
+            "latest_qc_ack_at": summary.get("event_time"),
+            "command_payload": {},
+        })
+    return merged
+
+
+def _command_lifecycle_event_summary(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    summary: dict[str, dict[str, Any]] = {}
+    for event in events:
+        command_id = str(event.get("command_id") or "").strip()
+        if not command_id:
+            continue
+        state = _state_from_lifecycle_event(event)
+        event_type = str(event.get("event_type") or "").lower().strip()
+        event_time = _parse_datetime(event.get("event_time"))
+        bucket = summary.setdefault(command_id, {
+            "state": "",
+            "priority": -1,
+            "event_time": None,
+            "event_types": [],
+        })
+        if event_type and event_type not in bucket["event_types"]:
+            bucket["event_types"].append(event_type)
+        existing_time = _parse_datetime(bucket.get("event_time"))
+        if not state:
+            if event_time is not None and (
+                existing_time is None
+                or _ensure_utc(event_time) > _ensure_utc(existing_time)
+            ):
+                bucket["event_time"] = event_time.isoformat()
+            continue
+        mapped_state, priority = state
+        should_replace = priority > int(bucket.get("priority") or -1)
+        if priority == int(bucket.get("priority") or -1) and event_time and existing_time:
+            should_replace = _ensure_utc(event_time) >= _ensure_utc(existing_time)
+        if should_replace:
+            bucket["state"] = mapped_state
+            bucket["priority"] = priority
+            bucket["event_time"] = event_time.isoformat() if event_time else bucket.get("event_time")
+        elif event_time is not None and existing_time is None:
+            bucket["event_time"] = event_time.isoformat()
+    return summary
+
+
+def _state_from_lifecycle_event(event: dict[str, Any]) -> tuple[str, int] | None:
+    event_type = str(event.get("event_type") or "").lower().strip()
+    event_status = str(event.get("event_status") or "").lower().strip()
+    if event_type == "execution_result" and event_status:
+        if event_status == "deduped":
+            return ("deduped", 50)
+        if event_status in {"accepted", "rejected", "timeout_no_ack"}:
+            return (_normalize_execution_state(event_status), 50)
+    return EVENT_STATE_PRIORITY.get(event_type)
+
+
 def _execution_state(row: dict[str, Any]) -> str:
     lifecycle = _normalize_execution_state(row.get("lifecycle_state"))
     if lifecycle and lifecycle != "created":
@@ -760,7 +872,7 @@ def _is_stuck_in_flight(row: dict[str, Any], review_as_of: datetime, timeout_min
 
 
 def _event_time(row: dict[str, Any]) -> datetime | None:
-    for key in ("latest_qc_ack_at", "qc_ack_at", "submitted_at", "executed_at"):
+    for key in ("event_time", "latest_qc_ack_at", "qc_ack_at", "submitted_at", "executed_at"):
         parsed = _parse_datetime(row.get(key))
         if parsed is not None:
             return parsed
@@ -775,7 +887,11 @@ def _event_sort_key(row: dict[str, Any]) -> float:
 
 
 def _week_bucket(row: dict[str, Any]) -> str | None:
-    event_time = _parse_datetime(row.get("submitted_at")) or _parse_datetime(row.get("executed_at"))
+    event_time = (
+        _parse_datetime(row.get("submitted_at"))
+        or _parse_datetime(row.get("executed_at"))
+        or _parse_datetime(row.get("event_time"))
+    )
     if event_time is None:
         return None
     day = _ensure_utc(event_time).date()

@@ -137,6 +137,51 @@ class WeekendReviewMetricsTests(unittest.TestCase):
         self.assertEqual(execution["duplicate_target_count"], 1)
         self.assertEqual(execution["rejected_count"], 3)
 
+    def test_execution_truth_prefers_command_lifecycle_events_over_stale_row(self):
+        dataset = build_weekend_review_dataset(
+            execution_logs=[
+                {
+                    "command_id": "analysis_242",
+                    "command_type": "weight_adjustment",
+                    "lifecycle_state": "created",
+                    "qc_status": "accepted",
+                    "status": "accepted",
+                    "executed_at": "2026-06-05T15:00:00+00:00",
+                    "command_payload": {"weights": {"SPY": 0.1}},
+                },
+            ],
+            command_lifecycle_events=[
+                {
+                    "command_id": "analysis_242",
+                    "event_type": "filled",
+                    "event_status": "filled",
+                    "event_time": "2026-06-05T15:00:30+00:00",
+                    "source": "qc",
+                    "payload": {},
+                },
+                {
+                    "command_id": "analysis_242",
+                    "event_type": "reconciled",
+                    "event_status": "reconciled",
+                    "event_time": "2026-06-05T15:01:00+00:00",
+                    "source": "fastapi",
+                    "payload": {},
+                },
+            ],
+        )
+
+        metrics = build_weekly_review_metrics(
+            dataset,
+            review_as_of=datetime(2026, 6, 6, 12, 0, tzinfo=UTC),
+        )
+        execution_section = metrics["sections"]["execution_truth"]
+        execution = execution_section["metrics"]
+
+        self.assertEqual(execution["commands_sent"], 1)
+        self.assertEqual(execution["filled_count"], 1)
+        self.assertEqual(execution_section["evidence_refs"][0]["state"], "reconciled")
+        self.assertIn("reconciled", execution_section["evidence_refs"][0]["event_types"])
+
     def test_intent_execution_counts_blocker_categories(self):
         dataset = build_weekend_review_dataset(
             validation_observations=[

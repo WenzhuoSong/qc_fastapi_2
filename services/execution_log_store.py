@@ -884,6 +884,15 @@ async def update_qc_status(
                 qc_response=safe_qc_response or {},
                 event_time=ack_time,
             )
+            all_event_types = event_types or await _read_reconciliation_event_types(db, command_id)
+            if all_event_types:
+                _sync_execution_log_from_reconciliation_events(
+                    row,
+                    command_id=command_id,
+                    event_types=all_event_types,
+                    event_time=ack_time,
+                    source="update_qc_status",
+                )
         await db.commit()
         return {
             "command_id": command_id,
@@ -1292,6 +1301,15 @@ async def append_reconciliation_from_account_snapshot(db, account_state: dict[st
         return 0
     qc_status = str(row.qc_status or "").lower().strip()
     if qc_status in RECONCILIATION_TERMINAL_QC_STATUSES:
+        event_types = await _read_reconciliation_event_types(db, command_id)
+        if event_types:
+            _sync_execution_log_from_reconciliation_events(
+                row,
+                command_id=command_id,
+                event_types=event_types,
+                event_time=account_state.get("recorded_at") or _utcnow_db_naive(),
+                source="append_reconciliation_from_account_snapshot_terminal_resync",
+            )
         return 0
     if qc_status not in RECONCILIATION_ACTIVE_QC_STATUSES:
         return 0
@@ -1320,33 +1338,15 @@ async def append_reconciliation_from_account_snapshot(db, account_state: dict[st
         account_state=reconciliation_account_state,
         event_time=account_state.get("recorded_at"),
     )
-    next_status = _qc_status_from_reconciliation_event_types(event_types, qc_status)
-    if next_status != qc_status:
-        row.qc_status = next_status
-        ack_time = account_state.get("recorded_at") or _utcnow_db_naive()
-        if row.qc_ack_at is None and next_status in {"accepted", "orders_submitted", "partial"}:
-            row.qc_ack_at = ack_time
-        row.latest_qc_ack_at = ack_time
-        payload = dict(row.command_payload or {})
-        payload["heartbeat_reconciliation"] = {
-            "status": next_status,
-            "event_types": event_types,
-            "account_state": reconciliation_account_state,
-            "recorded_at": str(account_state.get("recorded_at") or ""),
-        }
-        payload = _safe_json_payload(payload)
-        row.command_payload = payload
-        _apply_command_lifecycle_skeleton(
+    all_event_types = event_types or await _read_reconciliation_event_types(db, command_id)
+    if all_event_types:
+        _sync_execution_log_from_reconciliation_events(
             row,
             command_id=command_id,
-            analysis_id=getattr(row, "analysis_id", None),
-            command_type=getattr(row, "command_type", None) or _command_type_from_id(command_id),
-            policy_version=getattr(row, "policy_version", None),
-            status=getattr(row, "status", None),
-            qc_status=next_status,
-            qc_response=getattr(row, "qc_response", None),
-            latest_qc_ack_at=ack_time,
-            metadata={"source": "append_reconciliation_from_account_snapshot"},
+            event_types=all_event_types,
+            event_time=account_state.get("recorded_at") or _utcnow_db_naive(),
+            source="append_reconciliation_from_account_snapshot",
+            account_state=reconciliation_account_state,
         )
     return len(event_types)
 
@@ -1376,16 +1376,7 @@ async def _append_reconciliation_events(
         await db.execute(
             select(CommandLifecycleEvent.event_type)
             .where(CommandLifecycleEvent.command_id == command_id)
-            .where(CommandLifecycleEvent.event_type.in_((
-                "orders_submitted",
-                "filled",
-                "partial",
-                "reconciled",
-                "reconciliation_drift",
-                "failed_no_fill",
-                "superseded",
-                "timeout_reconciled_no_execution",
-            )))
+            .where(CommandLifecycleEvent.event_type.in_(_RECONCILIATION_EVENT_TYPES_FOR_STATUS()))
         )
     ).scalars().all()
     existing_types = set(existing)
@@ -1416,6 +1407,74 @@ async def _append_reconciliation_events(
         )
         appended.append(event_type)
     return appended
+
+
+async def _read_reconciliation_event_types(db, command_id: str) -> list[str]:
+    rows = (
+        await db.execute(
+            select(CommandLifecycleEvent.event_type)
+            .where(CommandLifecycleEvent.command_id == command_id)
+            .where(CommandLifecycleEvent.event_type.in_(_RECONCILIATION_EVENT_TYPES_FOR_STATUS()))
+        )
+    ).scalars().all()
+    return [str(row or "").lower().strip() for row in rows if str(row or "").strip()]
+
+
+def _sync_execution_log_from_reconciliation_events(
+    row: Any,
+    *,
+    command_id: str,
+    event_types: list[str],
+    event_time: datetime | None,
+    source: str,
+    account_state: dict[str, Any] | None = None,
+) -> bool:
+    current_status = str(getattr(row, "qc_status", "") or "").lower().strip()
+    next_status = _qc_status_from_reconciliation_event_types(event_types, current_status)
+    lifecycle_state = str(getattr(row, "lifecycle_state", "") or "").lower().strip()
+    if not next_status or (next_status == current_status and lifecycle_state not in {"", "created"}):
+        return False
+
+    ack_time = event_time or _utcnow_db_naive()
+    row.qc_status = next_status
+    if getattr(row, "qc_ack_at", None) is None and next_status in {"accepted", "orders_submitted", "partial"}:
+        row.qc_ack_at = ack_time
+    row.latest_qc_ack_at = ack_time
+    payload = dict(getattr(row, "command_payload", None) or {})
+    payload["reconciliation_row_cache_sync"] = {
+        "status": next_status,
+        "event_types": [str(event or "") for event in event_types or []],
+        "source": source,
+        "account_state": account_state or {},
+        "recorded_at": str(ack_time or ""),
+    }
+    row.command_payload = _safe_json_payload(payload)
+    _apply_command_lifecycle_skeleton(
+        row,
+        command_id=command_id,
+        analysis_id=getattr(row, "analysis_id", None),
+        command_type=getattr(row, "command_type", None) or _command_type_from_id(command_id),
+        policy_version=getattr(row, "policy_version", None),
+        status=getattr(row, "status", None),
+        qc_status=next_status,
+        qc_response=getattr(row, "qc_response", None),
+        latest_qc_ack_at=ack_time,
+        metadata={"source": source},
+    )
+    return True
+
+
+def _RECONCILIATION_EVENT_TYPES_FOR_STATUS() -> tuple[str, ...]:
+    return (
+        "orders_submitted",
+        "filled",
+        "partial",
+        "reconciled",
+        "reconciliation_drift",
+        "failed_no_fill",
+        "superseded",
+        "timeout_reconciled_no_execution",
+    )
 
 
 def _account_state_command_id(account_state: dict[str, Any]) -> str:
@@ -1460,6 +1519,10 @@ def _qc_status_from_reconciliation_event_types(
     for terminal in ("reconciled", "reconciliation_drift", "failed_no_fill"):
         if terminal in normalized:
             return terminal
+    if "timeout_reconciled_no_execution" in normalized:
+        return "timeout_no_execution_confirmed"
+    if "superseded" in normalized:
+        return "superseded"
     if "filled" in normalized:
         return "filled"
     if "partial" in normalized:
