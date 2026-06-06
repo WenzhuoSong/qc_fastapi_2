@@ -40,11 +40,6 @@ TERMINAL_FILLED_STATES = {
 REJECTED_STATES = {
     "rejected",
     "failed",
-    "not_sent",
-    "blocked",
-    "timeout_no_ack",
-    "timeout_no_execution_confirmed",
-    "failed_no_fill",
 }
 
 EVENT_STATE_PRIORITY: dict[str, tuple[str, int]] = {
@@ -145,6 +140,12 @@ def build_execution_truth_metrics(
         "noop_count": 0,
         "partial_count": 0,
         "rejected_count": 0,
+        "true_qc_rejected_count": 0,
+        "preflight_blocked_count": 0,
+        "not_sent_count": 0,
+        "timeout_no_ack_count": 0,
+        "timeout_no_execution_confirmed_count": 0,
+        "failed_no_fill_count": 0,
         "duplicate_target_count": 0,
         "reconciliation_divergence_count": 0,
         "stuck_in_flight_count": 0,
@@ -154,6 +155,8 @@ def build_execution_truth_metrics(
 
     for row in rows:
         state = _execution_state(row)
+        event_types = set(_event_types(row))
+        event_statuses = set(_event_statuses(row))
         command_id = str(row.get("command_id") or "")
         if state not in {"deduped", "duplicate_target", "not_sent"}:
             counts["commands_sent"] += 1
@@ -165,8 +168,20 @@ def build_execution_truth_metrics(
             counts["noop_count"] += 1
         if state == "partial":
             counts["partial_count"] += 1
-        if state in REJECTED_STATES:
+        if state in REJECTED_STATES or "qc_rejected" in event_types:
             counts["rejected_count"] += 1
+        if state == "rejected" or "qc_rejected" in event_types:
+            counts["true_qc_rejected_count"] += 1
+        if "preflight_blocked" in event_types:
+            counts["preflight_blocked_count"] += 1
+        if state == "not_sent" or "preflight_blocked" in event_types:
+            counts["not_sent_count"] += 1
+        if state == "timeout_no_ack" or "qc_timeout" in event_types or "timeout_no_ack" in event_statuses:
+            counts["timeout_no_ack_count"] += 1
+        if state == "timeout_no_execution_confirmed" or "timeout_reconciled_no_execution" in event_types:
+            counts["timeout_no_execution_confirmed_count"] += 1
+        if state == "failed_no_fill" or "failed_no_fill" in event_types:
+            counts["failed_no_fill_count"] += 1
         if state in {"deduped", "duplicate_target"} or _contains_any(row, {"recent_same_target", "dedupe"}):
             counts["duplicate_target_count"] += 1
         if state == "diverged" or _contains_any(row, {"reconciliation_divergence", "diverged"}):
@@ -182,6 +197,7 @@ def build_execution_truth_metrics(
             "state": state,
             "event_state": row.get("event_state"),
             "event_types": row.get("event_types") or [],
+            "event_statuses": row.get("event_statuses") or [],
             "week_bucket": bucket,
         })
 
@@ -213,6 +229,8 @@ def build_intent_execution_metrics(dataset: WeekendReviewDataset | dict[str, Any
         "daily_command_cap_block_count": 0,
         "daily_turnover_cap_block_count": 0,
         "dedupe_count": 0,
+        "execution_timeout_count": 0,
+        "qc_reject_count": 0,
         "approved_not_sent_count": 0,
         "hedge_triggered_not_added_count": 0,
     }
@@ -254,6 +272,19 @@ def build_intent_execution_metrics(dataset: WeekendReviewDataset | dict[str, Any
                 "observation_id": row.get("observation_id"),
                 "intent": item,
             })
+
+    observed_commands = {
+        str(row.get("command_id") or "").strip()
+        for row in observations
+        if str(row.get("command_id") or "").strip()
+    }
+    _apply_lifecycle_event_intent_fallback(
+        data.get("command_lifecycle_events") or [],
+        observed_commands=observed_commands,
+        metrics=metrics,
+        blocker_distribution=blocker_distribution,
+        unexecuted_intents=unexecuted_intents,
+    )
 
     return _section({
         "schema_version": "weekly_intent_execution_review_v1",
@@ -749,6 +780,7 @@ def _merge_execution_rows_with_lifecycle_events(
         enriched = dict(row)
         enriched["event_state"] = summary.get("state")
         enriched["event_types"] = summary.get("event_types") or []
+        enriched["event_statuses"] = summary.get("event_statuses") or []
         enriched["event_time"] = summary.get("event_time")
         if summary.get("state"):
             enriched["lifecycle_state"] = summary["state"]
@@ -767,6 +799,7 @@ def _merge_execution_rows_with_lifecycle_events(
             "lifecycle_state": summary.get("state") or "unknown",
             "event_state": summary.get("state"),
             "event_types": summary.get("event_types") or [],
+            "event_statuses": summary.get("event_statuses") or [],
             "event_time": summary.get("event_time"),
             "latest_qc_ack_at": summary.get("event_time"),
             "command_payload": {},
@@ -788,9 +821,13 @@ def _command_lifecycle_event_summary(events: list[dict[str, Any]]) -> dict[str, 
             "priority": -1,
             "event_time": None,
             "event_types": [],
+            "event_statuses": [],
         })
         if event_type and event_type not in bucket["event_types"]:
             bucket["event_types"].append(event_type)
+        event_status = str(event.get("event_status") or "").lower().strip()
+        if event_status and event_status not in bucket["event_statuses"]:
+            bucket["event_statuses"].append(event_status)
         existing_time = _parse_datetime(bucket.get("event_time"))
         if not state:
             if event_time is not None and (
@@ -823,6 +860,98 @@ def _state_from_lifecycle_event(event: dict[str, Any]) -> tuple[str, int] | None
     return EVENT_STATE_PRIORITY.get(event_type)
 
 
+def _event_types(row: dict[str, Any]) -> list[str]:
+    values = row.get("event_types") if isinstance(row.get("event_types"), list) else []
+    return [str(value or "").lower().strip() for value in values if str(value or "").strip()]
+
+
+def _event_statuses(row: dict[str, Any]) -> list[str]:
+    values = row.get("event_statuses") if isinstance(row.get("event_statuses"), list) else []
+    return [str(value or "").lower().strip() for value in values if str(value or "").strip()]
+
+
+def _apply_lifecycle_event_intent_fallback(
+    events: list[dict[str, Any]],
+    *,
+    observed_commands: set[str],
+    metrics: dict[str, int],
+    blocker_distribution: dict[str, int],
+    unexecuted_intents: list[dict[str, Any]],
+) -> None:
+    by_command: dict[str, list[dict[str, Any]]] = {}
+    for event in events or []:
+        command_id = str(event.get("command_id") or "").strip()
+        if not command_id or command_id in observed_commands:
+            continue
+        by_command.setdefault(command_id, []).append(event)
+
+    for command_id, command_events in by_command.items():
+        event_types = {str(event.get("event_type") or "").lower().strip() for event in command_events}
+        event_statuses = {str(event.get("event_status") or "").lower().strip() for event in command_events}
+        if "preflight_blocked" in event_types:
+            metrics["execution_preflight_block_count"] += 1
+            _count_distribution(blocker_distribution, "execution_preflight")
+            unexecuted_intents.append({
+                "command_id": command_id,
+                "intent": "blocked_by_lifecycle_preflight",
+            })
+            for category in _preflight_categories_from_lifecycle_events(command_events):
+                _count_distribution(blocker_distribution, category)
+                if category == "execution_daily_cap":
+                    metrics["daily_command_cap_block_count"] += 1
+                elif category == "execution_turnover_cap":
+                    metrics["daily_turnover_cap_block_count"] += 1
+
+        if "execution_result" in event_types and "deduped" in event_statuses:
+            metrics["dedupe_count"] += 1
+            _count_distribution(blocker_distribution, "execution_dedupe")
+            unexecuted_intents.append({
+                "command_id": command_id,
+                "intent": "not_sent:lifecycle_deduped",
+            })
+
+        if "qc_timeout" in event_types or "timeout_no_ack" in event_statuses:
+            metrics["execution_timeout_count"] += 1
+            _count_distribution(blocker_distribution, "execution_feedback_timeout")
+
+        if "qc_rejected" in event_types:
+            metrics["qc_reject_count"] += 1
+            _count_distribution(blocker_distribution, "qc_rejected")
+
+
+def _preflight_categories_from_lifecycle_events(events: list[dict[str, Any]]) -> set[str]:
+    categories: set[str] = set()
+    for event in events:
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        audit_payload = payload.get("audit_payload") if isinstance(payload.get("audit_payload"), dict) else {}
+        for value in _walk_json_values(audit_payload):
+            text = str(value or "").lower().strip()
+            if text == "daily_command_count_ok":
+                categories.add("execution_daily_cap")
+            elif text == "daily_gross_turnover_ok":
+                categories.add("execution_turnover_cap")
+    return categories
+
+
+def _walk_json_values(value: Any) -> list[Any]:
+    if isinstance(value, dict):
+        out: list[Any] = []
+        for key, item in value.items():
+            out.append(key)
+            out.extend(_walk_json_values(item))
+        return out
+    if isinstance(value, list):
+        out = []
+        for item in value:
+            out.extend(_walk_json_values(item))
+        return out
+    return [value]
+
+
+def _count_distribution(target: dict[str, int], key: str) -> None:
+    target[key] = target.get(key, 0) + 1
+
+
 def _execution_state(row: dict[str, Any]) -> str:
     lifecycle = _normalize_execution_state(row.get("lifecycle_state"))
     if lifecycle and lifecycle != "created":
@@ -849,7 +978,6 @@ def _normalize_execution_state(value: Any) -> str:
         return ""
     aliases = {
         "success": "filled",
-        "timeout_no_execution_confirmed": "timeout_no_ack",
     }
     return aliases.get(state, state)
 

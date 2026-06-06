@@ -135,7 +135,10 @@ class WeekendReviewMetricsTests(unittest.TestCase):
         self.assertEqual(execution["commands_sent"], 3)
         self.assertEqual(execution["accepted_count"], 1)
         self.assertEqual(execution["duplicate_target_count"], 1)
-        self.assertEqual(execution["rejected_count"], 3)
+        self.assertEqual(execution["rejected_count"], 1)
+        self.assertEqual(execution["true_qc_rejected_count"], 1)
+        self.assertEqual(execution["not_sent_count"], 1)
+        self.assertEqual(execution["timeout_no_execution_confirmed_count"], 1)
 
     def test_execution_truth_prefers_command_lifecycle_events_over_stale_row(self):
         dataset = build_weekend_review_dataset(
@@ -232,6 +235,60 @@ class WeekendReviewMetricsTests(unittest.TestCase):
         self.assertEqual(intent["metrics"]["approved_not_sent_count"], 1)
         self.assertEqual(intent["metrics"]["hedge_triggered_not_added_count"], 1)
         self.assertEqual(intent["blocker_distribution"]["execution_daily_cap"], 1)
+
+    def test_intent_execution_uses_lifecycle_events_as_blocker_fallback(self):
+        dataset = build_weekend_review_dataset(
+            command_lifecycle_events=[
+                {
+                    "command_id": "analysis_cap",
+                    "event_type": "preflight_blocked",
+                    "event_status": "rejected",
+                    "event_time": "2026-06-05T15:00:00+00:00",
+                    "source": "fastapi",
+                    "payload": {
+                        "audit_payload": {
+                            "blockers": ["daily_command_count_ok", "daily_gross_turnover_ok"],
+                        }
+                    },
+                },
+                {
+                    "command_id": "analysis_dedupe",
+                    "event_type": "execution_result",
+                    "event_status": "deduped",
+                    "event_time": "2026-06-05T15:01:00+00:00",
+                    "source": "fastapi",
+                    "payload": {},
+                },
+                {
+                    "command_id": "analysis_timeout",
+                    "event_type": "qc_timeout",
+                    "event_status": "timeout_no_ack",
+                    "event_time": "2026-06-05T15:02:00+00:00",
+                    "source": "fastapi",
+                    "payload": {},
+                },
+                {
+                    "command_id": "analysis_reject",
+                    "event_type": "qc_rejected",
+                    "event_status": "rejected",
+                    "event_time": "2026-06-05T15:03:00+00:00",
+                    "source": "qc",
+                    "payload": {},
+                },
+            ]
+        )
+
+        metrics = build_weekly_review_metrics(dataset)
+        intent = metrics["sections"]["intent_execution"]
+
+        self.assertEqual(intent["metrics"]["execution_preflight_block_count"], 1)
+        self.assertEqual(intent["metrics"]["daily_command_cap_block_count"], 1)
+        self.assertEqual(intent["metrics"]["daily_turnover_cap_block_count"], 1)
+        self.assertEqual(intent["metrics"]["dedupe_count"], 1)
+        self.assertEqual(intent["metrics"]["execution_timeout_count"], 1)
+        self.assertEqual(intent["metrics"]["qc_reject_count"], 1)
+        self.assertEqual(intent["blocker_distribution"]["execution_preflight"], 1)
+        self.assertEqual(intent["blocker_distribution"]["execution_dedupe"], 1)
 
     def test_label_maturity_counts_eligible_fallback_and_immature(self):
         dataset = build_weekend_review_dataset(
