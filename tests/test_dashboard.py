@@ -88,6 +88,23 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Avg Price", source)
         self.assertIn("target vs actual drift", source)
 
+    def test_dashboard_surfaces_weekend_trading_review_operator_pack(self):
+        source = Path("dashboard/app.py").read_text()
+
+        self.assertIn("load_latest_weekend_review_operator_pack", source)
+        self.assertIn('"weekend_review_operator": weekend_review_operator', source)
+        self.assertIn("def _weekend_review_operator_dashboard", source)
+        self.assertIn("def _render_weekend_review_operator", source)
+        self.assertIn("Weekend Trading Review", source)
+        self.assertIn('href="#weekend-review"', source)
+        self.assertIn("Weekly Execution Truth", source)
+        self.assertIn("Blocker Distribution", source)
+        self.assertIn("Acceptance Questions", source)
+        self.assertIn("/api/ops/weekend-review/latest?include_full_report=true", source)
+        self.assertIn("/api/ops/weekend-review/latest/text", source)
+        self.assertIn('"execution_authority": "none"', source)
+        self.assertIn('"target_weight_mutation": "none"', source)
+
     def test_dashboard_surfaces_alpha_basket_hedge_validation_overview(self):
         source = Path("dashboard/app.py").read_text()
 
