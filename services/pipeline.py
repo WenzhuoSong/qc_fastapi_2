@@ -1582,6 +1582,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             pipeline_context["target_builder_construction_input"] = construction_input
             target_builder_gated = build_target_weights(
                 base_weights=base_weights,
+                recall_tickers=quant_baseline.get("selected_tickers") or [],
                 construction_weights=construction_input.get("construction_weights"),
                 construction_source=construction_input.get("construction_source"),
                 current_weights=brief.get("current_weights") or {},
@@ -2137,6 +2138,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         try:
             target_builder_out = build_target_weights(
                 base_weights=base_weights,
+                recall_tickers=quant_baseline.get("selected_tickers") or [],
                 current_weights=brief.get("current_weights") or {},
                 market_scorecard=market_scorecard,
                 decision_style=decision_style,
@@ -2260,6 +2262,8 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             synthesizer_out=synthesizer_out,
             risk_out=risk_out,
             base_weights=base_weights,
+            bull_output=bull_output,
+            bear_output=bear_output,
         )
         risk_out = append_diagnostic_artifacts(risk_out, diagnostic_artifacts)
         risk_out["decision_feature_snapshot_id"] = next(

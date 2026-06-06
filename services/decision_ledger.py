@@ -69,7 +69,7 @@ def build_decision_ledger(
     historical_evidence = _historical_evidence_by_ticker(evidence_bundle or {})
     base_weights = _extract_base_weights(strategy_output or {})
     strategy_targets = _extract_strategy_targets(strategy_output or {}, evidence_bundle or {})
-    synthesizer_targets = _clean_weight_map((synthesizer_output or {}).get("adjusted_weights") or {})
+    diagnostic_llm_targets = _clean_weight_map((synthesizer_output or {}).get("adjusted_weights") or {})
     portfolio_construction_targets = _portfolio_construction_targets(risk)
     target_builder_targets = _target_builder_targets(risk)
     target_builder_diagnostics = _target_builder_diagnostics(risk)
@@ -115,7 +115,7 @@ def build_decision_ledger(
             historical_evidence=historical_evidence.get(ticker),
             base_weight=base_weights.get(ticker),
             strategy_target=strategy_targets.get(ticker),
-            synthesizer_target=synthesizer_targets.get(ticker),
+            diagnostic_llm_target=diagnostic_llm_targets.get(ticker),
             portfolio_construction_target=portfolio_construction_targets.get(ticker),
             target_builder_target=target_builder_targets.get(ticker),
             target_builder_diagnostics=target_builder_diagnostics,
@@ -280,7 +280,7 @@ def _build_ticker_row(
     historical_evidence: dict[str, Any] | None,
     base_weight: float | None,
     strategy_target: float | None,
-    synthesizer_target: float | None,
+    diagnostic_llm_target: float | None,
     portfolio_construction_target: float | None,
     target_builder_target: float | None,
     target_builder_diagnostics: dict[str, Any],
@@ -311,7 +311,7 @@ def _build_ticker_row(
         current_weight=current_weight,
         base_weight=base_weight,
         strategy_target=strategy_target,
-        synthesizer_target=synthesizer_target,
+        diagnostic_llm_target=diagnostic_llm_target,
         portfolio_construction_target=portfolio_construction_target,
         target_builder_target=target_builder_target,
         advisory_override=advisory_override,
@@ -378,7 +378,7 @@ def _build_ticker_row(
             "etf_intraday": None if holding_meta else "missing",
             "base_weight": None if base_weight is not None else "missing",
             "strategy_target": None if strategy_target is not None else "missing",
-            "synthesizer_target": None if synthesizer_target is not None else "missing",
+            "diagnostic_llm_target": None if diagnostic_llm_target is not None else "missing",
             "portfolio_construction_target": None if portfolio_construction_target is not None else "missing",
             "target_builder_target": None if target_builder_target is not None else "missing",
         },
@@ -552,7 +552,7 @@ def _sparse_trade_lifecycle(
     current_weight: float,
     base_weight: float | None,
     strategy_target: float | None,
-    synthesizer_target: float | None,
+    diagnostic_llm_target: float | None,
     portfolio_construction_target: float | None,
     target_builder_target: float | None,
     advisory_override: dict[str, Any] | None,
@@ -568,8 +568,7 @@ def _sparse_trade_lifecycle(
         "current_weight": round(float(current_weight or 0.0), 6),
         "base_weight": round(float(base_weight), 6) if base_weight is not None else None,
         "strategy_target": round(float(strategy_target), 6) if strategy_target is not None else None,
-        "synthesizer_target": round(float(synthesizer_target), 6) if synthesizer_target is not None else None,
-        "diagnostic_llm_target": round(float(synthesizer_target), 6) if synthesizer_target is not None else None,
+        "diagnostic_llm_target": round(float(diagnostic_llm_target), 6) if diagnostic_llm_target is not None else None,
         "portfolio_construction_target": round(float(portfolio_construction_target), 6) if portfolio_construction_target is not None else None,
         "target_builder_target": round(float(target_builder_target), 6) if target_builder_target is not None else None,
         "validated_advisory_delta": _validated_advisory_delta(advisory_override),
@@ -582,10 +581,6 @@ def _sparse_trade_lifecycle(
         changed_by.append("base_weight")
     if strategy_target is not None and base_weight is not None and abs(float(strategy_target) - float(base_weight)) > 1e-9:
         changed_by.append("strategy_target")
-    if synthesizer_target is not None and strategy_target is not None and abs(float(synthesizer_target) - float(strategy_target)) > 1e-9:
-        changed_by.append("synthesizer_target")
-    elif synthesizer_target is not None and base_weight is not None and abs(float(synthesizer_target) - float(base_weight)) > 1e-9:
-        changed_by.append("synthesizer_target")
     if portfolio_construction_target is not None and base_weight is not None and abs(float(portfolio_construction_target) - float(base_weight)) > 1e-9:
         changed_by.append("portfolio_construction_target")
     if target_builder_target is not None and base_weight is not None and abs(float(target_builder_target) - float(base_weight)) > 1e-9:
@@ -605,7 +600,6 @@ def _sparse_trade_lifecycle(
                 "current_weight",
                 "base_weight",
                 "strategy_target",
-                "synthesizer_target",
                 "diagnostic_llm_target",
                 "portfolio_construction_target",
                 "target_builder_target",
@@ -620,7 +614,6 @@ def _sparse_trade_lifecycle(
             key for key in (
                 "base_weight",
                 "strategy_target",
-                "synthesizer_target",
                 "portfolio_construction_target",
                 "target_builder_target",
             )
@@ -819,7 +812,7 @@ def _static_reason_source_effects(reason_code: str) -> tuple[tuple[str, str], ..
 def _lifecycle_stage_source(stage: str) -> str | None:
     if stage in {"base_weight", "strategy_target"}:
         return "strategy"
-    if stage in {"synthesizer_target", "validated_llm_advisory"}:
+    if stage == "validated_llm_advisory":
         return "strategy"
     if stage == "portfolio_construction_target":
         return "risk"

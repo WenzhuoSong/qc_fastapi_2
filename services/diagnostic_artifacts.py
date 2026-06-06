@@ -119,12 +119,37 @@ class PortfolioMixEvent(DiagnosticArtifact):
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
+class DebateImpact(DiagnosticArtifact):
+    schema_version: Literal["debate_impact_v1"] = "debate_impact_v1"
+    artifact_type: Literal["debate_impact"] = "debate_impact"
+    source_stage: str = "bull_bear_debate"
+    bull_stance: str | None = None
+    bear_stance: str | None = None
+    bull_confidence: str | float | None = None
+    bear_confidence: str | float | None = None
+    bull_failed: bool = False
+    bear_failed: bool = False
+    cross_exam_failed: bool = False
+    disagreement_count: int = 0
+    disagreement_tickers: list[str] = Field(default_factory=list)
+    arbitration_count: int = 0
+    arbitration_tickers: list[str] = Field(default_factory=list)
+    disagreement_tickers_in_target_builder: list[str] = Field(default_factory=list)
+    disagreement_tickers_changed_by_target_builder: list[str] = Field(default_factory=list)
+    disagreement_tickers_in_final_target: list[str] = Field(default_factory=list)
+    counterfactual_available: bool = False
+    execution_delta_from_debate: float | None = None
+    measurement_limitations: list[str] = Field(default_factory=list)
+    token_usage: dict[str, Any] = Field(default_factory=dict)
+
+
 Artifact = (
     MarketRiskAssessment
     | DecisionFeatureSnapshot
     | CandidateEvent
     | RankingEvent
     | PortfolioMixEvent
+    | DebateImpact
 )
 
 
@@ -163,6 +188,8 @@ def build_pipeline_diagnostic_artifacts(
     synthesizer_out: dict[str, Any] | None,
     risk_out: dict[str, Any] | None,
     base_weights: dict[str, float] | None,
+    bull_output: dict[str, Any] | None = None,
+    bear_output: dict[str, Any] | None = None,
 ) -> list[Artifact]:
     """Build the PR6 diagnostic artifact set from one pipeline decision."""
     context = pipeline_context or {}
@@ -205,6 +232,14 @@ def build_pipeline_diagnostic_artifacts(
                 "final_validation": risk_out.get("final_validation") or {},
             },
         ),
+        build_debate_impact(
+            analysis_id=analysis_id,
+            as_of_time=as_of_time,
+            bull_output=bull_output or {},
+            bear_output=bear_output or {},
+            synthesizer_out=synthesizer_out or {},
+            risk_out=risk_out,
+        ),
     ]
     artifacts.extend(
         CandidateEvent(
@@ -223,6 +258,81 @@ def build_pipeline_diagnostic_artifacts(
         if row["ticker"] != "CASH"
     )
     return artifacts
+
+
+def build_debate_impact(
+    *,
+    analysis_id: int,
+    as_of_time: datetime,
+    bull_output: dict[str, Any],
+    bear_output: dict[str, Any],
+    synthesizer_out: dict[str, Any],
+    risk_out: dict[str, Any],
+) -> DebateImpact:
+    """Record debate observability without claiming causal counterfactual impact."""
+    debate_summary = synthesizer_out.get("debate_summary") or {}
+    disagreements = [
+        row for row in (debate_summary.get("disagreement_map") or [])
+        if isinstance(row, dict)
+    ]
+    disagreement_tickers = _unique_tickers(row.get("ticker") for row in disagreements)
+
+    reasoning = synthesizer_out.get("reasoning_chain") or {}
+    arbitration_rows = [
+        row for row in (reasoning.get("step3_debate_arbitration") or [])
+        if isinstance(row, dict)
+    ]
+    arbitration_tickers = _unique_tickers(row.get("ticker") for row in arbitration_rows)
+
+    target_builder = risk_out.get("target_builder_input") or risk_out.get("target_builder_shadow") or {}
+    tb_per_ticker = target_builder.get("per_ticker") or {}
+    tb_tickers = {str(ticker).upper() for ticker in tb_per_ticker}
+    tb_changed = {
+        str(ticker).upper()
+        for ticker, row in tb_per_ticker.items()
+        if isinstance(row, dict) and row.get("changed_by")
+    }
+    final_tickers = {
+        str(ticker).upper()
+        for ticker, weight in (risk_out.get("target_weights") or {}).items()
+        if str(ticker).upper() != "CASH" and _safe_float(weight) > 0.0
+    }
+
+    cross_exam_failed = bool(
+        ((bull_output.get("rebuttal_vs_bear") or {}).get("failed"))
+        or ((bear_output.get("rebuttal_vs_bull") or {}).get("failed"))
+    )
+
+    return DebateImpact(
+        analysis_id=analysis_id,
+        created_at=as_of_time,
+        bull_stance=_first_present(bull_output, ("stance", "overall_stance")),
+        bear_stance=_first_present(bear_output, ("stance", "overall_stance")),
+        bull_confidence=_first_present(bull_output, ("confidence", "overall_confidence")),
+        bear_confidence=_first_present(bear_output, ("confidence", "overall_confidence")),
+        bull_failed=bool(bull_output.get("failed", False)),
+        bear_failed=bool(bear_output.get("failed", False)),
+        cross_exam_failed=cross_exam_failed,
+        disagreement_count=len(disagreement_tickers),
+        disagreement_tickers=disagreement_tickers,
+        arbitration_count=len(arbitration_tickers),
+        arbitration_tickers=arbitration_tickers,
+        disagreement_tickers_in_target_builder=sorted(set(disagreement_tickers) & tb_tickers),
+        disagreement_tickers_changed_by_target_builder=sorted(set(disagreement_tickers) & tb_changed),
+        disagreement_tickers_in_final_target=sorted(set(disagreement_tickers) & final_tickers),
+        counterfactual_available=False,
+        execution_delta_from_debate=None,
+        measurement_limitations=[
+            "no_no_debate_counterfactual_shadow",
+            "target_changes_are_overlap_metrics_not_causal_attribution",
+        ],
+        token_usage={
+            "bull": (bull_output.get("_token_usage") or {}),
+            "bear": (bear_output.get("_token_usage") or {}),
+            "bull_cross_exam": ((bull_output.get("rebuttal_vs_bear") or {}).get("_token_usage") or {}),
+            "bear_cross_exam": ((bear_output.get("rebuttal_vs_bull") or {}).get("_token_usage") or {}),
+        },
+    )
 
 
 def build_decision_feature_snapshot(
@@ -385,3 +495,30 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, (list, tuple, set)):
         return [str(item) for item in value if str(item)]
     return []
+
+
+def _unique_tickers(values: Any) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values or []:
+        ticker = str(raw or "").upper().strip()
+        if not ticker or ticker in seen:
+            continue
+        seen.add(ticker)
+        out.append(ticker)
+    return out
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _first_present(payload: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = payload.get(key)
+        if value is not None:
+            return value
+    return None

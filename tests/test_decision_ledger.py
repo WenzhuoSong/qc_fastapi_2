@@ -355,7 +355,7 @@ class DecisionLedgerTests(unittest.TestCase):
         self.assertIn("risk_target", lifecycle["changed_by"])
         self.assertIn("position_governance", lifecycle["changed_by"])
 
-    def test_trade_lifecycle_includes_base_strategy_and_synthesizer_when_available(self):
+    def test_trade_lifecycle_keeps_llm_weight_as_diagnostic_only(self):
         ledger = build_decision_ledger(
             evidence_bundle={
                 "strategies": {
@@ -384,12 +384,13 @@ class DecisionLedgerTests(unittest.TestCase):
         self.assertEqual(lifecycle["current_weight"], 0.09)
         self.assertEqual(lifecycle["base_weight"], 0.10)
         self.assertEqual(lifecycle["strategy_target"], 0.11)
-        self.assertEqual(lifecycle["synthesizer_target"], 0.13)
+        self.assertEqual(lifecycle["diagnostic_llm_target"], 0.13)
         self.assertEqual(lifecycle["risk_target"], 0.12)
         self.assertEqual(lifecycle["final_target"], 0.12)
         self.assertIn("base_weight", lifecycle["changed_by"])
         self.assertIn("strategy_target", lifecycle["changed_by"])
-        self.assertIn("synthesizer_target", lifecycle["changed_by"])
+        self.assertNotIn("synthesizer_target", lifecycle["changed_by"])
+        self.assertNotIn("diagnostic_llm_target", lifecycle["changed_by"])
 
     def test_ledger_records_validated_llm_advisory_without_reason_codes(self):
         ledger = build_decision_ledger(

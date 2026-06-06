@@ -9,6 +9,7 @@ from services.diagnostic_artifacts import (
     DecisionFeatureSnapshot,
     MarketRiskAssessment,
     append_diagnostic_artifacts,
+    build_debate_impact,
     build_pipeline_diagnostic_artifacts,
     serialize_artifact,
 )
@@ -94,6 +95,61 @@ class DiagnosticArtifactTests(unittest.TestCase):
         self.assertEqual(candidate.feature_snapshot_id, feature.artifact_id)
         self.assertEqual(candidate.execution_authority, "none")
 
+    def test_debate_impact_records_overlap_without_counterfactual_claim(self):
+        artifact = build_debate_impact(
+            analysis_id=9,
+            as_of_time=datetime(2026, 6, 6, 1, 0, tzinfo=UTC),
+            bull_output={
+                "stance": "neutral",
+                "confidence": "medium",
+                "_token_usage": {"prompt_tokens": 100, "completion_tokens": 20},
+                "rebuttal_vs_bear": {
+                    "failed": False,
+                    "_token_usage": {"prompt_tokens": 30, "completion_tokens": 10},
+                },
+            },
+            bear_output={
+                "stance": "defensive",
+                "confidence": "medium",
+                "rebuttal_vs_bull": {"failed": False},
+            },
+            synthesizer_out={
+                "debate_summary": {
+                    "disagreement_map": [
+                        {"ticker": "QQQ"},
+                        {"ticker": "XLK"},
+                    ]
+                },
+                "reasoning_chain": {
+                    "step3_debate_arbitration": [
+                        {"ticker": "QQQ", "decision_basis": "bear_wins"}
+                    ]
+                },
+            },
+            risk_out={
+                "target_weights": {"QQQ": 0.10, "CASH": 0.90},
+                "target_builder_input": {
+                    "per_ticker": {
+                        "QQQ": {"changed_by": ["scorecard_clip"]},
+                        "SPY": {"changed_by": []},
+                    }
+                },
+            },
+        )
+
+        payload = serialize_artifact(artifact)
+
+        self.assertEqual(payload["schema_version"], "debate_impact_v1")
+        self.assertEqual(payload["execution_authority"], "none")
+        self.assertEqual(payload["disagreement_count"], 2)
+        self.assertEqual(payload["arbitration_count"], 1)
+        self.assertEqual(payload["disagreement_tickers_in_target_builder"], ["QQQ"])
+        self.assertEqual(payload["disagreement_tickers_changed_by_target_builder"], ["QQQ"])
+        self.assertEqual(payload["disagreement_tickers_in_final_target"], ["QQQ"])
+        self.assertFalse(payload["counterfactual_available"])
+        self.assertIsNone(payload["execution_delta_from_debate"])
+        self.assertIn("no_no_debate_counterfactual_shadow", payload["measurement_limitations"])
+
     def test_pipeline_artifacts_link_candidate_ranking_and_mix_to_feature_snapshot(self):
         artifacts = build_pipeline_diagnostic_artifacts(
             analysis_id=42,
@@ -126,6 +182,8 @@ class DiagnosticArtifactTests(unittest.TestCase):
                 "target_weights": {"SPY": 0.1, "QQQ": 0.05, "CASH": 0.85},
             },
             base_weights={"SPY": 0.1},
+            bull_output={"stance": "neutral"},
+            bear_output={"stance": "defensive"},
         )
 
         serialized = [serialize_artifact(item) for item in artifacts]
@@ -148,6 +206,7 @@ class DiagnosticArtifactTests(unittest.TestCase):
         self.assertTrue(
             all(item["feature_snapshot_id"] == feature["artifact_id"] for item in linked)
         )
+        self.assertTrue(any(item["schema_version"] == "debate_impact_v1" for item in serialized))
 
 
 if __name__ == "__main__":

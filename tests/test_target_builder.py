@@ -121,6 +121,132 @@ class TargetBuilderTest(unittest.TestCase):
                 mode="target_builder_gated",
             )
 
+    def test_llm_advisory_cannot_recall_new_executable_ticker(self):
+        out = build_target_weights(
+            base_weights={"QQQ": 0.14, "CASH": 0.86},
+            current_weights={"QQQ": 0.12, "CASH": 0.88},
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[
+                {
+                    "ticker": "SPY",
+                    "validator_result": "accepted_as_add_1.00%",
+                    "target_before_override": 0.0,
+                    "target_after_override": 0.01,
+                }
+            ],
+            constraints={},
+            mode="target_builder_gated",
+        ).to_dict()
+
+        self.assertNotIn("SPY", out["target_weights"])
+        self.assertNotIn("SPY", out["per_ticker"])
+        self.assertFalse(out["diagnostics"]["llm_advisory_new_ticker_recall_allowed"])
+        self.assertEqual(out["diagnostics"]["executable_ticker_universe"], ["QQQ"])
+        self.assertEqual(out["diagnostics"]["llm_advisory_rejected_non_recall_tickers"], ["SPY"])
+        self.assertIn("llm_advisory_rejected_non_recall:SPY", out["violations"])
+
+    def test_quant_recall_tickers_define_primary_executable_universe(self):
+        out = build_target_weights(
+            base_weights={"QQQ": 0.14, "SPY": 0.12, "CASH": 0.74},
+            recall_tickers=["QQQ"],
+            current_weights={"CASH": 1.0},
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[],
+            constraints={},
+            mode="target_builder_gated",
+        ).to_dict()
+
+        self.assertIn("QQQ", out["target_weights"])
+        self.assertNotIn("SPY", out["target_weights"])
+        self.assertNotIn("SPY", out["per_ticker"])
+        self.assertEqual(out["diagnostics"]["recall_ticker_source"], "quant_baseline.selected_tickers")
+        self.assertEqual(out["diagnostics"]["recall_tickers"], ["QQQ"])
+        self.assertEqual(out["diagnostics"]["executable_ticker_universe"], ["QQQ"])
+
+    def test_governance_cannot_recall_new_executable_ticker(self):
+        out = build_target_weights(
+            base_weights={"QQQ": 0.14, "CASH": 0.86},
+            recall_tickers=["QQQ"],
+            current_weights={"QQQ": 0.12, "CASH": 0.88},
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            decision_style={},
+            position_governance={
+                "position_decisions": [
+                    {
+                        "ticker": "SPY",
+                        "target_after": 0.08,
+                        "reason_codes": ["llm_advisory_add"],
+                    }
+                ]
+            },
+            validated_advisory=[],
+            constraints={},
+            mode="target_builder_gated",
+        ).to_dict()
+
+        self.assertNotIn("SPY", out["target_weights"])
+        self.assertNotIn("SPY", out["per_ticker"])
+        self.assertEqual(out["diagnostics"]["governance_rejected_non_recall_tickers"], ["SPY"])
+        self.assertIn("governance_rejected_non_recall:SPY", out["violations"])
+
+    def test_current_holding_outside_recall_can_still_be_trimmed(self):
+        out = build_target_weights(
+            base_weights={"QQQ": 0.14, "CASH": 0.86},
+            recall_tickers=["QQQ"],
+            current_weights={"QQQ": 0.12, "XLE": 0.09, "CASH": 0.79},
+            market_scorecard={"investment_permission": "normal_rebalance"},
+            decision_style={},
+            position_governance={
+                "position_decisions": [
+                    {
+                        "ticker": "XLE",
+                        "target_after": 0.05,
+                        "reason_codes": ["risk_trim"],
+                    }
+                ]
+            },
+            validated_advisory=[],
+            constraints={},
+            mode="target_builder_gated",
+        ).to_dict()
+
+        self.assertIn("XLE", out["target_weights"])
+        self.assertEqual(out["target_weights"]["XLE"], 0.05)
+        self.assertEqual(out["diagnostics"]["current_holding_universe"], ["QQQ", "XLE"])
+        self.assertEqual(out["diagnostics"]["governance_rejected_non_recall_tickers"], [])
+
+    def test_approved_hedge_intent_can_add_hedge_outside_recall(self):
+        out = build_target_weights(
+            base_weights={"QQQ": 0.12, "CASH": 0.88},
+            recall_tickers=["QQQ"],
+            current_weights={"QQQ": 0.12, "CASH": 0.88},
+            market_scorecard={},
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[],
+            constraints={
+                "hedge_intent": {
+                    "triggered": True,
+                    "reasons": ["test stress"],
+                    "severity": 0.8,
+                    "trim_targets": ["QQQ"],
+                    "cash_raise_pct": 0.03,
+                    "add_hedge_etf": True,
+                    "hedge_instrument": "SQQQ",
+                    "hedge_weight": 0.015,
+                }
+            },
+            mode="target_builder_gated",
+        ).to_dict()
+
+        self.assertEqual(out["target_weights"]["SQQQ"], 0.015)
+        self.assertEqual(out["diagnostics"]["hedge_intent_universe"], ["SQQQ"])
+        self.assertIn("approved_hedge_intent", out["diagnostics"]["executable_ticker_universe_sources"])
+
     def test_conviction_fields_are_visible_but_not_consumed(self):
         out = build_target_weights(
             base_weights={"QQQ": 0.14, "CASH": 0.86},

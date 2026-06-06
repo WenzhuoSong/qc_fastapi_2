@@ -3,6 +3,8 @@
 Phase C shadow mode only: this module constructs an auditable deterministic
 target lifecycle from baseline weights, current holdings, governance decisions,
 and validated advisory results. It must not consume raw LLM adjusted_weights.
+LLM advisory cannot recall new executable tickers; target_builder only considers
+tickers already present in deterministic candidate sources.
 """
 from __future__ import annotations
 
@@ -55,6 +57,7 @@ class TargetBuildResult:
 def build_target_weights(
     *,
     base_weights: dict[str, Any],
+    recall_tickers: list[str] | None = None,
     construction_weights: dict[str, Any] | None = None,
     construction_source: str | None = None,
     current_weights: dict[str, Any],
@@ -97,7 +100,25 @@ def build_target_weights(
     starting_weights = construction if construction_participated else base
     start_source = str(construction_source or "base_weights").strip() if construction_participated else "base_weights"
     clean_mode = _target_builder_mode(mode)
-    tickers = sorted((set(base) | set(construction) | set(current) | set(decisions)) - {"CASH"})
+    recall_source = "quant_baseline.selected_tickers" if recall_tickers is not None else "base_weights_fallback"
+    recall_universe = _ticker_set(recall_tickers) if recall_tickers is not None else _positive_ticker_set(base)
+    current_universe = _positive_ticker_set(current)
+    construction_universe = _positive_ticker_set(construction) if construction_participated else set()
+    hedge_intent_universe = _approved_hedge_ticker_set(cfg.get("hedge_intent"))
+    # Hard recall boundary: semantic LLM advisory may change lifecycle state for
+    # known tickers through governance, but it cannot introduce new executable
+    # tickers by itself. The executable universe is sourced only from deterministic
+    # recall/construction/hedge contracts plus current holdings for hold/trim.
+    allowed_universe = (
+        recall_universe
+        | current_universe
+        | construction_universe
+        | hedge_intent_universe
+    )
+    executable_ticker_universe = sorted(allowed_universe)
+    rejected_advisory_tickers = sorted(set(advisory) - allowed_universe)
+    rejected_governance_tickers = sorted(set(decisions) - allowed_universe)
+    tickers = executable_ticker_universe
     permission = str(scorecard.get("investment_permission") or "")
     no_add = permission in NO_ADD_PERMISSIONS or bool(scorecard.get("require_human_confirmation"))
     max_single_delta = _effective_single_delta(scorecard, style, cfg)
@@ -243,6 +264,10 @@ def build_target_weights(
     evidence_cap_applied_tickers = set(evidence_cap_gate.get("applied_tickers") or [])
     if evidence_cap_shadow.get("applied_count"):
         violations.append(f"evidence_cap:{int(evidence_cap_shadow.get('applied_count') or 0)}")
+    for ticker in rejected_advisory_tickers:
+        violations.append(f"llm_advisory_rejected_non_recall:{ticker}")
+    for ticker in rejected_governance_tickers:
+        violations.append(f"governance_rejected_non_recall:{ticker}")
     policy_evaluation = evaluate_policy(
         weights=normalized,
         current_weights=current,
@@ -313,6 +338,21 @@ def build_target_weights(
             "evidence_cap_shadow": evidence_cap_shadow,
             "hedge_intent": hedge_overlay["diagnostics"],
             "ticker_count": len(per_ticker),
+            "executable_ticker_universe": executable_ticker_universe,
+            "recall_tickers": sorted(recall_universe),
+            "recall_ticker_source": recall_source,
+            "current_holding_universe": sorted(current_universe),
+            "construction_universe": sorted(construction_universe),
+            "hedge_intent_universe": sorted(hedge_intent_universe),
+            "executable_ticker_universe_sources": [
+                recall_source,
+                "current_weights",
+                "approved_portfolio_construction",
+                "approved_hedge_intent",
+            ],
+            "llm_advisory_new_ticker_recall_allowed": False,
+            "llm_advisory_rejected_non_recall_tickers": rejected_advisory_tickers,
+            "governance_rejected_non_recall_tickers": rejected_governance_tickers,
             "allowed_evidence_fields": sorted(ALLOWED_EVIDENCE_FIELDS),
             "forbidden_evidence_fields_seen": forbidden_evidence_fields_seen,
             "forbidden_evidence_fields_consumed": False,
@@ -388,6 +428,49 @@ def _advisory_by_ticker(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]
         if ticker:
             out[ticker] = row
     return out
+
+
+def _ticker_set(rows: list[str] | set[str] | tuple[str, ...] | None) -> set[str]:
+    out: set[str] = set()
+    for raw in rows or []:
+        ticker = str(raw or "").upper().strip()
+        if ticker and ticker != "CASH":
+            out.add(ticker)
+    return out
+
+
+def _positive_ticker_set(weights: dict[str, Any]) -> set[str]:
+    out: set[str] = set()
+    for ticker, weight in (weights or {}).items():
+        clean = str(ticker or "").upper().strip()
+        if not clean or clean == "CASH":
+            continue
+        parsed = _optional_float(weight)
+        if parsed is not None and parsed > 1e-9:
+            out.add(clean)
+    return out
+
+
+def _approved_hedge_ticker_set(hedge_intent: dict[str, Any] | None) -> set[str]:
+    if (
+        not isinstance(hedge_intent, dict)
+        or not hedge_intent.get("triggered")
+        or not hedge_intent.get("add_hedge_etf")
+    ):
+        return set()
+    hedge_weight = _optional_float(hedge_intent.get("hedge_weight"))
+    if hedge_weight is None or hedge_weight <= 1e-9:
+        return set()
+    candidates = (
+        hedge_intent.get("hedge_instrument"),
+        hedge_intent.get("selected_hedge"),
+        hedge_intent.get("selected_instrument"),
+    )
+    for raw in candidates:
+        ticker = str(raw or "").upper().strip()
+        if ticker and ticker != "CASH":
+            return {ticker}
+    return set()
 
 
 def _apply_hedge_intent_overlay(
