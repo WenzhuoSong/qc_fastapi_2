@@ -618,6 +618,42 @@ class FinalRiskValidationTest(unittest.TestCase):
         self.assertTrue(out["approved"], out)
         self.assertIn("decay_risk_auto_reduce", out["allowed_mutation_types"])
 
+    def test_blocking_mode_allows_min_executable_weight_floor_mutation(self):
+        out = validate_final_execution_target(
+            risk_approved_target={"XLRE": 0.0018, "XLU": 0.0010, "CASH": 0.9972},
+            final_target={"XLRE": 0.0, "XLU": 0.0, "CASH": 1.0},
+            current_weights={"XLRE": 0.0018, "XLU": 0.0010, "CASH": 0.9972},
+            policy_context={
+                "post_risk_mutation_types": ["min_executable_weight_floor"],
+                "post_risk_mutation_ledgers": [
+                    {
+                        "mutations": [
+                            {
+                                "type": "min_executable_weight_floor",
+                                "ticker": "XLRE",
+                                "before": 0.0018,
+                                "after": 0.0,
+                                "reason": "below min executable weight",
+                            },
+                            {
+                                "type": "min_executable_weight_floor",
+                                "ticker": "XLU",
+                                "before": 0.0010,
+                                "after": 0.0,
+                                "reason": "below min executable weight",
+                            },
+                        ]
+                    }
+                ],
+                "material_drift_threshold": 0.0001,
+            },
+            mode="blocking",
+        )
+
+        self.assertTrue(out["approved"], out)
+        self.assertIn("min_executable_weight_floor", out["allowed_mutation_types"])
+        self.assertEqual(out["unknown_mutation_types"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,7 @@ Does not allocate capital; Stage 5 PM sets adjusted_weights.
 Outputs: stance, confidence, core_arguments, target_tickers, risk_acknowledgments.
 Parallel with Bear draft; Stage 4c cross-exam and Stage 5 PM follow.
 
-LLM: settings.openai_model_heavy (gpt-4o)
+LLM: settings.openai_model_heavy
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ import time
 from openai import AsyncOpenAI
 
 from config import get_settings
+from services.openai_chat_compat import build_chat_completion_kwargs
 
 logger = logging.getLogger("qc_fastapi_2.bull_researcher")
 settings = get_settings()
@@ -129,13 +130,13 @@ async def run_bull_researcher_async(
                     f"[RETRY {attempt}] Previous output error: {last_error}\n\n" + user_payload
                 )
 
-            resp = await client.chat.completions.create(
+            resp = await client.chat.completions.create(**build_chat_completion_kwargs(
                 model=model,
                 messages=messages,
                 temperature=0.2,
                 max_tokens=1200,
                 response_format={"type": "json_object"},
-            )
+            ))
             raw = resp.choices[0].message.content or ""
             elapsed = round(time.time() - t0, 2)
             logger.info(

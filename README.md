@@ -134,7 +134,7 @@ This bundle is injected into the Synthesizer prompt as
 research context only; it does not bypass Risk Manager, Position Manager, or
 execution gates.
 
-**Stage 3 — `RESEARCHER`** (LLM, gpt-4o)
+**Stage 3 — `RESEARCHER`** (LLM, heavy model)
 The chief market analyst. **Only analyzes, does not decide weights.**
 Synthesizes quant factors + news + macro + calendar into a structured
 `research_report` for the Bull/Bear debate layer. Output:
@@ -160,7 +160,7 @@ Two adversarial analysts running via `asyncio.gather`:
 Each has 2 retries. Degraded fallbacks: Bull echoes base_weights; Bear
 increases CASH to 30%.
 
-**Stage 5 — `SYNTHESIZER`** (LLM, gpt-4o)
+**Stage 5 — `SYNTHESIZER`** (LLM, heavy model)
 The CIO / arbitrator. Weighs Bull vs Bear evidence quality, identifies
 consensus and divergence points, produces final `adjusted_weights`.
 **Output is interface-compatible with old researcher_out** — Risk MGR

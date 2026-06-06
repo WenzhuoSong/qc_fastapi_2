@@ -18,6 +18,7 @@ from db.models import MemoryWeekly, MemoryMonthly, PortfolioTimeseries
 from db.queries import upsert_system_config
 from config import get_settings
 from openai import AsyncOpenAI
+from services.openai_chat_compat import build_chat_completion_kwargs
 
 logger = logging.getLogger("qc_fastapi_2.cron.monthly")
 settings = get_settings()
@@ -149,7 +150,7 @@ async def _extract_monthly_memory(
     )
 
     try:
-        resp = await client.chat.completions.create(
+        resp = await client.chat.completions.create(**build_chat_completion_kwargs(
             model=settings.openai_model_heavy,
             messages=[
                 {"role": "system", "content": MONTHLY_ANALYST_SYSTEM},
@@ -158,7 +159,7 @@ async def _extract_monthly_memory(
             temperature=0.3,
             max_tokens=1200,
             response_format={"type": "json_object"},
-        )
+        ))
         return json.loads(resp.choices[0].message.content)
     except Exception as e:
         logger.error(f"[MONTHLY_ANALYST] LLM distillation failed: {e}")

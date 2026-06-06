@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable
 
 from openai import AsyncOpenAI
 from config import get_settings
+from services.openai_chat_compat import build_chat_completion_kwargs
 
 logger = logging.getLogger("qc_fastapi_2.agent")
 settings = get_settings()
@@ -104,13 +105,13 @@ class BaseAgent:
         t0 = time.time()
 
         while True:
-            response = await client.chat.completions.create(
+            response = await client.chat.completions.create(**build_chat_completion_kwargs(
                 model=self.model,
                 messages=messages,
                 tools=self.tools if self.tools else None,
                 temperature=0.0,
                 max_tokens=self.max_tokens,
-            )
+            ))
 
             message = response.choices[0].message
             finish_reason = response.choices[0].finish_reason

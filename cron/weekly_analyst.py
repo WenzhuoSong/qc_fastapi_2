@@ -2,7 +2,7 @@
 cron/weekly_analyst.py
 
 Runs each Friday at 17:30 ET (after daily_analyst).
-Aggregates this week's MemoryDaily records, uses GPT-4o to distill them
+Aggregates this week's MemoryDaily records, uses the heavy LLM to distill them
 into a weekly memory, and upserts memory_weekly.
 """
 
@@ -17,6 +17,7 @@ from sqlalchemy import select, func
 from config import get_settings
 from db.models import MemoryDaily, MemoryWeekly, PortfolioTimeseries
 from db.session import AsyncSessionLocal
+from services.openai_chat_compat import build_chat_completion_kwargs
 
 logging.basicConfig(
     level=logging.INFO,
@@ -164,8 +165,8 @@ async def _extract_weekly_memory(daily_memories, weekly_return: float) -> dict:
     )
 
     try:
-        resp = await client.chat.completions.create(
-            model=settings.openai_model_heavy,  # gpt-4o
+        resp = await client.chat.completions.create(**build_chat_completion_kwargs(
+            model=settings.openai_model_heavy,
             messages=[
                 {"role": "system", "content": WEEKLY_ANALYST_SYSTEM},
                 {"role": "user", "content": user_msg},
@@ -173,7 +174,7 @@ async def _extract_weekly_memory(daily_memories, weekly_return: float) -> dict:
             temperature=0.3,
             max_tokens=1000,
             response_format={"type": "json_object"},
-        )
+        ))
         return json.loads(resp.choices[0].message.content)
     except Exception as e:
         logger.error(f"[WEEKLY_ANALYST] LLM distillation failed: {e}")

@@ -12,7 +12,7 @@ Output: research_report (ticker_signals, macro_outlook, cross_signal_insights)
 Core idea: ticker_signals bundles quant factors + news sentiment + combined signal per ticker.
 Bull/Bear debate from this report instead of re-parsing raw inputs.
 
-LLM: settings.openai_model_heavy (gpt-4o), single call, 3 retries.
+LLM: settings.openai_model_heavy, single call, 3 retries.
 Fallback: after 3 failures → degraded report with quant-only data (no news synthesis).
 """
 from __future__ import annotations
@@ -24,6 +24,7 @@ import time
 from openai import AsyncOpenAI
 
 from config import get_settings
+from services.openai_chat_compat import build_chat_completion_kwargs
 
 logger = logging.getLogger("qc_fastapi_2.researcher")
 settings = get_settings()
@@ -332,13 +333,13 @@ async def run_researcher_async(
                     f"[RETRY {attempt}] Previous output error: {last_error}\n\n" + user_payload
                 )
 
-            resp = await client.chat.completions.create(
+            resp = await client.chat.completions.create(**build_chat_completion_kwargs(
                 model=model,
                 messages=messages,
                 temperature=0.0,
                 max_tokens=3000,
                 response_format={"type": "json_object"},
-            )
+            ))
             raw = resp.choices[0].message.content or ""
             elapsed = round(time.time() - t0, 2)
             logger.info(

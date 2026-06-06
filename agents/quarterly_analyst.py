@@ -23,6 +23,7 @@ from config import get_settings
 from db.session import AsyncSessionLocal
 from db.models import MemoryMonthly, MemoryWeekly, MemoryDaily, AgentAnalysis
 from db.queries import upsert_system_config
+from services.openai_chat_compat import build_chat_completion_kwargs
 from tools.notify_tools import tool_send_telegram
 
 logger = logging.getLogger("qc_fastapi_2.quarterly_analyst")
@@ -204,7 +205,7 @@ async def run_quarterly_analyst() -> dict:
     # Call LLM
     client = AsyncOpenAI(api_key=settings.openai_api_key)
     try:
-        resp = await client.chat.completions.create(
+        resp = await client.chat.completions.create(**build_chat_completion_kwargs(
             model=settings.openai_model_heavy,
             messages=[
                 {"role": "system", "content": QUARTERLY_ANALYST_SYSTEM},
@@ -213,7 +214,7 @@ async def run_quarterly_analyst() -> dict:
             temperature=0.3,
             max_tokens=2000,
             response_format={"type": "json_object"},
-        )
+        ))
         raw = resp.choices[0].message.content
         parsed = json.loads(raw)
         revision = parsed.get("strategy_revision_v1", {})

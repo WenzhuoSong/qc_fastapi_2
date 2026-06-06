@@ -28,6 +28,7 @@ ALLOWED_POST_RISK_MUTATIONS = {
     "emergency_reduce_only",
     "execution_buy_delta_throttle",
     "loss_trim",
+    "min_executable_weight_floor",
     REGIME_CONSTRAINT_MUTATION_TYPE,
 }
 

@@ -15,6 +15,7 @@ import time
 from openai import AsyncOpenAI
 
 from config import get_settings
+from services.openai_chat_compat import build_chat_completion_kwargs
 
 logger = logging.getLogger("qc_fastapi_2.cross_exam")
 settings = get_settings()
@@ -241,13 +242,13 @@ async def _run_cross_exam(
                 messages[1]["content"] = (
                     f"[RETRY {attempt}] Previous error: {last_error}\n\n" + user
                 )
-            resp = await client.chat.completions.create(
+            resp = await client.chat.completions.create(**build_chat_completion_kwargs(
                 model=model,
                 messages=messages,
                 temperature=0.15,
                 max_tokens=MAX_CROSS_EXAM_TOKENS,
                 response_format={"type": "json_object"},
-            )
+            ))
             raw = resp.choices[0].message.content or "{}"
             elapsed = round(time.time() - t0, 2)
             logger.info(
