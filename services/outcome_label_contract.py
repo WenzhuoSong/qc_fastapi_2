@@ -13,19 +13,17 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from services.outcome_label_policy import (
+    LABEL_PRICE_SOURCE_MAP as _LABEL_PRICE_SOURCE_MAP,
+    outcome_label_contract_summary,
+)
+
 
 ExecutionAuthority = Literal["none"]
 Horizon = Literal["1d", "5d", "20d"]
 LabelSource = Literal["qc_execution", "qc_snapshot", "yfinance"]
 PriceSource = Literal["fill_price", "qc_market_price", "yfinance_adjusted_close"]
 TrainingAuthority = Literal["eligible", "feature_scope_limited"]
-
-
-_LABEL_PRICE_SOURCE_MAP: dict[LabelSource, set[PriceSource]] = {
-    "qc_execution": {"fill_price"},
-    "qc_snapshot": {"qc_market_price"},
-    "yfinance": {"yfinance_adjusted_close"},
-}
 
 
 class OutcomeLabel(BaseModel):

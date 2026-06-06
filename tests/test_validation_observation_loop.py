@@ -5,6 +5,7 @@ from services.validation_observation_loop import (
     OBS_ACTIVE_BASKET,
     OBS_EXECUTION_TRUTH,
     OBS_HEDGE_INTENT,
+    OBS_INTENT_EXECUTION,
     STATUS_COMPLETED,
     STATUS_OBSERVED,
     STATUS_PENDING_OUTCOME,
@@ -23,6 +24,20 @@ class ValidationObservationLoopTests(unittest.TestCase):
             "trigger_type": "scheduled",
             "execution_status": "pending",
             "risk_output": {
+                "approved": False,
+                "target_weights": {"QQQ": 0.12, "CASH": 0.88},
+                "final_validation": {
+                    "approved": False,
+                    "reason": "execution_policy_violation",
+                    "blockers": ["execution_policy_violation"],
+                },
+                "hedge_intent": {
+                    "triggered": True,
+                    "severity": 0.52,
+                    "add_hedge_etf": False,
+                    "hedge_instrument": "PSQ",
+                    "reasons": ["risk_off_test"],
+                },
                 "hedge_intent_outcome": {
                     "date": "2026-06-06",
                     "outcome_status": "pending_t5",
@@ -43,12 +58,51 @@ class ValidationObservationLoopTests(unittest.TestCase):
         })
 
         by_type = {row["observation_type"]: row for row in records}
-        self.assertEqual(set(by_type), {OBS_HEDGE_INTENT, OBS_ACTIVE_BASKET})
+        self.assertEqual(set(by_type), {OBS_HEDGE_INTENT, OBS_ACTIVE_BASKET, OBS_INTENT_EXECUTION})
+        intent = by_type[OBS_INTENT_EXECUTION]
+        self.assertEqual(intent["status"], STATUS_OBSERVED)
+        self.assertEqual(intent["observation_payload"]["schema_version"], "intent_vs_execution_v1")
+        self.assertEqual(intent["observation_payload"]["intended_action"], "blocked_by_final_validation")
+        self.assertIn("execution_policy_violation", intent["observation_payload"]["blockers"])
+        self.assertIn(
+            "hedge_triggered_without_inverse_etf",
+            intent["observation_payload"]["unexecuted_intents"],
+        )
+        self.assertEqual(
+            intent["observation_payload"]["outcome_label_contract"]["preferred_training_source"],
+            "qc_execution",
+        )
+        self.assertFalse(intent["outcome_payload"]["command_sent"])
+        self.assertEqual(intent["metrics"]["unexecuted_intent_count"], 2)
+        self.assertEqual(intent["recommendation"]["operator_action"], "review_unexecuted_intent")
         self.assertEqual(by_type[OBS_HEDGE_INTENT]["status"], STATUS_PENDING_OUTCOME)
         self.assertEqual(by_type[OBS_HEDGE_INTENT]["horizon_days"], 5)
         self.assertEqual(by_type[OBS_ACTIVE_BASKET]["status"], STATUS_OBSERVED)
         self.assertEqual(by_type[OBS_ACTIVE_BASKET]["metrics"]["active_count"], 8)
         self.assertEqual(by_type[OBS_ACTIVE_BASKET]["execution_authority"], "none")
+
+    def test_intent_vs_execution_records_approved_target_not_sent(self):
+        records = build_validation_observation_records_from_analysis({
+            "id": 45,
+            "analyzed_at": datetime(2026, 6, 6, 11, 0, 0),
+            "trigger_type": "scheduled",
+            "execution_status": "deduped",
+            "risk_output": {
+                "approved": True,
+                "target_weights": {"SPY": 0.10, "CASH": 0.90},
+                "final_validation": {"approved": True},
+            },
+        })
+
+        intent = next(row for row in records if row["observation_type"] == OBS_INTENT_EXECUTION)
+
+        self.assertEqual(intent["observation_payload"]["intended_action"], "send_qc_command")
+        self.assertEqual(intent["outcome_payload"]["not_sent_reason"], "deduped")
+        self.assertIn(
+            "approved_target_not_sent:deduped",
+            intent["observation_payload"]["unexecuted_intents"],
+        )
+        self.assertEqual(intent["recommendation"]["operator_action"], "review_unexecuted_intent")
 
     def test_forward_return_uses_future_price_path(self):
         rows = [
@@ -98,8 +152,9 @@ class ValidationObservationLoopTests(unittest.TestCase):
             {"ticker": "SH", "trading_date": "2026-06-08", "adj_close_price": 21.0},
         ]
 
+        hedge_record = next(row for row in records if row["observation_type"] == OBS_HEDGE_INTENT)
         updated = complete_hedge_observation_if_mature(
-            records[0],
+            hedge_record,
             feature_rows,
             as_of_date=date(2026, 6, 8),
         )

@@ -8,6 +8,7 @@ from services.outcome_label_contract import (
     OutcomeLabel,
     build_outcome_label,
     label_has_training_authority,
+    outcome_label_contract_summary,
     serialize_outcome_label,
 )
 
@@ -37,6 +38,18 @@ class OutcomeLabelContractTests(unittest.TestCase):
                 decision_feature_snapshot_schema_version="decision_feature_snapshot_v1",
                 decision_feature_snapshot_as_of_time=self.decision_time,
             )
+
+    def test_contract_summary_defines_point_in_time_label_sources(self):
+        summary = outcome_label_contract_summary()
+
+        self.assertEqual(summary["label_schema_version"], "outcome_label_v1")
+        self.assertEqual(summary["preferred_training_source"], "qc_execution")
+        self.assertEqual(summary["preferred_training_price_source"], "fill_price")
+        self.assertEqual(
+            summary["label_source_price_sources"]["yfinance"],
+            ["yfinance_adjusted_close"],
+        )
+        self.assertIn("decision_feature_snapshot_id", summary["training_authority_requires"])
 
     def test_future_as_of_time_is_required_for_outcome(self):
         with self.assertRaises(ValidationError):

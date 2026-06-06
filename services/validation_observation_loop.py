@@ -20,6 +20,7 @@ from services.hedge_intent_outcome_log import (
     summarize_hedge_threshold_assessments,
 )
 from services.json_safety import json_safe
+from services.outcome_label_policy import outcome_label_contract_summary
 
 
 CONTRACT_VERSION = "validation_observation_loop_v1"
@@ -28,11 +29,13 @@ TARGET_WEIGHT_MUTATION = "none"
 OBS_HEDGE_INTENT = "hedge_intent"
 OBS_ACTIVE_BASKET = "active_basket"
 OBS_EXECUTION_TRUTH = "execution_truth"
+OBS_INTENT_EXECUTION = "intent_vs_execution"
 STATUS_OBSERVED = "observed"
 STATUS_PENDING_OUTCOME = "pending_outcome"
 STATUS_COMPLETED = "completed"
 STATUS_INSUFFICIENT_DATA = "insufficient_data"
 HEDGE_OUTCOME_HORIZON_DAYS = 5
+INTENT_EXECUTION_SCHEMA_VERSION = "intent_vs_execution_v1"
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,16 @@ def build_validation_observation_records_from_analysis(analysis: Any) -> list[di
     trigger_type = _record_get(analysis, "trigger_type")
     execution_status = _record_get(analysis, "execution_status")
     records: list[dict[str, Any]] = []
+
+    intent_record = _build_intent_vs_execution_record(
+        analysis_id=analysis_id,
+        analyzed_at=analyzed_at,
+        trigger_type=trigger_type,
+        execution_status=execution_status,
+        risk=risk if isinstance(risk, dict) else {},
+    )
+    if intent_record:
+        records.append(intent_record)
 
     hedge_outcome = risk.get("hedge_intent_outcome") if isinstance(risk, dict) else None
     if isinstance(hedge_outcome, dict) and hedge_outcome:
@@ -128,6 +141,113 @@ def build_validation_observation_records_from_analysis(analysis: Any) -> list[di
         )
 
     return records
+
+
+def _build_intent_vs_execution_record(
+    *,
+    analysis_id: int,
+    analyzed_at: datetime,
+    trigger_type: Any,
+    execution_status: Any,
+    risk: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Record what the system intended versus what it actually sent."""
+    risk_approved = bool(risk.get("approved"))
+    target_weights = _clean_weight_map(risk.get("target_weights") or {})
+    active_count = sum(1 for ticker, weight in target_weights.items() if ticker != "CASH" and weight > 0.0)
+    final_validation = risk.get("final_validation") if isinstance(risk.get("final_validation"), dict) else {}
+    hedge_intent = risk.get("hedge_intent") if isinstance(risk.get("hedge_intent"), dict) else {}
+    hedge_outcome = risk.get("hedge_intent_outcome") if isinstance(risk.get("hedge_intent_outcome"), dict) else {}
+    blockers = _risk_blockers(risk, final_validation)
+    command_sent = _execution_sent(execution_status)
+    unexecuted_intents = _unexecuted_intents(
+        risk_approved=risk_approved,
+        target_weights=target_weights,
+        execution_status=str(execution_status or ""),
+        final_validation=final_validation,
+        hedge_intent=hedge_intent,
+        hedge_outcome=hedge_outcome,
+        command_sent=command_sent,
+    )
+    intended_action = _intended_action(
+        risk_approved=risk_approved,
+        target_weights=target_weights,
+        final_validation=final_validation,
+    )
+    payload = {
+        "schema_version": INTENT_EXECUTION_SCHEMA_VERSION,
+        "contract_version": CONTRACT_VERSION,
+        "source": "agent_analysis.risk_output",
+        "trigger_type": trigger_type,
+        "execution_status": execution_status,
+        "intended_action": intended_action,
+        "risk_approved": risk_approved,
+        "final_validation_approved": (
+            final_validation.get("approved") if final_validation else None
+        ),
+        "target_weights": target_weights,
+        "target_active_count": active_count,
+        "blockers": blockers,
+        "unexecuted_intents": unexecuted_intents,
+        "hedge_intent": {
+            "triggered": bool(hedge_intent.get("triggered")),
+            "severity": _to_float(hedge_intent.get("severity"), 0.0),
+            "add_hedge_etf": bool(hedge_intent.get("add_hedge_etf")),
+            "selected_instrument": (
+                hedge_intent.get("hedge_instrument")
+                or hedge_intent.get("selected_hedge")
+                or hedge_outcome.get("selected_instrument")
+            ),
+            "candidate_hedge_instrument": hedge_outcome.get("candidate_hedge_instrument"),
+            "why_not_add_hedge": hedge_outcome.get("why_not_add_hedge"),
+            "trigger_reasons": list(hedge_intent.get("reasons") or hedge_intent.get("trigger_reasons") or []),
+            "cash_raise_pct": (
+                hedge_intent.get("cash_raise_pct")
+                or hedge_intent.get("target_cash_raise_pct")
+                or hedge_outcome.get("cash_raise_pct")
+                or 0.0
+            ),
+        },
+        "outcome_label_contract": outcome_label_contract_summary(),
+    }
+    outcome = {
+        "execution_status": execution_status,
+        "command_sent": command_sent,
+        "not_sent_reason": _not_sent_reason(
+            risk_approved=risk_approved,
+            execution_status=str(execution_status or ""),
+            blockers=blockers,
+            unexecuted_intents=unexecuted_intents,
+        ),
+    }
+    return _build_observation_record(
+        observation_id=f"{OBS_INTENT_EXECUTION}:{analysis_id}",
+        observation_type=OBS_INTENT_EXECUTION,
+        analysis_id=analysis_id,
+        command_id=f"analysis_{analysis_id}",
+        observed_at=analyzed_at,
+        observation_date=analyzed_at.date(),
+        horizon_days=None,
+        maturity_date=None,
+        status=STATUS_OBSERVED,
+        observation_payload=payload,
+        outcome_payload=outcome,
+        metrics={
+            "risk_approved": risk_approved,
+            "command_sent": command_sent,
+            "target_active_count": active_count,
+            "blocker_count": len(blockers),
+            "unexecuted_intent_count": len(unexecuted_intents),
+            "hedge_triggered": bool(hedge_intent.get("triggered")),
+            "hedge_add_requested": bool(hedge_intent.get("add_hedge_etf")),
+        },
+        recommendation=_intent_execution_recommendation(
+            command_sent=command_sent,
+            risk_approved=risk_approved,
+            blockers=blockers,
+            unexecuted_intents=unexecuted_intents,
+        ),
+    )
 
 
 def build_execution_truth_observation_record(execution_log: Any) -> dict[str, Any] | None:
@@ -595,6 +715,129 @@ def _execution_truth_recommendation(outcome: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _intent_execution_recommendation(
+    *,
+    command_sent: bool,
+    risk_approved: bool,
+    blockers: list[str],
+    unexecuted_intents: list[str],
+) -> dict[str, Any]:
+    action = "no_action"
+    if unexecuted_intents:
+        action = "review_unexecuted_intent"
+    elif risk_approved and not command_sent:
+        action = "review_approved_not_sent"
+    elif blockers:
+        action = "review_blockers"
+    return {
+        "recommendation_only": True,
+        "operator_action": action,
+        "unexecuted_intents": list(unexecuted_intents),
+    }
+
+
+def _intended_action(
+    *,
+    risk_approved: bool,
+    target_weights: dict[str, float],
+    final_validation: dict[str, Any],
+) -> str:
+    if not target_weights:
+        return "no_target"
+    if not risk_approved:
+        if final_validation and final_validation.get("approved") is False:
+            return "blocked_by_final_validation"
+        return "blocked_by_risk"
+    return "send_qc_command"
+
+
+def _unexecuted_intents(
+    *,
+    risk_approved: bool,
+    target_weights: dict[str, float],
+    execution_status: str,
+    final_validation: dict[str, Any],
+    hedge_intent: dict[str, Any],
+    hedge_outcome: dict[str, Any],
+    command_sent: bool,
+) -> list[str]:
+    intents: list[str] = []
+    if hedge_intent.get("triggered") and not hedge_intent.get("add_hedge_etf"):
+        intents.append("hedge_triggered_without_inverse_etf")
+    if hedge_outcome.get("why_not_add_hedge") and not hedge_outcome.get("add_hedge_etf"):
+        intents.append(f"hedge_not_added:{hedge_outcome.get('why_not_add_hedge')}")
+    if target_weights and not risk_approved:
+        if final_validation and final_validation.get("approved") is False:
+            intents.append("target_blocked_by_final_validation")
+        else:
+            intents.append("target_blocked_by_risk")
+    if risk_approved and target_weights and not command_sent:
+        status = execution_status or "unknown"
+        intents.append(f"approved_target_not_sent:{status}")
+    return _unique_strings(intents)
+
+
+def _risk_blockers(risk: dict[str, Any], final_validation: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    for value in (
+        risk.get("blockers"),
+        risk.get("failed_checks"),
+        final_validation.get("blockers") if isinstance(final_validation, dict) else None,
+        final_validation.get("details") if isinstance(final_validation, dict) else None,
+    ):
+        blockers.extend(_string_list(value))
+    reason = final_validation.get("reason") if isinstance(final_validation, dict) else None
+    if reason:
+        blockers.append(str(reason))
+    return _unique_strings(blockers)
+
+
+def _execution_sent(execution_status: Any) -> bool:
+    status = str(execution_status or "").strip().lower()
+    return status in {
+        "sent",
+        "accepted",
+        "filled",
+        "success",
+        "orders_submitted",
+        "partial",
+        "reconciled",
+    }
+
+
+def _not_sent_reason(
+    *,
+    risk_approved: bool,
+    execution_status: str,
+    blockers: list[str],
+    unexecuted_intents: list[str],
+) -> str | None:
+    if _execution_sent(execution_status):
+        return None
+    status = str(execution_status or "").strip().lower()
+    if status in {"deduped", "deferred_by_active_execution", "rejected", "not_sent", "skipped"}:
+        return status
+    if unexecuted_intents:
+        return unexecuted_intents[0]
+    if blockers:
+        return blockers[0]
+    if not risk_approved:
+        return "risk_not_approved"
+    return "unknown_not_sent"
+
+
+def _clean_weight_map(raw: dict[str, Any] | None) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for ticker, value in (raw or {}).items():
+        clean = str(ticker or "").upper().strip()
+        if not clean:
+            continue
+        parsed = _to_float(value)
+        if parsed is not None and parsed > 1e-9:
+            out[clean] = round(parsed, 6)
+    return out
+
+
 def _is_noop_execution(payload: dict[str, Any], qc_response: dict[str, Any]) -> bool:
     summary = _order_summary(payload, qc_response)
     if summary.get("is_noop") is not None:
@@ -724,6 +967,29 @@ def _to_int(value: Any, default: int | None = None) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item)]
+    if isinstance(value, dict):
+        return [str(value)]
+    text = str(value)
+    return [text] if text else []
+
+
+def _unique_strings(values: list[Any]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        clean = str(value or "").strip()
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        out.append(clean)
+    return out
 
 
 def _first_float(*values: Any) -> float | None:
