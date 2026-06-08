@@ -655,6 +655,122 @@ class WeekendReviewMetricsTests(unittest.TestCase):
         self.assertEqual(basket["cash_avg"], 0.4)
         self.assertEqual(basket["effective_n_avg"], 6.2)
 
+    def test_strategy_related_metrics_split_normal_and_degraded_samples(self):
+        degraded_report = {
+            "schema_version": "decision_degradation_v1",
+            "is_degraded": True,
+            "degraded_modes": ["llm_fallback"],
+            "fallback_paths": ["quant_only"],
+            "missing_inputs": ["llm_summary"],
+        }
+        dataset = build_weekend_review_dataset(
+            validation_observations=[
+                _hedge_observation(
+                    "hedge_intent:normal",
+                    date(2026, 6, 1),
+                    triggered=False,
+                    add=False,
+                    severity=0.5,
+                    candidate="SH",
+                ),
+                _hedge_observation(
+                    "hedge_intent:degraded",
+                    date(2026, 6, 10),
+                    triggered=True,
+                    add=False,
+                    severity=0.6,
+                    candidate="PSQ",
+                    degraded=True,
+                ),
+                {
+                    "observation_id": "active_basket:degraded",
+                    "observation_type": "active_basket",
+                    "observation_date": date(2026, 6, 6),
+                    "observed_at": datetime(2026, 6, 6, 10, 0, tzinfo=UTC),
+                    "status": "observed",
+                    "execution_authority": "none",
+                    "target_weight_mutation": "none",
+                    "metrics": {"active_count": 12, "subscale_count": 3},
+                    "observation_payload": {
+                        "contract_version": "validation_observation_loop_v1",
+                        "time_axis": _time_axis("2026-06-06T10:00:00+00:00"),
+                        "decision_degradation": degraded_report,
+                        "active_basket_policy": {"within_target_active_count": False},
+                    },
+                },
+            ],
+            diagnostic_artifacts=[
+                {
+                    "schema_version": "debate_impact_v1",
+                    "artifact_id": "debate_impact_v1:normal",
+                    "artifact_type": "debate_impact",
+                    "execution_authority": "none",
+                    "disagreement_count": 1,
+                    "arbitration_count": 1,
+                    "outcome_evaluation": {"mature": True, "win": True},
+                },
+                {
+                    "schema_version": "debate_impact_v1",
+                    "artifact_id": "debate_impact_v1:degraded",
+                    "artifact_type": "debate_impact",
+                    "execution_authority": "none",
+                    "decision_degradation": degraded_report,
+                    "disagreement_count": 2,
+                    "bull_failed": True,
+                    "outcome_evaluation": {"mature": True, "win": False},
+                },
+                {
+                    "schema_version": "portfolio_mix_event_v1",
+                    "artifact_id": "portfolio_mix_event_v1:normal",
+                    "artifact_type": "portfolio_mix_event",
+                    "execution_authority": "none",
+                    "active_count": 8,
+                    "cash_weight": 0.3,
+                    "diagnostics": {"effective_n": 5.0},
+                },
+                {
+                    "schema_version": "market_risk_assessment_v1",
+                    "artifact_id": "market_risk_assessment_v1:normal",
+                    "artifact_type": "market_risk_assessment",
+                    "execution_authority": "none",
+                    "market_regime": "risk_on",
+                },
+                {
+                    "schema_version": "market_risk_assessment_v1",
+                    "artifact_id": "market_risk_assessment_v1:degraded",
+                    "artifact_type": "market_risk_assessment",
+                    "execution_authority": "none",
+                    "decision_degradation": degraded_report,
+                    "market_regime": "defensive",
+                },
+            ],
+            market_features=[
+                *_price_path("SPY", date(2026, 6, 1), [100, 99, 98, 97, 96, 94]),
+                *_price_path("QQQ", date(2026, 6, 1), [100, 100, 99, 98, 97, 95]),
+                *_price_path("SH", date(2026, 6, 1), [20, 20.1, 20.2, 20.4, 20.7, 21.0]),
+                *_price_path("SPY", date(2026, 6, 10), [100, 101, 102, 102, 103, 104]),
+                *_price_path("QQQ", date(2026, 6, 10), [100, 101, 101, 102, 103, 104]),
+                *_price_path("PSQ", date(2026, 6, 10), [10, 9.9, 9.8, 9.7, 9.6, 9.5]),
+            ],
+        )
+
+        metrics = build_weekly_review_metrics(dataset)
+        hedge_split = metrics["sections"]["hedge_review"]["decision_degradation_split"]
+        debate_split = metrics["sections"]["debate_impact"]["decision_degradation_split"]
+        basket_split = metrics["sections"]["basket_portfolio"]["decision_degradation_split"]
+        regime_split = metrics["sections"]["regime_risk"]["decision_degradation_split"]
+
+        self.assertEqual(hedge_split["normal"]["metrics"]["false_negative_count"], 1)
+        self.assertEqual(hedge_split["degraded"]["metrics"]["hedge_trigger_count"], 1)
+        self.assertEqual(hedge_split["degraded"]["metrics"]["triggered_hedge_would_hurt_count"], 1)
+        self.assertEqual(debate_split["normal"]["metrics"]["debate_changed_target_count"], 1)
+        self.assertEqual(debate_split["degraded"]["metrics"]["debate_failure_count"], 1)
+        self.assertEqual(basket_split["normal"]["metrics"]["active_count_avg"], 8.0)
+        self.assertEqual(basket_split["degraded"]["metrics"]["active_count_out_of_range_count"], 1)
+        self.assertEqual(regime_split["normal"]["metrics"]["risk_off_call_count"], 0)
+        self.assertEqual(regime_split["degraded"]["metrics"]["risk_off_call_count"], 1)
+        self.assertEqual(metrics["sections"]["decision_degradation"]["metrics"]["degraded_sample_count"], 4)
+
 
 def _hedge_observation(
     observation_id: str,
@@ -664,7 +780,28 @@ def _hedge_observation(
     add: bool,
     severity: float,
     candidate: str,
+    degraded: bool = False,
 ) -> dict:
+    degradation = {
+        "schema_version": "decision_degradation_v1",
+        "is_degraded": True,
+        "degraded_modes": ["llm_fallback"],
+        "fallback_paths": ["quant_only"],
+        "missing_inputs": ["llm_summary"],
+    } if degraded else None
+    payload = {
+        "contract_version": "validation_observation_loop_v1",
+        "time_axis": _time_axis(datetime.combine(observation_date, datetime.min.time(), tzinfo=UTC).isoformat()),
+        "hedge_intent_outcome": {
+            "date": observation_date.isoformat(),
+            "triggered": triggered,
+            "severity": severity,
+            "add_hedge_etf": add,
+            "candidate_hedge_instrument": candidate,
+        },
+    }
+    if degradation:
+        payload["decision_degradation"] = degradation
     return {
         "observation_id": observation_id,
         "observation_type": "hedge_intent",
@@ -673,17 +810,7 @@ def _hedge_observation(
         "status": "pending_outcome",
         "execution_authority": "none",
         "target_weight_mutation": "none",
-        "observation_payload": {
-            "contract_version": "validation_observation_loop_v1",
-            "time_axis": _time_axis(datetime.combine(observation_date, datetime.min.time(), tzinfo=UTC).isoformat()),
-            "hedge_intent_outcome": {
-                "date": observation_date.isoformat(),
-                "triggered": triggered,
-                "severity": severity,
-                "add_hedge_etf": add,
-                "candidate_hedge_instrument": candidate,
-            },
-        },
+        "observation_payload": payload,
     }
 
 

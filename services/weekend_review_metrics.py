@@ -327,9 +327,13 @@ def build_decision_degradation_metrics(dataset: WeekendReviewDataset | dict[str,
     missing_input_distribution: dict[str, int] = {}
     by_observation_type: dict[str, dict[str, int]] = {}
 
-    for row in data.get("validation_observations") or []:
+    rows = [
+        *list(data.get("validation_observations") or []),
+        *list(data.get("diagnostic_artifacts") or []),
+    ]
+    for row in rows:
         metrics["sample_count"] += 1
-        observation_type = str(row.get("observation_type") or "unknown")
+        observation_type = str(row.get("observation_type") or row.get("artifact_type") or "unknown")
         by_type = by_observation_type.setdefault(observation_type, {"normal": 0, "degraded": 0})
         degradation = _decision_degradation_payload(row)
         if bool(degradation.get("is_degraded")):
@@ -417,30 +421,22 @@ def build_hedge_review_metrics(
     data = _dataset_dict(dataset)
     feature_rows = list(data.get("market_features") or [])
     samples = _hedge_samples(data)
-    metrics = {
-        "hedge_trigger_count": 0,
-        "hedge_added_count": 0,
-        "triggered_not_added_count": 0,
-        "false_negative_count": 0,
-        "triggered_no_drop_count": 0,
-        "triggered_hedge_would_hurt_count": 0,
-        "missed_protection_count": 0,
-        "hedge_would_have_helped_count": 0,
-        "hedge_would_have_hurt_count": 0,
-        "insufficient_market_outcome_count": 0,
-        "insufficient_counterfactual_count": 0,
-    }
+    metrics = _empty_hedge_metrics()
+    split = _empty_metric_split(_empty_hedge_metrics)
     counterfactuals: list[dict[str, Any]] = []
 
     for sample in samples:
+        bucket = "degraded" if bool(sample.get("decision_degraded")) else "normal"
+        split[bucket]["sample_count"] += 1
+        metric_targets = [metrics, split[bucket]["metrics"]]
         triggered = bool(sample.get("triggered"))
         added = bool(sample.get("add_hedge_etf"))
         if triggered:
-            metrics["hedge_trigger_count"] += 1
+            _increment_metric_targets(metric_targets, "hedge_trigger_count")
         if added:
-            metrics["hedge_added_count"] += 1
+            _increment_metric_targets(metric_targets, "hedge_added_count")
         if triggered and not added:
-            metrics["triggered_not_added_count"] += 1
+            _increment_metric_targets(metric_targets, "triggered_not_added_count")
 
         market_return = _market_forward_return(
             feature_rows,
@@ -448,15 +444,15 @@ def build_hedge_review_metrics(
             horizon_days=hedge_horizon_days,
         )
         if market_return is None:
-            metrics["insufficient_market_outcome_count"] += 1
+            _increment_metric_targets(metric_targets, "insufficient_market_outcome_count")
         else:
             dropped = market_return <= hedge_drawdown_threshold
             if not triggered and dropped:
-                metrics["false_negative_count"] += 1
+                _increment_metric_targets(metric_targets, "false_negative_count")
             if triggered and not dropped:
-                metrics["triggered_no_drop_count"] += 1
+                _increment_metric_targets(metric_targets, "triggered_no_drop_count")
             if not added and dropped:
-                metrics["missed_protection_count"] += 1
+                _increment_metric_targets(metric_targets, "missed_protection_count")
 
         cf = hedge_counterfactual_return(
             candidate_hedge_instrument=sample.get("candidate_hedge_instrument") or sample.get("selected_instrument"),
@@ -468,33 +464,28 @@ def build_hedge_review_metrics(
         )
         counterfactuals.append(cf)
         if cf["status"] != "ok":
-            metrics["insufficient_counterfactual_count"] += 1
+            _increment_metric_targets(metric_targets, "insufficient_counterfactual_count")
             continue
         contribution = float(cf["hedge_contribution"])
         if contribution > 0.0:
-            metrics["hedge_would_have_helped_count"] += 1
+            _increment_metric_targets(metric_targets, "hedge_would_have_helped_count")
         elif contribution < 0.0:
-            metrics["hedge_would_have_hurt_count"] += 1
+            _increment_metric_targets(metric_targets, "hedge_would_have_hurt_count")
             if triggered:
-                metrics["triggered_hedge_would_hurt_count"] += 1
+                _increment_metric_targets(metric_targets, "triggered_hedge_would_hurt_count")
 
     return _section({
         "schema_version": "weekly_hedge_review_v1",
         "metrics": metrics,
-        "rates": {
-            "false_negative_rate": rate_metric(
-                "hedge_false_negative_rate",
-                numerator=metrics["false_negative_count"],
-                denominator=len(samples),
+        "rates": _hedge_rates(metrics, sample_count=len(samples), min_sample_n=min_sample_n),
+        "decision_degradation_split": _finalize_metric_split(
+            split,
+            rate_builder=lambda item: _hedge_rates(
+                item["metrics"],
+                sample_count=item["sample_count"],
                 min_sample_n=min_sample_n,
             ),
-            "triggered_hedge_would_hurt_rate": rate_metric(
-                "triggered_hedge_would_hurt_rate",
-                numerator=metrics["triggered_hedge_would_hurt_count"],
-                denominator=max(metrics["hedge_trigger_count"], 0),
-                min_sample_n=min_sample_n,
-            ),
-        },
+        ),
         "counterfactuals": counterfactuals,
         "hedge_drawdown_threshold": hedge_drawdown_threshold,
         "hedge_horizon_days": hedge_horizon_days,
@@ -521,20 +512,29 @@ def build_debate_impact_metrics(
     failures = 0
     changed_ticker_samples = 0
     changed_ticker_wins = 0
+    split = _empty_debate_split()
 
     for row in artifacts:
+        bucket = "degraded" if _is_degraded_record(row) else "normal"
+        split[bucket]["sample_count"] += 1
+        split[bucket]["metrics"]["debate_available_count"] += 1
         total_disagreements += _int(row.get("disagreement_count"), default=0)
+        split[bucket]["metrics"]["disagreement_count_total"] += _int(row.get("disagreement_count"), default=0)
         changed_tickers = row.get("disagreement_tickers_changed_by_target_builder") or []
         final_tickers = row.get("disagreement_tickers_in_final_target") or []
         if changed_tickers or final_tickers or _int(row.get("arbitration_count"), default=0) > 0:
             changed += 1
+            split[bucket]["metrics"]["debate_changed_target_count"] += 1
         if row.get("bull_failed") or row.get("bear_failed") or row.get("cross_exam_failed"):
             failures += 1
+            split[bucket]["metrics"]["debate_failure_count"] += 1
         outcome = row.get("outcome_evaluation") if isinstance(row.get("outcome_evaluation"), dict) else {}
         if outcome.get("mature") is True:
             changed_ticker_samples += 1
+            split[bucket]["changed_ticker_samples"] += 1
             if outcome.get("win") is True:
                 changed_ticker_wins += 1
+                split[bucket]["changed_ticker_wins"] += 1
 
     return _section({
         "schema_version": "weekly_debate_impact_review_v1",
@@ -558,6 +558,7 @@ def build_debate_impact_metrics(
                 min_sample_n=min_sample_n,
             ),
         },
+        "decision_degradation_split": _finalize_debate_split(split, min_sample_n=min_sample_n),
     })
 
 
@@ -569,37 +570,50 @@ def build_basket_portfolio_metrics(dataset: WeekendReviewDataset | dict[str, Any
     out_of_range = 0
     subscale = 0
     floor_cleared = 0
+    split = _empty_basket_split()
 
     for row in data.get("validation_observations") or []:
         if row.get("observation_type") != "active_basket":
             continue
+        bucket = "degraded" if _is_degraded_record(row) else "normal"
+        split[bucket]["sample_count"] += 1
         metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
         payload = row.get("observation_payload") if isinstance(row.get("observation_payload"), dict) else {}
         policy = payload.get("active_basket_policy") if isinstance(payload.get("active_basket_policy"), dict) else {}
         active = _float(metrics.get("active_count", policy.get("active_count")))
         if active is not None:
             active_counts.append(active)
+            split[bucket]["active_counts"].append(active)
         if policy.get("within_target_active_count") is False:
             out_of_range += 1
+            split[bucket]["active_count_out_of_range_count"] += 1
         subscale += _int(metrics.get("subscale_count", policy.get("subscale_count")), default=0)
+        split[bucket]["subscale_position_count"] += _int(metrics.get("subscale_count", policy.get("subscale_count")), default=0)
         floor_cleared += _int(metrics.get("floor_cleared_count", policy.get("floor_cleared_count")), default=0)
+        split[bucket]["floor_cleared_count"] += _int(metrics.get("floor_cleared_count", policy.get("floor_cleared_count")), default=0)
         eff = _float(metrics.get("effective_n", policy.get("effective_n")))
         if eff is not None:
             effective_ns.append(eff)
+            split[bucket]["effective_ns"].append(eff)
 
     for artifact in data.get("diagnostic_artifacts") or []:
         if artifact.get("schema_version") != "portfolio_mix_event_v1":
             continue
+        bucket = "degraded" if _is_degraded_record(artifact) else "normal"
+        split[bucket]["sample_count"] += 1
         active = _float(artifact.get("active_count"))
         if active is not None:
             active_counts.append(active)
+            split[bucket]["active_counts"].append(active)
         cash = _float(artifact.get("cash_weight"))
         if cash is not None:
             cash_values.append(cash)
+            split[bucket]["cash_values"].append(cash)
         diagnostics = artifact.get("diagnostics") if isinstance(artifact.get("diagnostics"), dict) else {}
         eff = _float(diagnostics.get("effective_n"))
         if eff is not None:
             effective_ns.append(eff)
+            split[bucket]["effective_ns"].append(eff)
 
     return _section({
         "schema_version": "weekly_strategy_basket_review_v1",
@@ -611,6 +625,7 @@ def build_basket_portfolio_metrics(dataset: WeekendReviewDataset | dict[str, Any
             "cash_avg": _avg(cash_values),
             "effective_n_avg": _avg(effective_ns),
         },
+        "decision_degradation_split": _finalize_basket_split(split),
     })
 
 
@@ -629,6 +644,16 @@ def build_regime_risk_metrics(
         if str(row.get("market_regime") or "").lower() in {"risk_off", "defensive"}
         or str(row.get("risk_direction") or "").lower() in {"down", "risk_down", "defensive"}
     )
+    split = _empty_regime_split()
+    for row in assessments:
+        bucket = "degraded" if _is_degraded_record(row) else "normal"
+        split[bucket]["sample_count"] += 1
+        split[bucket]["metrics"]["market_risk_assessment_count"] += 1
+        if (
+            str(row.get("market_regime") or "").lower() in {"risk_off", "defensive"}
+            or str(row.get("risk_direction") or "").lower() in {"down", "risk_down", "defensive"}
+        ):
+            split[bucket]["metrics"]["risk_off_call_count"] += 1
     return _section({
         "schema_version": "weekly_regime_risk_review_v1",
         "metrics": {
@@ -650,6 +675,7 @@ def build_regime_risk_metrics(
                 ),
             }
         },
+        "decision_degradation_split": _finalize_regime_split(split, min_sample_n=min_sample_n),
     })
 
 
@@ -852,13 +878,192 @@ def _sorted_degradation_split(split: dict[str, dict[str, Any]]) -> dict[str, dic
     return out
 
 
+def _empty_hedge_metrics() -> dict[str, int]:
+    return {
+        "hedge_trigger_count": 0,
+        "hedge_added_count": 0,
+        "triggered_not_added_count": 0,
+        "false_negative_count": 0,
+        "triggered_no_drop_count": 0,
+        "triggered_hedge_would_hurt_count": 0,
+        "missed_protection_count": 0,
+        "hedge_would_have_helped_count": 0,
+        "hedge_would_have_hurt_count": 0,
+        "insufficient_market_outcome_count": 0,
+        "insufficient_counterfactual_count": 0,
+    }
+
+
+def _hedge_rates(metrics: dict[str, int], *, sample_count: int, min_sample_n: int) -> dict[str, Any]:
+    return {
+        "false_negative_rate": rate_metric(
+            "hedge_false_negative_rate",
+            numerator=metrics["false_negative_count"],
+            denominator=sample_count,
+            min_sample_n=min_sample_n,
+        ),
+        "triggered_hedge_would_hurt_rate": rate_metric(
+            "triggered_hedge_would_hurt_rate",
+            numerator=metrics["triggered_hedge_would_hurt_count"],
+            denominator=max(metrics["hedge_trigger_count"], 0),
+            min_sample_n=min_sample_n,
+        ),
+    }
+
+
+def _empty_metric_split(metrics_factory) -> dict[str, dict[str, Any]]:
+    return {
+        "normal": {"sample_count": 0, "metrics": metrics_factory()},
+        "degraded": {"sample_count": 0, "metrics": metrics_factory()},
+    }
+
+
+def _increment_metric_targets(targets: list[dict[str, int]], key: str, amount: int = 1) -> None:
+    for target in targets:
+        target[key] = int(target.get(key) or 0) + amount
+
+
+def _finalize_metric_split(split: dict[str, dict[str, Any]], *, rate_builder=None) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for bucket in ("normal", "degraded"):
+        item = split.get(bucket) or {}
+        payload = {
+            "sample_count": int(item.get("sample_count") or 0),
+            "metrics": item.get("metrics") or {},
+        }
+        if rate_builder is not None:
+            payload["rates"] = rate_builder(payload)
+        out[bucket] = payload
+    return out
+
+
+def _empty_debate_metrics() -> dict[str, int]:
+    return {
+        "debate_available_count": 0,
+        "disagreement_count_total": 0,
+        "debate_changed_target_count": 0,
+        "debate_failure_count": 0,
+    }
+
+
+def _empty_debate_split() -> dict[str, dict[str, Any]]:
+    return {
+        "normal": {
+            "sample_count": 0,
+            "metrics": _empty_debate_metrics(),
+            "changed_ticker_samples": 0,
+            "changed_ticker_wins": 0,
+        },
+        "degraded": {
+            "sample_count": 0,
+            "metrics": _empty_debate_metrics(),
+            "changed_ticker_samples": 0,
+            "changed_ticker_wins": 0,
+        },
+    }
+
+
+def _finalize_debate_split(split: dict[str, dict[str, Any]], *, min_sample_n: int) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for bucket in ("normal", "degraded"):
+        item = split.get(bucket) or {}
+        metrics = item.get("metrics") or _empty_debate_metrics()
+        out[bucket] = {
+            "sample_count": int(item.get("sample_count") or 0),
+            "metrics": metrics,
+            "rates": {
+                "debate_change_rate": rate_metric(
+                    "debate_change_rate",
+                    numerator=metrics["debate_changed_target_count"],
+                    denominator=int(item.get("sample_count") or 0),
+                    min_sample_n=1,
+                ),
+                "changed_ticker_outcome_win_rate": rate_metric(
+                    "changed_ticker_outcome_win_rate",
+                    numerator=int(item.get("changed_ticker_wins") or 0),
+                    denominator=int(item.get("changed_ticker_samples") or 0),
+                    min_sample_n=min_sample_n,
+                ),
+            },
+        }
+    return out
+
+
+def _empty_basket_split() -> dict[str, dict[str, Any]]:
+    def bucket() -> dict[str, Any]:
+        return {
+            "sample_count": 0,
+            "active_counts": [],
+            "cash_values": [],
+            "effective_ns": [],
+            "active_count_out_of_range_count": 0,
+            "subscale_position_count": 0,
+            "floor_cleared_count": 0,
+        }
+
+    return {"normal": bucket(), "degraded": bucket()}
+
+
+def _finalize_basket_split(split: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for bucket in ("normal", "degraded"):
+        item = split.get(bucket) or {}
+        out[bucket] = {
+            "sample_count": int(item.get("sample_count") or 0),
+            "metrics": {
+                "active_count_avg": _avg(item.get("active_counts") or []),
+                "active_count_out_of_range_count": int(item.get("active_count_out_of_range_count") or 0),
+                "subscale_position_count": int(item.get("subscale_position_count") or 0),
+                "floor_cleared_count": int(item.get("floor_cleared_count") or 0),
+                "cash_avg": _avg(item.get("cash_values") or []),
+                "effective_n_avg": _avg(item.get("effective_ns") or []),
+            },
+        }
+    return out
+
+
+def _empty_regime_split() -> dict[str, dict[str, Any]]:
+    return _empty_metric_split(lambda: {
+        "market_risk_assessment_count": 0,
+        "risk_off_call_count": 0,
+        "hard_risk_outcome_count": 0,
+    })
+
+
+def _finalize_regime_split(split: dict[str, dict[str, Any]], *, min_sample_n: int) -> dict[str, dict[str, Any]]:
+    return _finalize_metric_split(
+        split,
+        rate_builder=lambda item: {
+            "risk_off_recall_proxy": {
+                **rate_metric(
+                    "risk_off_recall_proxy",
+                    numerator=0,
+                    denominator=0,
+                    min_sample_n=min_sample_n,
+                ),
+                "proxy_caveat": (
+                    "denominator is observable negative forward-return windows; "
+                    "true should-have-been-risk-off is not directly observable"
+                ),
+            }
+        },
+    )
+
+
 def _decision_degradation_payload(row: dict[str, Any]) -> dict[str, Any]:
+    direct = row.get("decision_degradation")
+    if isinstance(direct, dict):
+        return direct
     payload = row.get("observation_payload") if isinstance(row.get("observation_payload"), dict) else {}
     degradation = payload.get("decision_degradation")
     return degradation if isinstance(degradation, dict) else {}
 
 
 def _is_degraded_observation(row: dict[str, Any]) -> bool:
+    return bool(_decision_degradation_payload(row).get("is_degraded"))
+
+
+def _is_degraded_record(row: dict[str, Any]) -> bool:
     return bool(_decision_degradation_payload(row).get("is_degraded"))
 
 
@@ -1262,6 +1467,7 @@ def _hedge_samples(data: dict[str, Any]) -> list[dict[str, Any]]:
             "add_hedge_etf": raw.get("add_hedge_etf"),
             "selected_instrument": raw.get("selected_instrument"),
             "candidate_hedge_instrument": raw.get("candidate_hedge_instrument"),
+            "decision_degraded": _is_degraded_record(row),
         }
         key = _hedge_sample_key(row, sample)
         seen.add(key)
@@ -1280,6 +1486,7 @@ def _hedge_samples(data: dict[str, Any]) -> list[dict[str, Any]]:
                 "add_hedge_etf": hedge.get("add_hedge_etf"),
                 "selected_instrument": hedge.get("selected_instrument"),
                 "candidate_hedge_instrument": hedge.get("candidate_hedge_instrument"),
+                "decision_degraded": _is_degraded_record(row),
             }
             key = _hedge_sample_key(row, sample)
             if key in seen:

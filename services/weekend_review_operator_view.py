@@ -96,15 +96,18 @@ def build_weekend_review_operator_view(payload: dict[str, Any]) -> dict[str, Any
             "hedge_review": {
                 "metrics": hedge.get("metrics") or {},
                 "rates": hedge.get("rates") or {},
+                "decision_degradation_split": hedge.get("decision_degradation_split") or {},
                 "counterfactuals": hedge.get("counterfactuals") or [],
             },
             "debate_value": {
                 "metrics": debate.get("metrics") or {},
                 "rates": debate.get("rates") or {},
+                "decision_degradation_split": debate.get("decision_degradation_split") or {},
             },
             "basket_portfolio": {
                 "metrics": basket.get("metrics") or {},
                 "rates": basket.get("rates") or {},
+                "decision_degradation_split": basket.get("decision_degradation_split") or {},
             },
             "prior_review_self_assessment": {
                 "metrics": self_assessment.get("metrics") or {},

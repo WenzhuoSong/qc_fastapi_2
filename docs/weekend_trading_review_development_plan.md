@@ -711,6 +711,44 @@ Do not enable automated strategy/policy changes from this report at any point.
 
 ---
 
+## 8.1 Deferred Backlog: Physical Weekend Review Store
+
+Current state:
+
+- weekend review outputs are explicitly marked `execution_authority=none`
+- trade-decision consumers must use helper filters that exclude review-only
+  records
+- helper filtering is acceptable as a short-term stopgap, but it still relies on
+  every future consumer remembering the same exclusion rule
+
+Backlog item:
+
+```text
+Create a dedicated append-only weekend_review_reports table/store.
+```
+
+Goals:
+
+- physically separate off-hours review reports from trade-decision
+  `AgentAnalysis` rows
+- make "review-only cannot be the latest trade decision" true by storage design,
+  not by reader discipline
+- keep the existing `/api/ops/weekend-review/latest` and operator pack reading
+  from the dedicated store once migrated
+- retain historical helper filtering until the migration is complete
+
+Acceptance:
+
+- no weekend review writer appends review-only rows to the trade-decision table
+- ad-hoc `latest AgentAnalysis` queries cannot accidentally return a weekend
+  review report
+- migration preserves schema versions and append-only history
+
+This remains non-trading work. It must not change targets, policies, thresholds,
+or execution state.
+
+---
+
 ## 9. Acceptance Criteria
 
 The weekend learning loop is acceptable when it can answer:
@@ -726,6 +764,10 @@ The weekend learning loop is acceptable when it can answer:
 8. Did bull/bear debate materially change outcomes?
 9. Did active basket constraints reduce noise without hiding risk?
 10. Did last week's review recommendations age well?
+11. Were decision samples separated by normal versus degraded mode before
+    interpreting strategy, hedge, debate, basket, or regime metrics?
+12. Did config fail-safe invariant scans find safety posture issues that require
+    operator review?
 ```
 
 And when all answers are backed by deterministic metrics rather than LLM-only
@@ -745,6 +787,8 @@ Its job is to reduce self-deception:
 - no replay-based promotion
 - no triggered-sample-only hedge analysis
 - no legacy raw JSON as authority
+- no degraded-mode samples mixed into normal-mode strategy conclusions
+- no silent config fail-safe drift
 
 The correct endpoint is a system that can say:
 
@@ -754,3 +798,18 @@ Here is how we measured it.
 Here is what the data suggests reviewing.
 No execution authority is granted by this report.
 ```
+
+Once authority gating, degraded-mode stratification, safety invariant scanning,
+and execution truth are wired into the report, the system should enter a label
+maturity waiting period:
+
+```text
+collect live samples -> wait for 1d/5d/20d labels -> review IC, hedge false
+negatives, debate impact, and basket policy with normal/degraded samples kept
+separate.
+```
+
+During this period, do not promote strategies, tune hedge thresholds, or change
+basket execution rules from insufficient or immature samples. Additional safety
+work should be limited to concrete invariant violations, not open-ended
+hardening.
