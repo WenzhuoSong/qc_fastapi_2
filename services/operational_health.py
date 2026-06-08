@@ -179,11 +179,9 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
             missing_blocker=False,
         ),
         "yfinance_ticker_health": yfinance_ticker_health,
-        "news_cache": _news_cache_freshness_check(
-            label="News cache",
+        "news_cache": news_cache_freshness_check(
             timestamp=getattr(news, "updated_at", None),
             now=now,
-            max_age_hours=FRESHNESS_LIMITS_HOURS["news_cache"],
             blocker=False,
             missing_blocker=False,
         ),
@@ -361,6 +359,24 @@ def _news_cache_freshness_check(
     elif check.get("state") == "ok":
         check["reason"] = "fresh: within 24/7 news schedule"
     return check
+
+
+def news_cache_freshness_check(
+    *,
+    timestamp: Any,
+    now: datetime | None = None,
+    blocker: bool = False,
+    missing_blocker: bool = False,
+) -> dict[str, Any]:
+    """Public 24/7 news freshness contract used by health and market brief."""
+    return _news_cache_freshness_check(
+        label="News cache",
+        timestamp=timestamp,
+        now=now or datetime.now(UTC).replace(tzinfo=None),
+        max_age_hours=FRESHNESS_LIMITS_HOURS["news_cache"],
+        blocker=blocker,
+        missing_blocker=missing_blocker,
+    )
 
 
 def _latest_scheduled_utc_run(now: datetime) -> datetime:

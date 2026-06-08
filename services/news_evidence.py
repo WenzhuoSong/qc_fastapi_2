@@ -121,6 +121,8 @@ def build_news_evidence(
 
     macro_score = _score_macro_news(context.get("macro_signals") or [], context)
     data_gaps = list(context.get("data_gaps") or [])
+    if context.get("_stale_warning"):
+        data_gaps.append(str(context.get("_stale_warning")))
     if not per_ticker_news and not structured_ticker:
         data_gaps.append("no ticker news evidence available")
     if not context.get("macro_signals"):

@@ -10,8 +10,8 @@ Responsibilities: Fully decoupled from the main pipeline, runs every 2h:
     Phase E: cross-source dedup (url dedup, already done per-Phase by url)
     Phase F: cleanup 48h old news
 
-Two crons fail independently: news down -> main pipeline uses previous-round cache;
-                   main pipeline down -> news continues refreshing.
+Two crons fail independently: trading analysis requires a fresh news cache before
+                   entering the pipeline; main pipeline down -> news continues refreshing.
 Each Phase fails independently: Phase B/C down does not affect Phase A (Finnhub), and vice versa.
 
 Usage:

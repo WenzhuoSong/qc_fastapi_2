@@ -245,6 +245,36 @@ class WeekendReviewLoaderTests(unittest.TestCase):
         self.assertEqual(dataset.fallback_label_count, 1)
         self.assertEqual(dataset.exclusion_counts["label_training_authority_not_eligible"], 1)
 
+    def test_strategy_signal_outcome_is_loaded_as_fallback_outcome_label(self):
+        dataset = build_weekend_review_dataset(
+            outcome_labels=[
+                {
+                    "outcome_id": "outcome_1",
+                    "signal_id": "signal_1",
+                    "signal_source": "daily_signal_freeze",
+                    "signal_date": date(2026, 6, 1),
+                    "label_date": date(2026, 6, 6),
+                    "strategy_id": "momentum_lite_v1",
+                    "ticker": "SPY",
+                    "action": "buy",
+                    "horizon_days": 5,
+                    "forward_return": 0.012,
+                    "drawdown_during_horizon": -0.01,
+                    "outcome_source": "yfinance",
+                    "data_quality": "ok",
+                    "hit": True,
+                }
+            ]
+        )
+
+        self.assertEqual(dataset.outcome_labels, [])
+        self.assertEqual(dataset.fallback_label_count, 1)
+        self.assertEqual(dataset.exclusion_counts["label_training_authority_not_eligible"], 1)
+        excluded = dataset.excluded_inputs[0]
+        self.assertEqual(excluded["source_type"], "outcome_label")
+        self.assertEqual(excluded["payload_ref"]["label_schema_version"], "outcome_label_v1")
+        self.assertEqual(excluded["payload_ref"]["ticker"], "SPY")
+
     def test_dataset_to_dict_is_json_safe(self):
         dataset = build_weekend_review_dataset(
             validation_observations=[

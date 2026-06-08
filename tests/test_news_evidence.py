@@ -155,6 +155,21 @@ class NewsEvidenceTest(unittest.TestCase):
         self.assertIn("no ticker news evidence available", evidence["data_gaps"])
         self.assertIn("no structured macro news signals available", evidence["data_gaps"])
 
+    def test_stale_warning_is_promoted_to_data_gaps(self):
+        evidence = build_news_evidence(
+            {
+                "news_context": {
+                    "macro_signals": [],
+                    "_stale_warning": "news_cache stale: missed scheduled news runs",
+                },
+                "per_ticker_news": {},
+                "hard_risks_map": {},
+            },
+            now_ts=NOW,
+        )
+
+        self.assertIn("news_cache stale: missed scheduled news runs", evidence["data_gaps"])
+
 
 if __name__ == "__main__":
     unittest.main()

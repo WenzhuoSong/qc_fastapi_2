@@ -123,6 +123,7 @@ async def load_weekend_review_dataset(
         CommandLifecycleEvent,
         ExecutionLog,
         MarketDailyFeature,
+        StrategySignalOutcome,
         ValidationObservation,
     )
     from db.session import AsyncSessionLocal
@@ -183,6 +184,15 @@ async def load_weekend_review_dataset(
                 .limit(limit * 20)
             )
         ).scalars().all())
+        outcome_labels = list((
+            await db.execute(
+                select(StrategySignalOutcome)
+                .where(StrategySignalOutcome.label_date >= start)
+                .where(StrategySignalOutcome.label_date <= end)
+                .order_by(desc(StrategySignalOutcome.label_date), desc(StrategySignalOutcome.id))
+                .limit(limit * 20)
+            )
+        ).scalars().all())
 
     return build_weekend_review_dataset(
         validation_observations=observations,
@@ -191,6 +201,7 @@ async def load_weekend_review_dataset(
         command_lifecycle_events=lifecycle_events,
         account_snapshots=snapshots,
         market_features=features,
+        outcome_labels=outcome_labels,
     )
 
 
@@ -288,7 +299,7 @@ def _add_market_feature(dataset: WeekendReviewDataset, row: Any) -> None:
 
 
 def _add_outcome_label(dataset: WeekendReviewDataset, row: Any) -> None:
-    payload = _record_dict(row)
+    payload = _outcome_label_payload(row)
     verdict = evaluate_training_data_source(source_type="outcome_label", payload=payload)
     if verdict["allowed"]:
         dataset.outcome_labels.append(json_safe(payload))
@@ -297,6 +308,54 @@ def _add_outcome_label(dataset: WeekendReviewDataset, row: Any) -> None:
         if _is_fallback_label(payload):
             dataset.fallback_label_count += 1
         _exclude(dataset, "outcome_label", payload, verdict["reasons"])
+
+
+def _outcome_label_payload(row: Any) -> dict[str, Any]:
+    payload = _record_dict(row)
+    if payload.get("label_schema_version") == "outcome_label_v1":
+        return payload
+
+    outcome_id = _record_get(row, "outcome_id")
+    horizon_days = _int_or_none(_record_get(row, "horizon_days"))
+    if not outcome_id or horizon_days is None:
+        return payload
+    horizon = _horizon_label(horizon_days)
+    return {
+        "label_schema_version": "outcome_label_v1",
+        "label_id": outcome_id,
+        "execution_authority": "none",
+        "training_authority": "feature_scope_limited",
+        "scope_limit_reasons": [
+            "fallback_label_source",
+            "missing_decision_feature_snapshot",
+        ],
+        "decision_feature_snapshot_id": None,
+        "decision_feature_snapshot_schema_version": None,
+        "horizon": horizon,
+        "label_source": "yfinance",
+        "price_source": "yfinance_adjusted_close",
+        "return": _float_or_none(_record_get(row, "forward_return")),
+        "max_drawdown_after_decision": _float_or_none(_record_get(row, "drawdown_during_horizon")),
+        "source_metadata": {
+            "source_table": "strategy_signal_outcomes",
+            "label_source_role": "fallback",
+            "outcome_source": _record_get(row, "outcome_source"),
+            "signal_id": _record_get(row, "signal_id"),
+            "signal_source": _record_get(row, "signal_source"),
+            "strategy_id": _record_get(row, "strategy_id"),
+            "ticker": _record_get(row, "ticker"),
+            "action": _record_get(row, "action"),
+            "hit": _record_get(row, "hit"),
+            "data_quality": _record_get(row, "data_quality"),
+        },
+        "source_type": "strategy_signal_outcome",
+        "signal_date": _date_or_none(_record_get(row, "signal_date")),
+        "label_date": _date_or_none(_record_get(row, "label_date")),
+        "ticker": str(_record_get(row, "ticker") or "").upper().strip(),
+        "strategy_id": _record_get(row, "strategy_id"),
+        "action": _record_get(row, "action"),
+        "horizon_days": horizon_days,
+    }
 
 
 def _diagnostic_artifacts_from_analysis(row: Any) -> list[dict[str, Any]]:
@@ -465,6 +524,10 @@ def _week_window(*, week_start: date | None, week_end: date | None) -> tuple[dat
 
 def _count(target: dict[str, int], key: str) -> None:
     target[key] = target.get(key, 0) + 1
+
+
+def _horizon_label(days: int) -> str:
+    return f"{int(days)}d"
 
 
 def _record_dict(value: Any) -> dict[str, Any]:

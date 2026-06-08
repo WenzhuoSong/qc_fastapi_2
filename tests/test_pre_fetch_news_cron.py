@@ -22,7 +22,7 @@ class PreFetchNewsCronContractTests(unittest.TestCase):
         end = source.index('"memory_write":', start)
         news_block = source[start:end]
 
-        self.assertIn("_news_cache_freshness_check(", news_block)
+        self.assertIn("news_cache_freshness_check(", news_block)
         self.assertNotIn("_trading_day_freshness_check(", news_block)
         self.assertIn("NEWS_CRON_SCHEDULE = \"50 */2 * * * UTC\"", source)
         self.assertIn("NEWS_CRON_ALLOWED_MISSED_RUNS = 2", source)
@@ -43,6 +43,13 @@ class PreFetchNewsCronContractTests(unittest.TestCase):
         self.assertIn('"news_evidence_summary": news_evidence_summary', source)
         self.assertIn('"news_context_summary": news_context_summary', source)
         self.assertIn("hourly analysis cron requires a fresh news cache", source)
+
+    def test_market_brief_reuses_shared_news_freshness_contract(self):
+        source = Path("services/market_brief.py").read_text()
+
+        self.assertIn("from services.operational_health import news_cache_freshness_check", source)
+        self.assertIn("_attach_news_freshness", source)
+        self.assertNotIn("older than 4 hours considered stale", source)
 
 
 if __name__ == "__main__":

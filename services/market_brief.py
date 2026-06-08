@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime as dt_cls
 from typing import Any
 
 from sqlalchemy import desc, select
@@ -31,6 +30,7 @@ from services.macro_regime_builder import build_deterministic_macro_regime
 from services.market_feature_store import latest_feature_map
 from services.market_brief_contexts import build_memory_context, build_scenario_context
 from services.market_snapshot_merge import merge_market_snapshots
+from services.operational_health import news_cache_freshness_check
 from services.sector_rotation import detect_sector_rotation, format_rotation_for_prompt, rotation_signal_strengths
 from services.universe_policy import filter_tradable_research_rows
 
@@ -248,7 +248,10 @@ async def get_news_context() -> dict:
             "noise_filtered": 0,
             "data_gaps": ["no news cache"],
             "_fallback": True,
+            "_freshness": news_cache_freshness_check(timestamp=None),
         }
+
+    freshness = news_cache_freshness_check(timestamp=getattr(row, "updated_at", None))
 
     # Prefer structured version
     if row.structured_payload:
@@ -256,18 +259,7 @@ async def get_news_context() -> dict:
             structured = row.structured_payload
             if isinstance(structured, str):
                 structured = json.loads(structured)
-
-            # Check freshness (older than 4 hours considered stale)
-            processed_at = structured.get("processed_at")
-            if processed_at:
-                try:
-                    processed_dt = dt_cls.fromisoformat(processed_at)
-                    age_seconds = (dt_cls.utcnow() - processed_dt).total_seconds()
-                    age_hours = age_seconds / 3600
-                    if age_hours > 4:
-                        structured["_stale_warning"] = f"News has not been updated in {age_hours:.1f} hours"
-                except (ValueError, TypeError):
-                    pass
+            _attach_news_freshness(structured, freshness)
 
             return structured
         except (json.JSONDecodeError, TypeError) as e:
@@ -279,7 +271,7 @@ async def get_news_context() -> dict:
             raw_news = row.raw_payload
             if isinstance(raw_news, str):
                 raw_news = json.loads(raw_news)
-            return {
+            fallback = {
                 "macro_signals": [],
                 "ticker_signals": {},
                 "noise_filtered": 0,
@@ -287,17 +279,34 @@ async def get_news_context() -> dict:
                 "_fallback": True,
                 "_raw_news_count": len(raw_news) if isinstance(raw_news, list) else 0,
             }
+            _attach_news_freshness(fallback, freshness)
+            return fallback
         except (json.JSONDecodeError, TypeError):
             pass
 
     # Complete fallback: return empty structure to let RESEARCHER know data quality is poor
-    return {
+    fallback = {
         "macro_signals": [],
         "ticker_signals": {},
         "noise_filtered": 0,
         "data_gaps": ["structured data unavailable, raw cache only"],
         "_fallback": True,
     }
+    _attach_news_freshness(fallback, freshness)
+    return fallback
+
+
+def _attach_news_freshness(payload: dict[str, Any], freshness: dict[str, Any]) -> None:
+    """Attach the shared 24/7 news freshness contract to structured news context."""
+    payload["_freshness"] = freshness
+    if freshness.get("state") == "ok":
+        return
+    warning = f"news_cache {freshness.get('state')}: {freshness.get('reason')}"
+    payload["_stale_warning"] = warning
+    data_gaps = list(payload.get("data_gaps") or [])
+    if warning not in data_gaps:
+        data_gaps.append(warning)
+    payload["data_gaps"] = data_gaps
 
 
 def _format_calendar(events: list[dict]) -> str:
