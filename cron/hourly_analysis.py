@@ -10,6 +10,7 @@ from datetime import date, timedelta
 
 from services.cron_audit import audit_cron_run
 from services.market_calendar import us_equity_market_status
+from services.operational_health import build_operational_health_snapshot
 from services.pipeline import run_full_pipeline
 from tools.notify_tools import tool_send_telegram
 
@@ -60,6 +61,19 @@ async def main() -> None:
                 audit.mark_skipped(reason)
                 audit.set_summary(market_status=market_status.to_dict())
                 logger.info("[hourly] Skipping pipeline: %s", reason)
+                return
+
+            health = await build_operational_health_snapshot()
+            news_check = (health.get("checks") or {}).get("news_cache") or {}
+            if news_check.get("state") != "ok":
+                reason = f"news_cache_not_ready:{news_check.get('reason') or news_check.get('state')}"
+                audit.mark_skipped(reason)
+                audit.set_summary(
+                    market_status=market_status.to_dict(),
+                    news_cache=news_check,
+                    operational_health=health.get("overall"),
+                )
+                logger.warning("[hourly] Skipping pipeline: %s", reason)
                 return
 
             trigger = await _resolve_trigger()

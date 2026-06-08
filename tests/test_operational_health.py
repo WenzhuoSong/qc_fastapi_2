@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from services.operational_health import (
     _freshness_check,
     _heartbeat_freshness_check,
+    _news_cache_freshness_check,
     _trading_day_freshness_check,
     _yfinance_ticker_health_check,
     classify_operational_health,
@@ -241,6 +242,44 @@ class OperationalHealthTests(unittest.TestCase):
 
         self.assertEqual(check["state"], "stale")
         self.assertIn("stale", check["reason"])
+
+    def test_news_cache_freshness_uses_24_7_cron_schedule(self):
+        now = datetime(2026, 6, 8, 2, 44, 0)
+        recent_news = datetime(2026, 6, 8, 0, 51, 0)
+
+        check = _news_cache_freshness_check(
+            label="News cache",
+            timestamp=recent_news,
+            now=now,
+            max_age_hours=6,
+            blocker=False,
+            missing_blocker=False,
+        )
+
+        self.assertEqual(check["state"], "ok")
+        self.assertEqual(check["freshness_policy"], "24_7_event_stream")
+        self.assertEqual(check["expected_schedule"], "50 */2 * * * UTC")
+        self.assertEqual(check["latest_expected_run_at"], "2026-06-08T00:50:00")
+        self.assertEqual(check["next_expected_run_at"], "2026-06-08T02:50:00")
+        self.assertEqual(check["missed_scheduled_runs"], 0)
+
+    def test_news_cache_freshness_stales_after_missed_24_7_runs(self):
+        now = datetime(2026, 6, 8, 10, 0, 0)
+        old_news = datetime(2026, 6, 8, 2, 51, 0)
+
+        check = _news_cache_freshness_check(
+            label="News cache",
+            timestamp=old_news,
+            now=now,
+            max_age_hours=12,
+            blocker=True,
+            missing_blocker=False,
+        )
+
+        self.assertEqual(check["state"], "stale")
+        self.assertTrue(check["blocking"])
+        self.assertEqual(check["missed_scheduled_runs"], 3)
+        self.assertIn("missed 3 scheduled news runs", check["reason"])
 
 
 if __name__ == "__main__":

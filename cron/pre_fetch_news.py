@@ -17,8 +17,8 @@ Each Phase fails independently: Phase B/C down does not affect Phase A (Finnhub)
 Usage:
     python -m cron.pre_fetch_news
 
-Railway recommended cron (ET):
-    09:50, 11:50, 13:50  (once before/during/after trading session)
+Railway recommended cron (UTC):
+    50 */2 * * *  (24/7 every 2h; news is an external event stream, not trading-day data)
 """
 from __future__ import annotations
 
@@ -619,9 +619,14 @@ async def run_pre_fetch() -> dict:
 
 
 async def main() -> None:
+    from services.cron_audit import audit_cron_run
+
     try:
-        result = await asyncio.wait_for(run_pre_fetch(), timeout=PRE_FETCH_TIMEOUT_S)
-        logger.info(f"pre_fetch_news result: {result}")
+        async with audit_cron_run("pre_fetch_news") as audit:
+            result = await asyncio.wait_for(run_pre_fetch(), timeout=PRE_FETCH_TIMEOUT_S)
+            audit.add_rows(result.get("total_new"))
+            audit.set_summary(**result)
+            logger.info(f"pre_fetch_news result: {result}")
     except asyncio.TimeoutError:
         logger.error(f"pre_fetch_news TIMEOUT after {PRE_FETCH_TIMEOUT_S}s")
         raise

@@ -27,9 +27,9 @@ Core data flow:
     risk approval      (Stage 6 Python)       ->
     execute            (Stage 9 Python)
 
-News data is refreshed independently every 2h by cron/pre_fetch_news.py; the main pipeline
-only reads from DB cache. Both crons fail independently: news down -> pipeline uses stale cache;
-pipeline down -> news continues refreshing.
+News data is refreshed independently every 2h, 24/7 by cron/pre_fetch_news.py; the
+hourly analysis cron requires a fresh news cache before entering this pipeline.
+Both crons still fail independently: pipeline down -> news continues refreshing.
 """
 import asyncio
 import hashlib
@@ -684,6 +684,42 @@ def _parse_iso_datetime(value: object) -> datetime | None:
         return None
 
 
+def _news_evidence_audit_summary(news_evidence: dict | None) -> dict:
+    """Small step-log summary showing how news evidence entered analysis."""
+    evidence = news_evidence or {}
+    macro = evidence.get("macro_news_score") or {}
+    ticker_scores = evidence.get("ticker_news_scores") or {}
+    hard_risks = evidence.get("hard_risk_events") or {}
+    return {
+        "macro_bias": macro.get("overall_bias"),
+        "macro_confidence": macro.get("confidence"),
+        "macro_impact": macro.get("market_impact"),
+        "macro_data_quality": macro.get("data_quality"),
+        "ticker_news_score_count": len(ticker_scores),
+        "hard_risk_tickers": sorted(str(ticker) for ticker in hard_risks.keys())[:20],
+        "data_gaps": list(evidence.get("data_gaps") or [])[:8],
+        "ignored_item_count": len(evidence.get("ignored_items") or []),
+    }
+
+
+def _news_context_audit_summary(brief: dict | None) -> dict:
+    """Small step-log summary for raw news context without duplicating article text."""
+    payload = brief or {}
+    context = payload.get("news_context") or {}
+    per_ticker_news = payload.get("per_ticker_news") or {}
+    ticker_signals = context.get("ticker_signals") or {}
+    return {
+        "macro_signal_count": len(context.get("macro_signals") or []),
+        "ticker_signal_count": len(ticker_signals),
+        "per_ticker_news_ticker_count": len(per_ticker_news),
+        "per_ticker_news_item_count": sum(len(items or []) for items in per_ticker_news.values()),
+        "hard_risk_ticker_count": len(payload.get("hard_risks_map") or {}),
+        "stale_warning": context.get("_stale_warning"),
+        "fallback": bool(context.get("_fallback")),
+        "data_gaps": list(context.get("data_gaps") or [])[:8],
+    }
+
+
 # ─────────────────────────────── Step Log Helper ───────────────────────────────
 
 
@@ -1095,6 +1131,8 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     pipeline_context["market_scorecard"] = market_scorecard
     pipeline_context["news_evidence"] = news_evidence
     pipeline_context["decision_style"] = decision_style
+    news_evidence_summary = _news_evidence_audit_summary(news_evidence)
+    news_context_summary = _news_context_audit_summary(brief)
     logger.info(
         "Stage 2d Evidence Scorecard done | "
         f"condition={market_scorecard.get('market_condition')} "
@@ -1108,11 +1146,13 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         input_data={
             "playground_available": bool(playground_bundle),
             "regime": (quant_baseline.get("regime_result") or {}).get("regime"),
+            "news_context_summary": news_context_summary,
         },
         output_data={
             "evidence_bundle": evidence_bundle,
             "market_scorecard": market_scorecard,
             "news_evidence": news_evidence,
+            "news_evidence_summary": news_evidence_summary,
         },
         duration_ms=0,
     )
@@ -1143,7 +1183,11 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     )
     await _save_step_log(
         analysis_id, "3_researcher", "researcher",
-        input_data={"base_weights": quant_baseline.get("base_weights")},
+        input_data={
+            "base_weights": quant_baseline.get("base_weights"),
+            "news_context_summary": news_context_summary,
+            "news_evidence_summary": news_evidence_summary,
+        },
         output_data=research_report,
         duration_ms=dur_researcher,
         model=model_heavy,
@@ -1193,7 +1237,15 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     )
     await _save_step_log(
         analysis_id, "4a_bull", "bull_researcher",
-        input_data={"base_weights": base_weights},
+        input_data={
+            "base_weights": base_weights,
+            "news_evidence_summary": news_evidence_summary,
+            "decision_style_summary": {
+                "analysis_style": decision_style.get("analysis_style"),
+                "trade_style": decision_style.get("trade_style"),
+                "dominant_style_constraint": decision_style.get("dominant_style_constraint"),
+            },
+        },
         output_data=bull_draft,
         duration_ms=dur_draft,
         model=model_heavy,
@@ -1201,7 +1253,15 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     )
     await _save_step_log(
         analysis_id, "4b_bear", "bear_researcher",
-        input_data={"base_weights": base_weights},
+        input_data={
+            "base_weights": base_weights,
+            "news_evidence_summary": news_evidence_summary,
+            "decision_style_summary": {
+                "analysis_style": decision_style.get("analysis_style"),
+                "trade_style": decision_style.get("trade_style"),
+                "dominant_style_constraint": decision_style.get("dominant_style_constraint"),
+            },
+        },
         output_data=bear_draft,
         duration_ms=dur_draft,
         model=model_heavy,
@@ -1241,6 +1301,7 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         input_data={
             "bull_draft_failed": bull_draft.get("failed", False),
             "bear_draft_failed": bear_draft.get("failed", False),
+            "news_evidence_summary": news_evidence_summary,
         },
         output_data={
             "rebuttal_vs_bear": rebuttal_vs_bear,
@@ -1294,6 +1355,8 @@ async def _run_pipeline_inner(trigger: str) -> dict:
             "bear_confidence": bear_output.get("confidence"),
             "regime": regime_result.get("regime") if regime_result else None,
             "playground_consensus_weights": (playground_bundle or {}).get("consensus_weights"),
+            "news_context_summary": news_context_summary,
+            "news_evidence_summary": news_evidence_summary,
         },
         output_data=synthesizer_out,
         duration_ms=dur_synth,

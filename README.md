@@ -216,8 +216,8 @@ Two independent tables feed Stage 1:
 - **`MacroNewsCache`** — single-row cache of macro headlines + economic
   calendar + pre-stitched Chinese prose.
 
-Both are maintained by `cron/pre_fetch_news.py` every 2h via a multi-phase
-pipeline, completely independent from the main pipeline:
+Both are maintained by `cron/pre_fetch_news.py` every 2h, 24/7, via a multi-phase
+pipeline, completely independent from the main trading pipeline:
 
 - **Phase A**: Finnhub — macro news + economic calendar + per-ticker news
 - **Phase B**: Alpha Vantage — bulk ticker news with built-in sentiment
@@ -228,14 +228,19 @@ pipeline, completely independent from the main pipeline:
 Each phase is independently fault-tolerant. Any phase failing does not
 affect the others or the main pipeline.
 
+`cron.hourly_analysis` treats news as a 24/7 external event stream, not a
+trading-day daily bar. On trading days it requires `news_cache` to be fresh
+against the `50 */2 * * * UTC` schedule before entering the LLM/Python pipeline;
+Monday pre-market analysis does not get a weekend grace for stale news.
+
 ## Cron Jobs
 
 **Standalone processes**, each `python -m cron.<name>` with its own
 `asyncio.run()`. Configure as Railway cron services:
 
-| Entry | Schedule (ET) | Purpose |
+| Entry | Schedule (UTC) | Purpose |
 |---|---|---|
-| `python -m cron.pre_fetch_news` | 09:50 / 11:50 / 13:50 | Multi-source news → DB (Finnhub + AV + RSS) |
+| `python -m cron.pre_fetch_news` | `50 */2 * * *` | 24/7 multi-source news → DB (Finnhub + AV + RSS) |
 | `python -m cron.hourly_analysis` | 10:00–15:00 hourly | Full 10-stage pipeline |
 | `python -m cron.pending_check` | every 1 min | SEMI_AUTO timeout handler |
 | `python -m cron.playground_analysis` | after close | Research-only multi-strategy comparison |

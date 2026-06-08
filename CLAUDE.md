@@ -33,7 +33,7 @@ This is an **agentic trading system** that integrates with QuantConnect using a 
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Cron 1: pre_fetch_news    every 2h @ 09:50/11:50/13:50 ET
+│ Cron 1: pre_fetch_news    every 2h, 24/7 @ 50 */2 * * * UTC
 │   Phase A: Finnhub → MacroNewsCache + TickerNewsLibrary
 │   Phase B: Alpha Vantage → TickerNewsLibrary (bulk ticker)
 │   Phase C: RSS feeds → keyword match → TickerNewsLibrary
@@ -217,9 +217,9 @@ When RISK MGR approves a proposal in SEMI_AUTO mode:
 Each cron is a standalone Python process (run via `python -m cron.<name>`),
 with its own fresh `asyncio.run()`. Configure schedules as Railway cron services:
 
-| Entry | Schedule (ET) | Purpose |
+| Entry | Schedule (UTC) | Purpose |
 |-------|---------------|---------|
-| `python -m cron.pre_fetch_news`    | 09:50, 11:50, 13:50 | Multi-source news → DB (Finnhub + Alpha Vantage + RSS) |
+| `python -m cron.pre_fetch_news`    | `50 */2 * * *` | 24/7 multi-source news → DB (Finnhub + Alpha Vantage + RSS) |
 | `python -m cron.hourly_analysis`   | 10:00–15:00 hourly | Full agent pipeline |
 | `python -m cron.post_market_report`| 16:35 | Daily summary |
 | `python -m cron.morning_health`    | 09:00 | Health check notification |
@@ -228,6 +228,11 @@ with its own fresh `asyncio.run()`. Configure schedules as Railway cron services
 | `python -m cron.yfinance_backfill` | after close | Research/backfill OHLCV feature store |
 | `python -m cron.daily_signal_freeze` | after playground/yfinance | Observe-only EvidenceCard signal ledger |
 | `python -m cron.daily_signal_validation_refresh` | after signal freeze | Mature outcome labels + conviction profiles |
+
+News is a 24/7 external event stream, not a trading-day daily bar. On trading
+days `cron.hourly_analysis` requires fresh `news_cache` against the
+`50 */2 * * * UTC` schedule before entering the analysis pipeline; Monday
+pre-market analysis does not receive a weekend grace for stale news.
 
 The web service (`main.py`) only serves webhooks (`/api/webhook/qc`,
 `/api/telegram`, `/api/status`, `/api/command/*`) — it no longer runs any

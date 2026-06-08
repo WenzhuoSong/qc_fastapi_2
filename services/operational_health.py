@@ -16,6 +16,10 @@ FRESHNESS_LIMITS_HOURS = {
     "memory_write": 36,
 }
 FAILED_CRON_LOOKBACK_HOURS = 48
+NEWS_CRON_SCHEDULE = "50 */2 * * * UTC"
+NEWS_CRON_INTERVAL_HOURS = 2
+NEWS_CRON_MINUTE_UTC = 50
+NEWS_CRON_ALLOWED_MISSED_RUNS = 2
 YFINANCE_CORE_HEALTH_FIELDS = (
     "close_price",
     "return_1d",
@@ -175,7 +179,7 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
             missing_blocker=False,
         ),
         "yfinance_ticker_health": yfinance_ticker_health,
-        "news_cache": _freshness_check(
+        "news_cache": _news_cache_freshness_check(
             label="News cache",
             timestamp=getattr(news, "updated_at", None),
             now=now,
@@ -307,6 +311,89 @@ def _freshness_check(
         "reason": f"stale {age_hours:.1f}h > {max_age_hours}h" if stale else "fresh",
         "blocking": blocker and stale,
     }
+
+
+def _news_cache_freshness_check(
+    *,
+    label: str,
+    timestamp: Any,
+    now: datetime,
+    max_age_hours: int,
+    blocker: bool,
+    missing_blocker: bool,
+) -> dict[str, Any]:
+    """Freshness check for the 24/7 pre_fetch_news external event stream."""
+    check = _freshness_check(
+        label=label,
+        timestamp=timestamp,
+        now=now,
+        max_age_hours=max_age_hours,
+        blocker=blocker,
+        missing_blocker=missing_blocker,
+    )
+    latest_expected = _latest_scheduled_utc_run(now)
+    next_expected = latest_expected + timedelta(hours=NEWS_CRON_INTERVAL_HOURS)
+    check.update({
+        "freshness_policy": "24_7_event_stream",
+        "expected_schedule": NEWS_CRON_SCHEDULE,
+        "latest_expected_run_at": latest_expected.isoformat(),
+        "next_expected_run_at": next_expected.isoformat(),
+        "allowed_missed_runs": NEWS_CRON_ALLOWED_MISSED_RUNS,
+    })
+
+    parsed = _to_naive_datetime(timestamp)
+    if parsed is None:
+        check["missed_scheduled_runs"] = None
+        return check
+
+    missed_runs = _missed_scheduled_runs_since(parsed, now)
+    stale_by_schedule = missed_runs > NEWS_CRON_ALLOWED_MISSED_RUNS
+    check["missed_scheduled_runs"] = missed_runs
+    if stale_by_schedule:
+        check.update({
+            "state": "stale",
+            "reason": (
+                f"missed {missed_runs} scheduled news runs "
+                f"> allowed {NEWS_CRON_ALLOWED_MISSED_RUNS}"
+            ),
+            "blocking": blocker,
+        })
+    elif check.get("state") == "ok":
+        check["reason"] = "fresh: within 24/7 news schedule"
+    return check
+
+
+def _latest_scheduled_utc_run(now: datetime) -> datetime:
+    """Return the most recent expected pre_fetch_news run for a 2h UTC schedule."""
+    current = _to_naive_datetime(now) or datetime.now(UTC).replace(tzinfo=None)
+    scheduled_hour = current.hour - (current.hour % NEWS_CRON_INTERVAL_HOURS)
+    candidate = current.replace(
+        hour=scheduled_hour,
+        minute=NEWS_CRON_MINUTE_UTC,
+        second=0,
+        microsecond=0,
+    )
+    if candidate > current:
+        candidate -= timedelta(hours=NEWS_CRON_INTERVAL_HOURS)
+    return candidate
+
+
+def _next_scheduled_utc_run_after(timestamp: datetime) -> datetime:
+    """Return the first expected pre_fetch_news run strictly after timestamp."""
+    current = _to_naive_datetime(timestamp) or timestamp
+    latest = _latest_scheduled_utc_run(current)
+    if latest <= current:
+        return latest + timedelta(hours=NEWS_CRON_INTERVAL_HOURS)
+    return latest
+
+
+def _missed_scheduled_runs_since(timestamp: datetime, now: datetime) -> int:
+    latest_expected = _latest_scheduled_utc_run(now)
+    first_missed = _next_scheduled_utc_run_after(timestamp)
+    if first_missed > latest_expected:
+        return 0
+    elapsed = latest_expected - first_missed
+    return int(elapsed.total_seconds() // (NEWS_CRON_INTERVAL_HOURS * 3600)) + 1
 
 
 def _heartbeat_freshness_check(
