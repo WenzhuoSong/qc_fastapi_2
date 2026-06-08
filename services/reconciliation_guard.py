@@ -20,6 +20,9 @@ DEFAULT_RECONCILIATION_GUARD_CONFIG: dict[str, Any] = {
     "auto_halt_min_clean_market_days": 5,
     "max_pending_ack_age_seconds": 300,
     "max_in_flight_age_seconds": 900,
+    "whole_share_rounding_tolerance_enabled": True,
+    "whole_share_rounding_tolerance_multiplier": 1.0,
+    "max_rounding_tolerance_weight": 0.01,
 }
 
 IN_FLIGHT_STATES = {"pending_ack", "accepted", "orders_submitted", "partial"}
@@ -47,6 +50,12 @@ def default_reconciliation_guard_config(config: dict[str, Any] | None = None) ->
     out["auto_halt_min_clean_market_days"] = max(int(_float_or_none(out.get("auto_halt_min_clean_market_days")) or 5), 0)
     out["max_pending_ack_age_seconds"] = max(int(_float_or_none(out.get("max_pending_ack_age_seconds")) or 300), 1)
     out["max_in_flight_age_seconds"] = max(int(_float_or_none(out.get("max_in_flight_age_seconds")) or 900), 1)
+    out["whole_share_rounding_tolerance_enabled"] = bool(out.get("whole_share_rounding_tolerance_enabled", True))
+    out["whole_share_rounding_tolerance_multiplier"] = _positive_float(
+        out.get("whole_share_rounding_tolerance_multiplier"),
+        1.0,
+    )
+    out["max_rounding_tolerance_weight"] = _positive_float(out.get("max_rounding_tolerance_weight"), 0.01)
     return out
 
 
@@ -186,6 +195,7 @@ def evaluate_reconciliation_guard(
         expected,
         actual,
         total_value=_float_or_none(snapshot.get("total_value")),
+        prices=snapshot.get("prices") or {},
         config=cfg,
     )
     if drift["max_drift"] > 0:
@@ -222,6 +232,7 @@ def calculate_reconciliation_drift(
     actual: dict[str, Any],
     *,
     total_value: float | None,
+    prices: dict[str, Any] | None = None,
     config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     cfg = default_reconciliation_guard_config(config)
@@ -236,7 +247,8 @@ def calculate_reconciliation_drift(
         if total > 0
         else 0.0
     )
-    threshold = max(float(cfg["relative_weight_tolerance"]), absolute_weight_floor)
+    base_threshold = max(float(cfg["relative_weight_tolerance"]), absolute_weight_floor)
+    price_map = _clean_prices(prices or {})
     drift_tickers = []
     max_drift = 0.0
     for ticker in tickers:
@@ -244,6 +256,13 @@ def calculate_reconciliation_drift(
         actual_w = float(right.get(ticker, 0.0) or 0.0)
         diff = actual_w - expected_w
         max_drift = max(max_drift, abs(diff))
+        threshold = _ticker_reconciliation_threshold(
+            ticker=ticker,
+            base_threshold=base_threshold,
+            total_value=total,
+            prices=price_map,
+            config=cfg,
+        )
         if abs(diff) > threshold:
             drift_tickers.append({
                 "ticker": ticker,
@@ -251,12 +270,14 @@ def calculate_reconciliation_drift(
                 "actual": round(actual_w, 6),
                 "diff": round(diff, 6),
                 "threshold": round(threshold, 6),
+                "base_threshold": round(base_threshold, 6),
+                "whole_share_tolerance": round(max(threshold - base_threshold, 0.0), 6),
             })
     drift_tickers.sort(key=lambda row: (-abs(float(row["diff"])), row["ticker"]))
     return {
         "max_drift": round(max((abs(float(row["diff"])) for row in drift_tickers), default=0.0), 6),
         "raw_max_abs_diff": round(max_drift, 6),
-        "threshold": round(threshold, 6),
+        "threshold": round(base_threshold, 6),
         "drift_tickers": drift_tickers,
     }
 
@@ -395,6 +416,7 @@ def _snapshot_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 def _snapshot_to_dict(row: Any) -> dict[str, Any]:
+    raw_snapshot = getattr(row, "raw_snapshot", None) or {}
     return {
         "id": getattr(row, "id", None),
         "recorded_at": getattr(row, "recorded_at", None),
@@ -404,6 +426,8 @@ def _snapshot_to_dict(row: Any) -> dict[str, Any]:
         "total_value": getattr(row, "total_value", None),
         "holdings_weights": getattr(row, "holdings_weights", None) or {},
         "target_weights": getattr(row, "target_weights", None) or {},
+        "prices": _prices_from_raw_snapshot(raw_snapshot),
+        "raw_snapshot": raw_snapshot,
     }
 
 
@@ -465,7 +489,60 @@ def _public_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "auto_set_reconciliation_halt": cfg.get("auto_set_reconciliation_halt"),
         "max_pending_ack_age_seconds": cfg.get("max_pending_ack_age_seconds"),
         "max_in_flight_age_seconds": cfg.get("max_in_flight_age_seconds"),
+        "whole_share_rounding_tolerance_enabled": cfg.get("whole_share_rounding_tolerance_enabled"),
+        "whole_share_rounding_tolerance_multiplier": cfg.get("whole_share_rounding_tolerance_multiplier"),
+        "max_rounding_tolerance_weight": cfg.get("max_rounding_tolerance_weight"),
     }
+
+
+def _ticker_reconciliation_threshold(
+    *,
+    ticker: str,
+    base_threshold: float,
+    total_value: float,
+    prices: dict[str, float],
+    config: dict[str, Any],
+) -> float:
+    threshold = float(base_threshold)
+    if not bool(config.get("whole_share_rounding_tolerance_enabled", True)):
+        return threshold
+    price = prices.get(str(ticker or "").upper().strip())
+    if not price or price <= 0 or total_value <= 0:
+        return threshold
+    share_tolerance = (
+        price
+        * float(config.get("whole_share_rounding_tolerance_multiplier") or 1.0)
+        / total_value
+    )
+    share_tolerance = min(
+        max(share_tolerance, 0.0),
+        float(config.get("max_rounding_tolerance_weight") or 0.01),
+    )
+    return max(threshold, share_tolerance)
+
+
+def _prices_from_raw_snapshot(raw_snapshot: dict[str, Any]) -> dict[str, float]:
+    prices: dict[str, float] = {}
+    for row in raw_snapshot.get("holdings_detail_rows") or []:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or "").upper().strip()
+        price = _float_or_none(row.get("market_price") or row.get("price"))
+        if ticker and price and price > 0:
+            prices[ticker] = price
+    return prices
+
+
+def _clean_prices(value: dict[str, Any]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    if not isinstance(value, dict):
+        return out
+    for ticker, raw in value.items():
+        key = str(ticker or "").upper().strip()
+        price = _float_or_none(raw)
+        if key and price and price > 0:
+            out[key] = price
+    return out
 
 
 def _positive_float(value: Any, fallback: float) -> float:

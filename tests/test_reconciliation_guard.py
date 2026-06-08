@@ -71,6 +71,42 @@ class ReconciliationGuardTests(unittest.TestCase):
 
         self.assertEqual(drift["drift_tickers"], [])
 
+    def test_whole_share_rounding_tolerance_allows_untradeable_high_price_residual(self):
+        drift = calculate_reconciliation_drift(
+            {"QQQ": 0.040955, "CASH": 0.959045},
+            {"QQQ": 0.0378, "CASH": 0.9622},
+            total_value=133_020.14,
+            prices={"QQQ": 717.56},
+        )
+
+        self.assertEqual(drift["drift_tickers"], [])
+        self.assertAlmostEqual(drift["raw_max_abs_diff"], 0.003155, places=6)
+
+    def test_whole_share_rounding_tolerance_still_blocks_multi_share_drift(self):
+        drift = calculate_reconciliation_drift(
+            {"QQQ": 0.040955, "CASH": 0.959045},
+            {"QQQ": 0.0300, "CASH": 0.9700},
+            total_value=133_020.14,
+            prices={"QQQ": 717.56},
+        )
+
+        self.assertEqual(drift["drift_tickers"][0]["ticker"], "QQQ")
+        self.assertGreater(drift["drift_tickers"][0]["threshold"], 0.005)
+
+    def test_evaluate_guard_uses_snapshot_prices_for_whole_share_rounding(self):
+        result = evaluate_reconciliation_guard(
+            snapshot=self._snapshot(
+                {"QQQ": 0.0378, "CASH": 0.9622},
+                total_value=133_020.14,
+                prices={"QQQ": 717.56},
+            ),
+            command=self._command({"QQQ": 0.040955, "CASH": 0.959045}),
+            now=datetime(2026, 6, 6, 14, 31),
+        )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertFalse(result["should_block_current_run"])
+
     def test_partial_command_returns_in_flight_without_halt(self):
         result = evaluate_reconciliation_guard(
             snapshot=self._snapshot({"SPY": 0.12, "CASH": 0.88}),
@@ -151,6 +187,7 @@ class ReconciliationGuardTests(unittest.TestCase):
         self.assertEqual(cfg["mode"], "blocking")
         self.assertTrue(cfg["ignore_cash"])
         self.assertEqual(cfg["cash_tolerance_mode"], "residual")
+        self.assertTrue(cfg["whole_share_rounding_tolerance_enabled"])
 
 
 if __name__ == "__main__":
