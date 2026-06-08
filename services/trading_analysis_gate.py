@@ -36,12 +36,17 @@ async def evaluate_trading_analysis_gate(*, require_market_open: bool = True) ->
     health = await build_operational_health_snapshot()
     news_check = (health.get("checks") or {}).get("news_cache") or {}
     if news_check.get("state") != "ok":
+        reason = news_check.get("reason") or news_check.get("state")
         return {
-            "allowed": False,
-            "reason": f"news_cache_not_ready:{news_check.get('reason') or news_check.get('state')}",
+            "allowed": True,
+            "reason": f"news_cache_degraded:{reason}",
             "market_status": market_payload,
             "news_cache": news_check,
             "operational_health": health.get("overall"),
+            "news_degraded_mode": True,
+            "degraded_mode": "news_stale_reduce_only",
+            "risk_increase_allowed": False,
+            "reduce_only_allowed": True,
         }
 
     return {
@@ -50,4 +55,8 @@ async def evaluate_trading_analysis_gate(*, require_market_open: bool = True) ->
         "market_status": market_payload,
         "news_cache": news_check,
         "operational_health": health.get("overall"),
+        "news_degraded_mode": False,
+        "degraded_mode": None,
+        "risk_increase_allowed": True,
+        "reduce_only_allowed": True,
     }

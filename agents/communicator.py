@@ -88,6 +88,7 @@ async def run_communicator_async(
             # 如果未批准或非 SEMI_AUTO 模式，移除任何命令提示
             if not approved or auth_mode != "SEMI_AUTO":
                 text = remove_command_hints(text)
+            text = _append_safety_posture_line(text.strip(), payload)
             return {"text": text.strip(), "used_fallback": False}
         logger.warning("COMMUNICATOR: empty LLM response, falling back")
     except asyncio.TimeoutError:
@@ -280,6 +281,7 @@ def _build_payload(
             risk_out.get("hedge_intent_outcome") or {}
         ),
         "final_validation": _compact_final_validation(risk_out.get("final_validation") or {}),
+        "safety_posture": _compact_safety_posture(pipeline_context),
         "auth_mode":        pipeline_context.get("auth_mode", "SEMI_AUTO"),
         "timeout_minutes":  settings.semi_auto_timeout_minutes,
         "debate_summary":   debate,
@@ -316,6 +318,7 @@ def _fallback_template(p: dict) -> str:
     pc_gate = p.get("portfolio_construction_promotion_gate") or {}
     hedge_outcome = p.get("hedge_intent_outcome") or {}
     final_validation = p.get("final_validation") or {}
+    safety_posture = p.get("safety_posture") or {}
 
     up, down = "\u25b2", "\u25bc"
 
@@ -353,6 +356,7 @@ def _fallback_template(p: dict) -> str:
     pc_gate_line = _format_portfolio_construction_promotion_gate_line(pc_gate)
     hedge_outcome_line = _format_hedge_intent_outcome_line(hedge_outcome)
     final_validation_line = _format_final_validation_line(final_validation)
+    safety_posture_line = _format_safety_posture_line(safety_posture)
     decision_ledger_line = _format_decision_ledger_line(decision_ledger)
     position_governance_line = _format_position_governance_line(position_governance)
 
@@ -385,6 +389,7 @@ def _fallback_template(p: dict) -> str:
             f"{pc_gate_line}"
             f"{hedge_outcome_line}"
             f"{final_validation_line}"
+            f"{safety_posture_line}"
             f"{decision_ledger_line}"
             f"{position_governance_line}"
             f"<b>Failed checks:</b>\n{reasons_text}\n\n"
@@ -434,6 +439,7 @@ def _fallback_template(p: dict) -> str:
         f"{pc_gate_line}"
         f"{hedge_outcome_line}"
         f"{final_validation_line}"
+        f"{safety_posture_line}"
         f"{decision_ledger_line}"
         f"{position_governance_line}"
         f"<b>Suggested actions</b>\n"
@@ -1089,6 +1095,54 @@ def _compact_decision_ledger(ledger: dict) -> dict:
     }
 
 
+def _compact_safety_posture(pipeline_context: dict) -> dict:
+    account = pipeline_context.get("account_state_guard") or {}
+    account_config = pipeline_context.get("account_state_guard_config") or {}
+    auto_pause = pipeline_context.get("auto_pause") or {}
+    auto_pause_config = pipeline_context.get("auto_pause_config") or {}
+    lifecycle_config = pipeline_context.get("execution_lifecycle_config") or {}
+    reconciliation = pipeline_context.get("reconciliation_guard") or {}
+    reconciliation_config = pipeline_context.get("reconciliation_guard_config") or {}
+    news_degraded = pipeline_context.get("news_degraded_mode") or {}
+    return {
+        "auth_mode": pipeline_context.get("auth_mode"),
+        "account_state_guard": {
+            "mode": account.get("mode") or account_config.get("mode"),
+            "configured_mode": account_config.get("configured_mode"),
+            "status": account.get("status"),
+            "execution_effect": account.get("execution_effect"),
+            "pipeline_enforcement": account.get("pipeline_enforcement"),
+            "would_block": bool(account.get("would_block")),
+            "should_block": bool(account.get("should_block_pipeline")),
+            "forced_reason": account_config.get("mode_forced_reason"),
+        },
+        "auto_pause": {
+            "mode": auto_pause.get("mode") or auto_pause_config.get("mode"),
+            "status": auto_pause.get("status"),
+            "execution_effect": auto_pause.get("execution_effect"),
+            "would_pause": bool(auto_pause.get("would_pause")),
+            "should_pause": bool(auto_pause.get("should_pause")),
+        },
+        "execution_lifecycle": {
+            "mode": lifecycle_config.get("mode"),
+            "strict": bool(lifecycle_config.get("strict")),
+        },
+        "reconciliation_guard": {
+            "mode": reconciliation.get("mode") or reconciliation_config.get("mode"),
+            "status": reconciliation.get("status"),
+            "execution_effect": reconciliation.get("execution_effect"),
+            "would_block": bool(reconciliation.get("should_block_current_run")),
+        },
+        "news_degraded_mode": {
+            "enabled": bool(news_degraded.get("enabled")),
+            "mode": news_degraded.get("mode"),
+            "reason": news_degraded.get("reason"),
+            "risk_increase_allowed": bool(news_degraded.get("risk_increase_allowed")),
+            "reduce_only_allowed": bool(news_degraded.get("reduce_only_allowed", True)),
+        },
+    }
+
+
 def _decision_ledger_sort_score(row: dict) -> int:
     score = 0
     proposed = str(row.get("proposed_action") or "")
@@ -1114,6 +1168,65 @@ def _decision_ledger_sort_score(row: dict) -> int:
     if isinstance(risk_rank, (int, float)):
         score += max(0, 10 - int(risk_rank))
     return score
+
+
+def _append_safety_posture_line(text: str, payload: dict) -> str:
+    line = _format_safety_posture_line(payload.get("safety_posture") or {})
+    if not line:
+        return text
+    if "Safety posture" in text:
+        return text
+    return f"{text.rstrip()}\n\n{line.strip()}".strip()
+
+
+def _format_safety_posture_line(posture: dict) -> str:
+    if not posture:
+        return ""
+    account = posture.get("account_state_guard") or {}
+    auto_pause = posture.get("auto_pause") or {}
+    lifecycle = posture.get("execution_lifecycle") or {}
+    reconciliation = posture.get("reconciliation_guard") or {}
+    news = posture.get("news_degraded_mode") or {}
+
+    def _mode_status(row: dict, *, status_key: str = "status") -> str:
+        mode = row.get("mode") or "?"
+        status = row.get(status_key) or row.get("execution_effect") or "?"
+        return f"{mode}/{status}"
+
+    account_text = _mode_status(account)
+    if account.get("configured_mode") and account.get("configured_mode") != account.get("mode"):
+        account_text += f" (configured={account.get('configured_mode')})"
+    if account.get("would_block") or account.get("should_block"):
+        account_text += "/would_block"
+    if account.get("forced_reason"):
+        account_text += f"/forced={account.get('forced_reason')}"
+
+    auto_text = _mode_status(auto_pause)
+    if auto_pause.get("would_pause") or auto_pause.get("should_pause"):
+        auto_text += "/would_pause"
+
+    lifecycle_mode = lifecycle.get("mode") or "?"
+    lifecycle_text = f"{lifecycle_mode}"
+    if lifecycle.get("strict"):
+        lifecycle_text += "/strict"
+
+    recon_text = _mode_status(reconciliation)
+    if reconciliation.get("would_block"):
+        recon_text += "/would_block"
+
+    news_text = "ok"
+    if news.get("enabled"):
+        news_text = (
+            f"degraded:{news.get('mode') or 'news_stale_reduce_only'}"
+            f" risk_add={bool(news.get('risk_increase_allowed'))}"
+            f" reduce_only={bool(news.get('reduce_only_allowed'))}"
+        )
+
+    return (
+        "<b>Safety posture</b>\n"
+        f"  account={account_text} | auto_pause={auto_text} | "
+        f"lifecycle={lifecycle_text} | reconciliation={recon_text} | news={news_text}\n\n"
+    )
 
 
 def _format_decision_ledger_line(ledger: dict) -> str:

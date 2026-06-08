@@ -30,6 +30,35 @@ class CommunicatorScorecardTest(unittest.TestCase):
         payload = _build_payload(
             {
                 "auth_mode": "SEMI_AUTO",
+                "account_state_guard_config": {
+                    "mode": "blocking",
+                    "configured_mode": "observe",
+                    "mode_forced_reason": "semi_auto_requires_fresh_account_truth",
+                },
+                "account_state_guard": {
+                    "mode": "blocking",
+                    "status": "pass",
+                    "execution_effect": "blocking",
+                },
+                "auto_pause_config": {"mode": "active"},
+                "auto_pause": {
+                    "mode": "active",
+                    "status": "pass",
+                    "execution_effect": "blocking",
+                },
+                "execution_lifecycle_config": {"mode": "strict", "strict": True},
+                "reconciliation_guard_config": {"mode": "blocking"},
+                "reconciliation_guard": {
+                    "mode": "blocking",
+                    "status": "pass",
+                    "execution_effect": "blocking",
+                },
+                "news_degraded_mode": {
+                    "enabled": True,
+                    "mode": "news_stale_reduce_only",
+                    "risk_increase_allowed": False,
+                    "reduce_only_allowed": True,
+                },
                 "market_scorecard": {
                     "market_condition": "bullish_but_mixed",
                     "investment_permission": "small_overweight_only",
@@ -213,6 +242,9 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertEqual(payload["knowledge_resolution"]["calibration"]["summary"]["accepted"], 1)
         self.assertEqual(payload["execution_gateway"]["final_permission"], "human_required")
         self.assertEqual(payload["strategy_certification"]["items"][0]["status"], "research_supported")
+        self.assertEqual(payload["safety_posture"]["account_state_guard"]["mode"], "blocking")
+        self.assertEqual(payload["safety_posture"]["account_state_guard"]["configured_mode"], "observe")
+        self.assertTrue(payload["safety_posture"]["news_degraded_mode"]["enabled"])
         self.assertEqual(payload["data_quality_detail"]["feature_authority_counts"]["daily_research"], 20)
         self.assertEqual(payload["evidence_cap_observe"]["would_clip_count"], 1)
         self.assertEqual(payload["evidence_cap_observe"]["rows"][0]["ticker"], "DRAM")
@@ -235,6 +267,23 @@ class CommunicatorScorecardTest(unittest.TestCase):
                 "auth_mode": "SEMI_AUTO",
                 "timeout_minutes": 20,
                 "debate_summary": {},
+                "safety_posture": {
+                    "account_state_guard": {
+                        "mode": "blocking",
+                        "configured_mode": "observe",
+                        "status": "pass",
+                        "forced_reason": "semi_auto_requires_fresh_account_truth",
+                    },
+                    "auto_pause": {"mode": "active", "status": "pass"},
+                    "execution_lifecycle": {"mode": "strict", "strict": True},
+                    "reconciliation_guard": {"mode": "blocking", "status": "pass"},
+                    "news_degraded_mode": {
+                        "enabled": True,
+                        "mode": "news_stale_reduce_only",
+                        "risk_increase_allowed": False,
+                        "reduce_only_allowed": True,
+                    },
+                },
                 "market_scorecard": {
                     "market_condition": "bullish_but_mixed",
                     "investment_permission": "small_overweight_only",
@@ -420,6 +469,10 @@ class CommunicatorScorecardTest(unittest.TestCase):
         self.assertIn("confidence calibration: accepted=1, rejected=0", text)
         self.assertIn("Strategy certification", text)
         self.assertIn("momentum_lite_v1=research_supported", text)
+        self.assertIn("Safety posture", text)
+        self.assertIn("account=blocking/pass (configured=observe)", text)
+        self.assertIn("forced=semi_auto_requires_fresh_account_truth", text)
+        self.assertIn("news=degraded:news_stale_reduce_only risk_add=False reduce_only=True", text)
         self.assertIn("/confirm", text)
 
     def test_rejected_fallback_shows_scorecard(self):

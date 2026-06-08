@@ -1,9 +1,9 @@
 id: llm_advisory_boundary
 type: risk_principle
-summary: LLM can propose lifecycle actions but deterministic validator is final.
+summary: LLM can propose candidate-set lifecycle actions; deterministic validator is final and clips all influence.
 trigger_conditions: [position_advisory_proposal]
 governance_action: validate_clip_reject_or_convert
 applies_to: [all_assets]
-cannot_override: [risk_manager, position_governance, position_manager]
+cannot_override: [recall_universe, risk_manager, position_governance, position_manager, full_auto_no_add_policy]
 sources: [risk_governance_policy]
-last_reviewed: 2026-05-18
+last_reviewed: 2026-06-08

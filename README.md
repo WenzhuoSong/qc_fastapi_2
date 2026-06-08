@@ -98,7 +98,7 @@ Stage 9   branch               Python    rejected / SEMI_AUTO pending / FULL_AUT
 ```
  base_weights       research_report      bull/bear_output     advisory_proposals      target_weights
  (Stage 2 Python) → (Stage 3 LLM)     → (Stage 4a/4b LLM) → (Stage 5 LLM)       → (Stage 5e/6 Python) → QC
-   量化召回/基准        信息合成              多空辩论              语义建议/否决权             确定性构造+风控
+  量化召回/基准        信息合成              多空辩论              受限 advisory influence    确定性构造+风控
 ```
 
 Legacy `adjusted_weights` may still appear in Stage 5 diagnostics for review,
@@ -106,6 +106,12 @@ but it is not an executable input. `target_builder` rejects raw LLM weight
 sources and only constructs executable tickers from deterministic candidate
 sources: quant recall, current holdings, gated portfolio construction, and
 approved hedge intent.
+
+LLM advisory is not pure veto power. Its accurate boundary is: candidate-set
+only, deterministic-validator-gated, and magnitude-limited advisory influence.
+By default this influence is capped by Position Governance; in FULL_AUTO, LLM
+advisory cannot increase positions and may only contribute bounded trim-style
+influence after deterministic validation.
 
 LLM calls per cycle: **4** — RESEARCHER (info synthesis) + BULL/BEAR
 (parallel debate, counted as 2) + SYNTHESIZER (arbitration). All on the
@@ -171,6 +177,9 @@ increases CASH to 30%.
 The CIO / arbitrator. Weighs Bull vs Bear evidence quality, identifies
 consensus and divergence points, and produces semantic advisory proposals.
 It has no recall authority and does not construct executable target weights.
+Those proposals can still influence targets inside the recall/current-holding
+set after deterministic validation and clipping, so they should be described as
+limited advisory influence, not raw execution authority.
 Legacy diagnostic `adjusted_weights` can be logged for compatibility/review,
 but Python `target_builder` is the execution boundary. Uses 5-level stance:
 buy / overweight / maintain / underweight / sell. Auto-detects uncertainty

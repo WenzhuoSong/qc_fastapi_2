@@ -515,14 +515,19 @@ class CircuitBreakerMonitor:
     # ── State Machine Logic ───────────────────────────────────────────────────
 
     def _parse_state(self, circuit_cfg) -> CircuitState:
-        """Parse circuit state from system_config."""
+        """Parse circuit state from system_config.
+
+        Missing or malformed circuit state must fail safe. The circuit latch is
+        a trading safety control, so an unreadable state is treated as ALERT
+        rather than silently reopening the loop.
+        """
         if circuit_cfg:
-            val = (circuit_cfg.value or {}).get("value", "CLOSED")
+            val = (circuit_cfg.value or {}).get("value", "ALERT")
             try:
                 return CircuitState(val)
             except ValueError:
-                return CircuitState.CLOSED
-        return CircuitState.CLOSED
+                return CircuitState.ALERT
+        return CircuitState.ALERT
 
     def _compute_next_state(
         self,

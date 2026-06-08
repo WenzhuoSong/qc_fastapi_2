@@ -20,6 +20,7 @@ from services.hedge_intent_outcome_log import (
     summarize_hedge_threshold_assessments,
 )
 from services.json_safety import json_safe
+from services.market_calendar import us_equity_market_status
 from services.outcome_label_policy import outcome_label_contract_summary
 
 
@@ -83,6 +84,12 @@ def build_validation_observation_records_from_analysis(
     if analysis_id is None:
         return []
     analyzed_at = _parse_datetime(_record_get(analysis, "analyzed_at")) or _utcnow()
+    market_verdict = _agent_analysis_market_open_verdict(
+        analysis_id=analysis_id,
+        analyzed_at=analyzed_at,
+    )
+    if not market_verdict["allowed"]:
+        return []
     risk = _record_get(analysis, "risk_output") or {}
     trigger_type = _record_get(analysis, "trigger_type")
     execution_status = _record_get(analysis, "execution_status")
@@ -597,7 +604,11 @@ async def load_validation_observation_summary(db: Any, *, limit: int = 50) -> di
             )
         ).scalars().all()
     )
-    compact = [_model_observation_to_dict(row) for row in rows]
+    raw_compact = [_model_observation_to_dict(row) for row in rows]
+    compact = [
+        row for row in raw_compact
+        if _validation_observation_market_open_verdict(row)["allowed"]
+    ]
     counts: dict[str, int] = {}
     for row in compact:
         key = f"{row.get('observation_type')}:{row.get('status')}"
@@ -612,6 +623,7 @@ async def load_validation_observation_summary(db: Any, *, limit: int = 50) -> di
         "execution_authority": EXECUTION_AUTHORITY,
         "target_weight_mutation": TARGET_WEIGHT_MUTATION,
         "sampled": len(compact),
+        "excluded_input_count": len(raw_compact) - len(compact),
         "observation_counts": dict(sorted(counts.items())),
         "hedge_threshold_summary": summarize_hedge_threshold_assessments(hedge_records),
         "recent_observations": [
@@ -1064,6 +1076,53 @@ def _model_observation_to_dict(row: Any) -> dict[str, Any]:
         "recommendation": row.recommendation or {},
         "content_hash": row.content_hash,
     }
+
+
+def _agent_analysis_market_open_verdict(
+    *,
+    analysis_id: int | None,
+    analyzed_at: datetime,
+) -> dict[str, Any]:
+    dt = _as_utc_aware(analyzed_at)
+    status = us_equity_market_status(dt)
+    if status.is_open:
+        return {"allowed": True, "reasons": [], "market_status": status.to_dict()}
+    return {
+        "allowed": False,
+        "reasons": ["analysis_outside_market_open"],
+        "payload": {
+            "id": analysis_id,
+            "analyzed_at": dt.isoformat(),
+            "market_status": status.to_dict(),
+        },
+    }
+
+
+def _validation_observation_market_open_verdict(payload: dict[str, Any]) -> dict[str, Any]:
+    observation_payload = payload.get("observation_payload")
+    if not isinstance(observation_payload, dict):
+        return {"allowed": True, "reasons": []}
+    source = str(observation_payload.get("source") or "").strip()
+    if not source.startswith("agent_analysis."):
+        return {"allowed": True, "reasons": []}
+
+    observed_at = _parse_datetime(payload.get("observed_at"))
+    if observed_at is None:
+        return {"allowed": False, "reasons": ["analysis_time_missing"]}
+    status = us_equity_market_status(_as_utc_aware(observed_at))
+    if status.is_open:
+        return {"allowed": True, "reasons": [], "market_status": status.to_dict()}
+    return {
+        "allowed": False,
+        "reasons": ["analysis_outside_market_open"],
+        "market_status": status.to_dict(),
+    }
+
+
+def _as_utc_aware(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _feature_row_dict(value: Any) -> dict[str, Any]:

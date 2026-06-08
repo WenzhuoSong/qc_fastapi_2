@@ -13,14 +13,39 @@ from services.validation_observation_loop import (
     build_validation_observation_records_from_analysis,
     complete_hedge_observation_if_mature,
     forward_return_from_feature_rows,
+    _validation_observation_market_open_verdict,
 )
 
 
 class ValidationObservationLoopTests(unittest.TestCase):
+    def test_agent_analysis_outside_market_open_is_not_observed(self):
+        records = build_validation_observation_records_from_analysis({
+            "id": 41,
+            "analyzed_at": datetime(2026, 6, 6, 10, 0, 0),
+            "risk_output": {
+                "approved": True,
+                "target_weights": {"QQQ": 0.10, "CASH": 0.90},
+                "final_validation": {"approved": True},
+            },
+        })
+
+        self.assertEqual(records, [])
+
+    def test_historical_agent_analysis_observation_outside_market_open_is_excluded(self):
+        verdict = _validation_observation_market_open_verdict({
+            "observed_at": datetime(2026, 6, 5, 22, 0, 0),
+            "observation_payload": {
+                "source": "agent_analysis.risk_output",
+            },
+        })
+
+        self.assertFalse(verdict["allowed"])
+        self.assertIn("analysis_outside_market_open", verdict["reasons"])
+
     def test_builds_hedge_and_basket_observations_from_analysis(self):
         records = build_validation_observation_records_from_analysis({
             "id": 42,
-            "analyzed_at": datetime(2026, 6, 6, 10, 0, 0),
+            "analyzed_at": datetime(2026, 6, 5, 14, 0, 0),
             "trigger_type": "scheduled",
             "execution_status": "pending",
             "risk_output": {
@@ -84,7 +109,7 @@ class ValidationObservationLoopTests(unittest.TestCase):
     def test_intent_vs_execution_records_approved_target_not_sent(self):
         records = build_validation_observation_records_from_analysis({
             "id": 45,
-            "analyzed_at": datetime(2026, 6, 6, 11, 0, 0),
+            "analyzed_at": datetime(2026, 6, 5, 15, 0, 0),
             "trigger_type": "scheduled",
             "execution_status": "deduped",
             "risk_output": {
@@ -108,7 +133,7 @@ class ValidationObservationLoopTests(unittest.TestCase):
         records = build_validation_observation_records_from_analysis(
             {
                 "id": 46,
-                "analyzed_at": datetime(2026, 6, 6, 11, 30, 0),
+                "analyzed_at": datetime(2026, 6, 5, 15, 30, 0),
                 "trigger_type": "scheduled",
                 "execution_status": "rejected",
                 "risk_output": {
@@ -196,7 +221,7 @@ class ValidationObservationLoopTests(unittest.TestCase):
     def test_backfills_mature_hedge_observation(self):
         records = build_validation_observation_records_from_analysis({
             "id": 43,
-            "analyzed_at": datetime(2026, 6, 1, 10, 0, 0),
+            "analyzed_at": datetime(2026, 6, 1, 14, 0, 0),
             "risk_output": {
                 "hedge_intent_outcome": {
                     "date": "2026-06-01",

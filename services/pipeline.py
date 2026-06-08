@@ -94,7 +94,10 @@ from services.auto_pause import (
     default_auto_pause_config,
     load_auto_pause_verdict,
 )
-from services.execution_lifecycle import default_execution_lifecycle_config
+from services.execution_lifecycle import (
+    default_execution_lifecycle_config,
+    is_reduce_only_vs_actual,
+)
 from services.reconciliation_guard import (
     default_reconciliation_guard_config,
     format_reconciliation_guard_alert,
@@ -545,6 +548,16 @@ async def _guard_and_config(trigger: str) -> dict | None:
     account_state_guard_config = default_account_state_guard_config(
         (account_guard_cfg.value if account_guard_cfg else {}) or {}
     )
+    account_state_guard_config["configured_mode"] = account_state_guard_config.get("mode")
+    if auth_mode == "SEMI_AUTO":
+        configured_mode = str(account_state_guard_config.get("configured_mode") or "observe")
+        account_state_guard_config["mode"] = "blocking"
+        account_state_guard_config["semi_auto_effective_mode"] = "blocking"
+        account_state_guard_config["mode_forced_reason"] = (
+            "semi_auto_requires_fresh_account_truth"
+            if configured_mode != "blocking"
+            else None
+        )
     account_state_guard_config["expected_policy_version"] = str(policy_snapshot().get("version") or "")
     auto_pause_config = default_auto_pause_config(
         (auto_pause_cfg.value if auto_pause_cfg else {}) or {}
@@ -763,12 +776,14 @@ async def _save_step_log(
 async def run_full_pipeline(trigger: str = "scheduled_hourly", *, require_trading_gate: bool = True) -> dict:
     """Run full agent pipeline."""
     logger.info(f"=== Pipeline START | trigger={trigger} ===")
+    trading_analysis_gate: dict[str, Any] | None = None
 
     if require_trading_gate:
         try:
             from services.trading_analysis_gate import evaluate_trading_analysis_gate
 
             gate = await evaluate_trading_analysis_gate(require_market_open=True)
+            trading_analysis_gate = gate
         except Exception as gate_error:
             logger.exception("[trading_analysis_gate] unavailable; skipping pipeline")
             return {
@@ -791,12 +806,12 @@ async def run_full_pipeline(trigger: str = "scheduled_hourly", *, require_tradin
         return {"status": "skipped_concurrent"}
 
     try:
-        return await _run_pipeline_inner(trigger)
+        return await _run_pipeline_inner(trigger, trading_analysis_gate=trading_analysis_gate)
     finally:
         await _release_pipeline_lock()
 
 
-async def _run_pipeline_inner(trigger: str) -> dict:
+async def _run_pipeline_inner(trigger: str, *, trading_analysis_gate: dict[str, Any] | None = None) -> dict:
     model_heavy = settings.openai_model_heavy
 
     # Local monitor telemetry facade. Durable per-stage data is written to AgentStepLog.
@@ -825,6 +840,17 @@ async def _run_pipeline_inner(trigger: str) -> dict:
     if pipeline_context is None:
         tracker.end_run("skipped_gated")
         return {"status": "skipped_gated"}
+    if trading_analysis_gate:
+        pipeline_context["trading_analysis_gate"] = trading_analysis_gate
+        if trading_analysis_gate.get("news_degraded_mode"):
+            pipeline_context["news_degraded_mode"] = {
+                "enabled": True,
+                "mode": trading_analysis_gate.get("degraded_mode") or "news_stale_reduce_only",
+                "reason": trading_analysis_gate.get("reason"),
+                "news_cache": trading_analysis_gate.get("news_cache") or {},
+                "risk_increase_allowed": bool(trading_analysis_gate.get("risk_increase_allowed")),
+                "reduce_only_allowed": bool(trading_analysis_gate.get("reduce_only_allowed", True)),
+            }
 
     try:
         account_state_guard = await load_latest_account_state_guard(
@@ -1960,6 +1986,11 @@ async def _run_pipeline_inner(trigger: str) -> dict:
         governance_config = dict(pipeline_context.get("position_governance_config") or {})
         if auth_mode == "FULL_AUTO":
             governance_config["advisory_basket_loss_auto_trim_enabled"] = 1.0
+            # FULL_AUTO keeps LLM advisory as trim-only influence. The LLM can
+            # still surface lifecycle concerns, but it cannot increase a live
+            # target weight without deterministic hedge/strategy construction.
+            governance_config["llm_advisory_max_add_pct"] = 0.0
+            governance_config["llm_advisory_full_auto_policy"] = "trim_only_no_add"
         if full_auto_governance_only:
             governance_config["replacement_enabled"] = 0.0
             governance_config["llm_advisory_enabled"] = 0.0
@@ -2440,8 +2471,49 @@ async def _run_pipeline_inner(trigger: str) -> dict:
 
     # Stage 9: Branch execution
     auth_mode = pipeline_context["auth_mode"]
+    news_degraded_gate = _evaluate_news_degraded_execution_gate(
+        pipeline_context=pipeline_context,
+        risk_out=risk_out,
+        current_weights=(pipeline_context.get("brief") or {}).get("current_weights") or {},
+    )
+    risk_out["news_degraded_execution_gate"] = news_degraded_gate
+    if not news_degraded_gate.get("allowed", True):
+        await _save_step_log(
+            analysis_id,
+            "8c_news_degraded_execution_gate",
+            "news_degraded_execution_gate",
+            input_data={
+                "analysis_id": analysis_id,
+                "approved": bool(risk_out.get("approved")),
+                "auth_mode": auth_mode,
+            },
+            output_data=news_degraded_gate,
+            duration_ms=0,
+            failed=True,
+        )
+        await _update_analysis_risk_output(analysis_id, risk_out)
+        await _save_execution(
+            analysis_id,
+            {
+                "execution_status": "skipped_news_stale_risk_increase",
+                "execution_audit": build_execution_audit_payload(
+                    action_status="skipped_news_stale_risk_increase",
+                    proposed_weights=risk_out.get("target_weights") or {},
+                    rebalance_actions=risk_out.get("rebalance_actions") or [],
+                    estimated_cost_pct=float(risk_out.get("estimated_cost_pct") or 0.0),
+                    reason=news_degraded_gate.get("reason") or "news_stale_degraded_mode_blocks_risk_increase",
+                ),
+            },
+        )
+        message = (
+            remove_command_hints(comm_out["text"]).rstrip()
+            + "\n\n⚠️ <b>News stale degraded mode</b>\n"
+            + "  Risk-increasing proposal blocked. Reduce-only actions remain allowed after deterministic checks."
+        )
+        await tool_send_telegram({"text": message})
+        pipeline_status = "skipped_news_stale_risk_increase"
 
-    if not approved:
+    elif not approved:
         should_notify, suppress_reason = await _should_notify_rejected_pipeline(
             risk_out=risk_out,
             synthesizer_out=synthesizer_out,
@@ -2515,6 +2587,51 @@ async def _run_pipeline_inner(trigger: str) -> dict:
 
 
 # ─────────────────────────────── SEMI_AUTO Proposal ───────────────────────────────
+
+
+def _evaluate_news_degraded_execution_gate(
+    *,
+    pipeline_context: dict,
+    risk_out: dict,
+    current_weights: dict,
+) -> dict[str, Any]:
+    degraded = pipeline_context.get("news_degraded_mode") or {}
+    if not degraded.get("enabled"):
+        return {
+            "allowed": True,
+            "status": "not_applicable",
+            "reason": "news_cache_ok_or_gate_not_required",
+            "execution_effect": "none",
+        }
+    if not risk_out.get("approved"):
+        return {
+            "allowed": True,
+            "status": "risk_rejected_no_execution",
+            "reason": degraded.get("reason") or "news_stale_degraded_mode",
+            "execution_effect": "none",
+            "degraded_mode": degraded.get("mode") or "news_stale_reduce_only",
+        }
+
+    target_weights = risk_out.get("target_weights") or {}
+    reduce_only = is_reduce_only_vs_actual(target_weights, current_weights or {})
+    if reduce_only:
+        return {
+            "allowed": True,
+            "status": "reduce_only_allowed",
+            "reason": degraded.get("reason") or "news_stale_degraded_mode",
+            "execution_effect": "allow_reduce_only",
+            "degraded_mode": degraded.get("mode") or "news_stale_reduce_only",
+            "reduce_only": True,
+        }
+    return {
+        "allowed": False,
+        "status": "blocked_risk_increase",
+        "reason": "news_stale_degraded_mode_blocks_risk_increase",
+        "execution_effect": "blocking",
+        "degraded_mode": degraded.get("mode") or "news_stale_reduce_only",
+        "reduce_only": False,
+        "news_cache": degraded.get("news_cache") or {},
+    }
 
 
 async def _should_notify_rejected_pipeline(

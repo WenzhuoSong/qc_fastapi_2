@@ -49,7 +49,7 @@ class TradingAnalysisGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(gate["allowed"])
         self.assertEqual(gate["reason"], "ok")
 
-    async def test_open_market_blocks_stale_news(self):
+    async def test_open_market_allows_news_degraded_reduce_only_mode(self):
         with patch(
             "services.trading_analysis_gate.us_equity_market_status",
             return_value=_FakeMarketStatus(True, True, "regular_hours", "open"),
@@ -59,8 +59,12 @@ class TradingAnalysisGateTests(unittest.IsolatedAsyncioTestCase):
         ):
             gate = await evaluate_trading_analysis_gate()
 
-        self.assertFalse(gate["allowed"])
-        self.assertEqual(gate["reason"], "news_cache_not_ready:missed_run")
+        self.assertTrue(gate["allowed"])
+        self.assertEqual(gate["reason"], "news_cache_degraded:missed_run")
+        self.assertTrue(gate["news_degraded_mode"])
+        self.assertEqual(gate["degraded_mode"], "news_stale_reduce_only")
+        self.assertFalse(gate["risk_increase_allowed"])
+        self.assertTrue(gate["reduce_only_allowed"])
 
 
 if __name__ == "__main__":

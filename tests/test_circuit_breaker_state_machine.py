@@ -20,6 +20,13 @@ class _ConfigRow:
 
 @unittest.skipIf(_CIRCUIT_IMPORT_ERROR, _CIRCUIT_IMPORT_ERROR or "")
 class CircuitBreakerStateMachineTests(unittest.TestCase):
+    def test_missing_or_malformed_circuit_state_fails_safe_to_alert(self):
+        monitor = CircuitBreakerMonitor(CircuitConfig())
+
+        self.assertEqual(monitor._parse_state(None), CircuitState.ALERT)
+        self.assertEqual(monitor._parse_state(_ConfigRow({})), CircuitState.ALERT)
+        self.assertEqual(monitor._parse_state(_ConfigRow({"value": "BROKEN"})), CircuitState.ALERT)
+
     def test_alert_closes_after_cooldown_when_escalations_clear(self):
         monitor = CircuitBreakerMonitor(
             CircuitConfig(cooldown_minutes=30, persistent_alert_hours=2)
