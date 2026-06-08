@@ -17,6 +17,7 @@ from services.execution_lifecycle import (
     load_active_execution_command,
 )
 from services.execution_policy import policy_snapshot
+from services.broker_order_filter import apply_broker_order_filter
 from services.execution_preflight import (
     check_recent_same_target_dedupe,
     format_command_preflight_blockers,
@@ -144,6 +145,7 @@ async def run_executor_async(
         }
     execution_throttle = risk_out.get("execution_throttle") or {}
     desired_weights = execution_throttle.get("desired_target_weights") or weights
+    current_weights = final_validation.get("current_weights") or {}
 
     # Gate 3: weight check (excluding CASH)
     equity_w = {k: v for k, v in weights.items() if k != "CASH"}
@@ -186,6 +188,58 @@ async def run_executor_async(
                 reason="blocked_by_execution_policy",
             ),
             "preflight": preflight,
+        }
+
+    broker_order_filter = await apply_broker_order_filter(
+        target_weights=weights,
+        current_weights=current_weights,
+        config=pipeline_context.get("execution_command_config") or {},
+    )
+    if broker_order_filter.get("adjusted"):
+        weights = broker_order_filter.get("target_weights") or weights
+        equity_w = {k: v for k, v in weights.items() if k != "CASH"}
+        suppressed = broker_order_filter.get("suppressed_orders") or []
+        logger.info(
+            "[executor] broker order filter suppressed %s micro orders for analysis_id=%s",
+            len(suppressed),
+            analysis_id,
+        )
+        post_broker_preflight = preflight_execution_weights(weights)
+        if not post_broker_preflight.get("allowed"):
+            await tool_send_telegram({
+                "text": (
+                    f"⛔ Broker order filter blocked `{analysis_id}` after suppressing micro orders.\n"
+                    "Filtered target no longer satisfies execution policy. No command sent to QC."
+                )
+            })
+            return {
+                "execution_status": "rejected",
+                "broker_order_filter": broker_order_filter,
+                "preflight": post_broker_preflight,
+                "execution_audit": build_execution_audit_payload(
+                    action_status="rejected",
+                    proposed_weights=desired_weights,
+                    sent_weights=weights,
+                    reason="broker_order_filter_policy_violation",
+                ),
+            }
+    if broker_order_filter.get("no_executable_delta"):
+        suppressed = broker_order_filter.get("suppressed_orders") or []
+        await tool_send_telegram({
+            "text": (
+                f"⏭ Command skipped `{analysis_id}`: broker order filter left no executable delta.\n"
+                f"Suppressed micro orders: {len(suppressed)}. No command sent to QC."
+            )
+        })
+        return {
+            "execution_status": "skipped_broker_order_filter",
+            "broker_order_filter": broker_order_filter,
+            "execution_audit": build_execution_audit_payload(
+                action_status="skipped",
+                proposed_weights=desired_weights,
+                sent_weights=weights,
+                reason="broker_order_filter_no_executable_delta",
+            ),
         }
 
     # Send weights
@@ -283,12 +337,13 @@ async def run_executor_async(
         command_id=command_id,
         analysis_id=analysis_id,
         target_weights=weights,
-        current_weights=(final_validation.get("current_weights") or {}),
+        current_weights=current_weights,
         policy_version=policy_version,
         policy_sync_result=policy_sync,
         policy_alignment_result=policy_alignment,
         config=pipeline_context.get("execution_command_config") or {},
     )
+    command_preflight["broker_order_filter"] = broker_order_filter
     if not command_preflight.get("allowed"):
         blockers = set(command_preflight.get("blockers") or [])
         budget_only_blockers = blockers and blockers <= {"daily_command_count_ok", "daily_gross_turnover_ok"}
@@ -453,6 +508,11 @@ async def run_executor_async(
                 f"buy_delta {float(before or 0):.2%}->{float(after or 0):.2%}, "
                 f"deferred {float(deferred or 0):.2%}"
             )
+        if broker_order_filter.get("adjusted"):
+            msg += (
+                "\nBroker order filter: "
+                f"suppressed {len(broker_order_filter.get('suppressed_orders') or [])} micro order(s)"
+            )
         await tool_send_telegram({"text": msg})
         qc_ack = await wait_for_qc_ack_detail(command_id)
         qc_status = qc_ack.get("qc_status")
@@ -479,6 +539,7 @@ async def run_executor_async(
             "active_execution_gate": active_execution_gate,
             "policy_sync": policy_sync,
             "policy_alignment": policy_alignment,
+            "broker_order_filter": broker_order_filter,
             "execution_audit": build_execution_audit_payload(
                 action_status="accepted" if qc_status in QC_OWNERSHIP_STATUSES else "sent",
                 proposed_weights=desired_weights,

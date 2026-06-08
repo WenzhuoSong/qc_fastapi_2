@@ -11,6 +11,7 @@ from tools.db_tools     import tool_verify_approval_token
 from tools.qc_tools     import tool_send_cancel_orders_command
 from tools.notify_tools import tool_send_telegram
 from services.qc_command_sender import send_setweights_command
+from services.broker_order_filter import apply_broker_order_filter
 from services.proposal  import load_pending_proposal, mark_proposal_done, validate_proposal_still_relevant
 from services.pc_promotion_config import default_pc_promotion_config, format_pc_promotion_config
 from services.execution_log_store import (
@@ -107,6 +108,7 @@ async def _cmd_confirm() -> str:
     weight_preflight = preflight_execution_weights(weights)
     if not weight_preflight.get("allowed"):
         return f"❌ Execution preflight blocked: {weight_preflight.get('policy_evaluation', {}).get('violations')}"
+    current_weights = final_validation.get("current_weights") or {}
 
     policy = policy_snapshot()
     _account_guard, policy_alignment = await _load_manual_confirm_policy_alignment(
@@ -132,6 +134,27 @@ async def _cmd_confirm() -> str:
 
     async with AsyncSessionLocal() as db:
         lifecycle_cfg = await get_system_config(db, "execution_lifecycle_config")
+        execution_command_cfg = await get_system_config(db, "execution_command_config")
+    broker_order_filter = await apply_broker_order_filter(
+        target_weights=weights,
+        current_weights=current_weights,
+        config=(execution_command_cfg.value if execution_command_cfg else {}) or {},
+    )
+    if broker_order_filter.get("adjusted"):
+        weights = broker_order_filter.get("target_weights") or weights
+        post_broker_preflight = preflight_execution_weights(weights)
+        if not post_broker_preflight.get("allowed"):
+            return (
+                "❌ Broker order filter suppressed micro orders, but the filtered target no longer "
+                "satisfies execution policy. No command sent to QC."
+            )
+    if broker_order_filter.get("no_executable_delta"):
+        await mark_proposal_done(pending.get("analysis_id"), "skipped_broker_order_filter")
+        return (
+            "⏭ Command not sent: broker order filter left no executable delta.\n"
+            f"Suppressed micro orders: {len(broker_order_filter.get('suppressed_orders') or [])}."
+        )
+
     active_execution = await load_active_execution_command()
     active_execution_gate = evaluate_active_execution_gate(
         target_weights=weights,
@@ -159,12 +182,13 @@ async def _cmd_confirm() -> str:
         command_id=command_id or "",
         analysis_id=analysis_id,
         target_weights=weights,
-        current_weights=final_validation.get("current_weights") or {},
+        current_weights=current_weights,
         policy_version=policy.get("version"),
         policy_sync_result=policy_sync,
         policy_alignment_result=policy_alignment,
-        config={},
+        config=(execution_command_cfg.value if execution_command_cfg else {}) or {},
     )
+    command_preflight["broker_order_filter"] = broker_order_filter
     if not command_preflight.get("allowed"):
         if "command_id_idempotent" not in (command_preflight.get("blockers") or []):
             await record_preflight_block(

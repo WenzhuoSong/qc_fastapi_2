@@ -90,10 +90,12 @@ class ExecutorPreflightTests(unittest.TestCase):
 
     def test_executor_dedupes_recent_same_target_after_preflight_before_send(self):
         text = Path("agents/executor.py").read_text()
+        broker_pos = text.index("broker_order_filter = await apply_broker_order_filter")
         preflight_pos = text.index("command_preflight = await preflight_execution_command")
         dedupe_pos = text.index("same_target_dedupe = await check_recent_same_target_dedupe")
         send_pos = text.index("result = await send_setweights_command")
 
+        self.assertLess(broker_pos, preflight_pos)
         self.assertLess(preflight_pos, dedupe_pos)
         self.assertLess(dedupe_pos, send_pos)
         self.assertIn("policy_version=policy_version", text)
@@ -102,6 +104,21 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn('"execution_status": "deduped"', text)
         self.assertIn("No command sent to QC", text)
         self.assertIn("same target fingerprint", text)
+        self.assertIn('command_preflight["broker_order_filter"] = broker_order_filter', text)
+
+    def test_executor_filters_broker_micro_orders_before_active_gate(self):
+        text = Path("agents/executor.py").read_text()
+
+        broker_pos = text.index("broker_order_filter = await apply_broker_order_filter")
+        active_pos = text.index("active_execution_gate = evaluate_active_execution_gate")
+        preflight_pos = text.index("command_preflight = await preflight_execution_command")
+        send_pos = text.index("result = await send_setweights_command")
+
+        self.assertLess(broker_pos, active_pos)
+        self.assertLess(broker_pos, preflight_pos)
+        self.assertLess(broker_pos, send_pos)
+        self.assertIn("skipped_broker_order_filter", text)
+        self.assertIn("broker order filter left no executable delta", text)
 
     def test_executor_budget_only_preflight_block_can_dedupe_before_blocking(self):
         text = Path("agents/executor.py").read_text()
@@ -148,6 +165,7 @@ class ExecutorPreflightTests(unittest.TestCase):
         confirm_body = text[text.index("async def _cmd_confirm") : text.index("async def _load_manual_confirm_policy_alignment")]
 
         relevance_pos = confirm_body.index("validate_proposal_still_relevant")
+        broker_pos = confirm_body.index("broker_order_filter = await apply_broker_order_filter")
         active_pos = confirm_body.index("active_execution_gate = evaluate_active_execution_gate")
         preflight_pos = confirm_body.index("command_preflight = await preflight_execution_command")
         dedupe_pos = confirm_body.index("same_target_dedupe = await check_recent_same_target_dedupe")
@@ -155,6 +173,7 @@ class ExecutorPreflightTests(unittest.TestCase):
         send_pos = confirm_body.index("result = await send_setweights_command")
 
         self.assertLess(relevance_pos, token_pos)
+        self.assertLess(broker_pos, active_pos)
         self.assertLess(active_pos, token_pos)
         self.assertLess(preflight_pos, token_pos)
         self.assertLess(dedupe_pos, token_pos)
@@ -164,6 +183,7 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn("target_fingerprint=target_fingerprint", confirm_body)
         self.assertIn("Proposal invalidated before confirmation", confirm_body)
         self.assertIn("active execution is still pending reconciliation", confirm_body)
+        self.assertIn('command_preflight["broker_order_filter"] = broker_order_filter', confirm_body)
 
     def test_timed_out_proposal_auto_execution_is_disabled(self):
         text = Path("services/proposal.py").read_text()
