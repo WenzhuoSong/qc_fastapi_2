@@ -65,7 +65,7 @@ class ExecutorPreflightTests(unittest.TestCase):
     def test_executor_requires_account_guard_policy_alignment_before_setweights(self):
         text = Path("agents/executor.py").read_text()
         alignment_pos = text.index("policy_alignment = policy_alignment_from_account_guard")
-        send_pos = text.index("result = await tool_send_weight_command")
+        send_pos = text.index("result = await send_setweights_command")
 
         self.assertLess(alignment_pos, send_pos)
         self.assertNotIn("tool_send_policy_sync", text)
@@ -79,7 +79,7 @@ class ExecutorPreflightTests(unittest.TestCase):
         text = Path("agents/executor.py").read_text()
         active_pos = text.index("active_execution_gate = evaluate_active_execution_gate")
         preflight_pos = text.index("command_preflight = await preflight_execution_command")
-        send_pos = text.index("result = await tool_send_weight_command")
+        send_pos = text.index("result = await send_setweights_command")
 
         self.assertLess(active_pos, preflight_pos)
         self.assertLess(active_pos, send_pos)
@@ -92,7 +92,7 @@ class ExecutorPreflightTests(unittest.TestCase):
         text = Path("agents/executor.py").read_text()
         preflight_pos = text.index("command_preflight = await preflight_execution_command")
         dedupe_pos = text.index("same_target_dedupe = await check_recent_same_target_dedupe")
-        send_pos = text.index("result = await tool_send_weight_command")
+        send_pos = text.index("result = await send_setweights_command")
 
         self.assertLess(preflight_pos, dedupe_pos)
         self.assertLess(dedupe_pos, send_pos)
@@ -134,7 +134,7 @@ class ExecutorPreflightTests(unittest.TestCase):
         text = Path("services/telegram_commands.py").read_text()
         confirm_body = text[text.index("async def _cmd_confirm") : text.index("async def _load_manual_confirm_policy_alignment")]
         alignment_pos = confirm_body.index("_load_manual_confirm_policy_alignment")
-        send_pos = confirm_body.index("result = await tool_send_weight_command")
+        send_pos = confirm_body.index("result = await send_setweights_command")
 
         self.assertLess(alignment_pos, send_pos)
         self.assertNotIn("tool_send_policy_sync", confirm_body)
@@ -142,6 +142,34 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertNotIn("wait_for_qc_ack_detail(policy_sync_id", confirm_body)
         self.assertIn("No recent account state policy alignment", confirm_body)
         self.assertIn("Deploy/sync the QC compiled policy before confirming", confirm_body)
+
+    def test_telegram_confirm_revalidates_proposal_and_active_execution_before_token_consumption(self):
+        text = Path("services/telegram_commands.py").read_text()
+        confirm_body = text[text.index("async def _cmd_confirm") : text.index("async def _load_manual_confirm_policy_alignment")]
+
+        relevance_pos = confirm_body.index("validate_proposal_still_relevant")
+        active_pos = confirm_body.index("active_execution_gate = evaluate_active_execution_gate")
+        preflight_pos = confirm_body.index("command_preflight = await preflight_execution_command")
+        token_pos = confirm_body.index("verify = await tool_verify_approval_token")
+        send_pos = confirm_body.index("result = await send_setweights_command")
+
+        self.assertLess(relevance_pos, token_pos)
+        self.assertLess(active_pos, token_pos)
+        self.assertLess(preflight_pos, token_pos)
+        self.assertLess(token_pos, send_pos)
+        self.assertIn("record_active_execution_wait", confirm_body)
+        self.assertIn("Proposal invalidated before confirmation", confirm_body)
+        self.assertIn("active execution is still pending reconciliation", confirm_body)
+
+    def test_timed_out_proposal_auto_execution_is_disabled(self):
+        text = Path("services/proposal.py").read_text()
+        timeout_body = text[text.index("async def check_and_handle_timeout") : text.index("async def validate_proposal_still_relevant")]
+
+        self.assertNotIn("tool_send_weight_command", text)
+        self.assertNotIn("executed_timeout_auto", timeout_body)
+        self.assertIn("skipped_timeout_auto_exec_disabled", timeout_body)
+        self.assertIn("auto-execution is disabled", timeout_body)
+        self.assertIn("No command sent to QC", timeout_body)
 
     def test_setweights_command_carries_policy_version_only(self):
         text = Path("tools/qc_tools.py").read_text()
@@ -168,10 +196,37 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn('"target_command_id": target_command_id', text)
         self.assertIn('"reason": inp.get("reason") or "operator_cancel_orders"', text)
 
+    def test_emergency_auto_liquidate_is_fail_closed_helper(self):
+        text = Path("api/webhook.py").read_text()
+
+        self.assertIn("def _emergency_auto_liquidate_enabled", text)
+        self.assertIn("settings.emergency_auto_liquidate is True", text)
+        self.assertNotIn("if settings.emergency_auto_liquidate:", text)
+
+    def test_setweights_low_level_sender_is_single_controlled_service(self):
+        allowed = {
+            Path("services/qc_command_sender.py"),
+            Path("tools/qc_tools.py"),
+        }
+        offenders = []
+        for path in list(Path("agents").rglob("*.py")) + list(Path("services").rglob("*.py")) + list(Path("api").rglob("*.py")) + list(Path("cron").rglob("*.py")):
+            text = path.read_text()
+            if "tool_send_weight_command" in text and path not in allowed:
+                offenders.append(str(path))
+
+        self.assertEqual([], offenders)
+        sender = Path("services/qc_command_sender.py").read_text()
+        self.assertIn("async def send_setweights_command", sender)
+        self.assertIn("tool_send_weight_command", sender)
+
+        registry = Path("tools/registry.py").read_text()
+        self.assertNotIn('"send_weight_command"', registry)
+        self.assertNotIn('"emergency_liquidate"', registry)
+
     def test_executor_requires_final_risk_validation_before_qc_command(self):
         text = Path("agents/executor.py").read_text()
         final_pos = text.index("Final risk validation missing or failed")
-        send_pos = text.index("result = await tool_send_weight_command")
+        send_pos = text.index("result = await send_setweights_command")
 
         self.assertLess(final_pos, send_pos)
         self.assertIn("blocked_by_final_risk_validation", text)
@@ -179,7 +234,7 @@ class ExecutorPreflightTests(unittest.TestCase):
     def test_telegram_confirm_requires_final_risk_validation(self):
         text = Path("services/telegram_commands.py").read_text()
         final_pos = text.index("Final risk validation missing or failed")
-        send_pos = text.index("result = await tool_send_weight_command")
+        send_pos = text.index("result = await send_setweights_command")
 
         self.assertLess(final_pos, send_pos)
 

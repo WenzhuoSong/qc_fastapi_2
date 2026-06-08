@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     webhook_user: str = "qc"
     webhook_secret: str
     qc_webhook_secret: str = ""
+    qc_webhook_allow_legacy_auth: bool = True
 
     # QC REST API
     qc_api_url: str = "https://www.quantconnect.com/api/v2"

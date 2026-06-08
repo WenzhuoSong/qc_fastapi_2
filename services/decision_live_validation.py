@@ -11,17 +11,14 @@ from typing import Any
 
 async def build_latest_decision_live_validation() -> dict[str, Any]:
     """Read the latest analysis step logs and validate live decision visibility."""
-    from sqlalchemy import desc, select
+    from sqlalchemy import select
 
-    from db.models import AgentAnalysis, AgentStepLog
+    from db.models import AgentStepLog
     from db.session import AsyncSessionLocal
+    from services.agent_analysis_queries import load_latest_trade_decision_analysis
 
     async with AsyncSessionLocal() as db:
-        analysis = (
-            await db.execute(
-                select(AgentAnalysis).order_by(desc(AgentAnalysis.analyzed_at)).limit(1)
-            )
-        ).scalar_one_or_none()
+        analysis = await load_latest_trade_decision_analysis(db)
         if not analysis:
             return {
                 "overall": "fail",

@@ -60,6 +60,7 @@ from services.weight_source_contract import (
 )
 from services.target_path_visibility import build_target_path_visibility
 from services.weekend_review_operator_view import load_latest_weekend_review_operator_pack
+from services.agent_analysis_queries import load_latest_trade_decision_analysis
 
 DATA_QUALITY_AUDIT_NAME = "qc_yfinance_feature_parity"
 
@@ -260,6 +261,10 @@ async def _hedge_intent_outcome_dashboard(limit: int = 30) -> dict[str, Any]:
             rows = (
                 await db.execute(
                     select(AgentAnalysis.id, AgentAnalysis.analyzed_at, AgentAnalysis.risk_output)
+                    .where(
+                        (AgentAnalysis.trigger_type.is_(None)) | (AgentAnalysis.trigger_type != "weekend_review"),
+                        (AgentAnalysis.execution_status.is_(None)) | (AgentAnalysis.execution_status != "review_only"),
+                    )
                     .order_by(desc(AgentAnalysis.analyzed_at), desc(AgentAnalysis.id))
                     .limit(max(limit * 3, limit))
                 )
@@ -901,11 +906,7 @@ def _series_window_return_pct(rows: list[dict[str, Any]], lookback_rows: int) ->
 
 async def _latest_analysis() -> dict[str, Any]:
     async with AsyncSessionLocal() as db:
-        row = (
-            await db.execute(
-                select(AgentAnalysis).order_by(desc(AgentAnalysis.analyzed_at)).limit(1)
-            )
-        ).scalar_one_or_none()
+        row = await load_latest_trade_decision_analysis(db)
     if not row:
         return {"available": False}
     stage_metrics = await _latest_stage_metrics(int(row.id))

@@ -52,6 +52,17 @@ class QCAckAuthTests(unittest.TestCase):
         self.assertIn("superseded_command_id: str | None", text)
         self.assertIn("canceled_order_count: int | None", text)
 
+    def test_qc_packet_webhook_prefers_hmac_with_configured_legacy_fallback(self):
+        webhook = Path("api/webhook.py").read_text()
+        config = Path("config.py").read_text()
+
+        self.assertIn("verify_qc_signature(request_body, x_qc_signature)", webhook)
+        self.assertIn("qc_webhook_allow_legacy_auth", webhook)
+        self.assertIn("accepted legacy static-header auth", webhook)
+        self.assertIn("Invalid QC webhook signature", webhook)
+        self.assertIn("x_qc_signature", webhook)
+        self.assertIn("qc_webhook_allow_legacy_auth: bool = True", config)
+
 
 if __name__ == "__main__":
     unittest.main()

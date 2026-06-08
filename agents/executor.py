@@ -1,9 +1,9 @@
 # agents/executor.py
 import logging
 
-from tools.qc_tools import tool_send_weight_command
 from tools.notify_tools import tool_send_telegram
 from tools.db_tools import tool_verify_approval_token
+from services.qc_command_sender import send_setweights_command
 from services.execution_audit import build_execution_audit_payload
 from services.execution_ack_tracker import wait_for_qc_ack_detail
 from services.execution_log_store import (
@@ -417,13 +417,13 @@ async def run_executor_async(
         }
 
     target_fingerprint = same_target_dedupe.get("target_fingerprint")
-    result = await tool_send_weight_command({
-        "weights": weights,
-        "command_id": command_id,
-        "analysis_id": analysis_id,
-        "policy_version": policy_version,
-        "target_fingerprint": target_fingerprint,
-    })
+    result = await send_setweights_command(
+        weights=weights,
+        command_id=command_id,
+        analysis_id=analysis_id,
+        policy_version=policy_version,
+        target_fingerprint=target_fingerprint,
+    )
 
     if result.get("success"):
         await create_or_update_submitted_log(

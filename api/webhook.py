@@ -15,6 +15,7 @@ from db.models import QCSnapshot, PortfolioTimeseries, HoldingsFactor, AccountSt
 from db.queries import upsert_system_config, upsert_alert, get_recent_alerts
 from services.account_state_snapshot import build_account_state_snapshot
 from services.execution_log_store import append_reconciliation_from_account_snapshot
+from services.qc_webhook_auth import verify_qc_signature
 from tools.notify_tools import tool_send_telegram
 from tools.qc_tools import tool_emergency_liquidate
 
@@ -33,9 +34,36 @@ _DECIMAL_RETURN_FIELDS = {
 
 
 def verify_auth(x_webhook_user: str = Header(None), x_webhook_secret: str = Header(None)):
-    """验证 webhook 鉴权头"""
+    """Legacy static-header webhook auth."""
     if x_webhook_user != settings.webhook_user or x_webhook_secret != settings.webhook_secret:
         raise HTTPException(status_code=403, detail="Invalid credentials")
+
+
+def verify_qc_packet_auth(
+    *,
+    request_body: bytes,
+    x_qc_signature: str | None,
+    x_webhook_user: str | None,
+    x_webhook_secret: str | None,
+) -> str:
+    """Verify QC packet auth, preferring HMAC and allowing legacy only by config."""
+    if verify_qc_signature(request_body, x_qc_signature):
+        return "hmac"
+
+    if settings.qc_webhook_allow_legacy_auth is True:
+        try:
+            verify_auth(x_webhook_user=x_webhook_user, x_webhook_secret=x_webhook_secret)
+            logger.warning("[Webhook] accepted legacy static-header auth; migrate QC to X-QC-Signature")
+            return "legacy_static_header"
+        except HTTPException:
+            pass
+
+    raise HTTPException(status_code=401, detail="Invalid QC webhook signature")
+
+
+def _emergency_auto_liquidate_enabled() -> bool:
+    """Fail-closed guard for the highest-impact emergency action."""
+    return settings.emergency_auto_liquidate is True
 
 
 def _numeric_or_none(row: dict, field: str, precision: int, scale: int, ticker: str | None = None):
@@ -81,7 +109,9 @@ def _numeric_or_none(row: dict, field: str, precision: int, scale: int, ticker: 
 async def receive_qc_packet(
     request: Request,
     db: AsyncSession = Depends(get_db),
-    _auth=Depends(verify_auth)
+    x_qc_signature: str | None = Header(None, alias="X-QC-Signature"),
+    x_webhook_user: str | None = Header(None),
+    x_webhook_secret: str | None = Header(None),
 ):
     """
     接收 QC 的 gzip 压缩 JSON 数据包
@@ -90,6 +120,12 @@ async def receive_qc_packet(
     try:
         # 读取原始 body 并解压
         data = await request.body()
+        auth_mode = verify_qc_packet_auth(
+            request_body=data,
+            x_qc_signature=x_qc_signature,
+            x_webhook_user=x_webhook_user,
+            x_webhook_secret=x_webhook_secret,
+        )
         decompressed = gzip.decompress(data)
         payload = json.loads(decompressed)
 
@@ -103,6 +139,7 @@ async def receive_qc_packet(
             if received_checksum != expected:
                 logger.warning(f"Checksum mismatch: received={received_checksum} expected={expected}")
                 raise HTTPException(status_code=400, detail="Checksum mismatch")
+        payload["_auth_mode"] = auth_mode
 
         packet_type = payload.get("packet_type", "heartbeat")
         trading_date_str = payload.get("trading_date")
@@ -312,7 +349,7 @@ async def _process_emergency(db: AsyncSession, snapshot_id: int, payload: dict):
     )
     if details:
         text += f"  Details: {json.dumps(details, ensure_ascii=False)[:200]}\n"
-    if settings.emergency_auto_liquidate:
+    if _emergency_auto_liquidate_enabled():
         text += "  🔥 Auto-liquidate: <b>ENABLED</b>"
     else:
         text += "  🔒 Auto-liquidate: DISABLED (manual action required)"
@@ -320,7 +357,7 @@ async def _process_emergency(db: AsyncSession, snapshot_id: int, payload: dict):
     await tool_send_telegram({"text": text})
 
     # 3. 可选：自动清仓
-    if settings.emergency_auto_liquidate:
+    if _emergency_auto_liquidate_enabled():
         logger.warning("[EMERGENCY] emergency_auto_liquidate is True — executing liquidation")
         result = await tool_emergency_liquidate({})
         if result.get("success"):

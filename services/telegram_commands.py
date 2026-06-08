@@ -8,17 +8,19 @@ from datetime import datetime, timedelta
 from db.session         import AsyncSessionLocal
 from db.queries         import get_system_config, upsert_system_config, get_latest_portfolio
 from tools.db_tools     import tool_verify_approval_token
-from tools.qc_tools     import tool_send_cancel_orders_command, tool_send_weight_command
+from tools.qc_tools     import tool_send_cancel_orders_command
 from tools.notify_tools import tool_send_telegram
-from services.proposal  import load_pending_proposal, mark_proposal_done
+from services.qc_command_sender import send_setweights_command
+from services.proposal  import load_pending_proposal, mark_proposal_done, validate_proposal_still_relevant
 from services.pc_promotion_config import default_pc_promotion_config, format_pc_promotion_config
 from services.execution_log_store import (
     create_or_update_submitted_log,
     force_reconcile_command,
     record_cancel_orders_requested,
+    record_active_execution_wait,
     record_preflight_block,
 )
-from services.execution_lifecycle import load_active_execution_command
+from services.execution_lifecycle import evaluate_active_execution_gate, load_active_execution_command
 from services.execution_policy import policy_snapshot
 from services.execution_preflight import (
     format_command_preflight_blockers,
@@ -88,9 +90,15 @@ async def _cmd_confirm() -> str:
     if not final_validation or not final_validation.get("approved"):
         return "❌ Final risk validation missing or failed. Please wait for the next analysis."
 
-    verify = await tool_verify_approval_token({"token": token})
-    if not verify.get("valid"):
-        return f"❌ Token {verify.get('reason')}. Please wait for the next analysis."
+    async with AsyncSessionLocal() as db:
+        latest_row = await get_latest_portfolio(db)
+    valid, reason = await validate_proposal_still_relevant(pending, latest_row)
+    if not valid:
+        await mark_proposal_done(pending.get("analysis_id"), f"skipped_invalidation_{reason}")
+        return (
+            "❌ Proposal invalidated before confirmation. "
+            f"reason={reason}. Please wait for the next analysis."
+        )
 
     analysis_id = pending.get("analysis_id")
     command_id = f"analysis_{analysis_id}" if analysis_id else None
@@ -119,6 +127,32 @@ async def _cmd_confirm() -> str:
             f"actual={policy_alignment.get('actual_policy_version')}. "
             "Deploy/sync the QC compiled policy before confirming."
         )
+
+    async with AsyncSessionLocal() as db:
+        lifecycle_cfg = await get_system_config(db, "execution_lifecycle_config")
+    active_execution = await load_active_execution_command()
+    active_execution_gate = evaluate_active_execution_gate(
+        target_weights=weights,
+        active_execution=active_execution,
+        config=(lifecycle_cfg.value if lifecycle_cfg else {}) or {},
+    )
+    if not active_execution_gate.get("allowed"):
+        await record_active_execution_wait(
+            command_id=command_id or "unknown",
+            analysis_id=analysis_id,
+            target_weights=weights,
+            active_execution_gate=active_execution_gate,
+            policy_version=policy.get("version"),
+        )
+        active_label = active_execution_gate.get("active_command_id") or "unknown"
+        return (
+            "⏳ Command not sent: active execution is still pending reconciliation.\n"
+            f"active_command={active_label}\n"
+            f"status={active_execution_gate.get('status')} "
+            f"classification={active_execution_gate.get('classification')}\n"
+            "Wait for QC heartbeat reconciliation before confirming again."
+        )
+
     command_preflight = await preflight_execution_command(
         command_id=command_id or "",
         analysis_id=analysis_id,
@@ -141,12 +175,16 @@ async def _cmd_confirm() -> str:
             )
         return "❌ Command preflight blocked:\n" + format_command_preflight_blockers(command_preflight)
 
-    result = await tool_send_weight_command({
-        "weights": weights,
-        "command_id": command_id,
-        "analysis_id": analysis_id,
-        "policy_version": policy.get("version"),
-    })
+    verify = await tool_verify_approval_token({"token": token})
+    if not verify.get("valid"):
+        return f"❌ Token {verify.get('reason')}. Please wait for the next analysis."
+
+    result = await send_setweights_command(
+        weights=weights,
+        command_id=command_id,
+        analysis_id=analysis_id,
+        policy_version=policy.get("version"),
+    )
     if result.get("success"):
         await create_or_update_submitted_log(
             command_id=command_id or result.get("command_id"),

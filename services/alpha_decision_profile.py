@@ -23,6 +23,7 @@ from services.conviction_decision import (
     decision_statistical_status,
 )
 from services.strategy_diversity import canonical_strategy_family, is_strategy_alpha_source
+from services.agent_analysis_queries import load_latest_trade_decision_analysis
 
 
 CONTRACT_VERSION = "alpha_decision_profiles_v1"
@@ -69,7 +70,6 @@ async def load_alpha_decision_profiles(
     from sqlalchemy import desc, func, select
 
     from db.models import (
-        AgentAnalysis,
         AgentStepLog,
         AlphaValidationRun,
         PerformanceAttribution,
@@ -115,11 +115,7 @@ async def load_alpha_decision_profiles(
     strategy_evidence: dict[str, Any] = {}
     strategy_independence: dict[str, Any] = {}
     latest_analysis_id = None
-    latest_analysis = (
-        await db.execute(
-            select(AgentAnalysis).order_by(desc(AgentAnalysis.analyzed_at), desc(AgentAnalysis.id)).limit(1)
-        )
-    ).scalar_one_or_none()
+    latest_analysis = await load_latest_trade_decision_analysis(db)
     if latest_analysis is not None:
         latest_analysis_id = int(latest_analysis.id)
         step = (

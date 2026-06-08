@@ -21,6 +21,7 @@ from sqlalchemy import select, func
 from config import get_settings
 from db.models import AgentAnalysis, ExecutionLog, MemoryDaily, PortfolioTimeseries, MarketDailyFeature
 from db.session import AsyncSessionLocal
+from services.agent_analysis_queries import load_latest_trade_decision_analysis
 from services.cron_audit import audit_cron_run
 
 logging.basicConfig(
@@ -303,13 +304,7 @@ async def _write_dqs_to_memory_daily_column(
 
 async def _get_latest_analysis_today(session, today: date):
     """Get the most recent AgentAnalysis record for today."""
-    result = await session.execute(
-        select(AgentAnalysis)
-        .where(func.date(AgentAnalysis.analyzed_at) == today)
-        .order_by(AgentAnalysis.analyzed_at.desc())
-        .limit(1)
-    )
-    return result.scalar_one_or_none()
+    return await load_latest_trade_decision_analysis(session, today=today)
 
 
 async def _get_latest_portfolio(session):

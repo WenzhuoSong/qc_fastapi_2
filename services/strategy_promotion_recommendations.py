@@ -31,6 +31,7 @@ from services.alpha_decision_profile import (
     build_alpha_decision_profiles,
 )
 from services.alpha_decision_policy import evaluate_alpha_decision_policy
+from services.agent_analysis_queries import load_latest_trade_decision_analysis
 from services.strategy_regime_gap_analysis import build_strategy_regime_gap_analysis
 
 
@@ -71,7 +72,7 @@ async def load_strategy_promotion_recommendations(
     """Load persisted diagnostics and build recommendation rows."""
     from sqlalchemy import desc, func, select
 
-    from db.models import AgentAnalysis, AgentStepLog, AlphaValidationRun, PerformanceAttribution, StrategyConvictionProfile, SystemConfig
+    from db.models import AgentStepLog, AlphaValidationRun, PerformanceAttribution, StrategyConvictionProfile, SystemConfig
 
     target_date = as_of_date or datetime.now(timezone.utc).date()
     latest_profile_date_result = await db.execute(
@@ -113,11 +114,7 @@ async def load_strategy_promotion_recommendations(
         )
     ).scalar_one_or_none()
 
-    latest_analysis = (
-        await db.execute(
-            select(AgentAnalysis).order_by(desc(AgentAnalysis.analyzed_at), desc(AgentAnalysis.id)).limit(1)
-        )
-    ).scalar_one_or_none()
+    latest_analysis = await load_latest_trade_decision_analysis(db)
     strategy_evidence: dict[str, Any] = {}
     latest_analysis_id = None
     if latest_analysis is not None:

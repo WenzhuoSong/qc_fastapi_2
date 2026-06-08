@@ -41,7 +41,6 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
     from sqlalchemy import desc, func, select
 
     from db.models import (
-        AgentAnalysis,
         CronRunLog,
         ExecutionLog,
         MacroNewsCache,
@@ -50,6 +49,7 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
         QCSnapshot,
     )
     from db.session import AsyncSessionLocal
+    from services.agent_analysis_queries import load_latest_trade_decision_analysis
     from services.execution_policy import TICKER_ROLES, TickerRole
 
     now = datetime.now(UTC).replace(tzinfo=None)
@@ -119,11 +119,7 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
                 select(MemoryDaily).order_by(desc(MemoryDaily.trading_date)).limit(1)
             )
         ).scalar_one_or_none()
-        analysis = (
-            await db.execute(
-                select(AgentAnalysis).order_by(desc(AgentAnalysis.analyzed_at)).limit(1)
-            )
-        ).scalar_one_or_none()
+        analysis = await load_latest_trade_decision_analysis(db)
         execution = (
             await db.execute(
                 select(ExecutionLog).order_by(desc(ExecutionLog.executed_at)).limit(1)

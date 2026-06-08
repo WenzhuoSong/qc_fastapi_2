@@ -17,8 +17,6 @@ from db.queries import (
     get_latest_portfolio,
 )
 from db.models import AgentAnalysis
-from tools.db_tools import tool_verify_approval_token
-from tools.qc_tools import tool_send_weight_command
 from tools.notify_tools import tool_send_telegram
 from config import get_settings
 
@@ -56,7 +54,11 @@ async def mark_proposal_done(analysis_id: int | None, status: str) -> None:
 async def check_and_handle_timeout() -> dict:
     """
     由 pending_check cron 每分钟调用。
-    若 pending_proposal 已过期，按策略自动执行或跳过。
+    若 pending_proposal 已过期，自动跳过并告警。
+
+    Timed-out proposals must not auto-execute from this side path. Any command
+    sent to QC must pass through the hardened execution path with lifecycle,
+    active-command, preflight, dedupe, and fingerprint controls.
     """
     pending = await load_pending_proposal()
     if not pending or pending.get("status") != "pending":
@@ -93,9 +95,6 @@ async def check_and_handle_timeout() -> dict:
         )
         return {"action": "skipped_cost"}
 
-    weights = pending.get("weights", {})
-    token   = pending.get("token", "")
-
     # P2-1: Proposal validation before execution
     valid, reason = await validate_proposal_still_relevant(pending, latest_row)
     if not valid:
@@ -105,25 +104,16 @@ async def check_and_handle_timeout() -> dict:
         )
         return {"action": f"skipped_invalidation_{reason}"}
 
-    verify = await tool_verify_approval_token({"token": token})
-    if not verify.get("valid"):
-        await mark_proposal_done(analysis_id, f"aborted_token_{verify.get('reason')}")
-        await tool_send_telegram(
-            {"text": f"⚠️ Timed-out auto-execution failed: token {verify.get('reason')}"}
-        )
-        return {"action": "token_invalid"}
-
-    result = await tool_send_weight_command({"weights": weights})
-    if result.get("success"):
-        await mark_proposal_done(analysis_id, "executed_timeout_auto")
-        await tool_send_telegram({"text": "⏱️ Timed-out auto-execution succeeded"})
-        return {"action": "executed"}
-
-    await mark_proposal_done(analysis_id, "failed_timeout_auto")
+    await mark_proposal_done(analysis_id, "skipped_timeout_auto_exec_disabled")
     await tool_send_telegram(
-        {"text": f"❌ Timed-out auto-execution failed: {result.get('error')}"}
+        {
+            "text": (
+                "⏱️ Proposal timed out; auto-execution is disabled. "
+                "No command sent to QC. Use /confirm before expiry or wait for the next analysis."
+            )
+        }
     )
-    return {"action": "failed"}
+    return {"action": "skipped_auto_exec_disabled"}
 
 
 async def validate_proposal_still_relevant(
