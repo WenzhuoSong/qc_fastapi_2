@@ -14,7 +14,7 @@ qc_fastapi_2/
 │   ├── researcher.py       # Stage 3: LLM info synthesis → research_report
 │   ├── bull_researcher.py  # Stage 4a: Bull arguments (parallel)
 │   ├── bear_researcher.py  # Stage 4b: Bear arguments (parallel)
-│   ├── synthesizer.py      # Stage 5: CIO arbitration → adjusted_weights
+│   ├── synthesizer.py      # Stage 5: CIO arbitration → advisory proposals
 │   ├── risk_manager.py     # Stage 6: overlays + 6 checks → target weights
 │   ├── communicator.py     # LLM Telegram card + Python fallback
 │   ├── executor.py         # Deterministic execution (3 gates)
@@ -84,21 +84,28 @@ Stage 2c  playground           Python    multi-strategy comparison bundle (advis
 Stage 3   RESEARCHER           LLM       base + brief → research_report (info synthesis only)
 Stage 4a  BULL RESEARCHER      LLM       research_report → bull arguments (parallel)
 Stage 4b  BEAR RESEARCHER      LLM       research_report → bear arguments (parallel)
-Stage 5   SYNTHESIZER          LLM       Bull/Bear arbitration → adjusted_weights
-Stage 6   RISK MGR             Python    transmission → defensive → hard_risk → 6 checks
+Stage 5   SYNTHESIZER          LLM       Bull/Bear arbitration → advisory proposals
+Stage 5e  TARGET BUILDER       Python    deterministic target_weights from recall + advisory
+Stage 6   RISK MGR             Python    validate-only checks over deterministic target
 Stage 6.5 POSITION MANAGER     Python    quantity/frequency controls
 Stage 7   save_analysis        Python    INSERT INTO agent_analysis (4 cols)
 Stage 8   COMMUNICATOR         LLM+fb    Telegram card (5s timeout → Python fallback)
 Stage 9   branch               Python    rejected / SEMI_AUTO pending / FULL_AUTO execute
 ```
 
-**The baton is always weights:**
+**Execution authority is not carried by LLM weights:**
 
 ```
- base_weights       research_report      bull/bear_output     adjusted_weights      target_weights
- (Stage 2 Python) → (Stage 3 LLM)     → (Stage 4a/4b LLM) → (Stage 5 LLM)      → (Stage 6 Python) → QC
-   量化研究员          信息合成              多空辩论              首席投资官仲裁          首席风控官
+ base_weights       research_report      bull/bear_output     advisory_proposals      target_weights
+ (Stage 2 Python) → (Stage 3 LLM)     → (Stage 4a/4b LLM) → (Stage 5 LLM)       → (Stage 5e/6 Python) → QC
+   量化召回/基准        信息合成              多空辩论              语义建议/否决权             确定性构造+风控
 ```
+
+Legacy `adjusted_weights` may still appear in Stage 5 diagnostics for review,
+but it is not an executable input. `target_builder` rejects raw LLM weight
+sources and only constructs executable tickers from deterministic candidate
+sources: quant recall, current holdings, gated portfolio construction, and
+approved hedge intent.
 
 LLM calls per cycle: **4** — RESEARCHER (info synthesis) + BULL/BEAR
 (parallel debate, counted as 2) + SYNTHESIZER (arbitration). All on the
@@ -162,12 +169,13 @@ increases CASH to 30%.
 
 **Stage 5 — `SYNTHESIZER`** (LLM, heavy model)
 The CIO / arbitrator. Weighs Bull vs Bear evidence quality, identifies
-consensus and divergence points, produces final `adjusted_weights`.
-**Output is interface-compatible with old researcher_out** — Risk MGR
-needs no changes. Uses 5-level stance: buy / overweight / maintain /
-underweight / sell. Auto-detects uncertainty when |bull_conf - bear_conf|
-< 0.15 → sets `uncertainty_flag=True`. Includes `debate_summary` for
-Communicator. 3 retries. Degraded fallback echoes base_weights.
+consensus and divergence points, and produces semantic advisory proposals.
+It has no recall authority and does not construct executable target weights.
+Legacy diagnostic `adjusted_weights` can be logged for compatibility/review,
+but Python `target_builder` is the execution boundary. Uses 5-level stance:
+buy / overweight / maintain / underweight / sell. Auto-detects uncertainty
+when |bull_conf - bear_conf| < 0.15 → sets `uncertainty_flag=True`. Includes
+`debate_summary` for Communicator. 3 retries. Degraded fallback is advisory-only.
 
 **Stage 6 — `RISK MGR`** (Python)
 The CRO. Not just a gatekeeper — applies deterministic corrections before

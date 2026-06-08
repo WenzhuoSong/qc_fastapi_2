@@ -9,9 +9,8 @@ import logging
 from datetime import date, timedelta
 
 from services.cron_audit import audit_cron_run
-from services.market_calendar import us_equity_market_status
-from services.operational_health import build_operational_health_snapshot
 from services.pipeline import run_full_pipeline
+from services.trading_analysis_gate import evaluate_trading_analysis_gate
 from tools.notify_tools import tool_send_telegram
 
 logging.basicConfig(
@@ -55,24 +54,11 @@ async def _resolve_trigger() -> str:
 async def main() -> None:
     try:
         async with audit_cron_run("hourly_analysis") as audit:
-            market_status = us_equity_market_status()
-            if not market_status.is_trading_day:
-                reason = f"market_closed:{market_status.reason}"
+            gate = await evaluate_trading_analysis_gate()
+            if not gate.get("allowed"):
+                reason = str(gate.get("reason") or "trading_analysis_gate_blocked")
                 audit.mark_skipped(reason)
-                audit.set_summary(market_status=market_status.to_dict())
-                logger.info("[hourly] Skipping pipeline: %s", reason)
-                return
-
-            health = await build_operational_health_snapshot()
-            news_check = (health.get("checks") or {}).get("news_cache") or {}
-            if news_check.get("state") != "ok":
-                reason = f"news_cache_not_ready:{news_check.get('reason') or news_check.get('state')}"
-                audit.mark_skipped(reason)
-                audit.set_summary(
-                    market_status=market_status.to_dict(),
-                    news_cache=news_check,
-                    operational_health=health.get("overall"),
-                )
+                audit.set_summary(trading_analysis_gate=gate)
                 logger.warning("[hourly] Skipping pipeline: %s", reason)
                 return
 

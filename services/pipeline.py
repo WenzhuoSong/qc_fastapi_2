@@ -27,8 +27,8 @@ Core data flow:
     risk approval      (Stage 6 Python)       ->
     execute            (Stage 9 Python)
 
-News data is refreshed independently every 2h, 24/7 by cron/pre_fetch_news.py; the
-hourly analysis cron requires a fresh news cache before entering this pipeline.
+News data is refreshed independently every 2h, 24/7 by cron/pre_fetch_news.py.
+Trading-analysis entrypoints require a fresh news cache before entering this pipeline.
 Both crons still fail independently: pipeline down -> news continues refreshing.
 """
 import asyncio

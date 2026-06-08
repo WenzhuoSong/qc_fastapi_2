@@ -30,10 +30,18 @@ class PreFetchNewsCronContractTests(unittest.TestCase):
     def test_hourly_analysis_requires_news_ready_before_pipeline(self):
         source = Path("cron/hourly_analysis.py").read_text()
 
-        self.assertIn("from services.operational_health import build_operational_health_snapshot", source)
-        self.assertIn("news_cache_not_ready", source)
-        self.assertIn('news_check.get("state") != "ok"', source)
-        self.assertLess(source.index("news_cache_not_ready"), source.index("result = await run_full_pipeline"))
+        self.assertIn("from services.trading_analysis_gate import evaluate_trading_analysis_gate", source)
+        self.assertIn("evaluate_trading_analysis_gate()", source)
+        self.assertIn("trading_analysis_gate", source)
+        self.assertLess(source.index("evaluate_trading_analysis_gate()"), source.index("result = await run_full_pipeline"))
+
+    def test_dynamic_scheduler_uses_same_trading_analysis_gate(self):
+        source = Path("services/dynamic_scheduler.py").read_text()
+
+        self.assertIn("from services.trading_analysis_gate import evaluate_trading_analysis_gate", source)
+        self.assertIn("evaluate_trading_analysis_gate()", source)
+        self.assertIn("trading_analysis_gate", source)
+        self.assertLess(source.index("evaluate_trading_analysis_gate()"), source.index("result = await run_full_pipeline"))
 
     def test_pipeline_step_logs_news_evidence_path(self):
         source = Path("services/pipeline.py").read_text()
@@ -42,7 +50,7 @@ class PreFetchNewsCronContractTests(unittest.TestCase):
         self.assertIn("def _news_context_audit_summary", source)
         self.assertIn('"news_evidence_summary": news_evidence_summary', source)
         self.assertIn('"news_context_summary": news_context_summary', source)
-        self.assertIn("hourly analysis cron requires a fresh news cache", source)
+        self.assertIn("Trading-analysis entrypoints require a fresh news cache", source)
 
     def test_market_brief_reuses_shared_news_freshness_contract(self):
         source = Path("services/market_brief.py").read_text()
