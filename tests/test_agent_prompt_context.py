@@ -133,6 +133,59 @@ class AgentPromptContextTest(unittest.TestCase):
         self.assertIn("strategy_certification", message)
         self.assertIn("research_supported", message)
 
+    def test_researcher_prompt_caps_large_news_and_scoring_inputs(self):
+        per_ticker_news = {
+            f"T{i:02d}": [
+                {
+                    "source": "TestWire",
+                    "source_api": "unit",
+                    "headline": f"headline {i}-{j} " + ("x" * 400),
+                    "sentiment": "neutral",
+                    "llm_summary": f"summary {i}-{j} " + ("y" * 1000),
+                }
+                for j in range(8)
+            ]
+            for i in range(25)
+        }
+        scoring = [
+            {
+                "ticker": f"T{i:02d}",
+                "score": 1.0 - i / 100,
+                "return_1d": 0.01,
+                "return_5d": 0.02,
+                "return_20d": 0.03,
+                "reason_codes": [f"reason_{j}" for j in range(20)],
+                "huge_debug_blob": "z" * 5000,
+            }
+            for i in range(80)
+        ]
+
+        message = _build_researcher_message(
+            brief={
+                "prose_summary": "market prose " + ("p" * 5000),
+                "macro_news_section": "macro " + ("m" * 5000),
+                "calendar_section": "calendar " + ("c" * 5000),
+                "per_ticker_news": per_ticker_news,
+                "feature_provenance": {
+                    "source_counts": {"qc": 100, "yfinance": 80},
+                    "huge_debug": "d" * 5000,
+                },
+                "evidence_bundle": {"news_evidence": NEWS_EVIDENCE},
+            },
+            quant_baseline={
+                "base_weights": {f"T{i:02d}": 0.01 for i in range(80)},
+                "scoring_breakdown": scoring,
+                "ranking_summary": {"rows": scoring},
+            },
+        )
+
+        self.assertIn("more items omitted", message)
+        self.assertIn("tickers omitted", message)
+        self.assertIn("_omitted_scoring_rows", message)
+        self.assertNotIn("headline 00-7", message)
+        self.assertNotIn("huge_debug_blob", message)
+        self.assertLess(len(message), 65000)
+
     def test_bull_and_bear_prompts_include_style_context(self):
         bull = _build_bull_message(
             {"market_regime": {"regime": "neutral"}},

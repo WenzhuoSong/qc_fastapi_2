@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from typing import Any
 
 from openai import AsyncOpenAI
 
@@ -30,6 +31,22 @@ logger = logging.getLogger("qc_fastapi_2.researcher")
 settings = get_settings()
 
 _client: AsyncOpenAI | None = None
+
+RESEARCHER_MAX_COMPLETION_TOKENS = 5000
+MAX_PROMPT_TEXT_CHARS = 2400
+MAX_MEMORY_TEXT_CHARS = 1600
+MAX_SCORING_ROWS = 24
+MAX_RANKING_ROWS = 16
+MAX_WEIGHT_ROWS = 40
+MAX_NEWS_TICKERS = 18
+MAX_NEWS_ITEMS_PER_TICKER = 3
+MAX_NEWS_SUMMARY_CHARS = 180
+MAX_NEWS_HEADLINE_CHARS = 120
+MAX_LIST_ITEMS = 16
+MAX_DICT_ITEMS = 32
+MAX_STRING_CHARS = 700
+MAX_RESEARCHER_TICKER_SIGNALS = 12
+MAX_RESEARCHER_INSIGHTS = 5
 
 # ═══════════════════════════════════════════════════════════════
 # Decision Learning helpers (Phase C)
@@ -155,7 +172,7 @@ def _build_similar_cases_section(cases: list[dict] | None) -> str:
         return ""
     from services.similar_case_retrieval import format_cases_for_prompt
 
-    cases_text = format_cases_for_prompt(cases)
+    cases_text = _truncate_text(format_cases_for_prompt(cases[:5]), 2200)
     return (
         "\n\n## SIMILAR HISTORICAL CASES (same regime, similar market conditions)\n"
         "These past decisions were made in similar regimes and market conditions.\n"
@@ -172,6 +189,83 @@ def _get_client() -> AsyncOpenAI:
     if _client is None:
         _client = AsyncOpenAI(api_key=settings.openai_api_key)
     return _client
+
+
+def _format_generation_error(exc: Exception, raw: str, finish_reason: str | None) -> str:
+    """Return a compact, actionable LLM generation failure description."""
+    tail = raw[-240:].replace("\n", "\\n") if raw else ""
+    return (
+        f"{type(exc).__name__}: {exc}; "
+        f"finish_reason={finish_reason}; raw_chars={len(raw)}; raw_tail={tail}"
+    )
+
+
+def _json_compact(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _truncate_text(value: Any, limit: int = MAX_PROMPT_TEXT_CHARS) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n...[truncated {len(text) - limit} chars]"
+
+
+def _limit_structure(
+    value: Any,
+    *,
+    max_depth: int = 4,
+    max_list: int = MAX_LIST_ITEMS,
+    max_dict: int = MAX_DICT_ITEMS,
+    max_str: int = MAX_STRING_CHARS,
+) -> Any:
+    """Recursively cap nested prompt structures before sending them to the LLM."""
+    if max_depth <= 0:
+        if isinstance(value, (dict, list)):
+            return "...[truncated nested structure]"
+        return _truncate_text(value, max_str) if isinstance(value, str) else value
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        omitted_keys = 0
+        for idx, (key, item) in enumerate(value.items()):
+            if idx >= max_dict:
+                out["_omitted_keys"] = len(value) - max_dict
+                break
+            if _omit_prompt_key(key):
+                omitted_keys += 1
+                continue
+            out[str(key)] = _limit_structure(
+                item,
+                max_depth=max_depth - 1,
+                max_list=max_list,
+                max_dict=max_dict,
+                max_str=max_str,
+            )
+        if omitted_keys:
+            out["_omitted_debug_keys"] = omitted_keys
+        return out
+    if isinstance(value, list):
+        out = [
+            _limit_structure(
+                item,
+                max_depth=max_depth - 1,
+                max_list=max_list,
+                max_dict=max_dict,
+                max_str=max_str,
+            )
+            for item in value[:max_list]
+        ]
+        if len(value) > max_list:
+            out.append({"_omitted_items": len(value) - max_list})
+        return out
+    if isinstance(value, str):
+        return _truncate_text(value, max_str)
+    return value
+
+
+def _omit_prompt_key(key: Any) -> bool:
+    text = str(key or "").lower()
+    return any(token in text for token in ("debug", "raw_payload", "raw_snapshot", "blob"))
 
 
 RESEARCHER_OUTPUT_SCHEMA = """
@@ -235,6 +329,11 @@ Confidence rules:
 - high: multiple independent signals agree, data is fresh (<4h), and there are no major contradictions.
 - medium: some signals agree, data is mildly stale (4-12h), or there are minor conflicts.
 - low: signals conflict, data is stale (>12h), or important information is missing.
+
+Output size rules:
+- ticker_signals: include at most 12 tickers, prioritizing current holdings, hard-risk tickers, and highest-confidence anomalies.
+- cross_signal_insights: include at most 5 items.
+- Keep all string fields short; do not repeat raw headlines or long evidence text.
 
 Only include tickers where you have a substantive view based on news, macro, or quant anomalies.
 For other tickers, omit the entry rather than manufacturing a neutral signal.
@@ -323,6 +422,8 @@ async def run_researcher_async(
     last_error: str | None = None
     for attempt in range(3):
         t0 = time.time()
+        raw = ""
+        finish_reason = None
         try:
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -330,34 +431,47 @@ async def run_researcher_async(
             ]
             if attempt > 0 and last_error:
                 messages[1]["content"] = (
-                    f"[RETRY {attempt}] Previous output error: {last_error}\n\n" + user_payload
+                    f"[RETRY {attempt}] Previous JSON output error: "
+                    f"{_truncate_text(last_error, 700)}\n"
+                    "Return fewer ticker_signals and shorter strings if needed. "
+                    "Output one complete valid JSON object only.\n\n"
+                    + user_payload
                 )
 
             resp = await client.chat.completions.create(**build_chat_completion_kwargs(
                 model=model,
                 messages=messages,
                 temperature=0.0,
-                max_tokens=3000,
+                max_tokens=RESEARCHER_MAX_COMPLETION_TOKENS,
                 response_format={"type": "json_object"},
             ))
-            raw = resp.choices[0].message.content or ""
+            choice = resp.choices[0]
+            raw = choice.message.content or ""
+            finish_reason = getattr(choice, "finish_reason", None)
             elapsed = round(time.time() - t0, 2)
+            usage = getattr(resp, "usage", None)
+            prompt_tokens = getattr(usage, "prompt_tokens", None)
+            completion_tokens = getattr(usage, "completion_tokens", None)
             logger.info(
                 f"[RESEARCHER] done in {elapsed}s | "
-                f"input_tokens={resp.usage.prompt_tokens} "
-                f"output_tokens={resp.usage.completion_tokens}"
+                f"input_tokens={prompt_tokens} "
+                f"output_tokens={completion_tokens} "
+                f"finish_reason={finish_reason} raw_chars={len(raw)}"
             )
 
             parsed = json.loads(raw)
             result = _validate_and_normalize(parsed, quant_baseline)
             result["_token_usage"] = {
-                "prompt_tokens": resp.usage.prompt_tokens,
-                "completion_tokens": resp.usage.completion_tokens,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "finish_reason": finish_reason,
+                "raw_chars": len(raw),
+                "prompt_chars": len(messages[1]["content"]),
             }
             return result
 
         except Exception as e:
-            last_error = str(e)
+            last_error = _format_generation_error(e, raw, finish_reason)
             logger.warning(f"[RESEARCHER] attempt {attempt} failed: {e}")
 
     # All retries failed → degraded report (quant only, no news synthesis)
@@ -379,22 +493,26 @@ def _build_user_message(
     similar_cases: list[dict] | None = None,
     calibration_bias: dict | None = None,
 ) -> str:
-    prose     = brief.get("prose_summary") or "(none)"
-    macro     = brief.get("macro_news_section") or "(none)"
-    calendar  = brief.get("calendar_section") or "(none)"
+    prose     = _truncate_text(brief.get("prose_summary") or "(none)")
+    macro     = _truncate_text(brief.get("macro_news_section") or "(none)")
+    calendar  = _truncate_text(brief.get("calendar_section") or "(none)", 1600)
     key_facts = brief.get("key_facts") or {}
-    sector_rotation = brief.get("sector_rotation") or {}
-    sector_rotation_section = brief.get("sector_rotation_section") or "(none)"
-    feature_provenance = brief.get("feature_provenance") or {}
+    sector_rotation = _compact_sector_rotation(brief.get("sector_rotation") or {})
+    sector_rotation_section = _truncate_text(
+        brief.get("sector_rotation_section") or "(none)", 1600
+    )
+    feature_provenance = _compact_feature_provenance(
+        brief.get("feature_provenance") or {}
+    )
     evidence_bundle = brief.get("evidence_bundle") or {}
     market_scorecard = brief.get("market_scorecard") or {}
     news_evidence = brief.get("news_evidence") or evidence_bundle.get("news_evidence") or {}
     decision_style = brief.get("decision_style") or evidence_bundle.get("decision_style") or {}
 
-    base_weights    = quant_baseline.get("base_weights") or {}
-    current_weights = brief.get("current_weights") or {}
-    scoring         = quant_baseline.get("scoring_breakdown") or []
-    ranking         = quant_baseline.get("ranking_summary") or {}
+    base_weights    = _compact_weights(quant_baseline.get("base_weights") or {})
+    current_weights = _compact_weights(brief.get("current_weights") or {})
+    scoring         = _compact_scoring_breakdown(quant_baseline.get("scoring_breakdown") or [])
+    ranking         = _compact_ranking_summary(quant_baseline.get("ranking_summary") or {})
 
     per_ticker_news = brief.get("per_ticker_news") or {}
     news_block = _format_per_ticker_news(per_ticker_news)
@@ -406,7 +524,7 @@ def _build_user_message(
         memory_section = (
             "\n\n## HISTORICAL MEMORY CONTEXT (for reference only — do not be dominated by it)\n\n"
             f"**Recent Regime Trend**: {memory_context.get('regime_trend', 'none')}\n\n"
-            f"{memory_context.get('memory_prose', '')}\n\n"
+            f"{_truncate_text(memory_context.get('memory_prose', ''), MAX_MEMORY_TEXT_CHARS)}\n\n"
             "**Note**: Historical memory is for reference only. "
             "If current market signals clearly differ from historical patterns, "
             "prioritize the current data.\n"
@@ -425,33 +543,33 @@ def _build_user_message(
     return (
         f"{regime_block}"
         "## Market condition scorecard (deterministic Python permission layer)\n"
-        f"{json.dumps(market_scorecard, ensure_ascii=False, indent=2)}\n\n"
+        f"{_json_compact(_limit_structure(market_scorecard, max_depth=4))}\n\n"
         "Use this scorecard as the system's auditable market-state contract. "
         "Your analysis may disagree with the interpretation, but you must explicitly "
         "explain any disagreement and cannot ignore data-quality or permission warnings.\n\n"
         "## Evidence bundle summary\n"
-        f"{json.dumps(_compact_evidence_bundle(evidence_bundle), ensure_ascii=False, indent=2)}\n\n"
+        f"{_json_compact(_compact_evidence_bundle(evidence_bundle))}\n\n"
         "Use strategy_use_summary and strategy_confidence as structured strategy evidence. "
         "primary/advisory strategies may support confidence; watch_only/ignore strategies "
         "must not be treated as action signals. Reason codes explain why a strategy is "
         "discounted or usable.\n\n"
         "## Structured news evidence (deterministic action-bias layer)\n"
-        f"{json.dumps(_compact_news_evidence(news_evidence), ensure_ascii=False, indent=2)}\n\n"
+        f"{_json_compact(_compact_news_evidence(news_evidence))}\n\n"
         "## Decision style (deterministic analysis/execution style)\n"
-        f"{json.dumps(decision_style, ensure_ascii=False, indent=2)}\n\n"
+        f"{_json_compact(_limit_structure(decision_style, max_depth=4))}\n\n"
         "Use decision_style to calibrate how strongly you interpret evidence. "
         "Do not convert it into weights; only reflect it in confidence, data gaps, "
         "and cross-signal insights.\n\n"
         "## Market technicals\n"
         f"{prose}\n\n"
         "## Quantitative facts\n"
-        f"{json.dumps(key_facts, ensure_ascii=False, indent=2)}\n\n"
+        f"{_json_compact(_limit_structure(key_facts, max_depth=3))}\n\n"
         "## Sector and factor rotation\n"
         f"{sector_rotation_section}\n\n"
         "Structured rotation signal:\n"
-        f"{json.dumps(sector_rotation, ensure_ascii=False, indent=2)}\n\n"
+        f"{_json_compact(sector_rotation)}\n\n"
         "## Data provenance and freshness\n"
-        f"{json.dumps(feature_provenance, ensure_ascii=False, indent=2)}\n\n"
+        f"{_json_compact(feature_provenance)}\n\n"
         "## Macro news\n"
         f"{macro}\n\n"
         "## Calendar this week\n"
@@ -459,13 +577,13 @@ def _build_user_message(
         "## Per-ticker news\n"
         f"{news_block}\n\n"
         "## Current portfolio weights (actual holdings)\n"
-        f"{json.dumps(current_weights, ensure_ascii=False, indent=2)}\n\n"
+        f"{_json_compact(current_weights)}\n\n"
         "## Python Stage 2 baseline weights (base_weights)\n"
-        f"{json.dumps(base_weights, ensure_ascii=False, indent=2)}\n\n"
-        "## Scoring breakdown (all tickers)\n"
-        f"{json.dumps(scoring, ensure_ascii=False, indent=2)}\n\n"
+        f"{_json_compact(base_weights)}\n\n"
+        f"## Scoring breakdown (top compact rows, max {MAX_SCORING_ROWS})\n"
+        f"{_json_compact(scoring)}\n\n"
         "## Ranking summary\n"
-        f"{json.dumps(ranking, ensure_ascii=False, indent=2)}\n\n"
+        f"{_json_compact(ranking)}\n\n"
         "## Your task\n"
         "From the above, output market_regime + macro_outlook + ticker_signals +\n"
         "cross_signal_insights. Analyze only — no trading decision. Include scorecard "
@@ -519,6 +637,127 @@ def _compact_evidence_bundle(bundle: dict) -> dict:
         ),
         "data_quality": bundle.get("data_quality") or {},
     }
+
+
+def _compact_weights(weights: dict) -> dict:
+    if not isinstance(weights, dict):
+        return {}
+    items: list[tuple[str, float]] = []
+    cash_value: float | None = None
+    for ticker, value in weights.items():
+        try:
+            weight = float(value or 0.0)
+        except (TypeError, ValueError):
+            continue
+        clean = str(ticker).upper().strip()
+        if not clean:
+            continue
+        if clean == "CASH":
+            cash_value = round(weight, 6)
+            continue
+        if abs(weight) > 1e-9:
+            items.append((clean, weight))
+    items.sort(key=lambda row: abs(row[1]), reverse=True)
+    compact = {ticker: round(weight, 6) for ticker, weight in items[:MAX_WEIGHT_ROWS]}
+    if len(items) > MAX_WEIGHT_ROWS:
+        compact["_omitted_positions"] = len(items) - MAX_WEIGHT_ROWS
+    if cash_value is not None:
+        compact["CASH"] = cash_value
+    return compact
+
+
+def _compact_scoring_breakdown(scoring: list) -> list:
+    if not isinstance(scoring, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    keep_fields = (
+        "ticker",
+        "score",
+        "signal",
+        "confidence",
+        "strategy",
+        "strategy_name",
+        "role",
+        "universe_role",
+        "data_quality",
+        "return_1d",
+        "return_5d",
+        "return_20d",
+        "return_60d",
+        "atr_pct",
+        "base_weight",
+        "target_weight",
+        "reason",
+        "reason_codes",
+    )
+    for item in scoring[:MAX_SCORING_ROWS]:
+        if not isinstance(item, dict):
+            continue
+        row = {
+            key: _limit_structure(item.get(key), max_depth=2, max_list=6, max_dict=8, max_str=180)
+            for key in keep_fields
+            if item.get(key) is not None
+        }
+        if row:
+            rows.append(row)
+    if len(scoring) > MAX_SCORING_ROWS:
+        rows.append({"_omitted_scoring_rows": len(scoring) - MAX_SCORING_ROWS})
+    return rows
+
+
+def _compact_ranking_summary(ranking: dict) -> dict:
+    if isinstance(ranking, dict) and isinstance(ranking.get("rows"), list):
+        out = {
+            key: value
+            for key, value in ranking.items()
+            if key != "rows" and not _omit_prompt_key(key)
+        }
+        out["rows"] = _compact_scoring_breakdown(ranking.get("rows") or [])
+        return _limit_structure(
+            out,
+            max_depth=4,
+            max_list=MAX_RANKING_ROWS,
+            max_dict=MAX_DICT_ITEMS,
+            max_str=300,
+        )
+    return _limit_structure(
+        ranking or {},
+        max_depth=4,
+        max_list=MAX_RANKING_ROWS,
+        max_dict=MAX_DICT_ITEMS,
+        max_str=300,
+    )
+
+
+def _compact_sector_rotation(rotation: dict) -> dict:
+    if not isinstance(rotation, dict):
+        return {}
+    return _limit_structure(
+        rotation,
+        max_depth=4,
+        max_list=MAX_RANKING_ROWS,
+        max_dict=MAX_DICT_ITEMS,
+        max_str=300,
+    )
+
+
+def _compact_feature_provenance(provenance: dict) -> dict:
+    if not isinstance(provenance, dict):
+        return {}
+    compact = {
+        "source_counts": provenance.get("source_counts") or {},
+        "authority_counts": provenance.get("authority_counts") or {},
+        "stale_fields": provenance.get("stale_fields") or {},
+        "has_stale_fields": provenance.get("has_stale_fields"),
+        "intraday_source": provenance.get("intraday_source"),
+        "live_state_source": provenance.get("live_state_source"),
+        "daily_research_source": provenance.get("daily_research_source"),
+        "fallback_policy": provenance.get("fallback_policy"),
+        "warnings": provenance.get("warnings") or [],
+    }
+    if not any(value not in ({}, [], None) for value in compact.values()):
+        return _limit_structure(provenance, max_depth=3, max_list=8, max_dict=16, max_str=220)
+    return _limit_structure(compact, max_depth=3, max_list=8, max_dict=16, max_str=220)
 
 
 def _compact_strategy_confidence(confidence: dict) -> dict:
@@ -643,7 +882,12 @@ def _compact_news_evidence(news_evidence: dict) -> dict:
     if not news_evidence:
         return {}
     ticker_scores = {}
-    for ticker, item in (news_evidence.get("ticker_news_scores") or {}).items():
+    score_items = list((news_evidence.get("ticker_news_scores") or {}).items())
+    score_items.sort(
+        key=lambda row: _safe_float((row[1] or {}).get("effective_credibility"), 0.0),
+        reverse=True,
+    )
+    for ticker, item in score_items[:MAX_NEWS_TICKERS]:
         if not isinstance(item, dict):
             continue
         ticker_scores[ticker] = {
@@ -652,39 +896,86 @@ def _compact_news_evidence(news_evidence: dict) -> dict:
             "effective_credibility": item.get("effective_credibility"),
             "market_impact": item.get("market_impact"),
             "action_bias": item.get("action_bias"),
-            "supporting_items": (item.get("supporting_items") or [])[:3],
-            "conflicting_items": (item.get("conflicting_items") or [])[:2],
+            "supporting_items": _compact_news_items(
+                item.get("supporting_items") or [], max_items=2
+            ),
+            "conflicting_items": _compact_news_items(
+                item.get("conflicting_items") or [], max_items=1
+            ),
         }
+    if len(score_items) > MAX_NEWS_TICKERS:
+        ticker_scores["_omitted_tickers"] = len(score_items) - MAX_NEWS_TICKERS
     return {
-        "macro_news_score": news_evidence.get("macro_news_score") or {},
+        "macro_news_score": _limit_structure(
+            news_evidence.get("macro_news_score") or {},
+            max_depth=3,
+            max_list=6,
+            max_dict=12,
+            max_str=220,
+        ),
         "ticker_news_scores": ticker_scores,
-        "hard_risk_events": news_evidence.get("hard_risk_events") or {},
-        "data_gaps": news_evidence.get("data_gaps") or [],
+        "hard_risk_events": _limit_structure(
+            news_evidence.get("hard_risk_events") or {},
+            max_depth=3,
+            max_list=8,
+            max_dict=16,
+            max_str=220,
+        ),
+        "data_gaps": (news_evidence.get("data_gaps") or [])[:8],
     }
 
 
+def _compact_news_items(items: list, *, max_items: int) -> list[dict]:
+    if not isinstance(items, list):
+        return []
+    compact: list[dict] = []
+    for item in items[:max_items]:
+        if not isinstance(item, dict):
+            continue
+        compact.append({
+            "source": item.get("source"),
+            "headline": _truncate_text(item.get("headline", ""), MAX_NEWS_HEADLINE_CHARS),
+            "freshness": item.get("freshness"),
+            "sentiment": item.get("sentiment"),
+            "action_bias": item.get("action_bias"),
+            "market_impact": item.get("market_impact"),
+        })
+    if len(items) > max_items:
+        compact.append({"_omitted_items": len(items) - max_items})
+    return compact
+
+
 def _format_per_ticker_news(per_ticker_news: dict) -> str:
-    """Format per_ticker_news into a compact text block. All articles included."""
-    if not per_ticker_news:
+    """Format per_ticker_news into a capped compact text block."""
+    if not isinstance(per_ticker_news, dict) or not per_ticker_news:
         return "(no per-ticker news)"
 
     lines = []
-    for ticker, news_list in sorted(per_ticker_news.items()):
-        if not news_list:
+    ticker_items = sorted(per_ticker_news.items())[:MAX_NEWS_TICKERS]
+    for ticker, news_list in ticker_items:
+        if not isinstance(news_list, list) or not news_list:
             continue
         lines.append(f"### {ticker} ({len(news_list)} items)")
-        for n in news_list:
+        for n in news_list[:MAX_NEWS_ITEMS_PER_TICKER]:
             source = n.get("source", "")
             source_api = n.get("source_api", "")
-            headline = n.get("headline", "")[:100]
+            headline = _truncate_text(
+                n.get("headline", ""), MAX_NEWS_HEADLINE_CHARS
+            ).replace("\n", " ")
             sentiment = n.get("sentiment", "neutral")
             tag = f"[{source}|{source_api}|{sentiment}]" if source else f"[{sentiment}]"
             summary = n.get("llm_summary") or ""
             if summary:
                 lines.append(f"  {tag} {headline}")
-                lines.append(f"    → {summary[:150]}")
+                lines.append(
+                    f"    -> {_truncate_text(summary, MAX_NEWS_SUMMARY_CHARS).replace(chr(10), ' ')}"
+                )
             else:
                 lines.append(f"  {tag} {headline}")
+        if len(news_list) > MAX_NEWS_ITEMS_PER_TICKER:
+            lines.append(f"  ... {len(news_list) - MAX_NEWS_ITEMS_PER_TICKER} more items omitted")
+    if len(per_ticker_news) > MAX_NEWS_TICKERS:
+        lines.append(f"... {len(per_ticker_news) - MAX_NEWS_TICKERS} tickers omitted")
 
     return "\n".join(lines) if lines else "(no per-ticker news)"
 
@@ -736,6 +1027,11 @@ def _validate_and_normalize(out: dict, quant_baseline: dict) -> dict:
 
     # key_drivers (new format) — convert to key_events for downstream
     raw_drivers = mo.get("key_drivers") or []
+    if isinstance(raw_drivers, list):
+        raw_drivers = [
+            _limit_structure(item, max_depth=2, max_list=4, max_dict=8, max_str=140)
+            for item in raw_drivers[:5]
+        ]
     key_events_rich: list[dict] = []
     key_events_keywords: list[str] = []
     if isinstance(raw_drivers, list):
@@ -768,6 +1064,7 @@ def _validate_and_normalize(out: dict, quant_baseline: dict) -> dict:
     data_gaps = mo.get("data_gaps") or []
     if not isinstance(data_gaps, list):
         data_gaps = []
+    data_gaps = [_truncate_text(item, 160) for item in data_gaps[:6]]
 
     # ticker_signals — new dict format (keyed by ticker)
     raw_signals = out.get("ticker_signals") or {}
@@ -776,6 +1073,8 @@ def _validate_and_normalize(out: dict, quant_baseline: dict) -> dict:
 
     if isinstance(raw_signals, dict):
         for ticker, sig in raw_signals.items():
+            if len(ticker_signals_dict) >= MAX_RESEARCHER_TICKER_SIGNALS:
+                break
             if not isinstance(sig, dict):
                 continue
             t = str(ticker).upper().strip()
@@ -799,8 +1098,9 @@ def _validate_and_normalize(out: dict, quant_baseline: dict) -> dict:
             conflicts = conf_drivers.get("conflicting_signals") or []
             if not isinstance(conflicts, list):
                 conflicts = []
+            conflicts = [_truncate_text(item, 120) for item in conflicts[:4]]
 
-            note = sig.get("note")
+            note = _truncate_text(sig.get("note"), 180) if sig.get("note") else None
 
             # Build new-format entry
             ticker_signals_dict[t] = {
@@ -832,6 +1132,8 @@ def _validate_and_normalize(out: dict, quant_baseline: dict) -> dict:
     elif isinstance(raw_signals, list):
         # Legacy list format (fallback for degraded upstream)
         for sig in raw_signals:
+            if len(ticker_signals_dict) >= MAX_RESEARCHER_TICKER_SIGNALS:
+                break
             if not isinstance(sig, dict) or not sig.get("ticker"):
                 continue
             combined = str(sig.get("combined_signal", "neutral")).strip()
@@ -843,7 +1145,8 @@ def _validate_and_normalize(out: dict, quant_baseline: dict) -> dict:
                 "combined_signal": combined,
                 "confidence": "medium",
                 "news_sentiment": str(sig.get("news_sentiment", "neutral")).strip(),
-                "note": sig.get("flag") or sig.get("note"),
+                "note": _truncate_text(sig.get("flag") or sig.get("note"), 180)
+                if (sig.get("flag") or sig.get("note")) else None,
             })
             ticker_signals_dict[t] = {
                 "overall_signal": combined,
@@ -854,7 +1157,7 @@ def _validate_and_normalize(out: dict, quant_baseline: dict) -> dict:
                     "macro_alignment": "neutral",
                 },
                 "confidence_drivers": {"supporting_count": 1, "conflicting_signals": []},
-                "note": sig.get("note"),
+                "note": _truncate_text(sig.get("note"), 180) if sig.get("note") else None,
             }
 
     # cross_signal_insights — new format: list of dicts with insight/confidence/affected_tickers/actionable
@@ -863,9 +1166,9 @@ def _validate_and_normalize(out: dict, quant_baseline: dict) -> dict:
     insights_str_list: list[str] = []  # legacy string list for downstream
 
     if isinstance(raw_insights, list):
-        for item in raw_insights:
+        for item in raw_insights[:MAX_RESEARCHER_INSIGHTS]:
             if isinstance(item, dict):
-                insight_text = str(item.get("insight", "")).strip()
+                insight_text = _truncate_text(str(item.get("insight", "")).strip(), 180)
                 ins_conf = str(item.get("confidence", "medium")).strip()
                 if ins_conf not in ("high", "medium", "low"):
                     ins_conf = "medium"
@@ -876,12 +1179,12 @@ def _validate_and_normalize(out: dict, quant_baseline: dict) -> dict:
                 insights_list.append({
                     "insight": insight_text,
                     "confidence": ins_conf,
-                    "affected_tickers": affected,
+                    "affected_tickers": affected[:8],
                     "actionable": actionable,
                 })
                 insights_str_list.append(insight_text)
             elif isinstance(item, str) and item.strip():
-                insights_str_list.append(item.strip())
+                insights_str_list.append(_truncate_text(item.strip(), 180))
 
     # overall_confidence + low_confidence_reasons
     overall_conf = str(out.get("overall_confidence", "medium")).strip()
@@ -890,6 +1193,7 @@ def _validate_and_normalize(out: dict, quant_baseline: dict) -> dict:
     low_reasons = out.get("low_confidence_reasons") or []
     if not isinstance(low_reasons, list):
         low_reasons = []
+    low_reasons = [_truncate_text(item, 160) for item in low_reasons[:6]]
 
     # Return: new format fields + legacy-compatible fields for downstream
     return {
@@ -992,6 +1296,16 @@ def _degraded_report(quant_baseline: dict, error: str | None) -> dict:
         "overall_confidence": "low",
         "low_confidence_reasons": [degraded_reason],
         "used_degraded_fallback": True,
+        "fallback_diagnostics": {
+            "schema_version": "researcher_fallback_diagnostics_v1",
+            "error": _truncate_text(error, 1000),
+            "likely_issue": (
+                "json_generation_or_parse_failure"
+                if error
+                else "unknown_researcher_failure"
+            ),
+            "max_completion_tokens": RESEARCHER_MAX_COMPLETION_TOKENS,
+        },
     }
 
 
@@ -1006,7 +1320,7 @@ def _build_earnings_section(memory_context: dict) -> str:
 
     return (
         "\n\n## UPCOMING EARNINGS (next 7 days — factor into risk assessment)\n\n"
-        f"{earnings_ctx.get('earnings_prose', '')}\n\n"
+        f"{_truncate_text(earnings_ctx.get('earnings_prose', ''), 1200)}\n\n"
         "**Note**: Held positions with upcoming earnings may carry elevated risk. "
         "Factor this into your ticker confidence assessments.\n"
     )
@@ -1045,4 +1359,4 @@ def _build_scenario_section(brief: dict) -> str:
         return ""
 
     from services.scenario_analyst import build_scenario_context
-    return build_scenario_context(scenario_result)
+    return _truncate_text(build_scenario_context(scenario_result), 1800)
