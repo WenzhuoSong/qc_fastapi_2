@@ -9,12 +9,13 @@ from services.operator_halt import (
 
 
 class OperatorHaltTests(unittest.TestCase):
-    def test_missing_state_defaults_to_running(self):
+    def test_missing_state_fails_safe_halted(self):
         state = normalize_operator_halt_state(None)
 
-        self.assertFalse(state["halted"])
-        self.assertFalse(state["fail_safe"])
-        self.assertEqual(state["source"], "missing_default")
+        self.assertTrue(state["halted"])
+        self.assertTrue(state["fail_safe"])
+        self.assertEqual(state["source"], "fail_safe")
+        self.assertEqual(state["reason"], "operator_halt_state_missing")
 
     def test_malformed_state_fails_safe_halted(self):
         state = normalize_operator_halt_state({"reason": "missing halted"})

@@ -7,10 +7,11 @@ non-authoritative inputs before PR1 metrics consume anything.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any
 
 from services.json_safety import json_safe
+from services.market_calendar import us_equity_market_status
 from services.training_data_authority import evaluate_training_data_source
 
 
@@ -81,6 +82,10 @@ def build_weekend_review_dataset(
         _add_diagnostic_artifact(dataset, _record_dict(row))
 
     for analysis in agent_analyses or []:
+        market_verdict = _agent_analysis_market_open_verdict(analysis)
+        if market_verdict and not market_verdict["allowed"]:
+            _exclude(dataset, "agent_analysis", market_verdict["payload"], market_verdict["reasons"])
+            continue
         for artifact in _diagnostic_artifacts_from_analysis(analysis):
             _add_diagnostic_artifact(dataset, artifact)
 
@@ -207,6 +212,11 @@ async def load_weekend_review_dataset(
 
 def _add_validation_observation(dataset: WeekendReviewDataset, row: Any) -> None:
     payload = _validation_observation_payload(row)
+    market_verdict = _validation_observation_market_open_verdict(payload)
+    if market_verdict and not market_verdict["allowed"]:
+        _exclude(dataset, "validation_observation", market_verdict["payload"], market_verdict["reasons"])
+        return
+
     verdict = evaluate_training_data_source(source_type="validation_observation", payload=payload)
     if verdict["allowed"]:
         dataset.validation_observations.append(payload)
@@ -366,6 +376,73 @@ def _diagnostic_artifacts_from_analysis(row: Any) -> list[dict[str, Any]]:
     if not isinstance(artifacts, list):
         return []
     return [_record_dict(item) for item in artifacts if isinstance(item, dict)]
+
+
+def _agent_analysis_market_open_verdict(row: Any) -> dict[str, Any] | None:
+    analyzed_at = _record_get(row, "analyzed_at")
+    if analyzed_at is None:
+        return None
+    dt = _datetime_or_none(analyzed_at)
+    if dt is None:
+        return {
+            "allowed": False,
+            "reasons": ["analysis_time_unparseable"],
+            "payload": {
+                "id": _record_get(row, "id"),
+                "analyzed_at": _iso_or_none(analyzed_at),
+            },
+        }
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    status = us_equity_market_status(dt)
+    if status.is_open:
+        return {"allowed": True, "reasons": [], "payload": {}}
+    return {
+        "allowed": False,
+        "reasons": ["analysis_outside_market_open"],
+        "payload": {
+            "id": _record_get(row, "id"),
+            "analyzed_at": dt.isoformat(),
+            "market_status": status.to_dict(),
+        },
+    }
+
+
+def _validation_observation_market_open_verdict(payload: dict[str, Any]) -> dict[str, Any] | None:
+    observation_payload = payload.get("observation_payload")
+    if not isinstance(observation_payload, dict):
+        return None
+    source = str(observation_payload.get("source") or "").strip()
+    if not source.startswith("agent_analysis."):
+        return None
+
+    observed_at = payload.get("observed_at")
+    if observed_at is None:
+        return {
+            "allowed": False,
+            "reasons": ["analysis_time_missing"],
+            "payload": payload,
+        }
+    dt = _datetime_or_none(observed_at)
+    if dt is None:
+        return {
+            "allowed": False,
+            "reasons": ["analysis_time_unparseable"],
+            "payload": payload,
+        }
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    status = us_equity_market_status(dt)
+    if status.is_open:
+        return {"allowed": True, "reasons": [], "payload": {}}
+    return {
+        "allowed": False,
+        "reasons": ["analysis_outside_market_open"],
+        "payload": {
+            **payload,
+            "market_status": status.to_dict(),
+        },
+    }
 
 
 def _validation_observation_payload(row: Any) -> dict[str, Any]:
@@ -564,6 +641,17 @@ def _iso_or_none(value: Any) -> str | None:
         return value.isoformat()
     if isinstance(value, str) and value.strip():
         return value
+    return None
+
+
+def _datetime_or_none(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
     return None
 
 

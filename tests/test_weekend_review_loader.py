@@ -80,6 +80,7 @@ class WeekendReviewLoaderTests(unittest.TestCase):
             agent_analyses=[
                 {
                     "id": 42,
+                    "analyzed_at": datetime(2026, 6, 5, 14, 0, tzinfo=UTC),
                     "risk_output": {
                         "diagnostic_artifacts": [
                             {
@@ -102,6 +103,75 @@ class WeekendReviewLoaderTests(unittest.TestCase):
         self.assertEqual(len(dataset.diagnostic_artifacts), 1)
         self.assertEqual(dataset.source_counts["diagnostic_artifact"], 1)
         self.assertEqual(dataset.exclusion_counts["missing_artifact_id"], 1)
+
+    def test_excludes_agent_analysis_outside_market_open_from_review_artifacts(self):
+        dataset = build_weekend_review_dataset(
+            agent_analyses=[
+                {
+                    "id": 43,
+                    "analyzed_at": datetime(2026, 6, 5, 22, 0, tzinfo=UTC),
+                    "risk_output": {
+                        "diagnostic_artifacts": [
+                            {
+                                "schema_version": "market_risk_assessment_v1",
+                                "artifact_id": "market_risk_assessment_v1:43:abc",
+                                "artifact_type": "market_risk_assessment",
+                                "execution_authority": "none",
+                            }
+                        ]
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(dataset.diagnostic_artifacts, [])
+        self.assertEqual(dataset.exclusion_counts["analysis_outside_market_open"], 1)
+        self.assertEqual(dataset.excluded_inputs[0]["source_type"], "agent_analysis")
+
+    def test_excludes_agent_analysis_derived_observation_outside_market_open(self):
+        dataset = build_weekend_review_dataset(
+            validation_observations=[
+                {
+                    "observation_id": "intent_vs_execution:43",
+                    "observation_type": "intent_vs_execution",
+                    "observed_at": datetime(2026, 6, 5, 22, 0, tzinfo=UTC),
+                    "observation_date": date(2026, 6, 5),
+                    "status": "observed",
+                    "execution_authority": "none",
+                    "target_weight_mutation": "none",
+                    "observation_payload": {
+                        "schema_version": "intent_vs_execution_v1",
+                        "source": "agent_analysis.risk_output",
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(dataset.validation_observations, [])
+        self.assertEqual(dataset.exclusion_counts["analysis_outside_market_open"], 1)
+        self.assertEqual(dataset.excluded_inputs[0]["source_type"], "validation_observation")
+
+    def test_does_not_market_filter_execution_truth_observations(self):
+        dataset = build_weekend_review_dataset(
+            validation_observations=[
+                {
+                    "observation_id": "execution_truth:analysis_43",
+                    "observation_type": "execution_truth",
+                    "observed_at": datetime(2026, 6, 5, 22, 0, tzinfo=UTC),
+                    "observation_date": date(2026, 6, 5),
+                    "status": "completed",
+                    "execution_authority": "none",
+                    "target_weight_mutation": "none",
+                    "observation_payload": {
+                        "schema_version": "execution_truth_v1",
+                        "source": "execution_log",
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(len(dataset.validation_observations), 1)
+        self.assertEqual(dataset.excluded_inputs, [])
 
     def test_counts_mixed_feature_authority_as_scope_limited(self):
         dataset = build_weekend_review_dataset(

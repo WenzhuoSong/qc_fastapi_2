@@ -10,7 +10,6 @@ from datetime import date, timedelta
 
 from services.cron_audit import audit_cron_run
 from services.pipeline import run_full_pipeline
-from services.trading_analysis_gate import evaluate_trading_analysis_gate
 from tools.notify_tools import tool_send_telegram
 
 logging.basicConfig(
@@ -54,14 +53,6 @@ async def _resolve_trigger() -> str:
 async def main() -> None:
     try:
         async with audit_cron_run("hourly_analysis") as audit:
-            gate = await evaluate_trading_analysis_gate()
-            if not gate.get("allowed"):
-                reason = str(gate.get("reason") or "trading_analysis_gate_blocked")
-                audit.mark_skipped(reason)
-                audit.set_summary(trading_analysis_gate=gate)
-                logger.warning("[hourly] Skipping pipeline: %s", reason)
-                return
-
             trigger = await _resolve_trigger()
             result = await run_full_pipeline(trigger=trigger)
             if result.get("status", "").startswith("skipped"):

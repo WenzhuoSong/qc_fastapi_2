@@ -7,7 +7,7 @@ from services.market_calendar import us_equity_market_status
 from services.operational_health import build_operational_health_snapshot
 
 
-async def evaluate_trading_analysis_gate() -> dict[str, Any]:
+async def evaluate_trading_analysis_gate(*, require_market_open: bool = True) -> dict[str, Any]:
     """Return whether a trading-analysis pipeline run may start.
 
     This gate is intentionally shared by scheduled and event-driven entrypoints.
@@ -20,6 +20,14 @@ async def evaluate_trading_analysis_gate() -> dict[str, Any]:
         return {
             "allowed": False,
             "reason": f"market_closed:{market_status.reason}",
+            "market_status": market_payload,
+            "news_cache": None,
+            "operational_health": None,
+        }
+    if require_market_open and not market_status.is_open:
+        return {
+            "allowed": False,
+            "reason": f"market_not_open:{market_status.reason}",
             "market_status": market_payload,
             "news_cache": None,
             "operational_health": None,

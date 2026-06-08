@@ -12,14 +12,7 @@ CONFIG_KEY = "operator_halt_state"
 def normalize_operator_halt_state(value: Any) -> dict[str, Any]:
     """Return a fail-safe normalized operator halt state."""
     if value is None:
-        return {
-            "halted": False,
-            "reason": "",
-            "updated_at": None,
-            "updated_by": "system",
-            "source": "missing_default",
-            "fail_safe": False,
-        }
+        return _fail_safe_state("operator_halt_state_missing")
     if not isinstance(value, dict):
         return _fail_safe_state("operator_halt_state_malformed")
 

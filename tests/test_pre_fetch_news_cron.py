@@ -28,20 +28,22 @@ class PreFetchNewsCronContractTests(unittest.TestCase):
         self.assertIn("NEWS_CRON_ALLOWED_MISSED_RUNS = 2", source)
 
     def test_hourly_analysis_requires_news_ready_before_pipeline(self):
-        source = Path("cron/hourly_analysis.py").read_text()
+        source = Path("services/pipeline.py").read_text()
+        run_body = source[source.index("async def run_full_pipeline"):]
 
-        self.assertIn("from services.trading_analysis_gate import evaluate_trading_analysis_gate", source)
-        self.assertIn("evaluate_trading_analysis_gate()", source)
+        self.assertIn("evaluate_trading_analysis_gate(require_market_open=True)", source)
         self.assertIn("trading_analysis_gate", source)
-        self.assertLess(source.index("evaluate_trading_analysis_gate()"), source.index("result = await run_full_pipeline"))
+        self.assertIn("require_trading_gate: bool = True", source)
+        self.assertLess(
+            run_body.index("evaluate_trading_analysis_gate(require_market_open=True)"),
+            run_body.index("_acquire_pipeline_lock"),
+        )
 
-    def test_dynamic_scheduler_uses_same_trading_analysis_gate(self):
+    def test_dynamic_scheduler_relies_on_shared_pipeline_gate(self):
         source = Path("services/dynamic_scheduler.py").read_text()
 
-        self.assertIn("from services.trading_analysis_gate import evaluate_trading_analysis_gate", source)
-        self.assertIn("evaluate_trading_analysis_gate()", source)
-        self.assertIn("trading_analysis_gate", source)
-        self.assertLess(source.index("evaluate_trading_analysis_gate()"), source.index("result = await run_full_pipeline"))
+        self.assertIn("result = await run_full_pipeline(trigger=trigger_name)", source)
+        self.assertNotIn("evaluate_trading_analysis_gate()", source)
 
     def test_pipeline_step_logs_news_evidence_path(self):
         source = Path("services/pipeline.py").read_text()

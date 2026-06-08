@@ -760,9 +760,31 @@ async def _save_step_log(
 # ─────────────────────────────── Main Entry ───────────────────────────────
 
 
-async def run_full_pipeline(trigger: str = "scheduled_hourly") -> dict:
+async def run_full_pipeline(trigger: str = "scheduled_hourly", *, require_trading_gate: bool = True) -> dict:
     """Run full agent pipeline."""
     logger.info(f"=== Pipeline START | trigger={trigger} ===")
+
+    if require_trading_gate:
+        try:
+            from services.trading_analysis_gate import evaluate_trading_analysis_gate
+
+            gate = await evaluate_trading_analysis_gate(require_market_open=True)
+        except Exception as gate_error:
+            logger.exception("[trading_analysis_gate] unavailable; skipping pipeline")
+            return {
+                "status": "skipped_trading_analysis_gate",
+                "trading_analysis_gate": {
+                    "allowed": False,
+                    "reason": "trading_analysis_gate_unavailable",
+                    "error": str(gate_error),
+                },
+            }
+        if not gate.get("allowed"):
+            logger.warning("[trading_analysis_gate] skipped pipeline | reason=%s", gate.get("reason"))
+            return {
+                "status": "skipped_trading_analysis_gate",
+                "trading_analysis_gate": gate,
+            }
 
     if not await _acquire_pipeline_lock():
         logger.warning("Pipeline lock held by another instance — skipped")

@@ -20,7 +20,6 @@ from db.session import AsyncSessionLocal
 from db.models import EarningsCalendar, MacroEventsCache, HoldingsFactor, QCSnapshot
 from db.queries import get_system_config, upsert_system_config, get_latest_snapshots
 from services.pipeline import run_full_pipeline
-from services.trading_analysis_gate import evaluate_trading_analysis_gate
 
 logger = logging.getLogger("qc_fastapi_2.dynamic_scheduler")
 
@@ -47,17 +46,6 @@ async def check_and_trigger() -> dict:
         cfg = await get_system_config(db, "dynamic_scheduler_state")
     if cfg and cfg.value:
         state = cfg.value or {}
-
-    gate = await evaluate_trading_analysis_gate()
-    if not gate.get("allowed"):
-        logger.warning("[dynamic_scheduler] Skipping extra pipeline checks: %s", gate.get("reason"))
-        return {
-            "checked_at": now_utc.isoformat(),
-            "actions": actions,
-            "status": "skipped",
-            "reason": gate.get("reason"),
-            "trading_analysis_gate": gate,
-        }
 
     # ── Macro events (FOMC, CPI) ────────────────────────────────────────────
     macro_triggers = await _check_macro_events(today)
