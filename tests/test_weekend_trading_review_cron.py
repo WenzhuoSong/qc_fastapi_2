@@ -48,6 +48,7 @@ class WeekendTradingReviewCronTests(unittest.TestCase):
                 allow_market_open=True,
                 dataset_loader=fake_loader,
                 artifact_persister=fake_persist,
+                safety_report_loader=_fake_safety_report,
                 persist=True,
             )
         )
@@ -87,6 +88,7 @@ class WeekendTradingReviewCronTests(unittest.TestCase):
 
         async def fake_llm(prompt: str) -> str:
             self.assertIn("weekly_execution_truth_review_v1", prompt)
+            self.assertIn("weekly_decision_degradation_review_v1", prompt)
             return "Execution truth: metrics are deterministic. Review-only follow-up: inspect blockers."
 
         result = asyncio.run(
@@ -96,19 +98,22 @@ class WeekendTradingReviewCronTests(unittest.TestCase):
                 artifact_persister=fake_persist,
                 notifier=fake_notify,
                 llm_complete=fake_llm,
+                safety_report_loader=_fake_safety_report,
                 notify=True,
                 persist=True,
             )
         )
 
         self.assertEqual(result.status, "success")
-        self.assertEqual(result.artifact_count, 8)
+        self.assertEqual(result.artifact_count, 9)
         self.assertEqual(result.persisted_ref, 42)
         self.assertTrue(result.notified)
         self.assertEqual(len(persisted_payloads), 1)
         payload = persisted_payloads[0]
         self.assertEqual(payload["schema_version"], "weekend_trading_review_cron_v1")
-        self.assertEqual(payload["weekend_review_artifact_count"], 8)
+        self.assertEqual(payload["weekend_review_artifact_count"], 9)
+        self.assertIn("safety_invariants", payload)
+        self.assertEqual(payload["safety_invariants"]["finding_count"], 0)
         self.assertIn("weekend_review_artifacts", payload)
         self.assertIn("weekend_review_summary", payload)
         self.assertIn("weekend_review_metrics", payload)
@@ -127,6 +132,7 @@ class WeekendTradingReviewCronTests(unittest.TestCase):
             run_weekend_trading_review(
                 now=datetime(2026, 6, 6, 12, 0, tzinfo=UTC),
                 dataset_loader=fake_loader,
+                safety_report_loader=_fake_safety_report,
                 persist=False,
             )
         )
@@ -147,9 +153,19 @@ class WeekendTradingReviewCronTests(unittest.TestCase):
         text = format_weekend_review_telegram({
             "week_start": "2026-06-01",
             "week_end": "2026-06-07",
-            "weekend_review_artifact_count": 8,
+            "weekend_review_artifact_count": 9,
+            "safety_invariants": {
+                "finding_count": 2,
+                "fail_safe_required": True,
+            },
             "weekend_review_metrics": {
                 "sections": {
+                    "decision_degradation": {
+                        "metrics": {
+                            "normal_sample_count": 3,
+                            "degraded_sample_count": 1,
+                        }
+                    },
                     "execution_truth": {
                         "metrics": {
                             "commands_sent": 22,
@@ -184,6 +200,10 @@ class WeekendTradingReviewCronTests(unittest.TestCase):
         })
 
         self.assertIn("Execution outcomes:", text)
+        self.assertIn("Decision degradation:", text)
+        self.assertIn("normal=3", text)
+        self.assertIn("Safety invariants:", text)
+        self.assertIn("findings=2", text)
         self.assertIn("qc_reject=1", text)
         self.assertIn("preflight=15", text)
         self.assertIn("timeout_ack=4", text)
@@ -213,6 +233,17 @@ class WeekendTradingReviewCronTests(unittest.TestCase):
         ]
         for token in forbidden:
             self.assertNotIn(token, source)
+
+def _fake_safety_report() -> dict:
+    return {
+        "schema_version": "safety_config_fail_safe_report_v1",
+        "execution_authority": "none",
+        "target_weight_mutation": "none",
+        "finding_count": 0,
+        "fail_safe_required": False,
+        "findings": [],
+        "effective_states": {},
+    }
 
 
 if __name__ == "__main__":

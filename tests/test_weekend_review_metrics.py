@@ -225,6 +225,7 @@ class WeekendReviewMetricsTests(unittest.TestCase):
                     "target_weight_mutation": "none",
                     "observation_payload": {
                         "schema_version": "intent_vs_execution_v1",
+                        "time_axis": _time_axis("2026-06-06T11:30:00+00:00"),
                         "risk_approved": True,
                         "blockers": ["daily_command_count_ok", "daily_gross_turnover_ok"],
                         "blocker_events": [
@@ -258,10 +259,80 @@ class WeekendReviewMetricsTests(unittest.TestCase):
         self.assertEqual(intent["metrics"]["execution_preflight_block_count"], 1)
         self.assertEqual(intent["metrics"]["daily_command_cap_block_count"], 1)
         self.assertEqual(intent["metrics"]["daily_turnover_cap_block_count"], 1)
+        self.assertIn("decision_degradation_split", intent)
         self.assertEqual(intent["metrics"]["dedupe_count"], 1)
         self.assertEqual(intent["metrics"]["approved_not_sent_count"], 1)
         self.assertEqual(intent["metrics"]["hedge_triggered_not_added_count"], 1)
         self.assertEqual(intent["blocker_distribution"]["execution_daily_cap"], 1)
+
+    def test_decision_degradation_metrics_and_intent_split(self):
+        dataset = build_weekend_review_dataset(
+            validation_observations=[
+                {
+                    "observation_id": "intent_vs_execution:normal",
+                    "observation_type": "intent_vs_execution",
+                    "observation_date": date(2026, 6, 5),
+                    "observed_at": datetime(2026, 6, 5, 15, 0, tzinfo=UTC),
+                    "status": "observed",
+                    "execution_authority": "none",
+                    "target_weight_mutation": "none",
+                    "observation_payload": {
+                        "schema_version": "intent_vs_execution_v1",
+                        "source": "agent_analysis.risk_output",
+                        "time_axis": _time_axis("2026-06-05T15:00:00+00:00"),
+                        "risk_approved": True,
+                        "blockers": [],
+                        "blocker_events": [],
+                    },
+                    "outcome_payload": {"command_sent": True},
+                },
+                {
+                    "observation_id": "intent_vs_execution:degraded",
+                    "observation_type": "intent_vs_execution",
+                    "observation_date": date(2026, 6, 5),
+                    "observed_at": datetime(2026, 6, 5, 15, 5, tzinfo=UTC),
+                    "status": "observed",
+                    "execution_authority": "none",
+                    "target_weight_mutation": "none",
+                    "observation_payload": {
+                        "schema_version": "intent_vs_execution_v1",
+                        "source": "agent_analysis.risk_output",
+                        "time_axis": _time_axis("2026-06-05T15:05:00+00:00"),
+                        "risk_approved": True,
+                        "blockers": ["daily_command_count_ok"],
+                        "blocker_events": [
+                            {"code": "daily_command_count_ok", "category": "execution_daily_cap"}
+                        ],
+                        "decision_degradation": {
+                            "schema_version": "decision_degradation_v1",
+                            "is_degraded": True,
+                            "degraded_modes": ["news_stale_degraded_mode"],
+                            "fallback_paths": ["news_degraded_reduce_only"],
+                            "missing_inputs": ["news_evidence_missing"],
+                        },
+                    },
+                    "outcome_payload": {"command_sent": False, "not_sent_reason": "preflight"},
+                },
+            ]
+        )
+
+        metrics = build_weekly_review_metrics(dataset)
+        degradation = metrics["sections"]["decision_degradation"]
+        intent = metrics["sections"]["intent_execution"]
+
+        self.assertEqual(degradation["metrics"]["sample_count"], 2)
+        self.assertEqual(degradation["metrics"]["normal_sample_count"], 1)
+        self.assertEqual(degradation["metrics"]["degraded_sample_count"], 1)
+        self.assertEqual(degradation["mode_distribution"]["news_stale_degraded_mode"], 1)
+        self.assertEqual(degradation["fallback_distribution"]["news_degraded_reduce_only"], 1)
+        self.assertEqual(degradation["missing_input_distribution"]["news_evidence_missing"], 1)
+        self.assertEqual(intent["decision_degradation_split"]["normal"]["sample_count"], 1)
+        self.assertEqual(intent["decision_degradation_split"]["degraded"]["sample_count"], 1)
+        self.assertEqual(
+            intent["decision_degradation_split"]["degraded"]["blocker_distribution"]["execution_daily_cap"],
+            1,
+        )
+        self.assertEqual(intent["metrics"]["daily_command_cap_block_count"], 1)
 
     def test_intent_execution_uses_lifecycle_events_as_blocker_fallback(self):
         dataset = build_weekend_review_dataset(
@@ -358,6 +429,9 @@ class WeekendReviewMetricsTests(unittest.TestCase):
                     "label_schema_version": "outcome_label_v1",
                     "training_authority": "eligible",
                     "horizon": "5d",
+                    "data_time": "2026-06-06T00:00:00+00:00",
+                    "as_of_time": "2026-06-06T00:00:00+00:00",
+                    "knowledge_time": "2026-06-06T00:00:00+00:00",
                 },
                 {
                     "label_schema_version": "outcome_label_v1",
@@ -365,6 +439,9 @@ class WeekendReviewMetricsTests(unittest.TestCase):
                     "scope_limit_reasons": ["fallback_label_source"],
                     "source_metadata": {"label_source_role": "fallback"},
                     "horizon": "5d",
+                    "data_time": "2026-06-06T00:00:00+00:00",
+                    "as_of_time": "2026-06-06T00:00:00+00:00",
+                    "knowledge_time": "2026-06-06T00:00:00+00:00",
                 },
             ],
             validation_observations=[
@@ -380,6 +457,7 @@ class WeekendReviewMetricsTests(unittest.TestCase):
                     "target_weight_mutation": "none",
                     "observation_payload": {
                         "contract_version": "validation_observation_loop_v1",
+                        "time_axis": _time_axis("2026-06-01T10:00:00+00:00"),
                         "hedge_intent_outcome": {"triggered": False},
                     },
                 }
@@ -480,6 +558,7 @@ class WeekendReviewMetricsTests(unittest.TestCase):
             "target_weight_mutation": "none",
             "observation_payload": {
                 "schema_version": "intent_vs_execution_v1",
+                "time_axis": _time_axis("2026-06-01T10:00:00+00:00"),
                 "hedge_intent": {
                     "triggered": False,
                     "severity": 0.5,
@@ -546,6 +625,7 @@ class WeekendReviewMetricsTests(unittest.TestCase):
                     },
                     "observation_payload": {
                         "contract_version": "validation_observation_loop_v1",
+                        "time_axis": _time_axis("2026-06-06T10:00:00+00:00"),
                         "active_basket_policy": {
                             "within_target_active_count": False,
                         },
@@ -595,6 +675,7 @@ def _hedge_observation(
         "target_weight_mutation": "none",
         "observation_payload": {
             "contract_version": "validation_observation_loop_v1",
+            "time_axis": _time_axis(datetime.combine(observation_date, datetime.min.time(), tzinfo=UTC).isoformat()),
             "hedge_intent_outcome": {
                 "date": observation_date.isoformat(),
                 "triggered": triggered,
@@ -616,6 +697,15 @@ def _price_path(ticker: str, start: date, prices: list[float]) -> list[dict]:
             "adj_close_price": price,
         })
     return rows
+
+
+def _time_axis(ts: str) -> dict:
+    return {
+        "contract_version": "time_axis_v1",
+        "data_time": ts,
+        "as_of_time": ts,
+        "knowledge_time": ts,
+    }
 
 
 if __name__ == "__main__":

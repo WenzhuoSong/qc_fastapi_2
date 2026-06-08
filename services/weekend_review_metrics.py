@@ -88,6 +88,7 @@ def build_weekly_review_metrics(
     guard = rate_guard or RateGuardConfig()
     as_of = _ensure_utc(review_as_of or datetime.now(timezone.utc))
     sections = {
+        "decision_degradation": build_decision_degradation_metrics(data),
         "execution_truth": build_execution_truth_metrics(
             data,
             review_as_of=as_of,
@@ -240,9 +241,12 @@ def build_intent_execution_metrics(dataset: WeekendReviewDataset | dict[str, Any
         "hedge_triggered_not_added_count": 0,
     }
     blocker_distribution: dict[str, int] = {}
+    degradation_split = _empty_intent_degradation_split()
     unexecuted_intents: list[dict[str, Any]] = []
 
     for row in observations:
+        degraded_bucket = "degraded" if _is_degraded_observation(row) else "normal"
+        degradation_split[degraded_bucket]["sample_count"] += 1
         payload = row.get("observation_payload") if isinstance(row.get("observation_payload"), dict) else {}
         outcome = row.get("outcome_payload") if isinstance(row.get("outcome_payload"), dict) else {}
         events = payload.get("blocker_events") if isinstance(payload.get("blocker_events"), list) else []
@@ -250,27 +254,37 @@ def build_intent_execution_metrics(dataset: WeekendReviewDataset | dict[str, Any
         categories = _blocker_categories(events)
         for category, count in categories.items():
             blocker_distribution[category] = blocker_distribution.get(category, 0) + count
+            split_dist = degradation_split[degraded_bucket]["blocker_distribution"]
+            split_dist[category] = split_dist.get(category, 0) + count
 
         if any(category in categories for category in ("risk_validation", "risk_manager")) or _any_contains(blockers, "risk"):
             metrics["risk_block_count"] += 1
+            degradation_split[degraded_bucket]["metrics"]["risk_block_count"] += 1
         if "final_validation" in categories or _any_contains(blockers, "final_validation"):
             metrics["final_validation_block_count"] += 1
+            degradation_split[degraded_bucket]["metrics"]["final_validation_block_count"] += 1
         if any(category.startswith("execution_") for category in categories) or _any_contains(blockers, "preflight"):
             metrics["execution_preflight_block_count"] += 1
+            degradation_split[degraded_bucket]["metrics"]["execution_preflight_block_count"] += 1
         if "execution_daily_cap" in categories or "daily_command_count_ok" in blockers:
             metrics["daily_command_cap_block_count"] += 1
+            degradation_split[degraded_bucket]["metrics"]["daily_command_cap_block_count"] += 1
         if "execution_turnover_cap" in categories or "daily_gross_turnover_ok" in blockers:
             metrics["daily_turnover_cap_block_count"] += 1
+            degradation_split[degraded_bucket]["metrics"]["daily_turnover_cap_block_count"] += 1
 
         not_sent_reason = str(outcome.get("not_sent_reason") or "").lower()
         row_unexecuted = [str(item) for item in payload.get("unexecuted_intents") or []]
         if "dedupe" in not_sent_reason or any("dedupe" in item for item in row_unexecuted):
             metrics["dedupe_count"] += 1
+            degradation_split[degraded_bucket]["metrics"]["dedupe_count"] += 1
         if bool(payload.get("risk_approved")) and not bool(outcome.get("command_sent")):
             metrics["approved_not_sent_count"] += 1
+            degradation_split[degraded_bucket]["metrics"]["approved_not_sent_count"] += 1
         hedge = payload.get("hedge_intent") if isinstance(payload.get("hedge_intent"), dict) else {}
         if bool(hedge.get("triggered")) and not bool(hedge.get("add_hedge_etf")):
             metrics["hedge_triggered_not_added_count"] += 1
+            degradation_split[degraded_bucket]["metrics"]["hedge_triggered_not_added_count"] += 1
 
         for item in row_unexecuted:
             unexecuted_intents.append({
@@ -295,7 +309,55 @@ def build_intent_execution_metrics(dataset: WeekendReviewDataset | dict[str, Any
         "schema_version": "weekly_intent_execution_review_v1",
         "metrics": metrics,
         "blocker_distribution": dict(sorted(blocker_distribution.items())),
+        "decision_degradation_split": _sorted_degradation_split(degradation_split),
         "unexecuted_intents": unexecuted_intents,
+    })
+
+
+def build_decision_degradation_metrics(dataset: WeekendReviewDataset | dict[str, Any]) -> dict[str, Any]:
+    data = _dataset_dict(dataset)
+    metrics = {
+        "sample_count": 0,
+        "normal_sample_count": 0,
+        "degraded_sample_count": 0,
+        "degraded_intent_execution_count": 0,
+    }
+    mode_distribution: dict[str, int] = {}
+    fallback_distribution: dict[str, int] = {}
+    missing_input_distribution: dict[str, int] = {}
+    by_observation_type: dict[str, dict[str, int]] = {}
+
+    for row in data.get("validation_observations") or []:
+        metrics["sample_count"] += 1
+        observation_type = str(row.get("observation_type") or "unknown")
+        by_type = by_observation_type.setdefault(observation_type, {"normal": 0, "degraded": 0})
+        degradation = _decision_degradation_payload(row)
+        if bool(degradation.get("is_degraded")):
+            metrics["degraded_sample_count"] += 1
+            by_type["degraded"] += 1
+            if observation_type == "intent_vs_execution":
+                metrics["degraded_intent_execution_count"] += 1
+            for mode in degradation.get("degraded_modes") or []:
+                _count_distribution(mode_distribution, str(mode))
+            for path in degradation.get("fallback_paths") or []:
+                _count_distribution(fallback_distribution, str(path))
+            for missing in degradation.get("missing_inputs") or []:
+                _count_distribution(missing_input_distribution, str(missing))
+        else:
+            metrics["normal_sample_count"] += 1
+            by_type["normal"] += 1
+
+    return _section({
+        "schema_version": "weekly_decision_degradation_review_v1",
+        "metrics": metrics,
+        "mode_distribution": dict(sorted(mode_distribution.items())),
+        "fallback_distribution": dict(sorted(fallback_distribution.items())),
+        "missing_input_distribution": dict(sorted(missing_input_distribution.items())),
+        "by_observation_type": {
+            key: by_observation_type[key]
+            for key in sorted(by_observation_type)
+        },
+        "evaluation_guidance": "stratify_strategy_metrics_by_decision_degraded_before_drawing_edge_conclusions",
     })
 
 
@@ -746,6 +808,58 @@ def _section(payload: dict[str, Any]) -> dict[str, Any]:
         **payload,
     }
     return json_safe(out)
+
+
+def _empty_intent_metrics() -> dict[str, int]:
+    return {
+        "risk_block_count": 0,
+        "final_validation_block_count": 0,
+        "execution_preflight_block_count": 0,
+        "daily_command_cap_block_count": 0,
+        "daily_turnover_cap_block_count": 0,
+        "dedupe_count": 0,
+        "execution_timeout_count": 0,
+        "qc_reject_count": 0,
+        "approved_not_sent_count": 0,
+        "hedge_triggered_not_added_count": 0,
+    }
+
+
+def _empty_intent_degradation_split() -> dict[str, dict[str, Any]]:
+    return {
+        "normal": {
+            "sample_count": 0,
+            "metrics": _empty_intent_metrics(),
+            "blocker_distribution": {},
+        },
+        "degraded": {
+            "sample_count": 0,
+            "metrics": _empty_intent_metrics(),
+            "blocker_distribution": {},
+        },
+    }
+
+
+def _sorted_degradation_split(split: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for bucket in ("normal", "degraded"):
+        payload = split.get(bucket) or {}
+        out[bucket] = {
+            "sample_count": int(payload.get("sample_count") or 0),
+            "metrics": payload.get("metrics") or _empty_intent_metrics(),
+            "blocker_distribution": dict(sorted((payload.get("blocker_distribution") or {}).items())),
+        }
+    return out
+
+
+def _decision_degradation_payload(row: dict[str, Any]) -> dict[str, Any]:
+    payload = row.get("observation_payload") if isinstance(row.get("observation_payload"), dict) else {}
+    degradation = payload.get("decision_degradation")
+    return degradation if isinstance(degradation, dict) else {}
+
+
+def _is_degraded_observation(row: dict[str, Any]) -> bool:
+    return bool(_decision_degradation_payload(row).get("is_degraded"))
 
 
 def _dataset_dict(dataset: WeekendReviewDataset | dict[str, Any]) -> dict[str, Any]:

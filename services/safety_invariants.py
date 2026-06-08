@@ -8,6 +8,29 @@ from services.operator_halt import normalize_operator_halt_state
 
 
 SCHEMA_VERSION = "safety_config_fail_safe_report_v1"
+SAFETY_CONFIG_KEYS = (
+    "operator_halt_state",
+    "circuit_state",
+    "emergency_auto_liquidate",
+    "account_state_guard_config",
+    "auto_pause_config",
+    "execution_lifecycle_config",
+    "reconciliation_guard_config",
+)
+
+
+async def load_config_fail_safe_report() -> dict[str, Any]:
+    """Load safety configs from DB and build the read-only invariant report."""
+    from db.queries import get_system_config
+    from db.session import AsyncSessionLocal
+
+    configs: dict[str, Any] = {}
+    async with AsyncSessionLocal() as db:
+        for key in SAFETY_CONFIG_KEYS:
+            row = await get_system_config(db, key)
+            if row is not None:
+                configs[key] = row.value
+    return build_config_fail_safe_report(configs)
 
 
 def build_config_fail_safe_report(configs: dict[str, Any] | None) -> dict[str, Any]:

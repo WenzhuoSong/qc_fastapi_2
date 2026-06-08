@@ -22,7 +22,9 @@ def build_weekend_review_operator_view(payload: dict[str, Any]) -> dict[str, Any
     metrics_payload = payload.get("weekend_review_metrics") if isinstance(payload.get("weekend_review_metrics"), dict) else {}
     sections = metrics_payload.get("sections") if isinstance(metrics_payload.get("sections"), dict) else {}
     summary = payload.get("weekend_review_summary") if isinstance(payload.get("weekend_review_summary"), dict) else {}
+    safety = payload.get("safety_invariants") if isinstance(payload.get("safety_invariants"), dict) else {}
 
+    degradation = _section(sections, "decision_degradation")
     execution = _section(sections, "execution_truth")
     intent = _section(sections, "intent_execution")
     labels = _section(sections, "label_maturity")
@@ -57,8 +59,26 @@ def build_weekend_review_operator_view(payload: dict[str, Any]) -> dict[str, Any
             "hedge_false_negative_count": _metric(hedge, "false_negative_count"),
             "hedge_triggered_no_drop_count": _metric(hedge, "triggered_no_drop_count"),
             "debate_change_rate_status": _rate_status(debate, "debate_change_rate"),
+            "decision_degraded_sample_count": _metric(degradation, "degraded_sample_count"),
+            "decision_normal_sample_count": _metric(degradation, "normal_sample_count"),
+            "safety_invariant_finding_count": int(safety.get("finding_count") or 0),
+            "safety_fail_safe_required": bool(safety.get("fail_safe_required")),
         },
         "sections": {
+            "decision_degradation": {
+                "metrics": degradation.get("metrics") or {},
+                "mode_distribution": degradation.get("mode_distribution") or {},
+                "fallback_distribution": degradation.get("fallback_distribution") or {},
+                "missing_input_distribution": degradation.get("missing_input_distribution") or {},
+                "by_observation_type": degradation.get("by_observation_type") or {},
+            },
+            "safety_invariants": {
+                "schema_version": safety.get("schema_version"),
+                "finding_count": int(safety.get("finding_count") or 0),
+                "fail_safe_required": bool(safety.get("fail_safe_required")),
+                "findings": safety.get("findings") or [],
+                "effective_states": safety.get("effective_states") or {},
+            },
             "execution_truth": {
                 "metrics": execution.get("metrics") or {},
                 "evidence_refs": execution.get("evidence_refs") or [],
@@ -66,6 +86,7 @@ def build_weekend_review_operator_view(payload: dict[str, Any]) -> dict[str, Any
             "blocker_distribution": {
                 "metrics": intent.get("metrics") or {},
                 "blocker_distribution": intent.get("blocker_distribution") or {},
+                "decision_degradation_split": intent.get("decision_degradation_split") or {},
                 "unexecuted_intents": intent.get("unexecuted_intents") or [],
             },
             "label_maturity": {
@@ -177,6 +198,8 @@ def format_weekend_review_operator_text(view: dict[str, Any]) -> str:
     headline = view.get("headline") if isinstance(view.get("headline"), dict) else {}
     sections = view.get("sections") if isinstance(view.get("sections"), dict) else {}
     blockers = (sections.get("blocker_distribution") or {}).get("blocker_distribution") or {}
+    degradation = (sections.get("decision_degradation") or {}).get("metrics") or {}
+    safety = sections.get("safety_invariants") or {}
     hedge = (sections.get("hedge_review") or {}).get("metrics") or {}
     labels = (sections.get("label_maturity") or {}).get("metrics") or {}
     debate = (sections.get("debate_value") or {}).get("rates") or {}
@@ -190,6 +213,16 @@ def format_weekend_review_operator_text(view: dict[str, Any]) -> str:
         "Weekend Review Operator View",
         f"Week: {view.get('week_start')} -> {view.get('week_end')}",
         "execution_authority=none | target_weight_mutation=none",
+        (
+            "Decision degradation: "
+            f"normal={degradation.get('normal_sample_count', 0)} "
+            f"degraded={degradation.get('degraded_sample_count', 0)}"
+        ),
+        (
+            "Safety invariants: "
+            f"findings={int(safety.get('finding_count') or 0)} "
+            f"fail_safe_required={bool(safety.get('fail_safe_required'))}"
+        ),
         (
             "Execution truth: "
             f"sent={headline.get('commands_sent', 0)} "
@@ -233,10 +266,12 @@ def format_weekend_review_operator_text(view: dict[str, Any]) -> str:
 
 
 def build_weekend_review_acceptance_answers(view: dict[str, Any]) -> list[dict[str, Any]]:
-    """Map the plan's ten acceptance questions to deterministic metric refs."""
+    """Map the plan's acceptance questions to deterministic metric refs."""
     _assert_review_only(view)
     sections = view.get("sections") if isinstance(view.get("sections"), dict) else {}
     execution = sections.get("execution_truth") if isinstance(sections.get("execution_truth"), dict) else {}
+    degradation = sections.get("decision_degradation") if isinstance(sections.get("decision_degradation"), dict) else {}
+    safety = sections.get("safety_invariants") if isinstance(sections.get("safety_invariants"), dict) else {}
     blockers = sections.get("blocker_distribution") if isinstance(sections.get("blocker_distribution"), dict) else {}
     labels = sections.get("label_maturity") if isinstance(sections.get("label_maturity"), dict) else {}
     hedge = sections.get("hedge_review") if isinstance(sections.get("hedge_review"), dict) else {}
@@ -311,6 +346,24 @@ def build_weekend_review_acceptance_answers(view: dict[str, Any]) -> list[dict[s
             {
                 "metrics": self_assessment.get("metrics") or {},
                 "rates": self_assessment.get("rates") or {},
+            },
+        ),
+        _answer(
+            11,
+            "Were decision samples separated by degraded versus normal mode?",
+            "decision_degradation.metrics + intent_execution.decision_degradation_split",
+            {
+                "metrics": degradation.get("metrics") or {},
+                "intent_split_available": "decision_degradation_split" in blockers,
+            },
+        ),
+        _answer(
+            12,
+            "Did config fail-safe scans find safety invariant violations?",
+            "safety_invariants.findings",
+            {
+                "finding_count": safety.get("finding_count"),
+                "fail_safe_required": safety.get("fail_safe_required"),
             },
         ),
     ])

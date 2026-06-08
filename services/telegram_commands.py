@@ -19,10 +19,12 @@ from services.execution_log_store import (
     record_cancel_orders_requested,
     record_active_execution_wait,
     record_preflight_block,
+    record_recent_same_target_dedupe,
 )
 from services.execution_lifecycle import evaluate_active_execution_gate, load_active_execution_command
 from services.execution_policy import policy_snapshot
 from services.execution_preflight import (
+    check_recent_same_target_dedupe,
     format_command_preflight_blockers,
     preflight_execution_command,
     preflight_execution_weights,
@@ -175,15 +177,44 @@ async def _cmd_confirm() -> str:
             )
         return "❌ Command preflight blocked:\n" + format_command_preflight_blockers(command_preflight)
 
+    command_cfg = command_preflight.get("config") or {}
+    same_target_dedupe = await check_recent_same_target_dedupe(
+        proposed_target=weights,
+        command_id=command_id or "",
+        policy_version=policy.get("version"),
+        command_type="SetWeights",
+        lookback_minutes=int(command_cfg.get("recent_same_target_dedupe_minutes") or 5),
+        tolerance=float(command_cfg.get("recent_same_target_dedupe_tolerance") or 0.005),
+    )
+    if not same_target_dedupe.get("should_send", True):
+        await record_recent_same_target_dedupe(
+            command_id=command_id or "unknown",
+            analysis_id=analysis_id,
+            target_weights=weights,
+            dedupe_result=same_target_dedupe,
+            policy_version=policy.get("version"),
+            preflight_result=command_preflight,
+        )
+        await mark_proposal_done(pending.get("analysis_id"), "deduped")
+        reference_id = same_target_dedupe.get("reference_command_id") or "unknown"
+        fp = str(same_target_dedupe.get("target_fingerprint") or "")[:12] or "n/a"
+        return (
+            "⏭ Command deduped. No command sent to QC.\n"
+            f"Recent reconciled command={reference_id}\n"
+            f"target_fingerprint={fp}"
+        )
+
     verify = await tool_verify_approval_token({"token": token})
     if not verify.get("valid"):
         return f"❌ Token {verify.get('reason')}. Please wait for the next analysis."
 
+    target_fingerprint = same_target_dedupe.get("target_fingerprint")
     result = await send_setweights_command(
         weights=weights,
         command_id=command_id,
         analysis_id=analysis_id,
         policy_version=policy.get("version"),
+        target_fingerprint=target_fingerprint,
     )
     if result.get("success"):
         await create_or_update_submitted_log(

@@ -33,7 +33,9 @@ class WeekendReviewOperatorViewTests(unittest.TestCase):
         self.assertIn("debate_value", view["sections"])
         self.assertIn("basket_portfolio", view["sections"])
         self.assertIn("prior_review_self_assessment", view["sections"])
-        self.assertEqual(len(view["acceptance_answers"]), 10)
+        self.assertIn("decision_degradation", view["sections"])
+        self.assertIn("safety_invariants", view["sections"])
+        self.assertEqual(len(view["acceptance_answers"]), 12)
         self.assertTrue(all(item["llm_computed"] is False for item in view["acceptance_answers"]))
         self.assertTrue(all(item["execution_authority"] == "none" for item in view["acceptance_answers"]))
 
@@ -82,6 +84,8 @@ class WeekendReviewOperatorViewTests(unittest.TestCase):
         self.assertIn("Labels:", text)
         self.assertIn("Hedge:", text)
         self.assertIn("Debate change rate:", text)
+        self.assertIn("Decision degradation:", text)
+        self.assertIn("Safety invariants:", text)
         self.assertIn("Prior review:", text)
 
     def test_acceptance_answers_map_to_deterministic_sources(self):
@@ -90,7 +94,7 @@ class WeekendReviewOperatorViewTests(unittest.TestCase):
         answers = view["acceptance_answers"]
         sources = {item["id"]: item["deterministic_source"] for item in answers}
 
-        self.assertEqual(len(answers), 10)
+        self.assertEqual(len(answers), 12)
         self.assertIn("intent_execution", sources[1])
         self.assertIn("execution_truth", sources[2])
         self.assertIn("execution_truth", sources[3])
@@ -100,6 +104,8 @@ class WeekendReviewOperatorViewTests(unittest.TestCase):
         self.assertIn("debate_value", sources[8])
         self.assertIn("basket_portfolio", sources[9])
         self.assertIn("prior_review_self_assessment", sources[10])
+        self.assertIn("decision_degradation", sources[11])
+        self.assertIn("safety_invariants", sources[12])
 
     def test_operator_pack_contains_text_view_and_optional_full_report(self):
         payload = _sample_review_payload()

@@ -150,14 +150,18 @@ class ExecutorPreflightTests(unittest.TestCase):
         relevance_pos = confirm_body.index("validate_proposal_still_relevant")
         active_pos = confirm_body.index("active_execution_gate = evaluate_active_execution_gate")
         preflight_pos = confirm_body.index("command_preflight = await preflight_execution_command")
+        dedupe_pos = confirm_body.index("same_target_dedupe = await check_recent_same_target_dedupe")
         token_pos = confirm_body.index("verify = await tool_verify_approval_token")
         send_pos = confirm_body.index("result = await send_setweights_command")
 
         self.assertLess(relevance_pos, token_pos)
         self.assertLess(active_pos, token_pos)
         self.assertLess(preflight_pos, token_pos)
+        self.assertLess(dedupe_pos, token_pos)
         self.assertLess(token_pos, send_pos)
         self.assertIn("record_active_execution_wait", confirm_body)
+        self.assertIn("record_recent_same_target_dedupe", confirm_body)
+        self.assertIn("target_fingerprint=target_fingerprint", confirm_body)
         self.assertIn("Proposal invalidated before confirmation", confirm_body)
         self.assertIn("active execution is still pending reconciliation", confirm_body)
 

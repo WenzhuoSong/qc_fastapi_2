@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable
 
 from services.json_safety import json_safe
 from services.market_calendar import us_equity_market_status
+from services.safety_invariants import load_config_fail_safe_report
 from services.weekend_review_artifacts import (
     build_weekly_review_artifacts,
     serialize_weekly_review_artifact,
@@ -42,6 +43,7 @@ DatasetLoader = Callable[..., WeekendReviewDataset | dict[str, Any] | Awaitable[
 LLMComplete = Callable[[str], str | Awaitable[str]]
 ArtifactPersister = Callable[[dict[str, Any]], Any | Awaitable[Any]]
 Notifier = Callable[[dict[str, Any]], Any | Awaitable[Any]]
+SafetyReportLoader = Callable[[], dict[str, Any] | Awaitable[dict[str, Any]]]
 
 
 @dataclass
@@ -62,6 +64,7 @@ class WeekendTradingReviewCronResult:
     metrics: dict[str, Any] = field(default_factory=dict)
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     summary_report: dict[str, Any] = field(default_factory=dict)
+    safety_report: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return json_safe(asdict(self))
@@ -80,6 +83,7 @@ async def run_weekend_trading_review(
     llm_complete: LLMComplete | None = None,
     artifact_persister: ArtifactPersister | None = None,
     notifier: Notifier | None = None,
+    safety_report_loader: SafetyReportLoader | None = None,
 ) -> WeekendTradingReviewCronResult:
     """Run the review loop with injectable IO for tests.
 
@@ -102,6 +106,27 @@ async def run_weekend_trading_review(
 
     dataset = await _maybe_await(dataset_loader(week_start=start, week_end=end, limit=dataset_limit))
     metrics = build_weekly_review_metrics(dataset, review_as_of=review_now)
+    try:
+        safety_report = await _maybe_await(
+            (safety_report_loader or load_config_fail_safe_report)()
+        )
+    except Exception as safety_error:
+        safety_report = {
+            "schema_version": "safety_config_fail_safe_report_v1",
+            "execution_authority": EXECUTION_AUTHORITY,
+            "target_weight_mutation": TARGET_WEIGHT_MUTATION,
+            "finding_count": 1,
+            "fail_safe_required": True,
+            "findings": [
+                {
+                    "key": "safety_invariants",
+                    "code": "safety_invariant_scan_unavailable",
+                    "severity": "high",
+                    "expected_safe_behavior": "operator_review_required",
+                    "detail": str(safety_error),
+                }
+            ],
+        }
     artifacts = build_weekly_review_artifacts(
         metrics,
         week_start=start,
@@ -123,6 +148,7 @@ async def run_weekend_trading_review(
         week_start=start,
         week_end=end,
         market_status=market,
+        safety_report=safety_report,
     )
 
     persisted_ref = None
@@ -153,6 +179,7 @@ async def run_weekend_trading_review(
         metrics=metrics,
         artifacts=artifact_payloads,
         summary_report=summary,
+        safety_report=safety_report,
     )
 
 
@@ -165,6 +192,7 @@ def build_weekend_review_payload(
     week_start: date,
     week_end: date,
     market_status: dict[str, Any],
+    safety_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the append-only payload persisted by PR4."""
     return json_safe({
@@ -175,6 +203,7 @@ def build_weekend_review_payload(
         "execution_authority": EXECUTION_AUTHORITY,
         "target_weight_mutation": TARGET_WEIGHT_MUTATION,
         "market_status": market_status,
+        "safety_invariants": safety_report or {},
         "weekend_review_metrics": metrics,
         "weekend_review_artifacts": artifacts,
         "weekend_review_artifact_count": len(artifacts),
@@ -231,6 +260,8 @@ def format_weekend_review_telegram(payload: dict[str, Any]) -> str:
     intent = _section_metrics(sections, "intent_execution")
     labels = _section_metrics(sections, "label_maturity")
     hedge = _section_metrics(sections, "hedge_review")
+    degradation = _section_metrics(sections, "decision_degradation")
+    safety = payload.get("safety_invariants") if isinstance(payload.get("safety_invariants"), dict) else {}
     summary = payload.get("weekend_review_summary") if isinstance(payload.get("weekend_review_summary"), dict) else {}
     removed = int(summary.get("removed_forbidden_line_count") or 0)
     return "\n".join([
@@ -238,6 +269,16 @@ def format_weekend_review_telegram(payload: dict[str, Any]) -> str:
         f"Week: {payload.get('week_start')} -> {payload.get('week_end')}",
         "execution_authority=none | target_weight_mutation=none",
         f"Artifacts: {payload.get('weekend_review_artifact_count', 0)}",
+        (
+            "Decision degradation: "
+            f"normal={degradation.get('normal_sample_count', 0)} "
+            f"degraded={degradation.get('degraded_sample_count', 0)}"
+        ),
+        (
+            "Safety invariants: "
+            f"findings={int(safety.get('finding_count') or 0)} "
+            f"fail_safe_required={bool(safety.get('fail_safe_required'))}"
+        ),
         (
             "Execution: "
             f"sent={execution.get('commands_sent', 0)} "

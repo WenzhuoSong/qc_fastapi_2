@@ -31,6 +31,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by local uv env.
 ARTIFACT_CONTRACT_VERSION = "weekend_review_artifacts_v1"
 
 SECTION_SCHEMA_MAP: dict[str, str] = {
+    "decision_degradation": "weekly_decision_degradation_review_v1",
     "execution_truth": "weekly_execution_truth_review_v1",
     "intent_execution": "weekly_intent_execution_review_v1",
     "label_maturity": "weekly_label_maturity_review_v1",
