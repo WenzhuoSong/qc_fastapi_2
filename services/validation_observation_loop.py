@@ -83,6 +83,8 @@ def build_validation_observation_records_from_analysis(
     analysis_id = _to_int(_record_get(analysis, "id"))
     if analysis_id is None:
         return []
+    if _is_review_only_analysis_record(analysis):
+        return []
     analyzed_at = _parse_datetime(_record_get(analysis, "analyzed_at")) or _utcnow()
     market_verdict = _agent_analysis_market_open_verdict(
         analysis_id=analysis_id,
@@ -186,6 +188,9 @@ def _build_intent_vs_execution_record(
     final_validation = risk.get("final_validation") if isinstance(risk.get("final_validation"), dict) else {}
     hedge_intent = risk.get("hedge_intent") if isinstance(risk.get("hedge_intent"), dict) else {}
     hedge_outcome = risk.get("hedge_intent_outcome") if isinstance(risk.get("hedge_intent_outcome"), dict) else {}
+    decision_degradation = (
+        risk.get("decision_degradation") if isinstance(risk.get("decision_degradation"), dict) else {}
+    )
     execution_context = _execution_context(execution_log, execution_status=execution_status)
     blocker_events = _blocker_events(
         risk=risk,
@@ -246,6 +251,7 @@ def _build_intent_vs_execution_record(
                 or 0.0
             ),
         },
+        "decision_degradation": decision_degradation,
         "outcome_label_contract": outcome_label_contract_summary(),
     }
     outcome = {
@@ -279,6 +285,7 @@ def _build_intent_vs_execution_record(
             "unexecuted_intent_count": len(unexecuted_intents),
             "hedge_triggered": bool(hedge_intent.get("triggered")),
             "hedge_add_requested": bool(hedge_intent.get("add_hedge_etf")),
+            "decision_degraded": bool(decision_degradation.get("is_degraded")),
         },
         recommendation=_intent_execution_recommendation(
             command_sent=command_sent,
@@ -658,6 +665,15 @@ def _build_observation_record(
     metrics: dict[str, Any] | None,
     recommendation: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    payload = dict(observation_payload or {})
+    payload.setdefault(
+        "time_axis",
+        _time_axis_payload(
+            data_time=observed_at,
+            as_of_time=observed_at,
+            knowledge_time=_utcnow(),
+        ),
+    )
     record = {
         "observation_id": observation_id,
         "observation_type": observation_type,
@@ -670,13 +686,27 @@ def _build_observation_record(
         "status": status,
         "execution_authority": EXECUTION_AUTHORITY,
         "target_weight_mutation": TARGET_WEIGHT_MUTATION,
-        "observation_payload": json_safe(observation_payload),
+        "observation_payload": json_safe(payload),
         "outcome_payload": json_safe(outcome_payload),
         "metrics": json_safe(metrics or {}),
         "recommendation": json_safe(recommendation or {}),
     }
     record["content_hash"] = _content_hash(_hash_payload(record))
     return record
+
+
+def _time_axis_payload(
+    *,
+    data_time: datetime,
+    as_of_time: datetime,
+    knowledge_time: datetime,
+) -> dict[str, str]:
+    return {
+        "contract_version": "time_axis_v1",
+        "data_time": _date_time_str(data_time),
+        "as_of_time": _date_time_str(as_of_time),
+        "knowledge_time": _date_time_str(knowledge_time),
+    }
 
 
 def _active_basket_payload(risk: dict[str, Any]) -> dict[str, Any]:
@@ -1096,6 +1126,23 @@ def _agent_analysis_market_open_verdict(
             "market_status": status.to_dict(),
         },
     }
+
+
+def _is_review_only_analysis_record(row: Any) -> bool:
+    trigger_type = str(_record_get(row, "trigger_type") or "").strip().lower()
+    if trigger_type == "weekend_review":
+        return True
+    execution_status = str(_record_get(row, "execution_status") or "").strip().lower()
+    if execution_status == "review_only":
+        return True
+    for payload_name in ("planner_output", "decision", "risk_output"):
+        payload = _record_get(row, payload_name)
+        if isinstance(payload, dict) and bool(payload.get("review_only")):
+            return True
+        if isinstance(payload, dict) and str(payload.get("execution_authority") or "").lower() == "none":
+            if bool(payload.get("target_weight_mutation") == "none" and payload.get("review_only")):
+                return True
+    return False
 
 
 def _validation_observation_market_open_verdict(payload: dict[str, Any]) -> dict[str, Any]:

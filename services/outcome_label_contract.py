@@ -37,6 +37,8 @@ class OutcomeLabel(BaseModel):
 
     decision_time: datetime
     as_of_time: datetime
+    data_time: datetime | None = None
+    knowledge_time: datetime | None = None
     horizon: Horizon
     label_source: LabelSource
     price_source: PriceSource
@@ -50,7 +52,14 @@ class OutcomeLabel(BaseModel):
     scope_limit_reasons: list[str] = Field(default_factory=list)
     source_metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("decision_time", "as_of_time", "decision_feature_snapshot_as_of_time", mode="before")
+    @field_validator(
+        "decision_time",
+        "as_of_time",
+        "data_time",
+        "knowledge_time",
+        "decision_feature_snapshot_as_of_time",
+        mode="before",
+    )
     @classmethod
     def _parse_dt(cls, value: Any) -> Any:
         if isinstance(value, str):
@@ -69,6 +78,15 @@ class OutcomeLabel(BaseModel):
         if self.as_of_time <= self.decision_time:
             raise ValueError("outcome as_of_time must be after decision_time")
 
+        if self.data_time is None:
+            self.data_time = self.as_of_time
+        if self.knowledge_time is None:
+            self.knowledge_time = self.data_time
+        if self.data_time < self.decision_time:
+            raise ValueError("outcome data_time must be at or after decision_time")
+        if self.knowledge_time < self.data_time:
+            raise ValueError("outcome knowledge_time must be at or after data_time")
+
         allowed_prices = _LABEL_PRICE_SOURCE_MAP[self.label_source]
         if self.price_source not in allowed_prices:
             raise ValueError(
@@ -77,6 +95,14 @@ class OutcomeLabel(BaseModel):
 
         reasons = list(self.scope_limit_reasons or [])
         metadata = dict(self.source_metadata or {})
+        metadata.setdefault(
+            "time_axis_contract",
+            {
+                "data_time": self.data_time.isoformat() if self.data_time else None,
+                "knowledge_time": self.knowledge_time.isoformat() if self.knowledge_time else None,
+                "as_of_time": self.as_of_time.isoformat(),
+            },
+        )
         preferred_label_source = self.label_source == "qc_execution" and self.price_source == "fill_price"
         metadata.setdefault("label_source_role", "preferred" if preferred_label_source else "fallback")
         if not preferred_label_source:
@@ -114,6 +140,7 @@ class OutcomeLabel(BaseModel):
             "label_schema_version": self.label_schema_version,
             "decision_time": self.decision_time.isoformat(),
             "as_of_time": self.as_of_time.isoformat(),
+            "data_time": self.data_time.isoformat() if self.data_time else None,
             "horizon": self.horizon,
             "label_source": self.label_source,
             "price_source": self.price_source,

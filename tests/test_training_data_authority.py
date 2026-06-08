@@ -48,11 +48,31 @@ class TrainingDataAuthorityTests(unittest.TestCase):
                 "execution_authority": "none",
                 "observation_payload": {
                     "schema_version": "intent_vs_execution_v1",
+                    "time_axis": {
+                        "contract_version": "time_axis_v1",
+                        "data_time": "2026-06-05T14:00:00",
+                        "knowledge_time": "2026-06-05T14:00:01",
+                        "as_of_time": "2026-06-05T14:00:00",
+                    },
                 },
             },
         )
 
         self.assertTrue(verdict["allowed"])
+
+        missing_time_axis = evaluate_training_data_source(
+            source_type="validation_observation",
+            payload={
+                "observation_id": "intent_vs_execution:1",
+                "observation_type": "intent_vs_execution",
+                "execution_authority": "none",
+                "observation_payload": {
+                    "schema_version": "intent_vs_execution_v1",
+                },
+            },
+        )
+        self.assertFalse(missing_time_axis["allowed"])
+        self.assertIn("missing_time_axis", missing_time_axis["reasons"])
 
     def test_outcome_label_must_have_training_authority(self):
         verdict = evaluate_training_data_source(
@@ -60,11 +80,24 @@ class TrainingDataAuthorityTests(unittest.TestCase):
             payload={
                 "label_schema_version": "outcome_label_v1",
                 "training_authority": "feature_scope_limited",
+                "data_time": "2026-06-10T14:00:00Z",
+                "knowledge_time": "2026-06-10T14:00:00Z",
+                "as_of_time": "2026-06-10T14:00:00Z",
             },
         )
 
         self.assertFalse(verdict["allowed"])
         self.assertIn("label_training_authority_not_eligible", verdict["reasons"])
+
+        missing_time_axis = evaluate_training_data_source(
+            source_type="outcome_label",
+            payload={
+                "label_schema_version": "outcome_label_v1",
+                "training_authority": "eligible",
+            },
+        )
+        self.assertFalse(missing_time_axis["allowed"])
+        self.assertIn("missing_data_time", missing_time_axis["reasons"])
 
     def test_assertion_raises_for_legacy_source(self):
         with self.assertRaises(ValueError):

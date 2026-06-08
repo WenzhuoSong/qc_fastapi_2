@@ -66,6 +66,7 @@ from services.decision_ledger import (
     apply_execution_audit_to_decision_ledger,
     build_decision_ledger,
 )
+from services.decision_degradation import build_decision_degradation_report
 from services.target_builder import build_target_weights, compare_target_weights
 from services.decision_live_validation import (
     format_decision_live_validation_report,
@@ -1755,6 +1756,18 @@ async def _run_pipeline_inner(trigger: str, *, trading_analysis_gate: dict[str, 
     t0 = time.time()
     risk_out = await run_risk_manager_async(
         pipeline_context, brief, quant_baseline, synthesizer_out
+    )
+    risk_out["decision_degradation"] = build_decision_degradation_report(
+        pipeline_context=pipeline_context,
+        brief=brief,
+        base_weights=base_weights,
+        news_evidence=news_evidence,
+        research_report=research_report,
+        bull_output=bull_output,
+        bear_output=bear_output,
+        rebuttal_vs_bear=rebuttal_vs_bear,
+        rebuttal_vs_bull=rebuttal_vs_bull,
+        synthesizer_out=synthesizer_out,
     )
     risk_out["legacy_mutation_classification"] = legacy_mutation_classification_summary()
     if pipeline_context.get("account_state_guard"):

@@ -10,6 +10,15 @@ from services.weekend_review_loader import (
 )
 
 
+def _time_axis(ts: str = "2026-06-05T14:00:00Z") -> dict:
+    return {
+        "contract_version": "time_axis_v1",
+        "data_time": ts,
+        "knowledge_time": ts,
+        "as_of_time": ts,
+    }
+
+
 class WeekendReviewLoaderTests(unittest.TestCase):
     def test_accepts_versioned_validation_observation(self):
         dataset = build_weekend_review_dataset(
@@ -25,6 +34,7 @@ class WeekendReviewLoaderTests(unittest.TestCase):
                     "target_weight_mutation": "none",
                     "observation_payload": {
                         "schema_version": "intent_vs_execution_v1",
+                        "time_axis": _time_axis("2026-06-06T01:00:00Z"),
                         "intent": {"action": "trim"},
                     },
                 }
@@ -66,6 +76,7 @@ class WeekendReviewLoaderTests(unittest.TestCase):
                     "maturity_date": date(2026, 6, 30),
                     "observation_payload": {
                         "contract_version": "validation_observation_loop_v1",
+                        "time_axis": _time_axis("2026-06-05T14:00:00Z"),
                     },
                 }
             ]
@@ -142,6 +153,7 @@ class WeekendReviewLoaderTests(unittest.TestCase):
                     "observation_payload": {
                         "schema_version": "intent_vs_execution_v1",
                         "source": "agent_analysis.risk_output",
+                        "time_axis": _time_axis("2026-06-05T22:00:00Z"),
                     },
                 }
             ]
@@ -165,6 +177,7 @@ class WeekendReviewLoaderTests(unittest.TestCase):
                     "observation_payload": {
                         "schema_version": "execution_truth_v1",
                         "source": "execution_log",
+                        "time_axis": _time_axis("2026-06-05T22:00:00Z"),
                     },
                 }
             ]

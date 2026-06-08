@@ -26,6 +26,8 @@ def outcome_label_contract_summary() -> dict[str, Any]:
         "fallback_sources": ["qc_snapshot", "yfinance"],
         "fallback_training_authority": "feature_scope_limited",
         "training_authority_requires": [
+            "data_time>=decision_time",
+            "knowledge_time>=data_time",
             "decision_feature_snapshot_id",
             "decision_feature_snapshot_schema_version=decision_feature_snapshot_v1",
             "decision_feature_snapshot_as_of_time<=decision_time",

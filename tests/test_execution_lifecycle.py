@@ -159,6 +159,26 @@ class ExecutionLifecycleTests(unittest.TestCase):
         self.assertTrue(is_reduce_only_vs_actual({"SPY": 0.09}, {"SPY": 0.1}))
         self.assertFalse(is_reduce_only_vs_actual({"SPY": 0.11}, {"SPY": 0.1}))
 
+    def test_reduce_only_is_portfolio_level_and_blocks_embedded_adds(self):
+        self.assertFalse(
+            is_reduce_only_vs_actual(
+                {"QQQ": 0.05, "XLK": 0.09, "CASH": 0.86},
+                {"QQQ": 0.10, "XLK": 0.04, "CASH": 0.86},
+            )
+        )
+        self.assertFalse(
+            is_reduce_only_vs_actual(
+                {"QQQ": 0.05, "NEW": 0.01, "CASH": 0.94},
+                {"QQQ": 0.10, "CASH": 0.90},
+            )
+        )
+        self.assertTrue(
+            is_reduce_only_vs_actual(
+                {"QQQ": 0.05, "XLK": 0.04, "CASH": 0.91},
+                {"QQQ": 0.10, "XLK": 0.04, "CASH": 0.86},
+            )
+        )
+
     def test_same_target_requires_non_empty_target(self):
         self.assertFalse(is_within_target_tolerance({}, {}))
 

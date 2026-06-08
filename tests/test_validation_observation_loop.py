@@ -31,6 +31,21 @@ class ValidationObservationLoopTests(unittest.TestCase):
 
         self.assertEqual(records, [])
 
+    def test_review_only_agent_analysis_is_not_observed(self):
+        records = build_validation_observation_records_from_analysis({
+            "id": 44,
+            "analyzed_at": datetime(2026, 6, 5, 14, 0, 0),
+            "trigger_type": "weekend_review",
+            "execution_status": "review_only",
+            "planner_output": {"review_only": True},
+            "risk_output": {
+                "approved": True,
+                "target_weights": {"QQQ": 0.10, "CASH": 0.90},
+            },
+        })
+
+        self.assertEqual(records, [])
+
     def test_historical_agent_analysis_observation_outside_market_open_is_excluded(self):
         verdict = _validation_observation_market_open_verdict({
             "observed_at": datetime(2026, 6, 5, 22, 0, 0),
@@ -79,6 +94,13 @@ class ValidationObservationLoopTests(unittest.TestCase):
                     "subscale_count": 0,
                     "floor_cleared_count": 1,
                 },
+                "decision_degradation": {
+                    "schema_version": "decision_degradation_v1",
+                    "is_degraded": True,
+                    "degraded_modes": ["news_stale_degraded_mode"],
+                    "fallback_paths": ["news_degraded_reduce_only"],
+                    "missing_inputs": [],
+                },
             },
         })
 
@@ -87,6 +109,11 @@ class ValidationObservationLoopTests(unittest.TestCase):
         intent = by_type[OBS_INTENT_EXECUTION]
         self.assertEqual(intent["status"], STATUS_OBSERVED)
         self.assertEqual(intent["observation_payload"]["schema_version"], "intent_vs_execution_v1")
+        self.assertEqual(
+            intent["observation_payload"]["time_axis"]["contract_version"],
+            "time_axis_v1",
+        )
+        self.assertIn("knowledge_time", intent["observation_payload"]["time_axis"])
         self.assertEqual(intent["observation_payload"]["intended_action"], "blocked_by_final_validation")
         self.assertIn("execution_policy_violation", intent["observation_payload"]["blockers"])
         self.assertIn(
@@ -97,6 +124,12 @@ class ValidationObservationLoopTests(unittest.TestCase):
             intent["observation_payload"]["outcome_label_contract"]["preferred_training_source"],
             "qc_execution",
         )
+        self.assertTrue(intent["observation_payload"]["decision_degradation"]["is_degraded"])
+        self.assertIn(
+            "news_stale_degraded_mode",
+            intent["observation_payload"]["decision_degradation"]["degraded_modes"],
+        )
+        self.assertTrue(intent["metrics"]["decision_degraded"])
         self.assertFalse(intent["outcome_payload"]["command_sent"])
         self.assertEqual(intent["metrics"]["unexecuted_intent_count"], 2)
         self.assertEqual(intent["recommendation"]["operator_action"], "review_unexecuted_intent")

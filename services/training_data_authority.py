@@ -56,12 +56,22 @@ def evaluate_training_data_source(
             reasons.append("execution_authority_not_none")
         if not (observation_payload.get("schema_version") or observation_payload.get("contract_version")):
             reasons.append("missing_observation_payload_version")
+        time_axis = observation_payload.get("time_axis")
+        if not isinstance(time_axis, dict):
+            reasons.append("missing_time_axis")
+        else:
+            for key in ("data_time", "knowledge_time", "as_of_time"):
+                if not time_axis.get(key):
+                    reasons.append(f"missing_{key}")
 
     elif clean_source == "outcome_label":
         if data.get("label_schema_version") != "outcome_label_v1":
             reasons.append("missing_or_invalid_label_schema_version")
         if data.get("training_authority") != "eligible":
             reasons.append("label_training_authority_not_eligible")
+        for key in ("data_time", "knowledge_time", "as_of_time"):
+            if not data.get(key):
+                reasons.append(f"missing_{key}")
 
     return {
         "source_type": clean_source,

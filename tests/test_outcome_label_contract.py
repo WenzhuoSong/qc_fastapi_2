@@ -51,6 +51,8 @@ class OutcomeLabelContractTests(unittest.TestCase):
             ["yfinance_adjusted_close"],
         )
         self.assertIn("decision_feature_snapshot_id", summary["training_authority_requires"])
+        self.assertIn("data_time>=decision_time", summary["training_authority_requires"])
+        self.assertIn("knowledge_time>=data_time", summary["training_authority_requires"])
 
     def test_future_as_of_time_is_required_for_outcome(self):
         with self.assertRaises(ValidationError):
@@ -80,10 +82,33 @@ class OutcomeLabelContractTests(unittest.TestCase):
         payload = serialize_outcome_label(label)
 
         self.assertEqual(payload["label_schema_version"], "outcome_label_v1")
+        self.assertEqual(payload["data_time"], self.as_of_time.isoformat().replace("+00:00", "Z"))
+        self.assertEqual(payload["knowledge_time"], self.as_of_time.isoformat().replace("+00:00", "Z"))
         self.assertEqual(payload["return"], 0.01)
         self.assertEqual(payload["training_authority"], "eligible")
+        self.assertEqual(
+            payload["source_metadata"]["time_axis_contract"]["as_of_time"],
+            self.as_of_time.isoformat(),
+        )
         self.assertTrue(label_has_training_authority(payload))
         json.dumps(payload)
+
+    def test_knowledge_time_cannot_precede_data_time(self):
+        with self.assertRaises(ValidationError):
+            OutcomeLabel(
+                decision_time=self.decision_time,
+                as_of_time=self.as_of_time,
+                data_time=self.as_of_time,
+                knowledge_time=self.as_of_time - timedelta(days=1),
+                horizon="5d",
+                label_source="qc_execution",
+                price_source="fill_price",
+                return_value=0.01,
+                max_drawdown_after_decision=-0.02,
+                decision_feature_snapshot_id=self.feature_snapshot["artifact_id"],
+                decision_feature_snapshot_schema_version="decision_feature_snapshot_v1",
+                decision_feature_snapshot_as_of_time=self.decision_time,
+            )
 
     def test_missing_decision_feature_snapshot_prevents_training_authority(self):
         label = build_outcome_label(
