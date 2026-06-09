@@ -704,10 +704,16 @@ def build_style_opportunity_metrics(
         "defensive_style_count": 0,
         "defensive_style_market_outcome_count": 0,
         "defensive_style_market_down_count": 0,
+        "defensive_style_market_outcome_count_1d": 0,
+        "defensive_style_market_down_count_1d": 0,
+        "defensive_style_market_outcome_count_5d": 0,
+        "defensive_style_market_down_count_5d": 0,
         "blocked_buy_candidate_count": 0,
         "blocked_buy_mature_count": 0,
         "blocked_buy_outperformed_benchmark_count": 0,
         "insufficient_defensive_market_outcome_count": 0,
+        "insufficient_defensive_market_outcome_count_1d": 0,
+        "insufficient_defensive_market_outcome_count_5d": 0,
         "insufficient_blocked_buy_outcome_count": 0,
     }
     excess_returns: list[float] = []
@@ -722,20 +728,27 @@ def build_style_opportunity_metrics(
         if _is_defensive_style_event(row):
             metrics["defensive_style_count"] += 1
             split_metrics["defensive_style_count"] += 1
-            market_return = _market_forward_return(
-                feature_rows,
-                observation_date=observation_date,
-                horizon_days=horizon_days,
-            )
-            if market_return is None:
-                metrics["insufficient_defensive_market_outcome_count"] += 1
-                split_metrics["insufficient_defensive_market_outcome_count"] += 1
-            else:
-                metrics["defensive_style_market_outcome_count"] += 1
-                split_metrics["defensive_style_market_outcome_count"] += 1
-                if market_return <= market_return_threshold:
-                    metrics["defensive_style_market_down_count"] += 1
-                    split_metrics["defensive_style_market_down_count"] += 1
+            for defensive_horizon in _defensive_style_horizons(horizon_days):
+                _record_defensive_style_market_outcome(
+                    metrics,
+                    split_metrics,
+                    feature_rows=feature_rows,
+                    observation_date=observation_date,
+                    horizon_days=defensive_horizon,
+                    market_return_threshold=market_return_threshold,
+                    primary_horizon_days=horizon_days,
+                )
+            if horizon_days != 5:
+                _record_defensive_style_market_outcome(
+                    metrics,
+                    split_metrics,
+                    feature_rows=feature_rows,
+                    observation_date=observation_date,
+                    horizon_days=5,
+                    market_return_threshold=market_return_threshold,
+                    primary_horizon_days=horizon_days,
+                    update_primary_aliases=False,
+                )
 
         for ticker in _blocked_new_positions(row):
             metrics["blocked_buy_candidate_count"] += 1
@@ -790,6 +803,15 @@ def build_style_opportunity_metrics(
             "blocked_buy_opportunity_cost": (
                 "blocked new buys are evaluated against a benchmark ticker, "
                 "not against cash-heavy actual allocation"
+            ),
+            "blocked_buy_selection_bias_caveat": (
+                "blocked-buy outcomes are measured on candidates selected by the shadow/style path; "
+                "the rate reflects shadow candidate quality multiplied by gate opportunity cost, "
+                "so it cannot by itself prove the gate is too strict"
+            ),
+            "defensive_style_horizons": (
+                "risk_reduce_fast-style calls are evaluated at both 1d and 5d horizons; "
+                "small samples remain insufficient_sample"
             ),
         },
     })
@@ -1172,10 +1194,16 @@ def _empty_style_opportunity_metrics() -> dict[str, int]:
         "defensive_style_count": 0,
         "defensive_style_market_outcome_count": 0,
         "defensive_style_market_down_count": 0,
+        "defensive_style_market_outcome_count_1d": 0,
+        "defensive_style_market_down_count_1d": 0,
+        "defensive_style_market_outcome_count_5d": 0,
+        "defensive_style_market_down_count_5d": 0,
         "blocked_buy_candidate_count": 0,
         "blocked_buy_mature_count": 0,
         "blocked_buy_outperformed_benchmark_count": 0,
         "insufficient_defensive_market_outcome_count": 0,
+        "insufficient_defensive_market_outcome_count_1d": 0,
+        "insufficient_defensive_market_outcome_count_5d": 0,
         "insufficient_blocked_buy_outcome_count": 0,
     }
 
@@ -1197,10 +1225,16 @@ def _empty_style_opportunity_split() -> dict[str, dict[str, Any]]:
 
 def _style_opportunity_rates(metrics: dict[str, int], *, min_sample_n: int) -> dict[str, Any]:
     return {
+        "defensive_style_hit_rate_1d": rate_metric(
+            "defensive_style_hit_rate_1d",
+            numerator=int(metrics.get("defensive_style_market_down_count_1d") or 0),
+            denominator=int(metrics.get("defensive_style_market_outcome_count_1d") or 0),
+            min_sample_n=min_sample_n,
+        ),
         "defensive_style_hit_rate_5d": rate_metric(
             "defensive_style_hit_rate_5d",
-            numerator=int(metrics.get("defensive_style_market_down_count") or 0),
-            denominator=int(metrics.get("defensive_style_market_outcome_count") or 0),
+            numerator=int(metrics.get("defensive_style_market_down_count_5d") or 0),
+            denominator=int(metrics.get("defensive_style_market_outcome_count_5d") or 0),
             min_sample_n=min_sample_n,
         ),
         "blocked_buy_outperform_rate_5d": rate_metric(
@@ -1232,6 +1266,56 @@ def _finalize_style_opportunity_split(
             "rates": _style_opportunity_rates(metrics, min_sample_n=min_sample_n),
         }
     return out
+
+
+def _defensive_style_horizons(primary_horizon_days: int) -> list[int]:
+    horizons: list[int] = []
+    for value in (1, int(primary_horizon_days)):
+        if value > 0 and value not in horizons:
+            horizons.append(value)
+    return horizons
+
+
+def _record_defensive_style_market_outcome(
+    metrics: dict[str, int],
+    split_metrics: dict[str, int],
+    *,
+    feature_rows: list[dict[str, Any]],
+    observation_date: Any,
+    horizon_days: int,
+    market_return_threshold: float,
+    primary_horizon_days: int,
+    update_primary_aliases: bool = True,
+) -> None:
+    suffix = f"{int(horizon_days)}d"
+    market_return = _market_forward_return(
+        feature_rows,
+        observation_date=observation_date,
+        horizon_days=int(horizon_days),
+    )
+    if market_return is None:
+        _increment_named_metric(metrics, f"insufficient_defensive_market_outcome_count_{suffix}")
+        _increment_named_metric(split_metrics, f"insufficient_defensive_market_outcome_count_{suffix}")
+        if update_primary_aliases and int(horizon_days) == int(primary_horizon_days):
+            _increment_named_metric(metrics, "insufficient_defensive_market_outcome_count")
+            _increment_named_metric(split_metrics, "insufficient_defensive_market_outcome_count")
+        return
+
+    _increment_named_metric(metrics, f"defensive_style_market_outcome_count_{suffix}")
+    _increment_named_metric(split_metrics, f"defensive_style_market_outcome_count_{suffix}")
+    if update_primary_aliases and int(horizon_days) == int(primary_horizon_days):
+        _increment_named_metric(metrics, "defensive_style_market_outcome_count")
+        _increment_named_metric(split_metrics, "defensive_style_market_outcome_count")
+    if market_return <= market_return_threshold:
+        _increment_named_metric(metrics, f"defensive_style_market_down_count_{suffix}")
+        _increment_named_metric(split_metrics, f"defensive_style_market_down_count_{suffix}")
+        if update_primary_aliases and int(horizon_days) == int(primary_horizon_days):
+            _increment_named_metric(metrics, "defensive_style_market_down_count")
+            _increment_named_metric(split_metrics, "defensive_style_market_down_count")
+
+
+def _increment_named_metric(target: dict[str, int], key: str, amount: int = 1) -> None:
+    target[key] = int(target.get(key) or 0) + amount
 
 
 def _decision_degradation_payload(row: dict[str, Any]) -> dict[str, Any]:

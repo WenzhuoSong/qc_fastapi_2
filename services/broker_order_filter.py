@@ -4,6 +4,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from services.execution_lifecycle import is_reduce_only_vs_actual
+
 
 DEFAULT_BROKER_ORDER_FILTER_CONFIG: dict[str, Any] = {
     "broker_order_filter_enabled": True,
@@ -47,7 +49,11 @@ def apply_broker_order_filter_to_snapshot(
     current = _clean_weights(current_weights or {})
     target = _with_cash_residual(target)
     before_metrics = _delta_metrics(target, current)
-    portfolio_reduce_only = _is_portfolio_reduce_only(target, current)
+    portfolio_reduce_only = is_reduce_only_vs_actual(
+        target,
+        current,
+        tolerance=float(cfg["broker_noop_weight_delta_epsilon"]),
+    )
 
     diagnostic: dict[str, Any] = {
         "schema_version": "broker_order_filter_v1",
@@ -157,21 +163,6 @@ def _suppression_reason(order: dict[str, Any], cfg: dict[str, Any]) -> str | Non
     if fee_bps is not None and float(fee_bps) > float(cfg["broker_max_fee_bps"]):
         return "fee_bps_above_threshold"
     return None
-
-
-def _is_portfolio_reduce_only(target: dict[str, float], current: dict[str, float]) -> bool:
-    """Return true only when the whole target cannot increase any risk asset."""
-    if not target:
-        return False
-    saw_reduction = False
-    for ticker in sorted((set(target) | set(current)) - {"CASH"}):
-        target_w = float(target.get(ticker, 0.0) or 0.0)
-        current_w = float(current.get(ticker, 0.0) or 0.0)
-        if target_w > current_w + 1e-9:
-            return False
-        if target_w < current_w - 1e-9:
-            saw_reduction = True
-    return saw_reduction
 
 
 async def _load_latest_broker_snapshot() -> dict[str, Any]:

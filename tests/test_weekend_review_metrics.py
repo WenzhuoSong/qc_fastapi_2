@@ -384,11 +384,14 @@ class WeekendReviewMetricsTests(unittest.TestCase):
 
         self.assertEqual(style["metrics"]["defensive_style_count"], 1)
         self.assertEqual(style["metrics"]["defensive_style_market_down_count"], 1)
+        self.assertEqual(style["metrics"]["defensive_style_market_down_count_1d"], 1)
+        self.assertEqual(style["rates"]["defensive_style_hit_rate_1d"]["value"], 1.0)
         self.assertEqual(style["rates"]["defensive_style_hit_rate_5d"]["value"], 1.0)
         self.assertEqual(style["metrics"]["blocked_buy_mature_count"], 1)
         self.assertEqual(style["metrics"]["blocked_buy_outperformed_benchmark_count"], 1)
         self.assertGreater(style["metrics"]["blocked_buy_avg_excess_return_vs_benchmark"], 0)
         self.assertEqual(style["rates"]["blocked_buy_outperform_rate_5d"]["value"], 1.0)
+        self.assertIn("shadow candidate", style["metric_contract"]["blocked_buy_selection_bias_caveat"])
 
     def test_intent_execution_uses_lifecycle_events_as_blocker_fallback(self):
         dataset = build_weekend_review_dataset(
