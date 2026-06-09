@@ -492,3 +492,5 @@ Optional yfinance backfill controls:
 ✅ Communicator updated with debate_summary in Telegram card
 ✅ AgentStepLog table for per-stage input/output audit trail
 ✅ Telegram error messages now include exception details for remote debugging
+
+Deployment trigger check: 2026-06-10.
