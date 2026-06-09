@@ -142,7 +142,41 @@ def _has_news_evidence(news_evidence: dict[str, Any] | None) -> bool:
     summaries = news_evidence.get("summaries")
     if isinstance(summaries, dict) and summaries:
         return True
+    if news_evidence.get("hard_risk_events") or news_evidence.get("ignored_items"):
+        return True
+
+    ticker_scores = news_evidence.get("ticker_news_scores")
+    if isinstance(ticker_scores, dict):
+        for score in ticker_scores.values():
+            if _ticker_news_score_has_evidence(score):
+                return True
+
+    macro_score = news_evidence.get("macro_news_score")
+    if isinstance(macro_score, dict):
+        data_quality = str(macro_score.get("data_quality") or "").lower()
+        if data_quality in {"fresh", "usable", "stale_for_trading", "stale", "limited"}:
+            return True
+        if macro_score.get("dominant_themes"):
+            return True
     return bool(news_evidence.get("status") in {"ok", "fresh", "degraded"})
+
+
+def _ticker_news_score_has_evidence(score: Any) -> bool:
+    if not isinstance(score, dict):
+        return False
+    if score.get("supporting_items") or score.get("conflicting_items"):
+        return True
+    try:
+        if float(score.get("source_credibility") or 0.0) > 0.0:
+            return True
+        if float(score.get("effective_credibility") or 0.0) > 0.0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    freshness = str(score.get("freshness") or "").lower()
+    if freshness in {"fresh", "usable", "stale_for_trading", "stale"}:
+        return True
+    return str(score.get("action_bias") or "").lower() not in {"", "ignore"}
 
 
 def _has_research_ticker_signals(research_report: dict[str, Any]) -> bool:
