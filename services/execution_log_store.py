@@ -35,6 +35,36 @@ RECONCILIATION_TERMINAL_QC_STATUSES = {
     "timeout_no_execution_confirmed",
 }
 _ANALYSIS_EXECUTED_AT_SKIP_STATUSES = {"", "pending", "proposed", "running"}
+_NOT_SENT_DB_STATUSES = {"failed", "rejected", "skipped", "deferred", "deduped"}
+
+
+def _execution_log_db_status(status: str | None) -> str:
+    """Return a short status that fits execution_log.status varchar(20).
+
+    Detailed business reasons belong in command_payload.reason/action_status and
+    lifecycle events, not in the narrow DB status column.
+    """
+    clean = str(status or "unknown").lower().strip()
+    if len(clean) <= 20:
+        return clean
+    if clean.startswith("skipped"):
+        return "skipped"
+    if clean.startswith("deferred"):
+        return "deferred"
+    if clean.startswith("rejected"):
+        return "rejected"
+    if clean.startswith("failed"):
+        return "failed"
+    if clean.startswith("timeout"):
+        return "timeout"
+    return "failed"
+
+
+def _event_status_for_db(status: str | None) -> str:
+    clean = str(status or "unknown").lower().strip()
+    if len(clean) <= 40:
+        return clean
+    return _execution_log_db_status(clean)
 
 
 def _utcnow_db_naive() -> datetime:
@@ -118,6 +148,16 @@ def _analysis_execution_status_from_row(row: Any) -> str:
     qc_status = str(getattr(row, "qc_status", "") or "").lower().strip()
     lifecycle_state = str(getattr(row, "lifecycle_state", "") or "").lower().strip()
     status = str(getattr(row, "status", "") or "").lower().strip()
+    payload = getattr(row, "command_payload", None)
+    if isinstance(payload, dict) and qc_status == "not_sent":
+        action_status = str(payload.get("action_status") or "").lower().strip()
+        reason = str(payload.get("reason") or "").lower().strip()
+        if action_status == "deferred_by_active_execution":
+            return action_status
+        if status == "deferred" and reason == "active_execution_wait":
+            return "deferred_by_active_execution"
+        if status == "skipped" and reason == "broker_order_filter_no_executable_delta":
+            return "skipped_broker_order_filter"
 
     if qc_status in {
         "reconciled",
@@ -433,8 +473,13 @@ async def update_execution_result(
     qc_response: dict[str, Any] | None,
     status: str,
 ) -> None:
+    raw_status = str(status or "unknown").lower().strip()
+    db_status = _execution_log_db_status(raw_status)
     if isinstance(audit_payload, dict):
         audit_payload = dict(audit_payload)
+        if raw_status != db_status:
+            audit_payload.setdefault("raw_execution_status", raw_status)
+            audit_payload.setdefault("execution_status_db", db_status)
         fingerprint_payload = _target_fingerprint_from_command_payload(
             audit_payload,
             command_id=command_id,
@@ -454,8 +499,8 @@ async def update_execution_result(
             row.analysis_id = analysis_id or row.analysis_id
             row.command_payload = audit_payload
             row.qc_response = qc_response or row.qc_response
-            row.status = status
-            if status in {"failed", "rejected", "skipped"} and row.qc_ack_at is None and row.qc_status in {None, "submitted"}:
+            row.status = db_status
+            if db_status in _NOT_SENT_DB_STATUSES and row.qc_ack_at is None and row.qc_status in {None, "submitted"}:
                 row.qc_status = "not_sent"
             _set_target_fingerprint(row, fingerprint_payload)
             _apply_command_lifecycle_skeleton(
@@ -470,14 +515,14 @@ async def update_execution_result(
                 metadata={"source": "update_execution_result"},
             )
         else:
-            qc_status = "not_sent" if status in {"failed", "rejected", "skipped"} else "submitted"
+            qc_status = "not_sent" if db_status in _NOT_SENT_DB_STATUSES else "submitted"
             row = ExecutionLog(
                 analysis_id=analysis_id,
                 command_id=command_id,
                 command_type="weight_adjustment",
                 command_payload=audit_payload,
                 qc_response=qc_response,
-                status=status,
+                status=db_status,
                 qc_status=qc_status,
             )
             _set_target_fingerprint(row, fingerprint_payload)
@@ -487,21 +532,21 @@ async def update_execution_result(
                 analysis_id=analysis_id,
                 command_type="weight_adjustment",
                 policy_version=policy_version,
-                status=status,
+                status=db_status,
                 qc_status=qc_status,
                 qc_response=qc_response,
                 metadata={"source": "update_execution_result"},
             )
             db.add(row)
         event_type = "execution_result"
-        if status == "rejected":
+        if db_status == "rejected":
             event_type = "preflight_blocked"
         await append_command_lifecycle_event(
             db,
             command_id=command_id,
             analysis_id=analysis_id,
             event_type=event_type,
-            event_status=status,
+            event_status=_event_status_for_db(raw_status),
             source="fastapi",
             reason=audit_payload.get("reason") if isinstance(audit_payload, dict) else None,
             payload={
@@ -665,7 +710,7 @@ async def record_active_execution_wait(
             row.analysis_id = analysis_id or row.analysis_id
             row.command_type = row.command_type or "weight_adjustment"
             row.command_payload = payload
-            row.status = "deferred_by_active_execution"
+            row.status = "deferred"
             row.qc_status = "not_sent"
             row.qc_rejection_reason = "active_execution_wait"
             _set_target_fingerprint(row, target_fingerprint)
@@ -687,7 +732,7 @@ async def record_active_execution_wait(
                 command_type="weight_adjustment",
                 command_payload=payload,
                 qc_response=None,
-                status="deferred_by_active_execution",
+                status="deferred",
                 qc_status="not_sent",
                 qc_rejection_reason="active_execution_wait",
             )
@@ -698,7 +743,7 @@ async def record_active_execution_wait(
                 analysis_id=analysis_id,
                 command_type="weight_adjustment",
                 policy_version=policy_version,
-                status="deferred_by_active_execution",
+                status="deferred",
                 qc_status="not_sent",
                 qc_response=None,
                 metadata={"source": "record_active_execution_wait"},

@@ -232,7 +232,7 @@ async def run_executor_async(
             )
         })
         return {
-            "execution_status": "skipped_broker_order_filter",
+            "execution_status": "skipped",
             "broker_order_filter": broker_order_filter,
             "execution_audit": build_execution_audit_payload(
                 action_status="skipped",

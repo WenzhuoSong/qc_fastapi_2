@@ -220,6 +220,18 @@ class ExecutionLogStoreTests(unittest.TestCase):
 
         self.assertEqual(payload["blockers"], ["daily_command_count_ok", "daily_gross_turnover_ok"])
 
+    def test_execution_log_db_status_normalizes_long_business_reasons(self):
+        self.assertEqual(
+            execution_log_store._execution_log_db_status("skipped_broker_order_filter"),
+            "skipped",
+        )
+        self.assertEqual(
+            execution_log_store._execution_log_db_status("deferred_by_active_execution"),
+            "deferred",
+        )
+        self.assertLessEqual(len(execution_log_store._execution_log_db_status("skipped_broker_order_filter")), 20)
+        self.assertLessEqual(len(execution_log_store._execution_log_db_status("deferred_by_active_execution")), 20)
+
     def test_analysis_execution_status_prefers_terminal_qc_status(self):
         row = type(
             "Row",
@@ -248,6 +260,46 @@ class ExecutionLogStoreTests(unittest.TestCase):
         )()
 
         self.assertEqual(execution_log_store._analysis_execution_status_from_row(row), "deduped")
+
+    def test_analysis_execution_status_recovers_broker_filter_skip_reason(self):
+        row = type(
+            "Row",
+            (),
+            {
+                "qc_status": "not_sent",
+                "lifecycle_state": "created",
+                "status": "skipped",
+                "command_payload": {
+                    "action_status": "skipped",
+                    "reason": "broker_order_filter_no_executable_delta",
+                },
+            },
+        )()
+
+        self.assertEqual(
+            execution_log_store._analysis_execution_status_from_row(row),
+            "skipped_broker_order_filter",
+        )
+
+    def test_analysis_execution_status_recovers_active_execution_defer_reason(self):
+        row = type(
+            "Row",
+            (),
+            {
+                "qc_status": "not_sent",
+                "lifecycle_state": "created",
+                "status": "deferred",
+                "command_payload": {
+                    "action_status": "skipped",
+                    "reason": "active_execution_wait",
+                },
+            },
+        )()
+
+        self.assertEqual(
+            execution_log_store._analysis_execution_status_from_row(row),
+            "deferred_by_active_execution",
+        )
 
     def test_qc_ack_timestamp_is_naive_for_db_column(self):
         value = _utcnow_db_naive()

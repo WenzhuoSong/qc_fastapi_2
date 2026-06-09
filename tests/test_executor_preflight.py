@@ -117,7 +117,8 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertLess(broker_pos, active_pos)
         self.assertLess(broker_pos, preflight_pos)
         self.assertLess(broker_pos, send_pos)
-        self.assertIn("skipped_broker_order_filter", text)
+        self.assertIn('"execution_status": "skipped"', text)
+        self.assertIn("broker_order_filter_no_executable_delta", text)
         self.assertIn("broker order filter left no executable delta", text)
 
     def test_executor_budget_only_preflight_block_can_dedupe_before_blocking(self):
