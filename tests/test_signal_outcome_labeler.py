@@ -8,6 +8,7 @@ from services.signal_outcome_labeler import (
     label_mature_signal_outcomes,
     plan_signal_outcome_writes,
     signal_outcome_content_hash,
+    signal_outcome_record,
 )
 
 
@@ -140,6 +141,19 @@ class SignalOutcomeLabelerTest(unittest.TestCase):
         self.assertEqual(second.insert_count, 0)
         self.assertEqual(second.duplicate_count, 1)
         self.assertEqual(second.conflict_count, 0)
+
+    def test_outcome_db_record_created_at_is_naive_for_timestamp_column(self):
+        outcome = label_mature_signal_outcomes(
+            [_signal()],
+            _rows(),
+            as_of_date=date(2020, 1, 2),
+            horizons=(1,),
+            created_at=datetime(2020, 1, 2, tzinfo=timezone.utc),
+        ).outcomes[0]
+
+        record = signal_outcome_record(outcome)
+
+        self.assertIsNone(record["created_at"].tzinfo)
 
     def test_outcome_write_plan_detects_conflicting_content(self):
         outcome = label_mature_signal_outcomes(

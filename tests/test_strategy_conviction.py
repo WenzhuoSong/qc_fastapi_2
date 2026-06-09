@@ -23,6 +23,7 @@ from services.strategy_conviction import (
     STAT_STATUS_MONITORING_READY,
     STAT_STATUS_STATISTICALLY_MEANINGFUL,
     compute_conviction_profiles,
+    conviction_profile_record,
     conviction_profile_content_hash,
     plan_conviction_profile_writes,
     statistical_status_for_samples,
@@ -351,6 +352,19 @@ class StrategyConvictionTest(unittest.TestCase):
         update = plan_conviction_profile_writes([modified], existing)
         self.assertEqual(update.update_count, 1)
         self.assertEqual(update.insert_count, 0)
+
+    def test_profile_db_record_created_at_is_naive_for_timestamp_column(self):
+        signals, outcomes = _samples(10)
+        profile = compute_conviction_profiles(
+            signals,
+            outcomes,
+            as_of_date=date(2020, 2, 1),
+            include_combined=False,
+        ).profiles[0]
+
+        record = conviction_profile_record(profile)
+
+        self.assertIsNone(record["created_at"].tzinfo)
 
 
 if __name__ == "__main__":

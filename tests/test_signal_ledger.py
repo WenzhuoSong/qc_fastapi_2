@@ -6,6 +6,7 @@ from services.signal_ledger import (
     freeze_evidence_cards_for_live,
     freeze_playground_bundle,
     frozen_signal_content_hash,
+    frozen_signal_record,
     plan_frozen_signal_writes,
 )
 
@@ -87,6 +88,19 @@ class SignalLedgerTest(unittest.TestCase):
         self.assertEqual(second.insert_count, 0)
         self.assertEqual(second.duplicate_count, 1)
         self.assertEqual(second.conflict_count, 0)
+
+    def test_db_record_datetimes_are_naive_for_timestamp_columns(self):
+        signal = freeze_evidence_cards_for_live(
+            [_card()],
+            signal_date=date(2026, 5, 24),
+            generated_at=datetime(2026, 5, 24, 21, 0, tzinfo=timezone.utc),
+            feature_data_date=date(2026, 5, 24),
+        )[0]
+
+        record = frozen_signal_record(signal)
+
+        self.assertIsNone(record["generated_at"].tzinfo)
+        self.assertIsNone(record["created_at"].tzinfo)
 
     def test_write_plan_detects_same_signal_id_with_different_content(self):
         signal = freeze_evidence_cards_for_live(

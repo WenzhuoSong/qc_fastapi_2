@@ -184,7 +184,7 @@ def frozen_signal_record(signal: FrozenSignal) -> dict[str, Any]:
         "signal_id": signal.signal_id,
         "signal_source": signal.signal_source,
         "signal_date": signal.signal_date,
-        "generated_at": signal.generated_at,
+        "generated_at": _db_naive_datetime(signal.generated_at),
         "tradable_from_date": signal.tradable_from_date,
         "strategy_id": signal.strategy_id,
         "strategy_version": signal.strategy_version,
@@ -207,7 +207,7 @@ def frozen_signal_record(signal: FrozenSignal) -> dict[str, Any]:
         "evidence_contract_version": signal.evidence_contract_version,
         "diagnostics": _json_ready(signal.diagnostics),
         "content_hash": frozen_signal_content_hash(signal),
-        "created_at": signal.created_at,
+        "created_at": _db_naive_datetime(signal.created_at),
     }
 
 
@@ -315,6 +315,13 @@ def _parse_datetime(value: Any) -> datetime | None:
         except ValueError:
             return None
     return None
+
+
+def _db_naive_datetime(value: datetime) -> datetime:
+    """Return UTC naive datetime for TIMESTAMP columns."""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _json_ready(value: Any) -> Any:

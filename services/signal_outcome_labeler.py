@@ -220,7 +220,7 @@ def signal_outcome_record(outcome: SignalOutcome) -> dict[str, Any]:
         "outcome_source": outcome.outcome_source,
         "data_quality": outcome.data_quality,
         "content_hash": signal_outcome_content_hash(outcome),
-        "created_at": outcome.created_at,
+        "created_at": _db_naive_datetime(outcome.created_at),
     }
 
 
@@ -382,3 +382,10 @@ def _json_ready(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     return value
+
+
+def _db_naive_datetime(value: datetime) -> datetime:
+    """Return UTC naive datetime for TIMESTAMP columns."""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)

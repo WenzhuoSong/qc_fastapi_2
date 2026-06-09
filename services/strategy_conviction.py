@@ -424,7 +424,7 @@ def conviction_profile_record(profile: ConvictionProfile) -> dict[str, Any]:
         "source_counts": _json_ready(profile.source_counts),
         "diagnostics": _json_ready(profile.diagnostics),
         "content_hash": conviction_profile_content_hash(profile),
-        "created_at": profile.created_at,
+        "created_at": _db_naive_datetime(profile.created_at),
     }
 
 
@@ -1005,3 +1005,10 @@ def _json_ready(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     return value
+
+
+def _db_naive_datetime(value: datetime) -> datetime:
+    """Return UTC naive datetime for TIMESTAMP columns."""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
