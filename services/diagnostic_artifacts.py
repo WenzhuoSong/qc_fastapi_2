@@ -143,6 +143,26 @@ class DebateImpact(DiagnosticArtifact):
     token_usage: dict[str, Any] = Field(default_factory=dict)
 
 
+class DecisionStyleEvent(DiagnosticArtifact):
+    schema_version: Literal["decision_style_event_v1"] = "decision_style_event_v1"
+    artifact_type: Literal["decision_style_event"] = "decision_style_event"
+    source_stage: str = "decision_style"
+    analysis_style: str = "unknown"
+    trade_style: str = "unknown"
+    dominant_style_constraint: str | None = None
+    triggered_style_rules: list[str] = Field(default_factory=list)
+    causal_sources: dict[str, Any] = Field(default_factory=dict)
+    news_style_influence: dict[str, Any] = Field(default_factory=dict)
+    style_limits: dict[str, Any] = Field(default_factory=dict)
+    style_enforcement: dict[str, Any] = Field(default_factory=dict)
+    blocked_new_positions: list[str] = Field(default_factory=list)
+    target_weights_pre_style_clip: dict[str, float] = Field(default_factory=dict)
+    target_weights_post_style_clip: dict[str, float] = Field(default_factory=dict)
+    defensive_style: bool = False
+    hard_new_position_block: bool = False
+    measurement_limitations: list[str] = Field(default_factory=list)
+
+
 Artifact = (
     MarketRiskAssessment
     | DecisionFeatureSnapshot
@@ -150,6 +170,7 @@ Artifact = (
     | RankingEvent
     | PortfolioMixEvent
     | DebateImpact
+    | DecisionStyleEvent
 )
 
 
@@ -240,6 +261,12 @@ def build_pipeline_diagnostic_artifacts(
             synthesizer_out=synthesizer_out or {},
             risk_out=risk_out,
         ),
+        build_decision_style_event(
+            analysis_id=analysis_id,
+            as_of_time=as_of_time,
+            decision_style=context.get("decision_style") or brief.get("decision_style") or {},
+            risk_out=risk_out,
+        ),
     ]
     artifacts.extend(
         CandidateEvent(
@@ -258,6 +285,58 @@ def build_pipeline_diagnostic_artifacts(
         if row["ticker"] != "CASH"
     )
     return artifacts
+
+
+def build_decision_style_event(
+    *,
+    analysis_id: int,
+    as_of_time: datetime,
+    decision_style: dict[str, Any],
+    risk_out: dict[str, Any],
+) -> DecisionStyleEvent:
+    """Record style causality and clipping as diagnostics, never execution authority."""
+    style = decision_style or {}
+    enforcement = risk_out.get("style_enforcement") if isinstance(risk_out.get("style_enforcement"), dict) else {}
+    pre = _float_weights(enforcement.get("target_weights_pre_style_clip") or {})
+    post = _float_weights(enforcement.get("target_weights_post_style_clip") or {})
+    violations = [str(item) for item in (enforcement.get("violations") or enforcement.get("clip_log") or [])]
+    blocked = _blocked_new_positions_from_style_violations(violations)
+    limits = style.get("style_limits") if isinstance(style.get("style_limits"), dict) else {}
+    analysis_style = str(style.get("analysis_style") or "unknown")
+    trade_style = str(style.get("trade_style") or "unknown")
+    hard_new_block = bool(limits.get("allow_new_positions") is False)
+    return DecisionStyleEvent(
+        analysis_id=analysis_id,
+        created_at=as_of_time,
+        analysis_style=analysis_style,
+        trade_style=trade_style,
+        dominant_style_constraint=style.get("dominant_style_constraint"),
+        triggered_style_rules=[str(item) for item in (style.get("triggered_style_rules") or [])],
+        causal_sources=style.get("causal_sources") if isinstance(style.get("causal_sources"), dict) else {},
+        news_style_influence=(
+            style.get("news_style_influence")
+            if isinstance(style.get("news_style_influence"), dict)
+            else {}
+        ),
+        style_limits=limits,
+        style_enforcement={
+            "violations": violations,
+            "one_way_tightening_ok": enforcement.get("one_way_tightening_ok"),
+            "post_clip_compliance": enforcement.get("post_clip_compliance") or {},
+        },
+        blocked_new_positions=blocked,
+        target_weights_pre_style_clip=pre,
+        target_weights_post_style_clip=post,
+        defensive_style=(
+            analysis_style == "macro_defensive"
+            or trade_style in {"risk_reduce_fast", "cash_only"}
+            or hard_new_block
+        ),
+        hard_new_position_block=hard_new_block,
+        measurement_limitations=[
+            "style_event_records_policy_and_clip_effects_not_causal_alpha_proof",
+        ],
+    )
 
 
 def build_debate_impact(
@@ -506,6 +585,20 @@ def _unique_tickers(values: Any) -> list[str]:
             continue
         seen.add(ticker)
         out.append(ticker)
+    return out
+
+
+def _blocked_new_positions_from_style_violations(violations: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in violations:
+        if not item.startswith("style_new_position_blocked:"):
+            continue
+        rest = item.split(":", 1)[1]
+        ticker = rest.split(" ", 1)[0].upper().strip()
+        if ticker and ticker not in seen:
+            seen.add(ticker)
+            out.append(ticker)
     return out
 
 

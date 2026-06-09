@@ -71,6 +71,7 @@ class RateGuardConfig:
     debate_outcome: int = 20
     regime_risk: int = 30
     basket_outcome: int = 20
+    style_opportunity: int = 20
     weekly_self_assessment: int = 5
 
 
@@ -106,6 +107,10 @@ def build_weekly_review_metrics(
         "debate_impact": build_debate_impact_metrics(data, min_sample_n=guard.debate_outcome),
         "basket_portfolio": build_basket_portfolio_metrics(data),
         "regime_risk": build_regime_risk_metrics(data, min_sample_n=guard.regime_risk),
+        "style_opportunity": build_style_opportunity_metrics(
+            data,
+            min_sample_n=guard.style_opportunity,
+        ),
         "weekly_self_assessment": build_weekly_self_assessment_metrics(
             data,
             min_sample_n=guard.weekly_self_assessment,
@@ -679,6 +684,117 @@ def build_regime_risk_metrics(
     })
 
 
+def build_style_opportunity_metrics(
+    dataset: WeekendReviewDataset | dict[str, Any],
+    *,
+    horizon_days: int = 5,
+    min_sample_n: int = 20,
+    market_return_threshold: float = 0.0,
+    opportunity_benchmark_ticker: str = "SPY",
+) -> dict[str, Any]:
+    """Evaluate defensive style calls and blocked-buy opportunity cost separately."""
+    data = _dataset_dict(dataset)
+    feature_rows = list(data.get("market_features") or [])
+    style_events = [
+        row for row in data.get("diagnostic_artifacts") or []
+        if row.get("schema_version") == "decision_style_event_v1"
+    ]
+    metrics = {
+        "style_event_count": len(style_events),
+        "defensive_style_count": 0,
+        "defensive_style_market_outcome_count": 0,
+        "defensive_style_market_down_count": 0,
+        "blocked_buy_candidate_count": 0,
+        "blocked_buy_mature_count": 0,
+        "blocked_buy_outperformed_benchmark_count": 0,
+        "insufficient_defensive_market_outcome_count": 0,
+        "insufficient_blocked_buy_outcome_count": 0,
+    }
+    excess_returns: list[float] = []
+    split = _empty_style_opportunity_split()
+
+    for row in style_events:
+        bucket = "degraded" if _is_degraded_record(row) else "normal"
+        split[bucket]["sample_count"] += 1
+        split_metrics = split[bucket]["metrics"]
+        split_metrics["style_event_count"] += 1
+        observation_date = _artifact_observation_date(row)
+        if _is_defensive_style_event(row):
+            metrics["defensive_style_count"] += 1
+            split_metrics["defensive_style_count"] += 1
+            market_return = _market_forward_return(
+                feature_rows,
+                observation_date=observation_date,
+                horizon_days=horizon_days,
+            )
+            if market_return is None:
+                metrics["insufficient_defensive_market_outcome_count"] += 1
+                split_metrics["insufficient_defensive_market_outcome_count"] += 1
+            else:
+                metrics["defensive_style_market_outcome_count"] += 1
+                split_metrics["defensive_style_market_outcome_count"] += 1
+                if market_return <= market_return_threshold:
+                    metrics["defensive_style_market_down_count"] += 1
+                    split_metrics["defensive_style_market_down_count"] += 1
+
+        for ticker in _blocked_new_positions(row):
+            metrics["blocked_buy_candidate_count"] += 1
+            split_metrics["blocked_buy_candidate_count"] += 1
+            ticker_return = _forward_return_from_prices(
+                feature_rows,
+                ticker=ticker,
+                observation_date=observation_date,
+                horizon_days=horizon_days,
+            )
+            benchmark_return = _forward_return_from_prices(
+                feature_rows,
+                ticker=opportunity_benchmark_ticker,
+                observation_date=observation_date,
+                horizon_days=horizon_days,
+            )
+            if ticker_return is None or benchmark_return is None:
+                metrics["insufficient_blocked_buy_outcome_count"] += 1
+                split_metrics["insufficient_blocked_buy_outcome_count"] += 1
+                continue
+            excess = ticker_return - benchmark_return
+            excess_returns.append(excess)
+            split[bucket]["blocked_buy_excess_returns"].append(excess)
+            metrics["blocked_buy_mature_count"] += 1
+            split_metrics["blocked_buy_mature_count"] += 1
+            if excess > 0.0:
+                metrics["blocked_buy_outperformed_benchmark_count"] += 1
+                split_metrics["blocked_buy_outperformed_benchmark_count"] += 1
+
+    return _section({
+        "schema_version": "weekly_style_opportunity_review_v1",
+        "metrics": {
+            **metrics,
+            "blocked_buy_avg_excess_return_vs_benchmark": _avg(excess_returns),
+        },
+        "rates": _style_opportunity_rates(
+            metrics,
+            min_sample_n=min_sample_n,
+        ),
+        "decision_degradation_split": _finalize_style_opportunity_split(
+            split,
+            min_sample_n=min_sample_n,
+        ),
+        "horizon_days": horizon_days,
+        "market_return_threshold": market_return_threshold,
+        "opportunity_benchmark_ticker": opportunity_benchmark_ticker,
+        "metric_contract": {
+            "defensive_style_hit_rate": (
+                "defensive style is evaluated against forward broad-market return, "
+                "not against a high-cash actual portfolio"
+            ),
+            "blocked_buy_opportunity_cost": (
+                "blocked new buys are evaluated against a benchmark ticker, "
+                "not against cash-heavy actual allocation"
+            ),
+        },
+    })
+
+
 def build_weekly_self_assessment_metrics(
     dataset: WeekendReviewDataset | dict[str, Any],
     *,
@@ -1050,6 +1166,74 @@ def _finalize_regime_split(split: dict[str, dict[str, Any]], *, min_sample_n: in
     )
 
 
+def _empty_style_opportunity_metrics() -> dict[str, int]:
+    return {
+        "style_event_count": 0,
+        "defensive_style_count": 0,
+        "defensive_style_market_outcome_count": 0,
+        "defensive_style_market_down_count": 0,
+        "blocked_buy_candidate_count": 0,
+        "blocked_buy_mature_count": 0,
+        "blocked_buy_outperformed_benchmark_count": 0,
+        "insufficient_defensive_market_outcome_count": 0,
+        "insufficient_blocked_buy_outcome_count": 0,
+    }
+
+
+def _empty_style_opportunity_split() -> dict[str, dict[str, Any]]:
+    return {
+        "normal": {
+            "sample_count": 0,
+            "metrics": _empty_style_opportunity_metrics(),
+            "blocked_buy_excess_returns": [],
+        },
+        "degraded": {
+            "sample_count": 0,
+            "metrics": _empty_style_opportunity_metrics(),
+            "blocked_buy_excess_returns": [],
+        },
+    }
+
+
+def _style_opportunity_rates(metrics: dict[str, int], *, min_sample_n: int) -> dict[str, Any]:
+    return {
+        "defensive_style_hit_rate_5d": rate_metric(
+            "defensive_style_hit_rate_5d",
+            numerator=int(metrics.get("defensive_style_market_down_count") or 0),
+            denominator=int(metrics.get("defensive_style_market_outcome_count") or 0),
+            min_sample_n=min_sample_n,
+        ),
+        "blocked_buy_outperform_rate_5d": rate_metric(
+            "blocked_buy_outperform_rate_5d",
+            numerator=int(metrics.get("blocked_buy_outperformed_benchmark_count") or 0),
+            denominator=int(metrics.get("blocked_buy_mature_count") or 0),
+            min_sample_n=min_sample_n,
+        ),
+    }
+
+
+def _finalize_style_opportunity_split(
+    split: dict[str, dict[str, Any]],
+    *,
+    min_sample_n: int,
+) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for bucket in ("normal", "degraded"):
+        item = split.get(bucket) or {}
+        metrics = item.get("metrics") or _empty_style_opportunity_metrics()
+        out[bucket] = {
+            "sample_count": int(item.get("sample_count") or 0),
+            "metrics": {
+                **metrics,
+                "blocked_buy_avg_excess_return_vs_benchmark": _avg(
+                    item.get("blocked_buy_excess_returns") or []
+                ),
+            },
+            "rates": _style_opportunity_rates(metrics, min_sample_n=min_sample_n),
+        }
+    return out
+
+
 def _decision_degradation_payload(row: dict[str, Any]) -> dict[str, Any]:
     direct = row.get("decision_degradation")
     if isinstance(direct, dict):
@@ -1065,6 +1249,50 @@ def _is_degraded_observation(row: dict[str, Any]) -> bool:
 
 def _is_degraded_record(row: dict[str, Any]) -> bool:
     return bool(_decision_degradation_payload(row).get("is_degraded"))
+
+
+def _artifact_observation_date(row: dict[str, Any]) -> Any:
+    return (
+        row.get("as_of_time")
+        or row.get("created_at")
+        or row.get("observation_date")
+        or row.get("data_time")
+    )
+
+
+def _is_defensive_style_event(row: dict[str, Any]) -> bool:
+    limits = row.get("style_limits") if isinstance(row.get("style_limits"), dict) else {}
+    return bool(
+        row.get("defensive_style")
+        or str(row.get("analysis_style") or "") == "macro_defensive"
+        or str(row.get("trade_style") or "") in {"risk_reduce_fast", "cash_only"}
+        or limits.get("allow_new_positions") is False
+    )
+
+
+def _blocked_new_positions(row: dict[str, Any]) -> list[str]:
+    raw = row.get("blocked_new_positions") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        ticker = str(item or "").upper().strip()
+        if ticker and ticker not in seen:
+            seen.add(ticker)
+            out.append(ticker)
+    if out:
+        return out
+    enforcement = row.get("style_enforcement") if isinstance(row.get("style_enforcement"), dict) else {}
+    for item in enforcement.get("violations") or []:
+        text = str(item)
+        if not text.startswith("style_new_position_blocked:"):
+            continue
+        ticker = text.split(":", 1)[1].split(" ", 1)[0].upper().strip()
+        if ticker and ticker not in seen:
+            seen.add(ticker)
+            out.append(ticker)
+    return out
 
 
 def _dataset_dict(dataset: WeekendReviewDataset | dict[str, Any]) -> dict[str, Any]:

@@ -105,13 +105,13 @@ class WeekendTradingReviewCronTests(unittest.TestCase):
         )
 
         self.assertEqual(result.status, "success")
-        self.assertEqual(result.artifact_count, 9)
+        self.assertEqual(result.artifact_count, 10)
         self.assertEqual(result.persisted_ref, 42)
         self.assertTrue(result.notified)
         self.assertEqual(len(persisted_payloads), 1)
         payload = persisted_payloads[0]
         self.assertEqual(payload["schema_version"], "weekend_trading_review_cron_v1")
-        self.assertEqual(payload["weekend_review_artifact_count"], 9)
+        self.assertEqual(payload["weekend_review_artifact_count"], 10)
         self.assertIn("safety_invariants", payload)
         self.assertEqual(payload["safety_invariants"]["finding_count"], 0)
         self.assertIn("weekend_review_artifacts", payload)
@@ -153,7 +153,7 @@ class WeekendTradingReviewCronTests(unittest.TestCase):
         text = format_weekend_review_telegram({
             "week_start": "2026-06-01",
             "week_end": "2026-06-07",
-            "weekend_review_artifact_count": 9,
+            "weekend_review_artifact_count": 10,
             "safety_invariants": {
                 "finding_count": 2,
                 "fail_safe_required": True,

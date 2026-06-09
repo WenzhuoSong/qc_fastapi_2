@@ -99,6 +99,7 @@ def resolve_decision_style(
             "base_style",
             "balanced",
             base_trade,
+            source="weighted_conviction",
             reasons=["Base style from weighted conviction"],
         )
     ]
@@ -112,6 +113,8 @@ def resolve_decision_style(
     resolved["weighted_conviction"] = round(weighted_conviction, 4)
     resolved["component_scores"] = component_scores
     resolved["style_weights"] = STYLE_WEIGHTS.get(resolved["analysis_style"], STYLE_WEIGHTS["balanced"])
+    resolved["causal_sources"] = _causal_sources(triggered)
+    resolved["news_style_influence"] = _news_style_influence(triggered)
     resolved["style_reason"] = _style_reason(resolved)
     return resolved
 
@@ -264,6 +267,7 @@ def _scorecard_rules(scorecard: dict[str, Any]) -> list[dict[str, Any]]:
                 "scorecard_cash_only",
                 "macro_defensive",
                 "cash_only",
+                source="scorecard",
                 limits={
                     "max_adjustment_multiplier": 0.0,
                     "max_turnover_per_cycle": 0.10,
@@ -283,6 +287,7 @@ def _scorecard_rules(scorecard: dict[str, Any]) -> list[dict[str, Any]]:
                 "scorecard_defensive_permission",
                 "macro_defensive",
                 "risk_reduce_fast",
+                source="scorecard",
                 limits={
                     "max_adjustment_multiplier": 0.5,
                     "max_turnover_per_cycle": 0.10,
@@ -302,6 +307,7 @@ def _scorecard_rules(scorecard: dict[str, Any]) -> list[dict[str, Any]]:
                 "scorecard_hold_or_trim",
                 "conservative",
                 "hold_unless_strong",
+                source="scorecard",
                 limits={"max_adjustment_multiplier": 0.5, "max_turnover_per_cycle": 0.10, "max_new_buys_per_cycle": 0},
                 reasons=["Market scorecard only allows hold-or-trim actions"],
             )
@@ -312,6 +318,7 @@ def _scorecard_rules(scorecard: dict[str, Any]) -> list[dict[str, Any]]:
                 "scorecard_small_overweight",
                 "conservative",
                 "step_in",
+                source="scorecard",
                 limits={
                     "max_adjustment_multiplier": 0.7,
                     "max_turnover_per_cycle": 0.15,
@@ -331,6 +338,7 @@ def _scorecard_rules(scorecard: dict[str, Any]) -> list[dict[str, Any]]:
                 "scorecard_high_volatility",
                 "macro_defensive",
                 "risk_reduce_fast",
+                source="scorecard",
                 limits={"max_adjustment_multiplier": 0.6, "min_cash_floor_addition": 0.08, "prefer_hedges": True},
                 reasons=["High volatility shifts decision style to macro defensive"],
             )
@@ -346,17 +354,20 @@ def _news_rules(news: dict[str, Any]) -> list[dict[str, Any]]:
             _style_rule(
                 "macro_negative_high_impact",
                 "macro_defensive",
-                "risk_reduce_fast",
+                "hold_unless_strong",
+                source="news",
                 limits={
-                    "max_adjustment_multiplier": 0.5,
+                    "max_adjustment_multiplier": 0.6,
                     "max_turnover_per_cycle": 0.10,
-                    "max_new_buys_per_cycle": 0,
-                    "min_cash_floor_addition": 0.08,
-                    "allow_new_positions": False,
+                    "max_single_trade_pct": 0.03,
+                    "max_buy_trade_pct": 0.02,
+                    "max_new_buys_per_cycle": 1,
+                    "min_cash_floor_addition": 0.05,
                     "prefer_hedges": True,
                     "sell_priority": True,
                 },
-                reasons=["High-impact negative macro news blocks risk expansion"],
+                reasons=["High-impact negative macro news tightens risk expansion without hard-blocking new positions"],
+                warnings=["news_advisory_tightening_only"],
             )
         )
     if news.get("hard_risk_events"):
@@ -365,6 +376,7 @@ def _news_rules(news: dict[str, Any]) -> list[dict[str, Any]]:
                 "hard_risk_news_event",
                 "macro_defensive",
                 "risk_reduce_fast",
+                source="news_hard_risk",
                 limits={
                     "max_adjustment_multiplier": 0.5,
                     "max_new_buys_per_cycle": 0,
@@ -405,6 +417,7 @@ def _strategy_rules(strategies: dict[str, Any]) -> list[dict[str, Any]]:
                 "high_turnover_strategy",
                 "low_turnover",
                 "hold_unless_strong",
+                source="strategy",
                 limits={
                     "max_adjustment_multiplier": 0.7,
                     "max_turnover_per_cycle": 0.10,
@@ -430,6 +443,7 @@ def _momentum_rule(scorecard: dict[str, Any], news: dict[str, Any], strategies: 
                 "momentum_confirmed",
                 "momentum_confirmed",
                 "normal_rebalance",
+                source="cross_evidence",
                 limits={"max_adjustment_multiplier": 1.1},
                 reasons=["Bullish trend has breadth, risk appetite, and usable strategy confirmation"],
             )
@@ -447,6 +461,7 @@ def _forced_rules(config: dict[str, Any]) -> list[dict[str, Any]]:
                 "forced_style_config",
                 analysis if analysis in ANALYSIS_STYLE_SEVERITY else "balanced",
                 trade if trade in TRADE_STYLE_SEVERITY else "normal_rebalance",
+                source="config",
                 limits=_limits_for_forced_style(analysis, trade),
                 reasons=["Style selected by system configuration"],
             )
@@ -481,6 +496,7 @@ def _limited_data_rule(name: str, reason: str) -> dict[str, Any]:
         name,
         "conservative",
         "step_in",
+        source="data_quality",
         limits={
             "max_adjustment_multiplier": 0.6,
             "max_turnover_per_cycle": 0.15,
@@ -497,17 +513,61 @@ def _style_rule(
     analysis_style: str,
     trade_style: str,
     *,
+    source: str = "system",
     limits: dict[str, Any] | None = None,
     reasons: list[str] | None = None,
     warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "name": name,
+        "source": source,
         "analysis_style": analysis_style,
         "trade_style": trade_style,
         "style_limits": limits or {},
         "reasons": reasons or [],
         "warnings": warnings or [],
+    }
+
+
+def _causal_sources(rules: list[dict[str, Any]]) -> dict[str, Any]:
+    distribution: dict[str, int] = {}
+    for rule in rules:
+        source = str(rule.get("source") or "system")
+        distribution[source] = distribution.get(source, 0) + 1
+    return {
+        "sources": sorted(distribution),
+        "source_distribution": dict(sorted(distribution.items())),
+        "triggered_rules": [str(rule.get("name") or "") for rule in rules if rule.get("name")],
+    }
+
+
+def _news_style_influence(rules: list[dict[str, Any]]) -> dict[str, Any]:
+    news_rules = [
+        rule for rule in rules
+        if str(rule.get("source") or "").startswith("news")
+    ]
+    hard_rules = [
+        rule for rule in news_rules
+        if str(rule.get("source") or "") == "news_hard_risk"
+        or bool((rule.get("style_limits") or {}).get("allow_new_positions") is False)
+    ]
+    advisory_rules = [rule for rule in news_rules if rule not in hard_rules]
+    return {
+        "present": bool(news_rules),
+        "triggered_rules": [str(rule.get("name") or "") for rule in news_rules],
+        "advisory_tightening_rules": [str(rule.get("name") or "") for rule in advisory_rules],
+        "hard_blocking_rules": [str(rule.get("name") or "") for rule in hard_rules],
+        "can_block_new_positions": bool(hard_rules),
+        "effect": (
+            "hard_risk_defensive"
+            if hard_rules
+            else "advisory_tightening_only"
+            if advisory_rules
+            else "none"
+        ),
+        "contract": (
+            "ordinary news may tighten style but only hard_risk news events may hard-block new positions"
+        ),
     }
 
 

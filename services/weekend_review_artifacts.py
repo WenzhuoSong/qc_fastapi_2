@@ -38,6 +38,7 @@ SECTION_SCHEMA_MAP: dict[str, str] = {
     "hedge_review": "weekly_hedge_review_v1",
     "debate_impact": "weekly_debate_impact_review_v1",
     "regime_risk": "weekly_regime_risk_review_v1",
+    "style_opportunity": "weekly_style_opportunity_review_v1",
     "basket_portfolio": "weekly_strategy_basket_review_v1",
     "weekly_self_assessment": "weekly_review_self_assessment_v1",
 }

@@ -7,6 +7,7 @@ from typing import Any
 
 DEFAULT_BROKER_ORDER_FILTER_CONFIG: dict[str, Any] = {
     "broker_order_filter_enabled": True,
+    "broker_allow_reduce_only_micro_sells": True,
     "broker_min_non_liquidation_share_delta": 2.0,
     "broker_min_order_notional_usd": 500.0,
     "broker_estimated_order_fee_usd": 1.0,
@@ -46,6 +47,7 @@ def apply_broker_order_filter_to_snapshot(
     current = _clean_weights(current_weights or {})
     target = _with_cash_residual(target)
     before_metrics = _delta_metrics(target, current)
+    portfolio_reduce_only = _is_portfolio_reduce_only(target, current)
 
     diagnostic: dict[str, Any] = {
         "schema_version": "broker_order_filter_v1",
@@ -56,6 +58,7 @@ def apply_broker_order_filter_to_snapshot(
         "suppressed_orders": [],
         "allowed_orders": [],
         "missing_inputs": [],
+        "portfolio_reduce_only": portfolio_reduce_only,
         "metrics_before": before_metrics,
         "metrics_after": before_metrics,
         "target_weights": target,
@@ -105,7 +108,15 @@ def apply_broker_order_filter_to_snapshot(
             "liquidation_to_zero": bool(liquidation),
         }
         suppress_reason = _suppression_reason(order, cfg)
-        if liquidation or suppress_reason is None:
+        reduce_only_micro_sell = (
+            portfolio_reduce_only
+            and delta_w < 0
+            and bool(cfg.get("broker_allow_reduce_only_micro_sells", True))
+        )
+        if liquidation or reduce_only_micro_sell or suppress_reason is None:
+            if reduce_only_micro_sell and suppress_reason is not None:
+                order["micro_order_override"] = "portfolio_reduce_only_sell"
+                order["would_have_suppressed_reason"] = suppress_reason
             diagnostic["allowed_orders"].append(order)
             continue
         after[ticker] = cur_w
@@ -146,6 +157,21 @@ def _suppression_reason(order: dict[str, Any], cfg: dict[str, Any]) -> str | Non
     if fee_bps is not None and float(fee_bps) > float(cfg["broker_max_fee_bps"]):
         return "fee_bps_above_threshold"
     return None
+
+
+def _is_portfolio_reduce_only(target: dict[str, float], current: dict[str, float]) -> bool:
+    """Return true only when the whole target cannot increase any risk asset."""
+    if not target:
+        return False
+    saw_reduction = False
+    for ticker in sorted((set(target) | set(current)) - {"CASH"}):
+        target_w = float(target.get(ticker, 0.0) or 0.0)
+        current_w = float(current.get(ticker, 0.0) or 0.0)
+        if target_w > current_w + 1e-9:
+            return False
+        if target_w < current_w - 1e-9:
+            saw_reduction = True
+    return saw_reduction
 
 
 async def _load_latest_broker_snapshot() -> dict[str, Any]:

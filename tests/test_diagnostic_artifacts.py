@@ -2,19 +2,24 @@ from datetime import UTC, datetime
 import json
 import unittest
 
-from pydantic import ValidationError
+try:
+    from pydantic import ValidationError
+    from services.diagnostic_artifacts import (
+        CandidateEvent,
+        DecisionFeatureSnapshot,
+        MarketRiskAssessment,
+        append_diagnostic_artifacts,
+        build_debate_impact,
+        build_pipeline_diagnostic_artifacts,
+        serialize_artifact,
+    )
+    HAS_PYDANTIC = True
+except ModuleNotFoundError:  # pragma: no cover - local lightweight env
+    ValidationError = Exception
+    HAS_PYDANTIC = False
 
-from services.diagnostic_artifacts import (
-    CandidateEvent,
-    DecisionFeatureSnapshot,
-    MarketRiskAssessment,
-    append_diagnostic_artifacts,
-    build_debate_impact,
-    build_pipeline_diagnostic_artifacts,
-    serialize_artifact,
-)
 
-
+@unittest.skipUnless(HAS_PYDANTIC, "pydantic is not installed in this test environment")
 class DiagnosticArtifactTests(unittest.TestCase):
     def test_serializer_includes_schema_version_and_no_execution_authority(self):
         artifact = MarketRiskAssessment(
@@ -207,6 +212,13 @@ class DiagnosticArtifactTests(unittest.TestCase):
             all(item["feature_snapshot_id"] == feature["artifact_id"] for item in linked)
         )
         self.assertTrue(any(item["schema_version"] == "debate_impact_v1" for item in serialized))
+        style_event = next(
+            item for item in serialized
+            if item["schema_version"] == "decision_style_event_v1"
+        )
+        self.assertEqual(style_event["execution_authority"], "none")
+        self.assertEqual(style_event["analysis_style"], "unknown")
+        self.assertIn("style_event_records_policy", style_event["measurement_limitations"][0])
 
 
 if __name__ == "__main__":

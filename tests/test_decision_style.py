@@ -198,6 +198,31 @@ class DecisionStyleTest(unittest.TestCase):
         self.assertFalse(resolved["style_limits"]["allow_new_positions"])
         self.assertTrue(resolved["style_limits"]["prefer_hedges"])
         self.assertTrue(resolved["style_limits"]["sell_priority"])
+        self.assertTrue(resolved["news_style_influence"]["can_block_new_positions"])
+
+    def test_macro_negative_news_tightens_but_does_not_hard_block_new_positions(self):
+        resolved = resolve_decision_style(
+            market_scorecard=_scorecard(regime="range_bound", breadth="weak", risk_appetite="mixed"),
+            news_evidence=_news(
+                macro_news_score={
+                    "overall_bias": "negative",
+                    "confidence": "high",
+                    "market_impact": "high",
+                    "data_quality": "fresh",
+                },
+                ticker_news_scores={},
+                hard_risk_events={},
+            ),
+            strategy_evidence=_strategies(),
+        )
+
+        self.assertEqual(resolved["analysis_style"], "macro_defensive")
+        self.assertIn("macro_negative_high_impact", resolved["triggered_style_rules"])
+        self.assertTrue(resolved["style_limits"]["allow_new_positions"])
+        self.assertEqual(resolved["style_limits"]["max_new_buys_per_cycle"], 1)
+        self.assertEqual(resolved["news_style_influence"]["effect"], "advisory_tightening_only")
+        self.assertFalse(resolved["news_style_influence"]["can_block_new_positions"])
+        self.assertIn("news", resolved["causal_sources"]["sources"])
 
     def test_forced_style_override_is_still_resolved_conservatively(self):
         resolved = resolve_decision_style(

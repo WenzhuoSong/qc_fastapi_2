@@ -4,6 +4,7 @@ import unittest
 from services.weekend_review_loader import build_weekend_review_dataset
 from services.weekend_review_metrics import (
     DEFAULT_HEDGE_WEIGHT_POLICY_VERSION,
+    RateGuardConfig,
     build_weekly_review_metrics,
     hedge_counterfactual_return,
     rate_metric,
@@ -333,6 +334,61 @@ class WeekendReviewMetricsTests(unittest.TestCase):
             1,
         )
         self.assertEqual(intent["metrics"]["daily_command_cap_block_count"], 1)
+
+    def test_style_opportunity_metrics_separate_defense_and_blocked_buy_cost(self):
+        start = date(2026, 6, 1)
+        market_features = []
+        prices = {
+            "SPY": [100, 99, 99, 98.5, 98.2, 98.0],
+            "QQQ": [100, 99.8, 99.5, 99.2, 99.0, 98.8],
+            "XSD": [100, 101, 102, 103, 104, 105],
+        }
+        for ticker, path in prices.items():
+            for offset, price in enumerate(path):
+                market_features.append({
+                    "ticker": ticker,
+                    "trading_date": start + timedelta(days=offset),
+                    "source": "unit_test",
+                    "price": price,
+                })
+        dataset = build_weekend_review_dataset(
+            diagnostic_artifacts=[
+                {
+                    "schema_version": "decision_style_event_v1",
+                    "artifact_type": "decision_style_event",
+                    "artifact_id": "decision_style_event_v1:test",
+                    "created_at": "2026-06-01T15:00:00+00:00",
+                    "source_stage": "decision_style",
+                    "execution_authority": "none",
+                    "analysis_id": 42,
+                    "analysis_style": "macro_defensive",
+                    "trade_style": "hold_unless_strong",
+                    "defensive_style": True,
+                    "hard_new_position_block": False,
+                    "blocked_new_positions": ["XSD"],
+                    "style_limits": {"allow_new_positions": True},
+                    "style_enforcement": {
+                        "violations": ["style_new_position_blocked:XSD 4.00%->0.00%"],
+                    },
+                    "news_style_influence": {"effect": "advisory_tightening_only"},
+                }
+            ],
+            market_features=market_features,
+        )
+
+        metrics = build_weekly_review_metrics(
+            dataset,
+            rate_guard=RateGuardConfig(style_opportunity=1),
+        )
+        style = metrics["sections"]["style_opportunity"]
+
+        self.assertEqual(style["metrics"]["defensive_style_count"], 1)
+        self.assertEqual(style["metrics"]["defensive_style_market_down_count"], 1)
+        self.assertEqual(style["rates"]["defensive_style_hit_rate_5d"]["value"], 1.0)
+        self.assertEqual(style["metrics"]["blocked_buy_mature_count"], 1)
+        self.assertEqual(style["metrics"]["blocked_buy_outperformed_benchmark_count"], 1)
+        self.assertGreater(style["metrics"]["blocked_buy_avg_excess_return_vs_benchmark"], 0)
+        self.assertEqual(style["rates"]["blocked_buy_outperform_rate_5d"]["value"], 1.0)
 
     def test_intent_execution_uses_lifecycle_events_as_blocker_fallback(self):
         dataset = build_weekend_review_dataset(
