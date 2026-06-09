@@ -41,6 +41,7 @@ class QCExecutionAck(BaseModel):
     actual_holdings_weights: dict[str, float] | None = None
     order_summary: dict[str, Any] | None = None
     fill_summary: dict[str, Any] | None = None
+    per_leg_fill_status: list[dict[str, Any]] | dict[str, Any] | None = None
     account_state: dict[str, Any] | None = None
     superseded_command_id: str | None = None
     canceled_order_count: int | None = None

@@ -254,11 +254,30 @@ def _execution_state_from_feedback(response: dict[str, Any]) -> str:
 
 
 def _order_summary_from_feedback(response: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
     for key in ("order_summary", "fill_summary"):
         value = response.get(key)
         if isinstance(value, dict):
-            return value
-    return {}
+            summary.update(value)
+    for key in (
+        "orders",
+        "order_events",
+        "fills",
+        "legs",
+        "leg_statuses",
+        "per_leg_status",
+        "per_leg_fill_status",
+        "order_details",
+        "open_order_count",
+        "open_order_count_after",
+        "open_orders_count",
+        "has_open_orders",
+    ):
+        if key in response and key not in summary:
+            summary[key] = response.get(key)
+    if response.get("per_leg_status_present") is True:
+        summary["per_leg_status_present"] = True
+    return summary
 
 
 def _dict_from_any(value: Any) -> dict[str, Any]:
@@ -292,7 +311,16 @@ def _has_per_leg_fill_status(order_summary: dict[str, Any]) -> bool:
         return False
     if order_summary.get("per_leg_status_present") is True:
         return True
-    for key in ("orders", "order_events", "fills", "legs", "leg_statuses", "per_leg_status", "order_details"):
+    for key in (
+        "orders",
+        "order_events",
+        "fills",
+        "legs",
+        "leg_statuses",
+        "per_leg_status",
+        "per_leg_fill_status",
+        "order_details",
+    ):
         value = order_summary.get(key)
         if isinstance(value, list) and value:
             return any(_leg_has_status(item) for item in value)

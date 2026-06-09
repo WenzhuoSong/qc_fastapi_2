@@ -14,6 +14,7 @@ def _load_utcnow_db_naive():
 
     models = type(sys)("db.models")
     models.ExecutionLog = type("ExecutionLog", (), {})
+    models.AgentAnalysis = type("AgentAnalysis", (), {})
     models.AccountStateSnapshot = type("AccountStateSnapshot", (), {})
     models.CommandLifecycleEvent = type("CommandLifecycleEvent", (), {})
 
@@ -218,6 +219,35 @@ class ExecutionLogStoreTests(unittest.TestCase):
         })
 
         self.assertEqual(payload["blockers"], ["daily_command_count_ok", "daily_gross_turnover_ok"])
+
+    def test_analysis_execution_status_prefers_terminal_qc_status(self):
+        row = type(
+            "Row",
+            (),
+            {
+                "qc_status": "reconciled",
+                "lifecycle_state": "filled",
+                "status": "accepted",
+            },
+        )()
+
+        self.assertEqual(
+            execution_log_store._analysis_execution_status_from_row(row),
+            "reconciled",
+        )
+
+    def test_analysis_execution_status_uses_specific_not_sent_reason(self):
+        row = type(
+            "Row",
+            (),
+            {
+                "qc_status": "not_sent",
+                "lifecycle_state": "deduped",
+                "status": "deduped",
+            },
+        )()
+
+        self.assertEqual(execution_log_store._analysis_execution_status_from_row(row), "deduped")
 
     def test_qc_ack_timestamp_is_naive_for_db_column(self):
         value = _utcnow_db_naive()

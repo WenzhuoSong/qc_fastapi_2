@@ -12,7 +12,7 @@ import math
 import time
 from dataclasses import asdict, is_dataclass
 from contextlib import asynccontextmanager
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -82,8 +82,57 @@ async def read_recent_cron_runs(limit: int = 20) -> list[dict[str, Any]]:
     return [_row_to_dict(row) for row in rows]
 
 
+async def mark_stale_running_cron_runs(
+    *,
+    job_name: str | None = None,
+    max_age_seconds: int = 6 * 60 * 60,
+) -> int:
+    """Close orphaned ``running`` audit rows left by killed containers.
+
+    Railway redeploys can stop a container between ``_create_run`` and
+    ``_finish_run``. Leaving those rows as ``running`` makes health checks look
+    worse than reality, so the next run marks old rows as stale instead of
+    pretending they are still live.
+    """
+    max_age_seconds = max(int(max_age_seconds or 0), 60)
+    now = _utcnow_naive()
+    cutoff = now - timedelta(seconds=max_age_seconds)
+    updated = 0
+    try:
+        async with AsyncSessionLocal() as db:
+            stmt = (
+                select(CronRunLog)
+                .where(CronRunLog.status == "running")
+                .where(CronRunLog.started_at < cutoff)
+            )
+            if job_name:
+                stmt = stmt.where(CronRunLog.job_name == job_name)
+            rows = (await db.execute(stmt)).scalars().all()
+            for row in rows:
+                started_at = row.started_at or cutoff
+                row.finished_at = row.finished_at or now
+                row.status = "stale_timeout"
+                row.duration_ms = int(max((now - started_at).total_seconds(), 0) * 1000)
+                summary = dict(row.summary or {})
+                summary.update({
+                    "stale_timeout": True,
+                    "stale_marked_at": now.isoformat(),
+                    "max_age_seconds": max_age_seconds,
+                })
+                row.summary = _json_safe(summary)
+                row.error_message = row.error_message or "cron_run_stale_timeout"
+                updated += 1
+            if updated:
+                await db.commit()
+    except Exception as exc:
+        logger.warning("[cron_audit] failed to mark stale running rows for %s: %s", job_name or "*", exc)
+        return 0
+    return updated
+
+
 async def _create_run(audit: CronAuditRun) -> None:
     try:
+        await mark_stale_running_cron_runs(job_name=audit.job_name)
         async with AsyncSessionLocal() as db:
             row = CronRunLog(
                 job_name=audit.job_name,

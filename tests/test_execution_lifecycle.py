@@ -63,6 +63,23 @@ class ExecutionLifecycleTests(unittest.TestCase):
         self.assertTrue(result["trusted_for_reconciliation"])
         self.assertEqual(result["lifecycle_state_hint"], "filled")
 
+    def test_feedback_trust_accepts_top_level_per_leg_fill_status(self):
+        result = classify_qc_feedback_trust(
+            command_known=True,
+            qc_response={
+                "status": "reconciled",
+                "actual_target_weights": {"QQQ": 0.04},
+                "actual_holdings_weights": {"QQQ": 0.04},
+                "open_order_count": 0,
+                "per_leg_fill_status": [
+                    {"ticker": "QQQ", "status": "Filled", "filled_quantity": -1},
+                ],
+            },
+        )
+
+        self.assertEqual(result["status"], "trusted_for_reconciliation")
+        self.assertTrue(result["trusted_for_reconciliation"])
+
     def test_feedback_trust_keeps_partial_as_in_flight(self):
         result = classify_qc_feedback_trust(
             command_known=True,

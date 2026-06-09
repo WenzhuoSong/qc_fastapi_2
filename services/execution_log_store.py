@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy import desc
 
-from db.models import AccountStateSnapshot, CommandLifecycleEvent, ExecutionLog
+from db.models import AccountStateSnapshot, AgentAnalysis, CommandLifecycleEvent, ExecutionLog
 from db.session import AsyncSessionLocal
 from services.command_lifecycle import (
     append_command_lifecycle_event,
@@ -34,6 +34,7 @@ RECONCILIATION_TERMINAL_QC_STATUSES = {
     "superseded",
     "timeout_no_execution_confirmed",
 }
+_ANALYSIS_EXECUTED_AT_SKIP_STATUSES = {"", "pending", "proposed", "running"}
 
 
 def _utcnow_db_naive() -> datetime:
@@ -110,6 +111,66 @@ def _set_target_fingerprint(row: Any, fingerprint_payload: dict[str, Any] | None
     fingerprint = str((fingerprint_payload or {}).get("fingerprint") or "").strip()
     if fingerprint and not str(getattr(row, "target_fingerprint", "") or "").strip():
         row.target_fingerprint = fingerprint
+
+
+def _analysis_execution_status_from_row(row: Any) -> str:
+    """Derive the user-facing AgentAnalysis execution status from lifecycle truth."""
+    qc_status = str(getattr(row, "qc_status", "") or "").lower().strip()
+    lifecycle_state = str(getattr(row, "lifecycle_state", "") or "").lower().strip()
+    status = str(getattr(row, "status", "") or "").lower().strip()
+
+    if qc_status in {
+        "reconciled",
+        "reconciliation_drift",
+        "failed_no_fill",
+        "timeout_no_execution_confirmed",
+        "rejected",
+        "canceled",
+        "superseded",
+    }:
+        return qc_status
+    if lifecycle_state in {
+        "filled",
+        "noop_reconciled",
+        "partial",
+        "orders_submitted",
+        "accepted",
+        "deduped",
+        "deferred_by_active_execution",
+        "rejected",
+    }:
+        return lifecycle_state
+    if status and status != "sent":
+        return status
+    return qc_status or status or "unknown"
+
+
+async def _sync_agent_analysis_execution_state(db: Any, row: Any) -> None:
+    """Keep AgentAnalysis execution fields aligned with the lifecycle row.
+
+    ``execution_log`` is the command lifecycle source of truth.  AgentAnalysis is
+    an operator-facing decision row, so stale ``pending`` values there make daily
+    review and validation observations misleading.
+    """
+    analysis_id = getattr(row, "analysis_id", None)
+    if analysis_id is None:
+        return
+    analysis = await db.get(AgentAnalysis, analysis_id)
+    if analysis is None:
+        return
+    existing_status = str(getattr(analysis, "execution_status", "") or "").lower().strip()
+    if existing_status == "review_only":
+        return
+    next_status = _analysis_execution_status_from_row(row)
+    if not next_status:
+        return
+    analysis.execution_status = next_status
+    if next_status not in _ANALYSIS_EXECUTED_AT_SKIP_STATUSES:
+        analysis.executed_at = (
+            getattr(row, "latest_qc_ack_at", None)
+            or getattr(row, "executed_at", None)
+            or _utcnow_db_naive()
+        )
 
 
 def _target_fingerprint_tolerance_from_preflight(preflight_result: dict[str, Any] | None) -> float | None:
@@ -448,6 +509,7 @@ async def update_execution_result(
                 "qc_response": qc_response or {},
             },
         )
+        await _sync_agent_analysis_execution_state(db, row)
         await db.commit()
 
 
@@ -566,6 +628,7 @@ async def record_recent_same_target_dedupe(
             reason="recent_same_target_reconciled",
             payload=payload,
         )
+        await _sync_agent_analysis_execution_state(db, row)
         await db.commit()
 
 
@@ -651,6 +714,7 @@ async def record_active_execution_wait(
             reason="active_execution_wait",
             payload=payload,
         )
+        await _sync_agent_analysis_execution_state(db, row)
         await db.commit()
 
 
@@ -724,6 +788,7 @@ async def force_reconcile_command(
             payload=payload["force_reconciliation"],
             event_time=now,
         )
+        await _sync_agent_analysis_execution_state(db, row)
         await db.commit()
     return {
         "success": True,
@@ -893,6 +958,7 @@ async def update_qc_status(
                     event_time=ack_time,
                     source="update_qc_status",
                 )
+        await _sync_agent_analysis_execution_state(db, row)
         await db.commit()
         return {
             "command_id": command_id,
@@ -1168,6 +1234,7 @@ async def reconcile_timeout_no_ack_commands(
                 payload=decision,
                 event_time=now,
             )
+            await _sync_agent_analysis_execution_state(db, row)
             reconciled += 1
 
         if reconciled:
@@ -1310,6 +1377,7 @@ async def append_reconciliation_from_account_snapshot(db, account_state: dict[st
                 event_time=account_state.get("recorded_at") or _utcnow_db_naive(),
                 source="append_reconciliation_from_account_snapshot_terminal_resync",
             )
+            await _sync_agent_analysis_execution_state(db, row)
         return 0
     if qc_status not in RECONCILIATION_ACTIVE_QC_STATUSES:
         return 0
@@ -1348,6 +1416,7 @@ async def append_reconciliation_from_account_snapshot(db, account_state: dict[st
             source="append_reconciliation_from_account_snapshot",
             account_state=reconciliation_account_state,
         )
+        await _sync_agent_analysis_execution_state(db, row)
     return len(event_types)
 
 
