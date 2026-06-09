@@ -393,6 +393,105 @@ class WeekendReviewMetricsTests(unittest.TestCase):
         self.assertEqual(style["rates"]["blocked_buy_outperform_rate_5d"]["value"], 1.0)
         self.assertIn("shadow candidate", style["metric_contract"]["blocked_buy_selection_bias_caveat"])
 
+    def test_decision_funnel_metrics_preserve_denominators_and_cash_trend(self):
+        dataset = build_weekend_review_dataset(
+            diagnostic_artifacts=[
+                {
+                    "schema_version": "decision_funnel_observability_v1",
+                    "artifact_type": "decision_funnel_observability",
+                    "artifact_id": "decision_funnel_observability_v1:a",
+                    "created_at": "2026-06-01T15:00:00+00:00",
+                    "source_stage": "decision_funnel_observability",
+                    "execution_authority": "none",
+                    "target_weight_mutation": "none",
+                    "analysis_id": 101,
+                    "decision_style": {"analysis_style": "normal", "trade_style": "normal_rebalance"},
+                    "decision_degradation": {"is_degraded": False},
+                    "buy_delta_metrics": {
+                        "buy_intent_count": 2,
+                        "blocked_buy_count": 1,
+                        "desired_buy_delta_before_gates": 0.01,
+                        "allowed_buy_delta_after_gates": 0.002,
+                        "blocked_buy_delta": 0.008,
+                        "buy_delta_suppression_ratio": {"status": "ok", "value": 0.8},
+                    },
+                    "net_position_drift": {"net_position_drift": -0.03},
+                    "cash_trajectory_point": {
+                        "as_of_time": "2026-06-01T15:00:00+00:00",
+                        "target_cash_weight": 0.55,
+                    },
+                    "first_blocker_distribution": {"scorecard": 1},
+                    "stateless_all_blocker_distribution": {"scorecard": 1, "decision_style": 1},
+                    "stateful_incremental_blocker_distribution": {"position_governance": 1},
+                    "stateful_pass_through_base_by_layer": {"position_governance": 1},
+                    "single_blocker_candidate_count": 1,
+                },
+                {
+                    "schema_version": "decision_funnel_observability_v1",
+                    "artifact_type": "decision_funnel_observability",
+                    "artifact_id": "decision_funnel_observability_v1:b",
+                    "created_at": "2026-06-02T15:00:00+00:00",
+                    "source_stage": "decision_funnel_observability",
+                    "execution_authority": "none",
+                    "target_weight_mutation": "none",
+                    "analysis_id": 102,
+                    "decision_style": {"analysis_style": "macro_defensive", "trade_style": "risk_reduce_fast"},
+                    "decision_degradation": {"is_degraded": True, "modes": ["news_stale_degraded_mode"]},
+                    "buy_delta_metrics": {
+                        "buy_intent_count": 0,
+                        "blocked_buy_count": 0,
+                        "desired_buy_delta_before_gates": 0.0,
+                        "allowed_buy_delta_after_gates": 0.0,
+                        "blocked_buy_delta": 0.0,
+                        "buy_delta_suppression_ratio": {
+                            "status": "not_applicable",
+                            "value": None,
+                        },
+                    },
+                    "net_position_drift": {"net_position_drift": 0.02},
+                    "cash_trajectory_point": {
+                        "as_of_time": "2026-06-02T15:00:00+00:00",
+                        "target_cash_weight": 0.6,
+                    },
+                    "first_blocker_distribution": {},
+                    "stateless_all_blocker_distribution": {},
+                    "stateful_incremental_blocker_distribution": {},
+                    "stateful_pass_through_base_by_layer": {},
+                    "single_blocker_candidate_count": 0,
+                },
+            ]
+        )
+
+        metrics = build_weekly_review_metrics(
+            dataset,
+            rate_guard=RateGuardConfig(decision_funnel=1),
+        )
+        funnel = metrics["sections"]["decision_funnel"]
+
+        self.assertEqual(funnel["metrics"]["funnel_artifact_count"], 2)
+        self.assertEqual(funnel["metrics"]["buy_intent_count"], 2)
+        self.assertEqual(funnel["metrics"]["blocked_buy_count"], 1)
+        self.assertEqual(funnel["metrics"]["suppression_ratio_sample_count"], 1)
+        self.assertEqual(funnel["metrics"]["suppression_ratio_not_applicable_count"], 1)
+        self.assertEqual(funnel["metrics"]["buy_delta_suppression_ratio_avg"], 0.8)
+        self.assertEqual(funnel["metrics"]["net_position_drift_avg"], -0.005)
+        self.assertEqual(funnel["metrics"]["cash_trajectory"]["cash_delta"], 0.05)
+        self.assertEqual(funnel["rates"]["blocked_buy_rate"]["value"], 0.5)
+        self.assertEqual(funnel["stateless_blocker_distribution"]["scorecard"], 1)
+        self.assertEqual(funnel["stateful_incremental_blocker_distribution"]["position_governance"], 1)
+        self.assertEqual(funnel["stateful_pass_through_base_by_layer"]["position_governance"], 1)
+        self.assertEqual(
+            funnel["decision_degradation_split"]["normal"]["metrics"]["buy_delta_suppression_ratio_avg"],
+            0.8,
+        )
+        self.assertEqual(
+            funnel["decision_degradation_split"]["degraded"]["metrics"]["suppression_ratio_not_applicable_count"],
+            1,
+        )
+        self.assertIn("normal:normal_rebalance", funnel["decision_style_split"])
+        self.assertIn("macro_defensive:risk_reduce_fast", funnel["decision_style_split"])
+        self.assertIn("stateful incremental", funnel["metric_contract"]["stateless_vs_stateful_denominators"])
+
     def test_intent_execution_uses_lifecycle_events_as_blocker_fallback(self):
         dataset = build_weekend_review_dataset(
             command_lifecycle_events=[

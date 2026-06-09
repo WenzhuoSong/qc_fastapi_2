@@ -163,6 +163,30 @@ class DecisionStyleEvent(DiagnosticArtifact):
     measurement_limitations: list[str] = Field(default_factory=list)
 
 
+class DecisionFunnelObservability(DiagnosticArtifact):
+    schema_version: Literal["decision_funnel_observability_v1"] = "decision_funnel_observability_v1"
+    artifact_type: Literal["decision_funnel_observability"] = "decision_funnel_observability"
+    source_stage: str = "decision_funnel_observability"
+    target_weight_mutation: Literal["none"] = "none"
+    min_buy_intent_delta: float = 0.0025
+    min_executable_weight_reference: float | None = None
+    buy_intents: list[dict[str, Any]] = Field(default_factory=list)
+    stateless_independent_verdicts: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    stateful_incremental_blockers: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    stateful_pass_through_base_by_layer: dict[str, int] = Field(default_factory=dict)
+    first_blocker_distribution: dict[str, int] = Field(default_factory=dict)
+    stateless_all_blocker_distribution: dict[str, int] = Field(default_factory=dict)
+    stateful_incremental_blocker_distribution: dict[str, int] = Field(default_factory=dict)
+    single_blocker_candidate_count: int = 0
+    buy_delta_metrics: dict[str, Any] = Field(default_factory=dict)
+    net_position_drift: dict[str, Any] = Field(default_factory=dict)
+    cash_trajectory_point: dict[str, Any] = Field(default_factory=dict)
+    llm_chain_decision_influence: dict[str, Any] = Field(default_factory=dict)
+    decision_style: dict[str, Any] = Field(default_factory=dict)
+    decision_degradation: dict[str, Any] = Field(default_factory=dict)
+    measurement_limitations: list[str] = Field(default_factory=list)
+
+
 Artifact = (
     MarketRiskAssessment
     | DecisionFeatureSnapshot
@@ -171,6 +195,7 @@ Artifact = (
     | PortfolioMixEvent
     | DebateImpact
     | DecisionStyleEvent
+    | DecisionFunnelObservability
 )
 
 
@@ -267,6 +292,15 @@ def build_pipeline_diagnostic_artifacts(
             decision_style=context.get("decision_style") or brief.get("decision_style") or {},
             risk_out=risk_out,
         ),
+        build_decision_funnel_observability(
+            analysis_id=analysis_id,
+            as_of_time=as_of_time,
+            pipeline_context=context,
+            brief=brief,
+            market_scorecard=market_scorecard or {},
+            risk_out=risk_out,
+            base_weights=base_weights or {},
+        ),
     ]
     artifacts.extend(
         CandidateEvent(
@@ -285,6 +319,112 @@ def build_pipeline_diagnostic_artifacts(
         if row["ticker"] != "CASH"
     )
     return artifacts
+
+
+def build_decision_funnel_observability(
+    *,
+    analysis_id: int,
+    as_of_time: datetime,
+    pipeline_context: dict[str, Any],
+    brief: dict[str, Any],
+    market_scorecard: dict[str, Any],
+    risk_out: dict[str, Any],
+    base_weights: dict[str, float],
+    min_buy_intent_delta: float = 0.0025,
+) -> DecisionFunnelObservability:
+    """Record buy-intent funnel observability without changing any target."""
+    current_weights = _current_weights_from_brief(brief)
+    target_weights = _float_weights(risk_out.get("target_weights") or current_weights)
+    base = _float_weights(base_weights or {})
+    min_exec_ref = _min_executable_weight_reference(pipeline_context, risk_out)
+    buy_intents = _build_buy_intents(
+        base_weights=base,
+        current_weights=current_weights,
+        target_weights=target_weights,
+        min_buy_intent_delta=min_buy_intent_delta,
+    )
+    intent_tickers = [row["ticker"] for row in buy_intents]
+    stateless = _decision_funnel_stateless_verdicts(
+        tickers=intent_tickers,
+        market_scorecard=market_scorecard or {},
+        decision_style=(pipeline_context.get("decision_style") or brief.get("decision_style") or {}),
+        risk_out=risk_out or {},
+    )
+    stateful = _decision_funnel_stateful_blockers(
+        tickers=intent_tickers,
+        stateless_verdicts=stateless,
+        target_weights=target_weights,
+        current_weights=current_weights,
+        risk_out=risk_out or {},
+        min_buy_intent_delta=min_buy_intent_delta,
+    )
+    first_blocker = _first_blocker_distribution(intent_tickers, stateless, stateful)
+    stateless_all = _layer_blocker_distribution(stateless)
+    stateful_all = _layer_blocker_distribution(stateful)
+    single_blockers = _single_blocker_count(intent_tickers, stateless, stateful)
+    buy_delta_metrics = _buy_delta_metrics(buy_intents)
+    drift = _net_position_drift(current_weights=current_weights, target_weights=target_weights)
+    style = pipeline_context.get("decision_style") if isinstance(pipeline_context.get("decision_style"), dict) else {}
+    degradation = risk_out.get("decision_degradation") if isinstance(risk_out.get("decision_degradation"), dict) else {}
+    return DecisionFunnelObservability(
+        analysis_id=analysis_id,
+        created_at=as_of_time,
+        min_buy_intent_delta=float(min_buy_intent_delta),
+        min_executable_weight_reference=min_exec_ref,
+        buy_intents=buy_intents,
+        stateless_independent_verdicts=stateless,
+        stateful_incremental_blockers=stateful,
+        stateful_pass_through_base_by_layer={
+            layer: int((payload or {}).get("pass_through_base_count") or 0)
+            for layer, payload in stateful.items()
+        },
+        first_blocker_distribution=first_blocker,
+        stateless_all_blocker_distribution=stateless_all,
+        stateful_incremental_blocker_distribution=stateful_all,
+        single_blocker_candidate_count=single_blockers,
+        buy_delta_metrics=buy_delta_metrics,
+        net_position_drift=drift,
+        cash_trajectory_point={
+            "as_of_time": as_of_time.isoformat(),
+            "current_cash_weight": round(float(current_weights.get("CASH", 0.0) or 0.0), 6),
+            "target_cash_weight": round(float(target_weights.get("CASH", 0.0) or 0.0), 6),
+            "cash_delta": round(
+                float(target_weights.get("CASH", 0.0) or 0.0)
+                - float(current_weights.get("CASH", 0.0) or 0.0),
+                6,
+            ),
+        },
+        llm_chain_decision_influence={
+            "status": "shadow_unavailable",
+            "reason": "no_verified_no_llm_dry_run_shadow_target",
+            "requires_dry_run_no_side_effects": True,
+            "no_db_write": True,
+            "no_lifecycle_event": True,
+            "no_execution_log": True,
+            "no_qc_command": True,
+            "measurement_rule": (
+                "do_not_infer_llm_influence_by_subtracting_fields; compare full targets "
+                "from an explicit no-LLM dry-run shadow only"
+            ),
+        },
+        decision_style={
+            "analysis_style": style.get("analysis_style") or "unknown",
+            "trade_style": style.get("trade_style") or "unknown",
+            "style_limits": style.get("style_limits") if isinstance(style.get("style_limits"), dict) else {},
+        },
+        decision_degradation={
+            "is_degraded": bool(degradation.get("is_degraded")),
+            "modes": [str(item) for item in (degradation.get("modes") or [])],
+            "fallback_paths": [str(item) for item in (degradation.get("fallback_paths") or [])],
+            "missing_inputs": [str(item) for item in (degradation.get("missing_inputs") or [])],
+        },
+        measurement_limitations=[
+            "buy_intent_delta_is_lower_than_execution_floor_to_observe_floor_suppression",
+            "stateless_layer_rates_use_all_buy_intents_as_denominator",
+            "stateful_layer_rates_use_only_layer_pass_through_base_as_denominator",
+            "llm_influence_rate_not_computed_without_verified_no_side_effect_dry_run_shadow",
+        ],
+    )
 
 
 def build_decision_style_event(
@@ -412,6 +552,311 @@ def build_debate_impact(
             "bear_cross_exam": ((bear_output.get("rebuttal_vs_bull") or {}).get("_token_usage") or {}),
         },
     )
+
+
+def _current_weights_from_brief(brief: dict[str, Any]) -> dict[str, float]:
+    current = _float_weights(brief.get("current_weights") or {})
+    if current:
+        return current
+    out: dict[str, float] = {}
+    for row in brief.get("holdings") or []:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or row.get("symbol") or "").upper().strip()
+        if not ticker:
+            continue
+        raw = row.get("weight_current")
+        if raw is None:
+            raw = row.get("weight")
+        value = _safe_float(raw)
+        if value:
+            out[ticker] = value
+    return out
+
+
+def _min_executable_weight_reference(
+    pipeline_context: dict[str, Any],
+    risk_out: dict[str, Any],
+) -> float | None:
+    candidates = [
+        ((pipeline_context.get("risk_params") or {}).get("min_executable_weight_floor")),
+        ((pipeline_context.get("risk_params") or {}).get("min_executable_weight")),
+        ((risk_out.get("risk_config") or {}).get("min_executable_weight_floor")),
+        ((risk_out.get("broker_order_filter") or {}).get("min_executable_weight_floor")),
+    ]
+    for raw in candidates:
+        value = _safe_float(raw)
+        if value > 0:
+            return value
+    return None
+
+
+def _build_buy_intents(
+    *,
+    base_weights: dict[str, float],
+    current_weights: dict[str, float],
+    target_weights: dict[str, float],
+    min_buy_intent_delta: float,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    tickers = sorted((set(base_weights) | set(current_weights) | set(target_weights)) - {"CASH"})
+    for ticker in tickers:
+        base_w = float(base_weights.get(ticker, 0.0) or 0.0)
+        current_w = float(current_weights.get(ticker, 0.0) or 0.0)
+        final_w = float(target_weights.get(ticker, 0.0) or 0.0)
+        desired_delta = base_w - current_w
+        if desired_delta < float(min_buy_intent_delta):
+            continue
+        allowed_delta = max(final_w - current_w, 0.0)
+        blocked_delta = max(desired_delta - allowed_delta, 0.0)
+        out.append({
+            "ticker": ticker,
+            "base_weight": round(base_w, 6),
+            "current_weight": round(current_w, 6),
+            "final_target_weight": round(final_w, 6),
+            "desired_buy_delta": round(desired_delta, 6),
+            "allowed_buy_delta_after_gates": round(allowed_delta, 6),
+            "blocked_buy_delta": round(blocked_delta, 6),
+            "blocked": final_w <= current_w + 1e-9,
+        })
+    return out
+
+
+def _decision_funnel_stateless_verdicts(
+    *,
+    tickers: list[str],
+    market_scorecard: dict[str, Any],
+    decision_style: dict[str, Any],
+    risk_out: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    scorecard_permission = str(market_scorecard.get("investment_permission") or "").lower()
+    scorecard_no_add = scorecard_permission in {
+        "cash_only",
+        "reduce_risk_only",
+        "defensive_only",
+        "hold_or_trim",
+    } or bool(market_scorecard.get("require_human_confirmation"))
+    style_limits = decision_style.get("style_limits") if isinstance(decision_style.get("style_limits"), dict) else {}
+    style_no_add = style_limits.get("allow_new_positions") is False
+    style_blocked = set()
+    enforcement = risk_out.get("style_enforcement") if isinstance(risk_out.get("style_enforcement"), dict) else {}
+    for item in enforcement.get("violations") or enforcement.get("clip_log") or []:
+        text = str(item)
+        if not text.startswith("style_new_position_blocked:"):
+            continue
+        ticker = text.split(":", 1)[1].split(" ", 1)[0].upper().strip()
+        if ticker:
+            style_blocked.add(ticker)
+    broker_filter = risk_out.get("broker_order_filter") if isinstance(risk_out.get("broker_order_filter"), dict) else {}
+    suppressed = {
+        str(row.get("ticker") or row.get("symbol") or "").upper().strip()
+        for row in (broker_filter.get("suppressed_orders") or broker_filter.get("suppressed_micro_orders") or [])
+        if isinstance(row, dict)
+    }
+    return {
+        "scorecard": {
+            "layer_type": "stateless_independent",
+            "denominator": len(tickers),
+            "blocked_tickers": sorted(tickers if scorecard_no_add else []),
+            "verdict_by_ticker": {
+                ticker: {
+                    "verdict": "blocked" if scorecard_no_add else "passed",
+                    "reason": "scorecard_no_new_buys" if scorecard_no_add else None,
+                }
+                for ticker in tickers
+            },
+            "measurement_note": "independent policy verdict over all buy intents",
+        },
+        "decision_style": {
+            "layer_type": "stateless_independent",
+            "denominator": len(tickers),
+            "blocked_tickers": sorted(
+                ticker for ticker in tickers if style_no_add or ticker in style_blocked
+            ),
+            "verdict_by_ticker": {
+                ticker: {
+                    "verdict": "blocked" if (style_no_add or ticker in style_blocked) else "passed",
+                    "reason": "style_new_position_blocked" if (style_no_add or ticker in style_blocked) else None,
+                }
+                for ticker in tickers
+            },
+            "measurement_note": "independent style verdict over all buy intents",
+        },
+        "broker_order_filter": {
+            "layer_type": "stateless_independent",
+            "denominator": len(tickers),
+            "blocked_tickers": sorted(ticker for ticker in tickers if ticker in suppressed),
+            "verdict_by_ticker": {
+                ticker: {
+                    "verdict": "blocked" if ticker in suppressed else "not_evaluated",
+                    "reason": "micro_order_suppressed" if ticker in suppressed else "broker_filter_runs_after_execution_intent",
+                }
+                for ticker in tickers
+            },
+            "measurement_note": "order-efficiency evidence is included only when execution filter diagnostics exist",
+        },
+    }
+
+
+def _decision_funnel_stateful_blockers(
+    *,
+    tickers: list[str],
+    stateless_verdicts: dict[str, dict[str, Any]],
+    target_weights: dict[str, float],
+    current_weights: dict[str, float],
+    risk_out: dict[str, Any],
+    min_buy_intent_delta: float,
+) -> dict[str, dict[str, Any]]:
+    stateless_blocked = {
+        ticker
+        for layer in stateless_verdicts.values()
+        for ticker in (layer.get("blocked_tickers") or [])
+    }
+    pass_through = [ticker for ticker in tickers if ticker not in stateless_blocked]
+    governance_blocked = _blocked_tickers_from_actions(
+        (risk_out.get("position_governance") or {}).get("blocked_actions") or []
+    )
+    final_validation = risk_out.get("final_validation") if isinstance(risk_out.get("final_validation"), dict) else {}
+    final_validation_blocked_all = bool(final_validation.get("allowed") is False or final_validation.get("approved") is False)
+    target_blocked = [
+        ticker
+        for ticker in pass_through
+        if float(target_weights.get(ticker, 0.0) or 0.0)
+        <= float(current_weights.get(ticker, 0.0) or 0.0) + min_buy_intent_delta / 10.0
+    ]
+    return {
+        "position_governance": {
+            "layer_type": "stateful_incremental",
+            "pass_through_base_count": len(pass_through),
+            "blocked_tickers": sorted(ticker for ticker in pass_through if ticker in governance_blocked),
+            "measurement_note": "incremental blockers among candidates that reached position governance",
+        },
+        "risk_manager_final_target": {
+            "layer_type": "stateful_incremental",
+            "pass_through_base_count": len(pass_through),
+            "blocked_tickers": sorted(target_blocked),
+            "measurement_note": "final target did not preserve the buy delta among candidates reaching stateful layers",
+        },
+        "final_validation": {
+            "layer_type": "stateful_incremental",
+            "pass_through_base_count": len(pass_through),
+            "blocked_tickers": sorted(pass_through if final_validation_blocked_all else []),
+            "measurement_note": "portfolio-level validation blocker; denominator is candidates reaching validation",
+        },
+    }
+
+
+def _blocked_tickers_from_actions(actions: Any) -> set[str]:
+    out: set[str] = set()
+    for raw in actions or []:
+        text = str(raw or "")
+        parts = text.split(":")
+        if len(parts) >= 2 and parts[0] in {
+            "buy_blocked",
+            "concentration_add_blocked",
+            "hedge_only_add_blocked",
+            "llm_advisory_rejected",
+        }:
+            ticker = parts[1].upper().strip()
+            if ticker:
+                out.add(ticker)
+    return out
+
+
+def _first_blocker_distribution(
+    tickers: list[str],
+    stateless: dict[str, dict[str, Any]],
+    stateful: dict[str, dict[str, Any]],
+) -> dict[str, int]:
+    order = [
+        ("scorecard", stateless),
+        ("decision_style", stateless),
+        ("position_governance", stateful),
+        ("risk_manager_final_target", stateful),
+        ("final_validation", stateful),
+        ("broker_order_filter", stateless),
+    ]
+    out: dict[str, int] = {}
+    for ticker in tickers:
+        for layer, source in order:
+            if ticker in set((source.get(layer) or {}).get("blocked_tickers") or []):
+                out[layer] = out.get(layer, 0) + 1
+                break
+    return dict(sorted(out.items()))
+
+
+def _layer_blocker_distribution(layers: dict[str, dict[str, Any]]) -> dict[str, int]:
+    return {
+        layer: len((payload or {}).get("blocked_tickers") or [])
+        for layer, payload in sorted(layers.items())
+    }
+
+
+def _single_blocker_count(
+    tickers: list[str],
+    stateless: dict[str, dict[str, Any]],
+    stateful: dict[str, dict[str, Any]],
+) -> int:
+    count = 0
+    all_layers = {**stateless, **stateful}
+    for ticker in tickers:
+        blockers = [
+            layer
+            for layer, payload in all_layers.items()
+            if ticker in set((payload or {}).get("blocked_tickers") or [])
+        ]
+        if len(blockers) == 1:
+            count += 1
+    return count
+
+
+def _buy_delta_metrics(buy_intents: list[dict[str, Any]]) -> dict[str, Any]:
+    desired = sum(float(row.get("desired_buy_delta") or 0.0) for row in buy_intents)
+    allowed = sum(float(row.get("allowed_buy_delta_after_gates") or 0.0) for row in buy_intents)
+    blocked = sum(float(row.get("blocked_buy_delta") or 0.0) for row in buy_intents)
+    if desired <= 0:
+        suppression = {
+            "value": None,
+            "status": "not_applicable",
+            "reason": "no_desired_buy_delta",
+        }
+    else:
+        suppression = {
+            "value": max(0.0, min(1.0, 1.0 - allowed / desired)),
+            "status": "ok",
+            "denominator": round(desired, 6),
+        }
+    return {
+        "buy_intent_count": len(buy_intents),
+        "blocked_buy_count": sum(1 for row in buy_intents if bool(row.get("blocked"))),
+        "desired_buy_delta_before_gates": round(desired, 6),
+        "allowed_buy_delta_after_gates": round(allowed, 6),
+        "blocked_buy_delta": round(blocked, 6),
+        "buy_delta_suppression_ratio": suppression,
+    }
+
+
+def _net_position_drift(
+    *,
+    current_weights: dict[str, float],
+    target_weights: dict[str, float],
+) -> dict[str, Any]:
+    buy_delta = 0.0
+    sell_delta = 0.0
+    for ticker in sorted((set(current_weights) | set(target_weights)) - {"CASH"}):
+        current = float(current_weights.get(ticker, 0.0) or 0.0)
+        target = float(target_weights.get(ticker, 0.0) or 0.0)
+        delta = target - current
+        if delta > 0:
+            buy_delta += delta
+        elif delta < 0:
+            sell_delta += abs(delta)
+    return {
+        "allowed_buy_delta_after_gates": round(buy_delta, 6),
+        "sell_delta_after_gates": round(sell_delta, 6),
+        "net_position_drift": round(buy_delta - sell_delta, 6),
+        "direction": "net_add" if buy_delta > sell_delta else "net_reduce" if sell_delta > buy_delta else "flat",
+    }
 
 
 def build_decision_feature_snapshot(

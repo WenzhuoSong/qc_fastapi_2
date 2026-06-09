@@ -72,6 +72,7 @@ class RateGuardConfig:
     regime_risk: int = 30
     basket_outcome: int = 20
     style_opportunity: int = 20
+    decision_funnel: int = 20
     weekly_self_assessment: int = 5
 
 
@@ -110,6 +111,10 @@ def build_weekly_review_metrics(
         "style_opportunity": build_style_opportunity_metrics(
             data,
             min_sample_n=guard.style_opportunity,
+        ),
+        "decision_funnel": build_decision_funnel_metrics(
+            data,
+            min_sample_n=guard.decision_funnel,
         ),
         "weekly_self_assessment": build_weekly_self_assessment_metrics(
             data,
@@ -817,6 +822,143 @@ def build_style_opportunity_metrics(
     })
 
 
+def build_decision_funnel_metrics(
+    dataset: WeekendReviewDataset | dict[str, Any],
+    *,
+    min_sample_n: int = 20,
+) -> dict[str, Any]:
+    """Aggregate decision-funnel observability artifacts without execution authority."""
+    data = _dataset_dict(dataset)
+    rows = [
+        row for row in data.get("diagnostic_artifacts") or []
+        if row.get("schema_version") == "decision_funnel_observability_v1"
+    ]
+    metrics = _empty_decision_funnel_metrics()
+    suppression_values: list[float] = []
+    net_drifts: list[float] = []
+    cash_points: list[dict[str, Any]] = []
+    stateless_distribution: dict[str, int] = {}
+    stateful_distribution: dict[str, int] = {}
+    stateful_pass_through_base: dict[str, int] = {}
+    first_blockers: dict[str, int] = {}
+    split = _empty_decision_funnel_split()
+
+    for row in rows:
+        bucket = "degraded" if _is_degraded_record(row) else "normal"
+        style_bucket = _decision_funnel_style_bucket(row)
+        _ensure_decision_funnel_style_bucket(split, style_bucket)
+        split[bucket]["sample_count"] += 1
+        split["by_decision_style"][style_bucket]["sample_count"] += 1
+        metrics["funnel_artifact_count"] += 1
+        buy_delta = row.get("buy_delta_metrics") if isinstance(row.get("buy_delta_metrics"), dict) else {}
+        intent_count = int(buy_delta.get("buy_intent_count") or len(row.get("buy_intents") or []))
+        blocked_count = int(buy_delta.get("blocked_buy_count") or 0)
+        metrics["buy_intent_count"] += intent_count
+        metrics["blocked_buy_count"] += blocked_count
+        split[bucket]["metrics"]["buy_intent_count"] += intent_count
+        split[bucket]["metrics"]["blocked_buy_count"] += blocked_count
+        split["by_decision_style"][style_bucket]["metrics"]["buy_intent_count"] += intent_count
+        split["by_decision_style"][style_bucket]["metrics"]["blocked_buy_count"] += blocked_count
+
+        desired = _float(buy_delta.get("desired_buy_delta_before_gates"), 0.0) or 0.0
+        allowed = _float(buy_delta.get("allowed_buy_delta_after_gates"), 0.0) or 0.0
+        blocked_delta = _float(buy_delta.get("blocked_buy_delta"), 0.0) or 0.0
+        metrics["desired_buy_delta_before_gates"] += desired
+        metrics["allowed_buy_delta_after_gates"] += allowed
+        metrics["blocked_buy_delta"] += blocked_delta
+        split[bucket]["metrics"]["desired_buy_delta_before_gates"] += desired
+        split[bucket]["metrics"]["allowed_buy_delta_after_gates"] += allowed
+        split[bucket]["metrics"]["blocked_buy_delta"] += blocked_delta
+        split["by_decision_style"][style_bucket]["metrics"]["desired_buy_delta_before_gates"] += desired
+        split["by_decision_style"][style_bucket]["metrics"]["allowed_buy_delta_after_gates"] += allowed
+        split["by_decision_style"][style_bucket]["metrics"]["blocked_buy_delta"] += blocked_delta
+
+        ratio = buy_delta.get("buy_delta_suppression_ratio") if isinstance(buy_delta.get("buy_delta_suppression_ratio"), dict) else {}
+        if ratio.get("status") == "ok" and ratio.get("value") is not None:
+            value = float(ratio.get("value"))
+            suppression_values.append(value)
+            split[bucket]["suppression_values"].append(value)
+            split["by_decision_style"][style_bucket]["suppression_values"].append(value)
+            metrics["suppression_ratio_sample_count"] += 1
+            split[bucket]["metrics"]["suppression_ratio_sample_count"] += 1
+            split["by_decision_style"][style_bucket]["metrics"]["suppression_ratio_sample_count"] += 1
+        elif ratio.get("status") == "not_applicable":
+            metrics["suppression_ratio_not_applicable_count"] += 1
+            split[bucket]["metrics"]["suppression_ratio_not_applicable_count"] += 1
+            split["by_decision_style"][style_bucket]["metrics"]["suppression_ratio_not_applicable_count"] += 1
+
+        drift = row.get("net_position_drift") if isinstance(row.get("net_position_drift"), dict) else {}
+        drift_value = _float(drift.get("net_position_drift"))
+        if drift_value is not None:
+            net_drifts.append(float(drift_value))
+            split[bucket]["net_drifts"].append(float(drift_value))
+            split["by_decision_style"][style_bucket]["net_drifts"].append(float(drift_value))
+
+        cash = row.get("cash_trajectory_point") if isinstance(row.get("cash_trajectory_point"), dict) else {}
+        if cash:
+            cash_points.append(cash)
+            split[bucket]["cash_points"].append(cash)
+            split["by_decision_style"][style_bucket]["cash_points"].append(cash)
+
+        _merge_counts(stateless_distribution, row.get("stateless_all_blocker_distribution") or {})
+        _merge_counts(stateful_distribution, row.get("stateful_incremental_blocker_distribution") or {})
+        _merge_counts(stateful_pass_through_base, row.get("stateful_pass_through_base_by_layer") or {})
+        _merge_counts(first_blockers, row.get("first_blocker_distribution") or {})
+        _merge_counts(split[bucket]["stateless_distribution"], row.get("stateless_all_blocker_distribution") or {})
+        _merge_counts(split[bucket]["stateful_distribution"], row.get("stateful_incremental_blocker_distribution") or {})
+        _merge_counts(split[bucket]["stateful_pass_through_base"], row.get("stateful_pass_through_base_by_layer") or {})
+        _merge_counts(split[bucket]["first_blockers"], row.get("first_blocker_distribution") or {})
+        style_split = split["by_decision_style"][style_bucket]
+        _merge_counts(style_split["stateless_distribution"], row.get("stateless_all_blocker_distribution") or {})
+        _merge_counts(style_split["stateful_distribution"], row.get("stateful_incremental_blocker_distribution") or {})
+        _merge_counts(style_split["stateful_pass_through_base"], row.get("stateful_pass_through_base_by_layer") or {})
+        _merge_counts(style_split["first_blockers"], row.get("first_blocker_distribution") or {})
+        metrics["single_blocker_candidate_count"] += int(row.get("single_blocker_candidate_count") or 0)
+        split[bucket]["metrics"]["single_blocker_candidate_count"] += int(row.get("single_blocker_candidate_count") or 0)
+        style_split["metrics"]["single_blocker_candidate_count"] += int(row.get("single_blocker_candidate_count") or 0)
+
+    finalized_metrics = _round_decision_funnel_metrics({
+        **metrics,
+        "buy_delta_suppression_ratio_avg": _avg(suppression_values),
+        "net_position_drift_avg": _avg(net_drifts),
+        "cash_trajectory": _cash_trajectory_summary(cash_points),
+    })
+    return _section({
+        "schema_version": "weekly_decision_funnel_review_v1",
+        "metrics": finalized_metrics,
+        "rates": _decision_funnel_rates(finalized_metrics, min_sample_n=min_sample_n),
+        "first_blocker_distribution": dict(sorted(first_blockers.items())),
+        "stateless_blocker_distribution": dict(sorted(stateless_distribution.items())),
+        "stateful_incremental_blocker_distribution": dict(sorted(stateful_distribution.items())),
+        "stateful_pass_through_base_by_layer": dict(sorted(stateful_pass_through_base.items())),
+        "decision_degradation_split": _finalize_decision_funnel_split(
+            {"normal": split["normal"], "degraded": split["degraded"]},
+            min_sample_n=min_sample_n,
+        ),
+        "decision_style_split": _finalize_decision_funnel_split(
+            split["by_decision_style"],
+            min_sample_n=min_sample_n,
+        ),
+        "metric_contract": {
+            "min_buy_intent_delta": (
+                "buy-intent threshold is intentionally lower than execution floor so "
+                "small buy intents suppressed by execution filters remain visible"
+            ),
+            "stateless_vs_stateful_denominators": (
+                "stateless blocker rates use all buy intents; stateful incremental blocker rates "
+                "use only candidates reaching that layer and must not be compared as one distribution"
+            ),
+            "suppression_ratio": (
+                "desired_buy_delta=0 returns not_applicable and is excluded from aggregate suppression ratios"
+            ),
+            "llm_shadow": (
+                "LLM influence must be measured only from explicit no-LLM dry-run shadow targets; "
+                "missing shadows are not inferred from final target fields"
+            ),
+        },
+    })
+
+
 def build_weekly_self_assessment_metrics(
     dataset: WeekendReviewDataset | dict[str, Any],
     *,
@@ -1266,6 +1408,152 @@ def _finalize_style_opportunity_split(
             "rates": _style_opportunity_rates(metrics, min_sample_n=min_sample_n),
         }
     return out
+
+
+def _empty_decision_funnel_metrics() -> dict[str, Any]:
+    return {
+        "funnel_artifact_count": 0,
+        "buy_intent_count": 0,
+        "blocked_buy_count": 0,
+        "desired_buy_delta_before_gates": 0.0,
+        "allowed_buy_delta_after_gates": 0.0,
+        "blocked_buy_delta": 0.0,
+        "suppression_ratio_sample_count": 0,
+        "suppression_ratio_not_applicable_count": 0,
+        "single_blocker_candidate_count": 0,
+    }
+
+
+def _empty_decision_funnel_bucket() -> dict[str, Any]:
+    return {
+        "sample_count": 0,
+        "metrics": _empty_decision_funnel_metrics(),
+        "suppression_values": [],
+        "net_drifts": [],
+        "cash_points": [],
+        "first_blockers": {},
+        "stateless_distribution": {},
+        "stateful_distribution": {},
+        "stateful_pass_through_base": {},
+    }
+
+
+def _empty_decision_funnel_split() -> dict[str, Any]:
+    return {
+        "normal": _empty_decision_funnel_bucket(),
+        "degraded": _empty_decision_funnel_bucket(),
+        "by_decision_style": {},
+    }
+
+
+def _ensure_decision_funnel_style_bucket(split: dict[str, Any], style_bucket: str) -> None:
+    by_style = split.setdefault("by_decision_style", {})
+    if style_bucket not in by_style:
+        by_style[style_bucket] = _empty_decision_funnel_bucket()
+
+
+def _decision_funnel_style_bucket(row: dict[str, Any]) -> str:
+    style = row.get("decision_style") if isinstance(row.get("decision_style"), dict) else {}
+    trade_style = str(style.get("trade_style") or "unknown").strip() or "unknown"
+    analysis_style = str(style.get("analysis_style") or "unknown").strip() or "unknown"
+    return f"{analysis_style}:{trade_style}"
+
+
+def _decision_funnel_rates(metrics: dict[str, Any], *, min_sample_n: int) -> dict[str, Any]:
+    return {
+        "blocked_buy_rate": rate_metric(
+            "blocked_buy_rate",
+            numerator=int(metrics.get("blocked_buy_count") or 0),
+            denominator=int(metrics.get("buy_intent_count") or 0),
+            min_sample_n=min_sample_n,
+        ),
+        "single_blocker_candidate_rate": rate_metric(
+            "single_blocker_candidate_rate",
+            numerator=int(metrics.get("single_blocker_candidate_count") or 0),
+            denominator=int(metrics.get("buy_intent_count") or 0),
+            min_sample_n=min_sample_n,
+        ),
+    }
+
+
+def _finalize_decision_funnel_split(
+    split: dict[str, dict[str, Any]],
+    *,
+    min_sample_n: int,
+) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for bucket, item in sorted(split.items()):
+        metrics = _round_decision_funnel_metrics({
+            **(item.get("metrics") or _empty_decision_funnel_metrics()),
+            "buy_delta_suppression_ratio_avg": _avg(item.get("suppression_values") or []),
+            "net_position_drift_avg": _avg(item.get("net_drifts") or []),
+            "cash_trajectory": _cash_trajectory_summary(item.get("cash_points") or []),
+        })
+        out[bucket] = {
+            "sample_count": int(item.get("sample_count") or 0),
+            "metrics": metrics,
+            "rates": _decision_funnel_rates(metrics, min_sample_n=min_sample_n),
+            "first_blocker_distribution": dict(sorted((item.get("first_blockers") or {}).items())),
+            "stateless_blocker_distribution": dict(sorted((item.get("stateless_distribution") or {}).items())),
+            "stateful_incremental_blocker_distribution": dict(sorted((item.get("stateful_distribution") or {}).items())),
+            "stateful_pass_through_base_by_layer": dict(sorted((item.get("stateful_pass_through_base") or {}).items())),
+        }
+    return out
+
+
+def _round_decision_funnel_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    out = dict(metrics)
+    for key in (
+        "desired_buy_delta_before_gates",
+        "allowed_buy_delta_after_gates",
+        "blocked_buy_delta",
+        "buy_delta_suppression_ratio_avg",
+        "net_position_drift_avg",
+    ):
+        if out.get(key) is not None:
+            out[key] = round(float(out.get(key) or 0.0), 6)
+    return out
+
+
+def _cash_trajectory_summary(points: list[dict[str, Any]]) -> dict[str, Any]:
+    parsed: list[tuple[datetime, float]] = []
+    for row in points:
+        if not isinstance(row, dict):
+            continue
+        raw_time = row.get("as_of_time") or row.get("created_at")
+        value = _float(row.get("target_cash_weight"))
+        if value is None:
+            value = _float(row.get("current_cash_weight"))
+        parsed_time = _parse_datetime(raw_time)
+        if parsed_time is None or value is None:
+            continue
+        parsed.append((parsed_time, float(value)))
+    parsed.sort(key=lambda item: item[0])
+    if not parsed:
+        return {
+            "sample_count": 0,
+            "cash_weight_start": None,
+            "cash_weight_end": None,
+            "cash_slope_per_day": None,
+            "status": "insufficient_sample",
+        }
+    start_time, start_cash = parsed[0]
+    end_time, end_cash = parsed[-1]
+    elapsed_days = max((end_time - start_time).total_seconds() / 86400.0, 0.0)
+    slope = None if elapsed_days <= 0 else (end_cash - start_cash) / elapsed_days
+    return {
+        "sample_count": len(parsed),
+        "cash_weight_start": round(start_cash, 6),
+        "cash_weight_end": round(end_cash, 6),
+        "cash_delta": round(end_cash - start_cash, 6),
+        "cash_slope_per_day": round(slope, 6) if slope is not None else None,
+        "status": "ok" if len(parsed) >= 2 and slope is not None else "insufficient_sample",
+    }
+
+
+def _merge_counts(target: dict[str, int], source: dict[str, Any]) -> None:
+    for key, raw in (source or {}).items():
+        target[str(key)] = target.get(str(key), 0) + int(raw or 0)
 
 
 def _defensive_style_horizons(primary_horizon_days: int) -> list[int]:
