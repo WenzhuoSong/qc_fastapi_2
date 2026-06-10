@@ -353,6 +353,23 @@ class StrategyConvictionTest(unittest.TestCase):
         self.assertEqual(update.update_count, 1)
         self.assertEqual(update.insert_count, 0)
 
+    def test_same_day_outcomes_are_excluded_from_profiles(self):
+        signal = _signal(0)
+        dirty_outcome = replace(
+            _outcome(signal, horizon=1, hit=False, forward_return=0.0, excess_vs_spy=0.0),
+            label_date=signal.signal_date,
+        )
+
+        result = compute_conviction_profiles(
+            [signal],
+            [dirty_outcome],
+            as_of_date=date(2020, 2, 1),
+            include_combined=False,
+        )
+
+        self.assertEqual(result.profiles, [])
+        self.assertEqual(result.summary["skipped"], {"non_forward_outcome": 1})
+
     def test_profile_db_record_created_at_is_naive_for_timestamp_column(self):
         signals, outcomes = _samples(10)
         profile = compute_conviction_profiles(

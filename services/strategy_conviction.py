@@ -220,6 +220,9 @@ def compute_conviction_profiles(
         if signal is None:
             skipped["missing_signal"] = skipped.get("missing_signal", 0) + 1
             continue
+        if outcome.label_date <= signal.signal_date:
+            skipped["non_forward_outcome"] = skipped.get("non_forward_outcome", 0) + 1
+            continue
         source_bucket = source_bucket_for_signal(signal)
         if source_bucket is None:
             skipped["unsupported_signal_source"] = skipped.get("unsupported_signal_source", 0) + 1

@@ -22,6 +22,7 @@ from services.historical_signal_replay import (
     _price_index,
     label_date_for_horizon,
     label_signal_outcomes,
+    outcome_tradable_from_date,
 )
 
 
@@ -112,14 +113,27 @@ def label_mature_signal_outcomes(
             skipped["invalid_signal"] = skipped.get("invalid_signal", 0) + 1
             continue
         converted_signals.append(signal)
+        effective_tradable_from = outcome_tradable_from_date(
+            signal,
+            trading_dates=trading_dates,
+        )
+        if effective_tradable_from is None:
+            skipped["tradable_from_not_available"] = skipped.get("tradable_from_not_available", 0) + 1
+            continue
         for horizon in horizons:
             label_date = label_date_for_horizon(
                 trading_dates=trading_dates,
-                tradable_from_date=signal.tradable_from_date,
+                tradable_from_date=effective_tradable_from,
                 horizon_days=horizon,
             )
             if label_date is None or label_date > as_of_date:
                 skipped[f"h{horizon}:not_mature"] = skipped.get(f"h{horizon}:not_mature", 0) + 1
+                continue
+            if label_date <= signal.signal_date:
+                skipped[f"h{horizon}:non_forward_label"] = skipped.get(
+                    f"h{horizon}:non_forward_label",
+                    0,
+                ) + 1
                 continue
             labeled = label_signal_outcomes(
                 signal,

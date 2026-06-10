@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 from typing import Any, Iterable
 
@@ -308,17 +308,28 @@ def label_signal_outcomes(
     created_at: datetime | None = None,
 ) -> list[SignalOutcome]:
     created = created_at or datetime.now(timezone.utc)
+    effective_tradable_from = outcome_tradable_from_date(
+        signal,
+        trading_dates=trading_dates,
+    )
+    if effective_tradable_from is None:
+        return []
+    effective_signal = (
+        signal
+        if effective_tradable_from == signal.tradable_from_date
+        else replace(signal, tradable_from_date=effective_tradable_from)
+    )
     outcomes: list[SignalOutcome] = []
     for horizon in horizons:
         label_date = label_date_for_horizon(
             trading_dates=trading_dates,
-            tradable_from_date=signal.tradable_from_date,
+            tradable_from_date=effective_signal.tradable_from_date,
             horizon_days=horizon,
         )
-        if label_date is None:
+        if label_date is None or label_date <= effective_signal.signal_date:
             continue
         outcome = _label_one_outcome(
-            signal,
+            effective_signal,
             label_date=label_date,
             horizon_days=horizon,
             price_by_ticker=price_by_ticker,
@@ -327,6 +338,17 @@ def label_signal_outcomes(
         if outcome is not None:
             outcomes.append(outcome)
     return outcomes
+
+
+def outcome_tradable_from_date(
+    signal: FrozenSignal,
+    *,
+    trading_dates: list[date],
+) -> date | None:
+    """Return the first valid outcome start date after the signal date."""
+    if signal.tradable_from_date > signal.signal_date:
+        return signal.tradable_from_date
+    return next_trading_date(trading_dates, signal.signal_date)
 
 
 def label_date_for_horizon(

@@ -51,6 +51,17 @@ def _signal(ticker="TQQQ", action="increase"):
     )[0]
 
 
+def _same_day_tradable_signal(ticker="TQQQ", action="increase"):
+    return freeze_evidence_cards_for_live(
+        [_card(ticker=ticker, action=action)],
+        signal_date=date(2020, 1, 1),
+        tradable_from_date=date(2020, 1, 1),
+        generated_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+        feature_data_date=date(2020, 1, 1),
+        regime_at_signal="test_regime",
+    )[0]
+
+
 def _rows(tqqq=None, uvxy=None, spy=None):
     tqqq = tqqq or [100, 101, 102, 103, 104, 105]
     uvxy = uvxy or [20, 19, 18, 17, 16, 15]
@@ -69,6 +80,32 @@ def _rows(tqqq=None, uvxy=None, spy=None):
 
 
 class SignalOutcomeLabelerTest(unittest.TestCase):
+    def test_same_day_live_signal_does_not_generate_same_day_outcome(self):
+        result = label_mature_signal_outcomes(
+            [_same_day_tradable_signal()],
+            _rows(),
+            as_of_date=date(2020, 1, 1),
+            horizons=(1,),
+            created_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(result.outcomes, [])
+        self.assertEqual(result.summary["skipped"], {"tradable_from_not_available": 1})
+
+    def test_same_day_live_signal_uses_next_trading_day_for_h1_outcome(self):
+        result = label_mature_signal_outcomes(
+            [_same_day_tradable_signal()],
+            _rows(tqqq=[100, 104, 105, 106, 107, 108], spy=[100, 101, 102, 103, 104, 105]),
+            as_of_date=date(2020, 1, 2),
+            horizons=(1,),
+            created_at=datetime(2020, 1, 2, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(len(result.outcomes), 1)
+        self.assertEqual(result.outcomes[0].signal_date, date(2020, 1, 1))
+        self.assertEqual(result.outcomes[0].label_date, date(2020, 1, 2))
+        self.assertGreater(result.outcomes[0].forward_return, 0)
+
     def test_t5_outcome_is_not_generated_before_maturity(self):
         result = label_mature_signal_outcomes(
             [_signal()],
