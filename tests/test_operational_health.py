@@ -6,10 +6,19 @@ from services.operational_health import (
     _heartbeat_freshness_check,
     _news_cache_freshness_check,
     _trading_day_freshness_check,
+    _unresolved_failed_crons,
     _yfinance_ticker_health_check,
     classify_operational_health,
     format_operational_health_report,
 )
+
+
+class _CronRow:
+    def __init__(self, job_name, status, started_at):
+        self.job_name = job_name
+        self.status = status
+        self.started_at = started_at
+        self.error_message = None
 
 
 class OperationalHealthTests(unittest.TestCase):
@@ -105,6 +114,35 @@ class OperationalHealthTests(unittest.TestCase):
 
         self.assertEqual(snapshot["overall"], "healthy")
         self.assertEqual(snapshot["research_degradations"], [])
+
+    def test_resolved_cron_failure_is_not_active_degradation(self):
+        now = datetime(2026, 6, 10, 12, 0, 0)
+        rows = [
+            _CronRow("daily_signal_freeze", "success", now - timedelta(hours=1)),
+            _CronRow("daily_signal_freeze", "failed", now - timedelta(hours=2)),
+        ]
+
+        unresolved = _unresolved_failed_crons(rows)
+        snapshot = classify_operational_health(
+            {"pipeline_status": {"label": "Pipeline", "status": "reconciled"}},
+            [row.__dict__ for row in unresolved],
+            now=now,
+        )
+
+        self.assertEqual(unresolved, [])
+        self.assertEqual(snapshot["overall"], "healthy")
+
+    def test_unresolved_cron_failure_remains_active_degradation(self):
+        now = datetime(2026, 6, 10, 12, 0, 0)
+        rows = [
+            _CronRow("daily_signal_freeze", "failed", now - timedelta(hours=1)),
+            _CronRow("daily_signal_freeze", "success", now - timedelta(hours=2)),
+        ]
+
+        unresolved = _unresolved_failed_crons(rows)
+
+        self.assertEqual(len(unresolved), 1)
+        self.assertEqual(unresolved[0].job_name, "daily_signal_freeze")
 
     def test_formats_short_telegram_report(self):
         snapshot = {

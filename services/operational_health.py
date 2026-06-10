@@ -125,13 +125,12 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
                 select(ExecutionLog).order_by(desc(ExecutionLog.executed_at)).limit(1)
             )
         ).scalar_one_or_none()
-        failed_crons = (
+        recent_cron_rows = (
             await db.execute(
                 select(CronRunLog)
-                .where(CronRunLog.status == "failed")
                 .where(CronRunLog.started_at >= failed_cron_cutoff)
                 .order_by(desc(CronRunLog.started_at))
-                .limit(5)
+                .limit(200)
             )
         ).scalars().all()
 
@@ -196,7 +195,12 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
             "blocking": False,
         },
     }
-    snapshot = classify_operational_health(checks, [_cron_to_dict(row) for row in failed_crons], now=now)
+    unresolved_failed_crons = _unresolved_failed_crons(recent_cron_rows)
+    snapshot = classify_operational_health(
+        checks,
+        [_cron_to_dict(row) for row in unresolved_failed_crons],
+        now=now,
+    )
     snapshot["execution"] = _execution_to_dict(execution)
     return snapshot
 
@@ -238,6 +242,45 @@ def classify_operational_health(
         "execution_blockers": execution_blockers,
         "research_degradations": research_degradations,
     }
+
+
+def _unresolved_failed_crons(rows: list[Any]) -> list[Any]:
+    """Return failed cron rows that have not been followed by a success.
+
+    Cron failures are operationally active only until the same job later
+    succeeds. This prevents old fixed failures from keeping research health
+    degraded throughout the whole lookback window.
+    """
+    latest_success_by_job: dict[str, datetime] = {}
+    failed_rows: list[Any] = []
+    for row in rows:
+        job_name = str(getattr(row, "job_name", "") or "")
+        if not job_name:
+            continue
+        started_at = _to_naive_datetime(getattr(row, "started_at", None))
+        if started_at is None:
+            continue
+        status = str(getattr(row, "status", "") or "").lower()
+        if status == "success":
+            latest = latest_success_by_job.get(job_name)
+            if latest is None or started_at > latest:
+                latest_success_by_job[job_name] = started_at
+        elif status == "failed":
+            failed_rows.append(row)
+
+    unresolved: list[Any] = []
+    for row in failed_rows:
+        job_name = str(getattr(row, "job_name", "") or "")
+        started_at = _to_naive_datetime(getattr(row, "started_at", None))
+        latest_success = latest_success_by_job.get(job_name)
+        if started_at is not None and latest_success is not None and latest_success > started_at:
+            continue
+        unresolved.append(row)
+    unresolved.sort(
+        key=lambda row: _to_naive_datetime(getattr(row, "started_at", None)) or datetime.min,
+        reverse=True,
+    )
+    return unresolved[:5]
 
 
 def format_operational_health_report(snapshot: dict[str, Any]) -> str:
