@@ -553,6 +553,9 @@ def _normalize_row(row: Any) -> dict[str, Any]:
                 "return_20d",
                 "return_60d",
                 "return_252d",
+                "mom_20d",
+                "mom_60d",
+                "mom_252d",
                 "sma_20",
                 "sma_50",
                 "sma_200",
@@ -568,6 +571,10 @@ def _normalize_row(row: Any) -> dict[str, Any]:
     raw["trading_date"] = _parse_date(raw.get("trading_date"))
     raw.setdefault("source", "yfinance")
     raw.setdefault("price", raw.get("close_price") or raw.get("adj_close_price"))
+    raw.setdefault("mom_20d", raw.get("return_20d"))
+    raw.setdefault("mom_60d", raw.get("return_60d"))
+    raw.setdefault("mom_252d", raw.get("return_252d"))
+    raw.setdefault("daily_return_pct", raw.get("return_1d"))
     return raw
 
 

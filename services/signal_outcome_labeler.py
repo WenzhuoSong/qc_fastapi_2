@@ -303,15 +303,17 @@ async def persist_signal_outcomes(
     from db.models import StrategySignalOutcome
 
     outcome_ids = sorted({outcome.outcome_id for outcome in outcomes})
-    result = await db.execute(
-        select(StrategySignalOutcome).where(StrategySignalOutcome.outcome_id.in_(outcome_ids))
-    )
-    existing_rows = result.scalars().all()
+    existing_rows = []
+    for batch in _chunks(outcome_ids, 5000):
+        result = await db.execute(
+            select(StrategySignalOutcome).where(StrategySignalOutcome.outcome_id.in_(batch))
+        )
+        existing_rows.extend(result.scalars().all())
     existing = {row.outcome_id: row for row in existing_rows}
     plan = plan_signal_outcome_writes(outcomes, existing)
-    for record in plan.records_to_insert:
-        db.add(StrategySignalOutcome(**record))
-    if plan.records_to_insert:
+    for batch in _chunks(plan.records_to_insert, 1000):
+        for record in batch:
+            db.add(StrategySignalOutcome(**record))
         await db.commit()
     return PersistSignalOutcomesResult(
         inserted=plan.insert_count,
@@ -328,6 +330,12 @@ def _existing_content_hash(value: Any) -> str | None:
     else:
         raw = getattr(value, "content_hash", None)
     return str(raw) if raw else None
+
+
+def _chunks(items: list[Any], size: int) -> Iterable[list[Any]]:
+    size = max(int(size or 0), 1)
+    for index in range(0, len(items), size):
+        yield items[index:index + size]
 
 
 def _record_get(value: Any, field: str) -> Any:
