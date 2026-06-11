@@ -64,6 +64,21 @@ BASE_STYLE_LIMITS = {
     "sell_priority": False,
 }
 
+GLOBAL_HARD_RISK_TYPES = {
+    "bank_crisis",
+    "credit_stress",
+    "trading_halt",
+    "fraud",
+    "lawsuit_material",
+    "lawsuit",
+    "liquidity_crisis",
+    "sanctions",
+    "war_escalation",
+    "emergency",
+    "critical",
+}
+GLOBAL_RISK_TICKERS = {"SPY", "QQQ", "IWM", "DIA", "VIX", "TLT", "XLF", "XLE"}
+
 
 def resolve_decision_style(
     *,
@@ -370,7 +385,8 @@ def _news_rules(news: dict[str, Any]) -> list[dict[str, Any]]:
                 warnings=["news_advisory_tightening_only"],
             )
         )
-    if news.get("hard_risk_events"):
+    global_hard_events = _global_hard_risk_events(news.get("hard_risk_events") or {})
+    if global_hard_events:
         rules.append(
             _style_rule(
                 "hard_risk_news_event",
@@ -384,7 +400,8 @@ def _news_rules(news: dict[str, Any]) -> list[dict[str, Any]]:
                     "prefer_hedges": True,
                     "sell_priority": True,
                 },
-                reasons=["Hard risk news event detected"],
+                reasons=["Systemic or core-market hard risk news event detected"],
+                warnings=[f"global_hard_risk_events={global_hard_events}"],
             )
         )
     if macro.get("data_quality") in {"limited", "missing", "stale"}:
@@ -646,9 +663,29 @@ def _risk_penalty(scorecard: dict[str, Any], strategies: dict[str, Any], news: d
         penalty += 0.20
     if _max_strategy_turnover(strategies) > 0.50:
         penalty += 0.15
-    if news.get("hard_risk_events"):
+    if _global_hard_risk_events(news.get("hard_risk_events") or {}):
         penalty += 0.50
     return _clamp(penalty, 0.0, 1.0)
+
+
+def _global_hard_risk_events(raw_events: Any) -> dict[str, list[str]]:
+    if not isinstance(raw_events, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for raw_ticker, raw_types in raw_events.items():
+        ticker = str(raw_ticker or "").upper().strip()
+        risk_types = {
+            str(item or "").lower().strip()
+            for item in (raw_types or [])
+            if str(item or "").strip()
+        }
+        if not ticker or not risk_types:
+            continue
+        if risk_types & GLOBAL_HARD_RISK_TYPES or (
+            ticker in GLOBAL_RISK_TICKERS and "hard_risk_event" in risk_types
+        ):
+            out[ticker] = sorted(risk_types)
+    return out
 
 
 def _strategy_quality_ok(strategies: dict[str, Any]) -> bool:

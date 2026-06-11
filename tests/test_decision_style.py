@@ -224,6 +224,45 @@ class DecisionStyleTest(unittest.TestCase):
         self.assertFalse(resolved["news_style_influence"]["can_block_new_positions"])
         self.assertIn("news", resolved["causal_sources"]["sources"])
 
+    def test_ticker_local_hard_risk_does_not_globally_block_new_positions(self):
+        resolved = resolve_decision_style(
+            market_scorecard=_scorecard(regime="range_bound", breadth="weak", risk_appetite="mixed"),
+            news_evidence=_news(
+                macro_news_score={
+                    "overall_bias": "neutral",
+                    "confidence": "medium",
+                    "market_impact": "low",
+                    "data_quality": "fresh",
+                },
+                ticker_news_scores={},
+                hard_risk_events={"URA": ["acquisition_target"]},
+            ),
+            strategy_evidence=_strategies(),
+        )
+
+        self.assertNotIn("hard_risk_news_event", resolved["triggered_style_rules"])
+        self.assertTrue(resolved["style_limits"]["allow_new_positions"])
+        self.assertFalse(resolved["news_style_influence"]["can_block_new_positions"])
+
+    def test_core_ticker_local_hard_risk_still_does_not_globally_block(self):
+        resolved = resolve_decision_style(
+            market_scorecard=_scorecard(regime="range_bound", breadth="weak", risk_appetite="mixed"),
+            news_evidence=_news(
+                macro_news_score={
+                    "overall_bias": "neutral",
+                    "confidence": "medium",
+                    "market_impact": "low",
+                    "data_quality": "fresh",
+                },
+                ticker_news_scores={},
+                hard_risk_events={"XLE": ["acquisition_target"]},
+            ),
+            strategy_evidence=_strategies(),
+        )
+
+        self.assertNotIn("hard_risk_news_event", resolved["triggered_style_rules"])
+        self.assertTrue(resolved["style_limits"]["allow_new_positions"])
+
     def test_forced_style_override_is_still_resolved_conservatively(self):
         resolved = resolve_decision_style(
             market_scorecard=_scorecard(regime="range_bound", breadth="moderate", risk_appetite="mixed"),

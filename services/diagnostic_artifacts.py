@@ -181,6 +181,7 @@ class DecisionFunnelObservability(DiagnosticArtifact):
     buy_delta_metrics: dict[str, Any] = Field(default_factory=dict)
     net_position_drift: dict[str, Any] = Field(default_factory=dict)
     cash_trajectory_point: dict[str, Any] = Field(default_factory=dict)
+    sell_side_attribution: dict[str, Any] = Field(default_factory=dict)
     llm_chain_decision_influence: dict[str, Any] = Field(default_factory=dict)
     decision_style: dict[str, Any] = Field(default_factory=dict)
     decision_degradation: dict[str, Any] = Field(default_factory=dict)
@@ -364,6 +365,11 @@ def build_decision_funnel_observability(
     single_blockers = _single_blocker_count(intent_tickers, stateless, stateful)
     buy_delta_metrics = _buy_delta_metrics(buy_intents)
     drift = _net_position_drift(current_weights=current_weights, target_weights=target_weights)
+    sell_attribution = _sell_side_attribution(
+        current_weights=current_weights,
+        target_weights=target_weights,
+        risk_out=risk_out or {},
+    )
     style = pipeline_context.get("decision_style") if isinstance(pipeline_context.get("decision_style"), dict) else {}
     degradation = risk_out.get("decision_degradation") if isinstance(risk_out.get("decision_degradation"), dict) else {}
     return DecisionFunnelObservability(
@@ -394,6 +400,7 @@ def build_decision_funnel_observability(
                 6,
             ),
         },
+        sell_side_attribution=sell_attribution,
         llm_chain_decision_influence={
             "status": "shadow_unavailable",
             "reason": "no_verified_no_llm_dry_run_shadow_target",
@@ -557,6 +564,7 @@ def build_debate_impact(
 def _current_weights_from_brief(brief: dict[str, Any]) -> dict[str, float]:
     current = _float_weights(brief.get("current_weights") or {})
     if current:
+        current.setdefault("CASH", round(max(1.0 - sum(v for k, v in current.items() if k != "CASH"), 0.0), 6))
         return current
     out: dict[str, float] = {}
     for row in brief.get("holdings") or []:
@@ -571,6 +579,8 @@ def _current_weights_from_brief(brief: dict[str, Any]) -> dict[str, float]:
         value = _safe_float(raw)
         if value:
             out[ticker] = value
+    if out:
+        out["CASH"] = round(max(1.0 - sum(out.values()), 0.0), 6)
     return out
 
 
@@ -856,6 +866,80 @@ def _net_position_drift(
         "sell_delta_after_gates": round(sell_delta, 6),
         "net_position_drift": round(buy_delta - sell_delta, 6),
         "direction": "net_add" if buy_delta > sell_delta else "net_reduce" if sell_delta > buy_delta else "flat",
+    }
+
+
+def _sell_side_attribution(
+    *,
+    current_weights: dict[str, float],
+    target_weights: dict[str, float],
+    risk_out: dict[str, Any],
+) -> dict[str, Any]:
+    target_builder = risk_out.get("target_builder_input") or risk_out.get("target_builder_shadow") or {}
+    per_ticker = target_builder.get("per_ticker") if isinstance(target_builder, dict) else {}
+    if not isinstance(per_ticker, dict):
+        per_ticker = {}
+    reason_counts: dict[str, int] = {}
+    reason_delta: dict[str, float] = {}
+    changed_counts: dict[str, int] = {}
+    changed_delta: dict[str, float] = {}
+    top_sells: list[dict[str, Any]] = []
+    total_sell_delta = 0.0
+    hard_risk_sell_delta = 0.0
+    sell_count = 0
+    for ticker in sorted((set(current_weights) | set(target_weights)) - {"CASH"}):
+        current = float(current_weights.get(ticker, 0.0) or 0.0)
+        target = float(target_weights.get(ticker, 0.0) or 0.0)
+        if current <= target + 1e-9:
+            continue
+        sell_delta = current - target
+        sell_count += 1
+        total_sell_delta += sell_delta
+        row = per_ticker.get(ticker) if isinstance(per_ticker.get(ticker), dict) else {}
+        reasons = [str(item) for item in (row.get("reason_codes") or []) if str(item)]
+        changed_by = [str(item) for item in (row.get("changed_by") or []) if str(item)]
+        if not reasons:
+            reasons = ["unattributed"]
+        if not changed_by:
+            changed_by = ["unattributed"]
+        if "hard_risk" in reasons:
+            hard_risk_sell_delta += sell_delta
+        for reason in reasons:
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+            reason_delta[reason] = reason_delta.get(reason, 0.0) + sell_delta
+        for source in changed_by:
+            changed_counts[source] = changed_counts.get(source, 0) + 1
+            changed_delta[source] = changed_delta.get(source, 0.0) + sell_delta
+        top_sells.append({
+            "ticker": ticker,
+            "current_weight": round(current, 6),
+            "target_weight": round(target, 6),
+            "sell_delta": round(sell_delta, 6),
+            "reason_codes": reasons,
+            "changed_by": changed_by,
+        })
+    top_sells.sort(key=lambda row: float(row.get("sell_delta") or 0.0), reverse=True)
+    return {
+        "schema_version": "sell_side_attribution_v1",
+        "sell_intent_count": sell_count,
+        "sell_delta_after_gates": round(total_sell_delta, 6),
+        "hard_risk_sell_delta": round(hard_risk_sell_delta, 6),
+        "reason_code_distribution": dict(sorted(reason_counts.items())),
+        "reason_code_sell_delta": _round_float_map(reason_delta),
+        "changed_by_distribution": dict(sorted(changed_counts.items())),
+        "changed_by_sell_delta": _round_float_map(changed_delta),
+        "top_sells": top_sells[:10],
+        "metric_contract": (
+            "sell-side attribution explains cash build-up; it is diagnostic-only "
+            "and does not gate risk-reducing sells"
+        ),
+    }
+
+
+def _round_float_map(values: dict[str, float]) -> dict[str, float]:
+    return {
+        key: round(float(value or 0.0), 6)
+        for key, value in sorted(values.items())
     }
 
 

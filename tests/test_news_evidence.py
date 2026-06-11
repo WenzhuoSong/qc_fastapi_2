@@ -115,6 +115,39 @@ class NewsEvidenceTest(unittest.TestCase):
         self.assertIn("credit_stress", evidence["hard_risk_events"]["XLF"])
         self.assertEqual(evidence["ticker_news_scores"]["XLF"]["action_bias"], "block_new_buy")
 
+    def test_noise_acquisition_news_does_not_trigger_hard_risk(self):
+        item = score_news_item(
+            {
+                "headline": "5 Dynamics Shaping Today's Investment Landscape",
+                "source": "SeekingAlpha",
+                "sentiment": "neutral",
+                "relevance": "noise",
+                "datetime": NOW - 60,
+            },
+            ticker="IGV",
+            now_ts=NOW,
+            hard_risks={"acquisition_target": "keyword match"},
+        )
+
+        self.assertEqual(item["hard_risk_types"], [])
+        self.assertEqual(item["action_bias"], "ignore")
+
+    def test_halt_attacks_phrase_is_not_trading_halt(self):
+        item = score_news_item(
+            {
+                "headline": "Oil falls as investors await clarity after Iran-Israel halt attacks",
+                "source": "Yahoo Finance",
+                "sentiment": "negative",
+                "relevance": "indirect",
+                "datetime": NOW - 60,
+            },
+            ticker="XLE",
+            now_ts=NOW,
+        )
+
+        self.assertEqual(item["hard_risk_types"], [])
+        self.assertNotEqual(item["action_bias"], "block_new_buy")
+
     def test_macro_news_score_aggregates_bias_and_themes(self):
         evidence = build_news_evidence(
             {

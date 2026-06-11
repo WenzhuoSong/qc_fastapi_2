@@ -45,11 +45,10 @@ FRESHNESS_MULTIPLIERS = {
     "unknown": 0.50,
 }
 
-HARD_RISK_TYPES = {
+SYSTEMIC_HARD_RISK_TYPES = {
     "bank_crisis",
     "credit_stress",
     "trading_halt",
-    "halt",
     "fraud",
     "lawsuit_material",
     "lawsuit",
@@ -59,6 +58,27 @@ HARD_RISK_TYPES = {
     "emergency",
     "critical",
 }
+TICKER_LOCAL_HARD_RISK_TYPES = {
+    "acquisition_target",
+    "earnings_soon",
+    "fda_pending",
+    "major_lawsuit",
+    "trading_halted",
+}
+HARD_RISK_TYPES = SYSTEMIC_HARD_RISK_TYPES | TICKER_LOCAL_HARD_RISK_TYPES
+
+TRADING_HALT_PHRASES = (
+    "trading halt",
+    "trading halted",
+    "halted trading",
+    "suspended trading",
+    "trading suspension",
+    "shares halted",
+    "stock halted",
+)
+HARD_RISK_MIN_EFFECTIVE_CREDIBILITY = 0.45
+HARD_RISK_ALLOWED_RELEVANCE = {"direct", "sector", "macro"}
+HARD_RISK_ALLOWED_FRESHNESS = {"fresh", "usable"}
 
 POSITIVE_BIAS = {"positive", "bullish", "risk_on", "tailwind"}
 NEGATIVE_BIAS = {"negative", "bearish", "risk_off", "headwind"}
@@ -159,7 +179,7 @@ def score_news_item(
         * FRESHNESS_MULTIPLIERS.get(freshness, 0.50),
         4,
     )
-    hard_types = _hard_risk_types(item, hard_risks)
+    hard_types = _hard_risk_types(item, hard_risks, now_ts=now)
     action_bias = _action_bias(
         sentiment=sentiment,
         relevance=relevance,
@@ -371,13 +391,13 @@ def _freshness_label(ts_value: Any, now_ts: int) -> str:
 
 
 def _infer_market_impact(item: dict[str, Any], hard_risks: dict[str, Any] | None) -> str:
-    if _hard_risk_types(item, hard_risks):
+    if _raw_hard_risk_types(item, hard_risks):
         return "high"
     text = " ".join(
         str(item.get(k) or "")
         for k in ("headline", "llm_summary", "summary", "category")
     ).lower()
-    high_terms = ("fed", "cpi", "credit stress", "bank crisis", "war", "halt", "fraud", "sanction")
+    high_terms = ("fed", "cpi", "credit stress", "bank crisis", "war", "trading halt", "fraud", "sanction")
     medium_terms = ("earnings", "guidance", "policy", "sector", "rates", "inflation", "oil")
     if any(term in text for term in high_terms):
         return "high"
@@ -394,7 +414,35 @@ def _time_horizon(freshness: str, impact: str) -> str:
     return "medium_term"
 
 
-def _hard_risk_types(item: dict[str, Any], hard_risks: dict[str, Any] | None) -> list[str]:
+def _hard_risk_types(
+    item: dict[str, Any],
+    hard_risks: dict[str, Any] | None,
+    *,
+    now_ts: int | None = None,
+) -> list[str]:
+    risks = _raw_hard_risk_types(item, hard_risks)
+    if not risks:
+        return []
+    relevance = _normalize_relevance(item.get("relevance"))
+    freshness = _freshness_label(item.get("datetime"), int(now_ts or time.time()))
+    source_credibility = _source_credibility(item.get("credibility"), str(item.get("source") or ""))
+    market_impact = str(item.get("market_impact") or item.get("impact") or "").lower().strip()
+    effective = source_credibility
+    effective *= RELEVANCE_MULTIPLIERS.get(relevance, 0.70)
+    effective *= FRESHNESS_MULTIPLIERS.get(freshness, 0.50)
+    if market_impact in IMPACT_MULTIPLIERS:
+        effective *= IMPACT_MULTIPLIERS[market_impact]
+    if not _hard_risk_item_is_qualified(
+        risks=risks,
+        relevance=relevance,
+        freshness=freshness,
+        effective_credibility=effective,
+    ):
+        return []
+    return sorted(risks)
+
+
+def _raw_hard_risk_types(item: dict[str, Any], hard_risks: dict[str, Any] | None) -> set[str]:
     risks: set[str] = set()
     if item.get("is_hard_event"):
         risks.add("hard_risk_event")
@@ -402,9 +450,31 @@ def _hard_risk_types(item: dict[str, Any], hard_risks: dict[str, Any] | None) ->
         risks.update(str(k) for k in hard_risks.keys())
     text = " ".join(str(item.get(k) or "") for k in ("headline", "llm_summary", "summary", "category")).lower()
     for risk in HARD_RISK_TYPES:
+        if risk in {"halt", "trading_halt", "trading_halted"}:
+            continue
         if risk.replace("_", " ") in text or risk in text:
             risks.add(risk)
-    return sorted(risks)
+    if any(phrase in text for phrase in TRADING_HALT_PHRASES):
+        risks.add("trading_halt")
+    return risks
+
+
+def _hard_risk_item_is_qualified(
+    *,
+    risks: set[str],
+    relevance: str,
+    freshness: str,
+    effective_credibility: float,
+) -> bool:
+    if "hard_risk_event" in risks:
+        return True
+    if relevance not in HARD_RISK_ALLOWED_RELEVANCE:
+        return False
+    if freshness not in HARD_RISK_ALLOWED_FRESHNESS:
+        return False
+    if effective_credibility < HARD_RISK_MIN_EFFECTIVE_CREDIBILITY:
+        return False
+    return bool(risks & HARD_RISK_TYPES)
 
 
 def _action_bias(

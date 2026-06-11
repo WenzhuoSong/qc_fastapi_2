@@ -420,6 +420,15 @@ class WeekendReviewMetricsTests(unittest.TestCase):
                         "as_of_time": "2026-06-01T15:00:00+00:00",
                         "target_cash_weight": 0.55,
                     },
+                    "sell_side_attribution": {
+                        "sell_intent_count": 1,
+                        "sell_delta_after_gates": 0.03,
+                        "hard_risk_sell_delta": 0.01,
+                        "reason_code_distribution": {"scorecard_human_required": 1, "hard_risk": 1},
+                        "reason_code_sell_delta": {"scorecard_human_required": 0.03, "hard_risk": 0.01},
+                        "changed_by_distribution": {"turnover_clip": 1},
+                        "changed_by_sell_delta": {"turnover_clip": 0.03},
+                    },
                     "first_blocker_distribution": {"scorecard": 1},
                     "stateless_all_blocker_distribution": {"scorecard": 1, "decision_style": 1},
                     "stateful_incremental_blocker_distribution": {"position_governance": 1},
@@ -453,6 +462,15 @@ class WeekendReviewMetricsTests(unittest.TestCase):
                         "as_of_time": "2026-06-02T15:00:00+00:00",
                         "target_cash_weight": 0.6,
                     },
+                    "sell_side_attribution": {
+                        "sell_intent_count": 1,
+                        "sell_delta_after_gates": 0.02,
+                        "hard_risk_sell_delta": 0.0,
+                        "reason_code_distribution": {"scorecard_human_required": 1},
+                        "reason_code_sell_delta": {"scorecard_human_required": 0.02},
+                        "changed_by_distribution": {"turnover_clip": 1},
+                        "changed_by_sell_delta": {"turnover_clip": 0.02},
+                    },
                     "first_blocker_distribution": {},
                     "stateless_all_blocker_distribution": {},
                     "stateful_incremental_blocker_distribution": {},
@@ -476,10 +494,18 @@ class WeekendReviewMetricsTests(unittest.TestCase):
         self.assertEqual(funnel["metrics"]["buy_delta_suppression_ratio_avg"], 0.8)
         self.assertEqual(funnel["metrics"]["net_position_drift_avg"], -0.005)
         self.assertEqual(funnel["metrics"]["cash_trajectory"]["cash_delta"], 0.05)
+        self.assertEqual(funnel["metrics"]["sell_intent_count"], 2)
+        self.assertEqual(funnel["metrics"]["sell_delta_after_gates"], 0.05)
+        self.assertEqual(funnel["metrics"]["hard_risk_sell_delta"], 0.01)
         self.assertEqual(funnel["rates"]["blocked_buy_rate"]["value"], 0.5)
         self.assertEqual(funnel["stateless_blocker_distribution"]["scorecard"], 1)
         self.assertEqual(funnel["stateful_incremental_blocker_distribution"]["position_governance"], 1)
         self.assertEqual(funnel["stateful_pass_through_base_by_layer"]["position_governance"], 1)
+        self.assertEqual(
+            funnel["sell_side_attribution"]["reason_code_sell_delta"]["scorecard_human_required"],
+            0.05,
+        )
+        self.assertEqual(funnel["sell_side_attribution"]["changed_by_sell_delta"]["turnover_clip"], 0.05)
         self.assertEqual(
             funnel["decision_degradation_split"]["normal"]["metrics"]["buy_delta_suppression_ratio_avg"],
             0.8,

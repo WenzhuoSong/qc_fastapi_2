@@ -841,6 +841,10 @@ def build_decision_funnel_metrics(
     stateful_distribution: dict[str, int] = {}
     stateful_pass_through_base: dict[str, int] = {}
     first_blockers: dict[str, int] = {}
+    sell_reason_distribution: dict[str, int] = {}
+    sell_reason_delta: dict[str, float] = {}
+    sell_changed_by_distribution: dict[str, int] = {}
+    sell_changed_by_delta: dict[str, float] = {}
     split = _empty_decision_funnel_split()
 
     for row in rows:
@@ -900,6 +904,33 @@ def build_decision_funnel_metrics(
             split[bucket]["cash_points"].append(cash)
             split["by_decision_style"][style_bucket]["cash_points"].append(cash)
 
+        sell_attr = row.get("sell_side_attribution") if isinstance(row.get("sell_side_attribution"), dict) else {}
+        sell_count = int(sell_attr.get("sell_intent_count") or 0)
+        sell_delta = _float(sell_attr.get("sell_delta_after_gates"), 0.0) or 0.0
+        hard_risk_sell_delta = _float(sell_attr.get("hard_risk_sell_delta"), 0.0) or 0.0
+        metrics["sell_intent_count"] += sell_count
+        metrics["sell_delta_after_gates"] += sell_delta
+        metrics["hard_risk_sell_delta"] += hard_risk_sell_delta
+        split[bucket]["metrics"]["sell_intent_count"] += sell_count
+        split[bucket]["metrics"]["sell_delta_after_gates"] += sell_delta
+        split[bucket]["metrics"]["hard_risk_sell_delta"] += hard_risk_sell_delta
+        split["by_decision_style"][style_bucket]["metrics"]["sell_intent_count"] += sell_count
+        split["by_decision_style"][style_bucket]["metrics"]["sell_delta_after_gates"] += sell_delta
+        split["by_decision_style"][style_bucket]["metrics"]["hard_risk_sell_delta"] += hard_risk_sell_delta
+        _merge_counts(sell_reason_distribution, sell_attr.get("reason_code_distribution") or {})
+        _merge_float_counts(sell_reason_delta, sell_attr.get("reason_code_sell_delta") or {})
+        _merge_counts(sell_changed_by_distribution, sell_attr.get("changed_by_distribution") or {})
+        _merge_float_counts(sell_changed_by_delta, sell_attr.get("changed_by_sell_delta") or {})
+        _merge_counts(split[bucket]["sell_reason_distribution"], sell_attr.get("reason_code_distribution") or {})
+        _merge_float_counts(split[bucket]["sell_reason_delta"], sell_attr.get("reason_code_sell_delta") or {})
+        _merge_counts(split[bucket]["sell_changed_by_distribution"], sell_attr.get("changed_by_distribution") or {})
+        _merge_float_counts(split[bucket]["sell_changed_by_delta"], sell_attr.get("changed_by_sell_delta") or {})
+        style_split = split["by_decision_style"][style_bucket]
+        _merge_counts(style_split["sell_reason_distribution"], sell_attr.get("reason_code_distribution") or {})
+        _merge_float_counts(style_split["sell_reason_delta"], sell_attr.get("reason_code_sell_delta") or {})
+        _merge_counts(style_split["sell_changed_by_distribution"], sell_attr.get("changed_by_distribution") or {})
+        _merge_float_counts(style_split["sell_changed_by_delta"], sell_attr.get("changed_by_sell_delta") or {})
+
         _merge_counts(stateless_distribution, row.get("stateless_all_blocker_distribution") or {})
         _merge_counts(stateful_distribution, row.get("stateful_incremental_blocker_distribution") or {})
         _merge_counts(stateful_pass_through_base, row.get("stateful_pass_through_base_by_layer") or {})
@@ -931,6 +962,16 @@ def build_decision_funnel_metrics(
         "stateless_blocker_distribution": dict(sorted(stateless_distribution.items())),
         "stateful_incremental_blocker_distribution": dict(sorted(stateful_distribution.items())),
         "stateful_pass_through_base_by_layer": dict(sorted(stateful_pass_through_base.items())),
+        "sell_side_attribution": {
+            "reason_code_distribution": dict(sorted(sell_reason_distribution.items())),
+            "reason_code_sell_delta": _round_float_counts(sell_reason_delta),
+            "changed_by_distribution": dict(sorted(sell_changed_by_distribution.items())),
+            "changed_by_sell_delta": _round_float_counts(sell_changed_by_delta),
+            "metric_contract": (
+                "sell-side attribution is diagnostic-only and explains net cash build-up; "
+                "it must not block risk-reducing sells"
+            ),
+        },
         "decision_degradation_split": _finalize_decision_funnel_split(
             {"normal": split["normal"], "degraded": split["degraded"]},
             min_sample_n=min_sample_n,
@@ -1421,6 +1462,9 @@ def _empty_decision_funnel_metrics() -> dict[str, Any]:
         "suppression_ratio_sample_count": 0,
         "suppression_ratio_not_applicable_count": 0,
         "single_blocker_candidate_count": 0,
+        "sell_intent_count": 0,
+        "sell_delta_after_gates": 0.0,
+        "hard_risk_sell_delta": 0.0,
     }
 
 
@@ -1435,6 +1479,10 @@ def _empty_decision_funnel_bucket() -> dict[str, Any]:
         "stateless_distribution": {},
         "stateful_distribution": {},
         "stateful_pass_through_base": {},
+        "sell_reason_distribution": {},
+        "sell_reason_delta": {},
+        "sell_changed_by_distribution": {},
+        "sell_changed_by_delta": {},
     }
 
 
@@ -1497,6 +1545,12 @@ def _finalize_decision_funnel_split(
             "stateless_blocker_distribution": dict(sorted((item.get("stateless_distribution") or {}).items())),
             "stateful_incremental_blocker_distribution": dict(sorted((item.get("stateful_distribution") or {}).items())),
             "stateful_pass_through_base_by_layer": dict(sorted((item.get("stateful_pass_through_base") or {}).items())),
+            "sell_side_attribution": {
+                "reason_code_distribution": dict(sorted((item.get("sell_reason_distribution") or {}).items())),
+                "reason_code_sell_delta": _round_float_counts(item.get("sell_reason_delta") or {}),
+                "changed_by_distribution": dict(sorted((item.get("sell_changed_by_distribution") or {}).items())),
+                "changed_by_sell_delta": _round_float_counts(item.get("sell_changed_by_delta") or {}),
+            },
         }
     return out
 
@@ -1509,6 +1563,8 @@ def _round_decision_funnel_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "blocked_buy_delta",
         "buy_delta_suppression_ratio_avg",
         "net_position_drift_avg",
+        "sell_delta_after_gates",
+        "hard_risk_sell_delta",
     ):
         if out.get(key) is not None:
             out[key] = round(float(out.get(key) or 0.0), 6)
@@ -1554,6 +1610,18 @@ def _cash_trajectory_summary(points: list[dict[str, Any]]) -> dict[str, Any]:
 def _merge_counts(target: dict[str, int], source: dict[str, Any]) -> None:
     for key, raw in (source or {}).items():
         target[str(key)] = target.get(str(key), 0) + int(raw or 0)
+
+
+def _merge_float_counts(target: dict[str, float], source: dict[str, Any]) -> None:
+    for key, raw in (source or {}).items():
+        target[str(key)] = target.get(str(key), 0.0) + float(_float(raw, 0.0) or 0.0)
+
+
+def _round_float_counts(values: dict[str, Any]) -> dict[str, float]:
+    return {
+        str(key): round(float(_float(raw, 0.0) or 0.0), 6)
+        for key, raw in sorted((values or {}).items())
+    }
 
 
 def _defensive_style_horizons(primary_horizon_days: int) -> list[int]:
