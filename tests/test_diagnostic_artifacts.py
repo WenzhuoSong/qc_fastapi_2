@@ -10,6 +10,7 @@ try:
         MarketRiskAssessment,
         append_diagnostic_artifacts,
         build_debate_impact,
+        build_decision_funnel_observability,
         build_pipeline_diagnostic_artifacts,
         serialize_artifact,
     )
@@ -219,6 +220,55 @@ class DiagnosticArtifactTests(unittest.TestCase):
         self.assertEqual(style_event["execution_authority"], "none")
         self.assertEqual(style_event["analysis_style"], "unknown")
         self.assertIn("style_event_records_policy", style_event["measurement_limitations"][0])
+
+    def test_decision_funnel_human_required_is_not_scorecard_no_add(self):
+        artifact = build_decision_funnel_observability(
+            analysis_id=42,
+            as_of_time=datetime(2026, 6, 6, 1, 0, tzinfo=UTC),
+            pipeline_context={"decision_style": {}},
+            brief={"current_weights": {"CASH": 1.0}},
+            market_scorecard={
+                "investment_permission": "small_overweight_only",
+                "require_human_confirmation": True,
+            },
+            risk_out={"target_weights": {"SPY": 0.02, "CASH": 0.98}},
+            base_weights={"SPY": 0.04, "CASH": 0.96},
+        )
+
+        payload = serialize_artifact(artifact)
+        self.assertEqual(len(payload["buy_intents"]), 1)
+        self.assertEqual(payload["stateless_all_blocker_distribution"]["scorecard"], 0)
+        self.assertEqual(
+            payload["stateless_independent_verdicts"]["scorecard"]["verdict_by_ticker"]["SPY"]["verdict"],
+            "passed",
+        )
+
+    def test_decision_funnel_strategy_advisory_only_remains_scorecard_blocker(self):
+        artifact = build_decision_funnel_observability(
+            analysis_id=43,
+            as_of_time=datetime(2026, 6, 6, 1, 0, tzinfo=UTC),
+            pipeline_context={"decision_style": {}},
+            brief={"current_weights": {"CASH": 1.0}},
+            market_scorecard={
+                "investment_permission": "small_overweight_only",
+                "require_human_confirmation": True,
+                "triggered_rules": ["strategy_advisory_only"],
+            },
+            risk_out={"target_weights": {"SPY": 0.0, "CASH": 1.0}},
+            base_weights={"SPY": 0.04, "CASH": 0.96},
+        )
+
+        payload = serialize_artifact(artifact)
+        self.assertEqual(len(payload["buy_intents"]), 1)
+        self.assertEqual(payload["stateless_all_blocker_distribution"]["scorecard"], 1)
+        self.assertEqual(
+            payload["stateless_independent_verdicts"]["scorecard"]["verdict_by_ticker"]["SPY"]["verdict"],
+            "blocked",
+        )
+        self.assertEqual(
+            payload["stateless_independent_verdicts"]["scorecard"]["verdict_by_ticker"]["SPY"]["reason"],
+            "scorecard_strategy_advisory_only",
+        )
 
 
 if __name__ == "__main__":

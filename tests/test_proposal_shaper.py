@@ -69,6 +69,24 @@ class ProposalShaperTests(unittest.TestCase):
         self.assertEqual(out["adjusted_weights"]["SPY"], 0.10)
         self.assertIn("scorecard_no_add:SPY", " ".join(out["clip_log"]))
 
+    def test_strategy_advisory_only_blocks_adds_before_risk(self):
+        out = shape_proposal_before_risk(
+            adjusted_weights={"SPY": 0.12, "CASH": 0.88},
+            current_weights={"SPY": 0.10, "CASH": 0.90},
+            holdings_meta=[],
+            market_scorecard={
+                "investment_permission": "small_overweight_only",
+                "data_quality": "limited",
+                "require_human_confirmation": True,
+                "triggered_rules": ["strategy_advisory_only"],
+            },
+            decision_style={"trade_style": "normal_rebalance"},
+        )
+
+        self.assertTrue(out["applied"])
+        self.assertEqual(out["adjusted_weights"]["SPY"], 0.10)
+        self.assertIn("scorecard_no_add:SPY", " ".join(out["clip_log"]))
+
     def test_high_atr_blocks_add_before_risk(self):
         out = shape_proposal_before_risk(
             adjusted_weights={"QQQ": 0.12, "CASH": 0.88},

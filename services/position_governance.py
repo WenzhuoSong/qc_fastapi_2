@@ -14,6 +14,7 @@ from typing import Any
 from services.advisory_quality import build_advisory_quality_diagnostics
 from services.execution_policy import get_policy
 from services.group_contract import calc_primary_group_exposure, get_primary_group
+from services.scorecard_execution_semantics import scorecard_no_add_reason
 from services.thesis_scheduler import build_thesis_review_queue
 from services.weight_ops import normalize_cash_first
 
@@ -123,6 +124,7 @@ def apply_position_governance(
     group_limits = _group_limits(cfg)
     permission = str((market_scorecard or {}).get("investment_permission") or "normal_rebalance")
     require_human = bool((market_scorecard or {}).get("require_human_confirmation"))
+    scorecard_block_reason = scorecard_no_add_reason(market_scorecard or {})
     confirmation_classes = _scorecard_confirmation_classes(market_scorecard or {})
     market_stress_confirmation = "market_stress" in confirmation_classes
 
@@ -169,9 +171,11 @@ def apply_position_governance(
             allowed_actions.add("add")
         if require_human:
             reasons.append("scorecard_human_required")
-            allowed_actions.discard("add")
         if permission in {"hold_or_trim", "reduce_risk_only", "cash_only", "defensive_only"}:
             reasons.append(f"scorecard_{permission}")
+            allowed_actions.discard("add")
+        elif scorecard_block_reason:
+            reasons.append(scorecard_block_reason)
             allowed_actions.discard("add")
         if market_stress_confirmation:
             reasons.append("scorecard_market_stress")
@@ -320,7 +324,7 @@ def apply_position_governance(
             require_human=require_human,
             hedge_intent=hedge_intent,
         )
-    if cfg.replacement_enabled and _replacement_allowed(permission, require_human):
+    if cfg.replacement_enabled and _replacement_allowed(permission, require_human, scorecard_block_reason):
         replacement_candidates = _replacement_candidates(strategy_evidence or {}, decisions)
         replacements = _apply_replacements(
             work=work,
@@ -369,8 +373,8 @@ def apply_position_governance(
     )
 
 
-def _replacement_allowed(permission: str, require_human: bool) -> bool:
-    if require_human:
+def _replacement_allowed(permission: str, require_human: bool, scorecard_block_reason: str | None) -> bool:
+    if require_human or scorecard_block_reason:
         return False
     return permission not in {"hold_or_trim", "reduce_risk_only", "cash_only", "defensive_only"}
 
@@ -1049,9 +1053,7 @@ def _explanation_facts(
         risk_action = str(row.get("decision") or "hold")
 
     execution_blocker = None
-    if "scorecard_human_required" in reasons:
-        execution_blocker = "human_required"
-    elif any("risk_rejected" in str(item) for item in blocked):
+    if any("risk_rejected" in str(item) for item in blocked):
         execution_blocker = "risk_rejected"
 
     basket_context = None

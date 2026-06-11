@@ -12,6 +12,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from services.scorecard_execution_semantics import scorecard_no_add_reason
+
 
 ExecutionAuthority = Literal["none"]
 
@@ -639,13 +641,8 @@ def _decision_funnel_stateless_verdicts(
     decision_style: dict[str, Any],
     risk_out: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
-    scorecard_permission = str(market_scorecard.get("investment_permission") or "").lower()
-    scorecard_no_add = scorecard_permission in {
-        "cash_only",
-        "reduce_risk_only",
-        "defensive_only",
-        "hold_or_trim",
-    } or bool(market_scorecard.get("require_human_confirmation"))
+    scorecard_block_reason = scorecard_no_add_reason(market_scorecard)
+    scorecard_no_add = scorecard_block_reason is not None
     style_limits = decision_style.get("style_limits") if isinstance(decision_style.get("style_limits"), dict) else {}
     style_no_add = style_limits.get("allow_new_positions") is False
     style_blocked = set()
@@ -671,7 +668,7 @@ def _decision_funnel_stateless_verdicts(
             "verdict_by_ticker": {
                 ticker: {
                     "verdict": "blocked" if scorecard_no_add else "passed",
-                    "reason": "scorecard_no_new_buys" if scorecard_no_add else None,
+                    "reason": scorecard_block_reason if scorecard_no_add else None,
                 }
                 for ticker in tickers
             },

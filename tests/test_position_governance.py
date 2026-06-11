@@ -269,6 +269,55 @@ class PositionGovernanceTest(unittest.TestCase):
         self.assertNotIn("scorecard_market_stress", decision["reason_codes"])
         self.assertFalse(out.forced_trims)
 
+    def test_human_required_is_diagnostic_not_no_add(self):
+        out = apply_position_governance(
+            target_weights={"QQQ": 0.04, "CASH": 0.96},
+            current_weights={"CASH": 1.0},
+            holdings_meta=[],
+            strategy_evidence={
+                "strategy_results": [
+                    {"strategy_name": "momentum_lite_v1", "suggested_use": "advisory", "selected_tickers": ["QQQ"]}
+                ]
+            },
+            market_scorecard={
+                "investment_permission": "small_overweight_only",
+                "require_human_confirmation": True,
+                "confirmation_classes": ["data_quality"],
+            },
+            news_evidence={},
+        )
+
+        decision = _decision(out, "QQQ")
+        self.assertIn("add", decision["allowed_actions"])
+        self.assertIn("scorecard_human_required", decision["reason_codes"])
+        self.assertNotIn("scorecard_small_overweight_only", decision["reason_codes"])
+        self.assertAlmostEqual(decision["target_after"], 0.04, places=4)
+
+    def test_strategy_advisory_only_blocks_automatic_add(self):
+        out = apply_position_governance(
+            target_weights={"QQQ": 0.04, "CASH": 0.96},
+            current_weights={"CASH": 1.0},
+            holdings_meta=[],
+            strategy_evidence={
+                "strategy_results": [
+                    {"strategy_name": "momentum_lite_v1", "suggested_use": "advisory", "selected_tickers": ["QQQ"]}
+                ]
+            },
+            market_scorecard={
+                "investment_permission": "small_overweight_only",
+                "require_human_confirmation": True,
+                "triggered_rules": ["strategy_advisory_only"],
+                "confirmation_classes": ["data_quality"],
+            },
+            news_evidence={},
+        )
+
+        decision = _decision(out, "QQQ")
+        self.assertNotIn("add", decision["allowed_actions"])
+        self.assertIn("scorecard_strategy_advisory_only", decision["reason_codes"])
+        self.assertAlmostEqual(decision["target_after"], 0.0, places=4)
+        self.assertTrue(any(item.startswith("buy_blocked:QQQ") for item in out.blocked_actions))
+
     def test_market_stress_human_required_auto_trims_high_beta_position(self):
         out = apply_position_governance(
             target_weights={"QQQ": 0.12, "CASH": 0.88},

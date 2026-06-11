@@ -330,6 +330,47 @@ class TargetBuilderTest(unittest.TestCase):
         self.assertEqual(out["target_weights"]["SPY"], 0.10)
         self.assertTrue(any(item.startswith("scorecard_no_add:SPY") for item in out["violations"]))
 
+    def test_human_confirmation_does_not_collapse_small_overweight_to_no_add(self):
+        out = build_target_weights(
+            base_weights={"SPY": 0.20, "CASH": 0.80},
+            current_weights={"SPY": 0.10, "CASH": 0.90},
+            market_scorecard={
+                "investment_permission": "small_overweight_only",
+                "require_human_confirmation": True,
+                "max_adjustment_from_base": 0.03,
+            },
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[],
+            constraints={},
+        ).to_dict()
+
+        self.assertGreater(out["target_weights"]["SPY"], 0.10)
+        self.assertLessEqual(out["target_weights"]["SPY"], 0.1301)
+        self.assertFalse(any(item.startswith("scorecard_no_add:SPY") for item in out["violations"]))
+        self.assertTrue(any(item.startswith("single_delta_clip:SPY") for item in out["violations"]))
+
+    def test_strategy_advisory_only_keeps_full_auto_no_add_boundary(self):
+        out = build_target_weights(
+            base_weights={"SPY": 0.20, "CASH": 0.80},
+            current_weights={"SPY": 0.10, "CASH": 0.90},
+            market_scorecard={
+                "investment_permission": "small_overweight_only",
+                "require_human_confirmation": True,
+                "triggered_rules": ["strategy_advisory_only"],
+                "max_adjustment_from_base": 0.03,
+            },
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[],
+            constraints={},
+        ).to_dict()
+
+        self.assertEqual(out["target_weights"]["SPY"], 0.10)
+        self.assertTrue(
+            any(item.startswith("scorecard_strategy_advisory_only:SPY") for item in out["violations"])
+        )
+
     def test_single_delta_and_turnover_caps_are_deterministic(self):
         out = build_target_weights(
             base_weights={"SPY": 0.50, "CASH": 0.50},

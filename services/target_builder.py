@@ -13,14 +13,13 @@ from typing import Any
 
 from services.evidence_cap_config import default_evidence_cap_config, resolve_evidence_cap_mode
 from services.execution_policy import apply_policy_caps, evaluate_policy, policy_snapshot
+from services.scorecard_execution_semantics import scorecard_no_add_reason
 from services.weight_ops import apply_single_caps_cash_first, normalize_cash_first
 from services.weight_source_contract import (
     assert_no_forbidden_target_builder_inputs,
     weight_source_contract_summary,
 )
 
-
-NO_ADD_PERMISSIONS = {"hold_or_trim", "reduce_risk_only", "defensive_only", "cash_only"}
 
 ALLOWED_EVIDENCE_FIELDS = {
     "action",
@@ -120,7 +119,12 @@ def build_target_weights(
     rejected_governance_tickers = sorted(set(decisions) - allowed_universe)
     tickers = executable_ticker_universe
     permission = str(scorecard.get("investment_permission") or "")
-    no_add = permission in NO_ADD_PERMISSIONS or bool(scorecard.get("require_human_confirmation"))
+    # In FULL_AUTO, scorecard human-confirmation is diagnostic/visibility
+    # metadata. It must not silently collapse small-overweight permission into
+    # no-add; hard no-add is expressed by the permission itself or by strategy
+    # autonomy rules that say advisory-only evidence cannot drive automatic adds.
+    no_add_reason = scorecard_no_add_reason(scorecard)
+    no_add = no_add_reason is not None
     max_single_delta = _effective_single_delta(scorecard, style, cfg)
 
     work: dict[str, float] = {}
@@ -152,7 +156,7 @@ def build_target_weights(
             changed_by.append("portfolio_construction")
 
         if no_add and target > current_w:
-            violations.append(f"scorecard_no_add:{ticker} {target:.2%}->{current_w:.2%}")
+            violations.append(f"{no_add_reason}:{ticker} {target:.2%}->{current_w:.2%}")
             target = current_w
             changed_by.append("scorecard_clip")
 
@@ -163,7 +167,7 @@ def build_target_weights(
             target = governance_target
 
         if no_add and target > current_w:
-            violations.append(f"governance_no_add_clip:{ticker} {target:.2%}->{current_w:.2%}")
+            violations.append(f"governance_no_add_clip:{no_add_reason}:{ticker} {target:.2%}->{current_w:.2%}")
             target = current_w
             changed_by.append("scorecard_clip")
 

@@ -9,20 +9,13 @@ from __future__ import annotations
 from typing import Any
 
 from services.group_contract import calc_primary_group_exposure, get_default_group_limit, get_primary_group
+from services.scorecard_execution_semantics import scorecard_blocks_new_risk
 
 
 LOSS_REVIEW_PCT = -0.04
 HIGH_ATR_PCT = 0.05
 HUMAN_OR_LIMITED_MAX_TURNOVER = 0.05
 HUMAN_OR_LIMITED_MAX_SINGLE_DELTA = 0.015
-
-NO_ADD_PERMISSIONS = {
-    "hold_or_trim",
-    "defensive_only",
-    "cash_only",
-    "reduce_risk_only",
-}
-
 
 def shape_proposal_before_risk(
     *,
@@ -196,8 +189,7 @@ def _ticker_group(ticker: str) -> str | None:
 
 
 def _scorecard_blocks_add(scorecard: dict[str, Any]) -> bool:
-    permission = str(scorecard.get("investment_permission") or "")
-    return permission in NO_ADD_PERMISSIONS
+    return scorecard_blocks_new_risk(scorecard)
 
 
 def _add_block_reasons(
