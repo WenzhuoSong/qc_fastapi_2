@@ -141,6 +141,7 @@ class PlaygroundBundle:
     liquidity_proxy_diagnostics: dict[str, Any] = field(default_factory=dict)
     evidence_vote_summary: dict[str, Any] = field(default_factory=dict)
     evidence_cap_diagnostics: dict[str, Any] = field(default_factory=dict)
+    conviction_profile_summary: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -184,6 +185,7 @@ async def run_playground(
     names = strategy_names or DEFAULT_PLAYGROUND_STRATEGIES
     memory_feedback = await _load_strategy_memory_feedback(regime.regime.value, names)
     conviction_profiles = await _load_latest_conviction_profiles_for_evidence()
+    conviction_profile_summary = _summarize_conviction_profiles(conviction_profiles)
     results = [
         _run_one_strategy(
             name,
@@ -279,6 +281,7 @@ async def run_playground(
         liquidity_proxy_diagnostics=liquidity_proxy_diagnostics,
         evidence_vote_summary=evidence_vote_summary,
         evidence_cap_diagnostics=evidence_cap_diagnostics,
+        conviction_profile_summary=conviction_profile_summary,
     )
 
 
@@ -504,12 +507,44 @@ async def _load_latest_conviction_profiles_for_evidence(limit: int = 5000) -> li
                 "hit_rate": row.hit_rate,
                 "avg_excess_vs_spy": row.avg_excess_vs_spy,
                 "ic": row.ic,
+                "as_of_date": row.as_of_date.isoformat() if row.as_of_date else None,
             }
             for row in rows
         ]
     except Exception as exc:
         logger.warning("[playground] conviction profiles unavailable for evidence cards: %s", exc)
         return []
+
+
+def _summarize_conviction_profiles(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    statuses: dict[str, int] = {}
+    source_buckets: dict[str, int] = {}
+    statistical_statuses: dict[str, int] = {}
+    latest_as_of_date: str | None = None
+    matched_profile_count = 0
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "unknown")
+        bucket = str(row.get("source_bucket") or "unknown")
+        stat = str(row.get("statistical_status") or row.get("status") or "unknown")
+        statuses[status] = statuses.get(status, 0) + 1
+        source_buckets[bucket] = source_buckets.get(bucket, 0) + 1
+        statistical_statuses[stat] = statistical_statuses.get(stat, 0) + 1
+        if row.get("conviction") is not None:
+            matched_profile_count += 1
+        as_of = row.get("as_of_date")
+        if as_of and (latest_as_of_date is None or str(as_of) > latest_as_of_date):
+            latest_as_of_date = str(as_of)
+    return {
+        "contract_version": "conviction_profile_availability_v1",
+        "total_profiles": len(rows or []),
+        "matched_profile_count": matched_profile_count,
+        "latest_as_of_date": latest_as_of_date,
+        "statuses": dict(sorted(statuses.items())),
+        "source_buckets": dict(sorted(source_buckets.items())),
+        "statistical_statuses": dict(sorted(statistical_statuses.items())),
+    }
 
 
 async def generate_playground_report(bundle: PlaygroundBundle) -> str:

@@ -172,6 +172,15 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
             "liquidity_proxy_diagnostics": empty_liquidity_proxy_diagnostics("no_recent_playground_result"),
             "evidence_vote_summary": {},
             "evidence_cap_diagnostics": {},
+            "conviction_profile_summary": {
+                "contract_version": "conviction_profile_availability_v1",
+                "total_profiles": 0,
+                "matched_profile_count": 0,
+                "latest_as_of_date": None,
+                "statuses": {},
+                "source_buckets": {},
+                "statistical_statuses": {},
+            },
             "turnover_warnings": [],
             "data_quality": "missing",
             "evidence_summary": {
@@ -243,6 +252,7 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
         "liquidity_proxy_diagnostics": liquidity_proxy_diagnostics,
         "evidence_vote_summary": playground.get("evidence_vote_summary") or {},
         "evidence_cap_diagnostics": playground.get("evidence_cap_diagnostics") or {},
+        "conviction_profile_summary": playground.get("conviction_profile_summary") or {},
         "turnover_warnings": turnover_warnings,
         "data_quality": data_quality,
         "warnings": _unique([str(item) for item in warnings] + turnover_warnings),

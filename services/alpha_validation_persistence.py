@@ -32,13 +32,28 @@ def build_alpha_validation_run_record(
         or {}
     )
     diversity = _strategy_diversity_summary(strategies)
-    conviction = _conviction_status_summary(strategies)
+    evidence_card_conviction = _conviction_status_summary(strategies)
+    profile_conviction = _profile_conviction_status_summary(strategies)
+    conviction_count_source = (
+        "evidence_cards"
+        if sum(evidence_card_conviction.values()) > 0
+        else "profile_availability"
+        if sum(profile_conviction.values()) > 0
+        else "none"
+    )
+    conviction = (
+        evidence_card_conviction
+        if conviction_count_source == "evidence_cards"
+        else profile_conviction
+    )
     warnings = _warnings(
         cost=cost,
         portfolio_risk=portfolio_risk,
         construction=construction,
         diversity=diversity,
         risk_out=risk,
+        evidence_card_conviction=evidence_card_conviction,
+        profile_conviction=profile_conviction,
     )
     status = _status_from_warnings(warnings, cost, portfolio_risk, construction, diversity)
     data_quality = _data_quality(cost, portfolio_risk, construction, diversity)
@@ -49,6 +64,10 @@ def build_alpha_validation_run_record(
         "portfolio_construction": construction.get("raw"),
         "strategy_diversity": diversity.get("raw"),
         "conviction_status_counts": conviction,
+        "conviction_count_source": conviction_count_source,
+        "evidence_card_conviction_status_counts": evidence_card_conviction,
+        "profile_conviction_status_counts": profile_conviction,
+        "conviction_profile_summary": strategies.get("conviction_profile_summary") or {},
         "final_validation": risk.get("final_validation") or {},
     }
     record = {
@@ -211,6 +230,20 @@ def _conviction_status_summary(strategies: dict[str, Any]) -> dict[str, int]:
     return counts
 
 
+def _profile_conviction_status_summary(strategies: dict[str, Any]) -> dict[str, int]:
+    summary = strategies.get("conviction_profile_summary")
+    if not isinstance(summary, dict):
+        return {}
+    statuses = summary.get("statuses")
+    if not isinstance(statuses, dict):
+        return {}
+    return {
+        str(key): int(value or 0)
+        for key, value in statuses.items()
+        if int(value or 0) > 0
+    }
+
+
 def _warnings(
     *,
     cost: dict[str, Any],
@@ -218,6 +251,8 @@ def _warnings(
     construction: dict[str, Any],
     diversity: dict[str, Any],
     risk_out: dict[str, Any],
+    evidence_card_conviction: dict[str, int] | None = None,
+    profile_conviction: dict[str, int] | None = None,
 ) -> list[str]:
     out: list[str] = []
     out.extend(f"cost:{item}" for item in cost.get("warnings") or [])
@@ -227,6 +262,11 @@ def _warnings(
     final_validation = risk_out.get("final_validation") or {}
     if final_validation and not final_validation.get("approved", True):
         out.append("final_validation:not_approved")
+    if (
+        sum((profile_conviction or {}).values()) > 0
+        and sum((evidence_card_conviction or {}).values()) == 0
+    ):
+        out.append("conviction_profiles_available_but_no_evidence_card_convictions")
     return sorted(set(str(item) for item in out if item))
 
 

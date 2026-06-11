@@ -98,6 +98,53 @@ class AlphaValidationPersistenceTest(unittest.TestCase):
         self.assertEqual(record["data_quality"], "missing")
         self.assertEqual(record["independent_alpha_family_count"], 0)
 
+    def test_profile_availability_backfills_conviction_counts_when_cards_missing(self):
+        record = build_alpha_validation_run_record(
+            analysis_id=456,
+            analyzed_at=datetime(2026, 6, 10, 19, 0, 0),
+            trigger_type="scheduled",
+            risk_out={
+                "approved": True,
+                "transaction_cost_gate": {"status": "ok", "rows": []},
+                "portfolio_risk_diagnostic": {"status": "ok", "summary": {}},
+            },
+            evidence_bundle={
+                "strategies": {
+                    "strategy_results": [
+                        {
+                            "strategy_name": "momentum_lite_v1",
+                            "evidence_cards": [],
+                        }
+                    ],
+                    "conviction_profile_summary": {
+                        "contract_version": "conviction_profile_availability_v1",
+                        "total_profiles": 12,
+                        "statuses": {
+                            "calibrated": 2,
+                            "early_estimate": 3,
+                            "insufficient_samples": 7,
+                        },
+                    },
+                }
+            },
+        )
+
+        self.assertEqual(record["calibrated_conviction_count"], 2)
+        self.assertEqual(record["early_conviction_count"], 3)
+        self.assertEqual(record["insufficient_conviction_count"], 7)
+        self.assertEqual(
+            record["diagnostic_payload"]["conviction_count_source"],
+            "profile_availability",
+        )
+        self.assertEqual(
+            record["diagnostic_payload"]["evidence_card_conviction_status_counts"],
+            {},
+        )
+        self.assertIn(
+            "conviction_profiles_available_but_no_evidence_card_convictions",
+            record["warnings"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
