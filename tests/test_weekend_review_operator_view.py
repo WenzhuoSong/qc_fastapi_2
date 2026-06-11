@@ -34,6 +34,7 @@ class WeekendReviewOperatorViewTests(unittest.TestCase):
         self.assertIn("basket_portfolio", view["sections"])
         self.assertIn("prior_review_self_assessment", view["sections"])
         self.assertIn("decision_degradation", view["sections"])
+        self.assertIn("decision_funnel", view["sections"])
         self.assertIn("safety_invariants", view["sections"])
         self.assertIn("decision_degradation_split", view["sections"]["hedge_review"])
         self.assertIn("decision_degradation_split", view["sections"]["debate_value"])
@@ -88,6 +89,8 @@ class WeekendReviewOperatorViewTests(unittest.TestCase):
         self.assertIn("Hedge:", text)
         self.assertIn("Debate change rate:", text)
         self.assertIn("Decision degradation:", text)
+        self.assertIn("Scorecard semantics:", text)
+        self.assertIn("Cash drift attribution:", text)
         self.assertIn("Safety invariants:", text)
         self.assertIn("Prior review:", text)
 

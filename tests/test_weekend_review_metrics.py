@@ -429,6 +429,30 @@ class WeekendReviewMetricsTests(unittest.TestCase):
                         "changed_by_distribution": {"turnover_clip": 1},
                         "changed_by_sell_delta": {"turnover_clip": 0.03},
                     },
+                    "scorecard_semantic_acceptance": {
+                        "limited_data_quality_human_required_small_add": {
+                            "occurrence": True,
+                            "attempted_count": 1,
+                            "attempted_ticker_count": 1,
+                        },
+                        "strategy_advisory_only_scorecard_block": {
+                            "occurrence": False,
+                            "occurrence_count": 0,
+                            "blocked_count": 0,
+                            "blocked_ticker_count": 0,
+                        },
+                    },
+                    "cash_drift_attribution": {
+                        "actual_cash_delta": 0.05,
+                        "bucket_total": 0.06,
+                        "residual": -0.01,
+                        "buckets": {
+                            "buy_blocked_by_gate": {"delta": 0.008, "event_count": 1},
+                            "target_builder_conservative": {"delta": 0.012, "event_count": 1},
+                            "sell_side_active_trim": {"delta": 0.03, "event_count": 1},
+                            "execution_not_realized": {"delta": 0.01, "event_count": 1},
+                        },
+                    },
                     "first_blocker_distribution": {"scorecard": 1},
                     "stateless_all_blocker_distribution": {"scorecard": 1, "decision_style": 1},
                     "stateful_incremental_blocker_distribution": {"position_governance": 1},
@@ -471,13 +495,47 @@ class WeekendReviewMetricsTests(unittest.TestCase):
                         "changed_by_distribution": {"turnover_clip": 1},
                         "changed_by_sell_delta": {"turnover_clip": 0.02},
                     },
+                    "scorecard_semantic_acceptance": {
+                        "limited_data_quality_human_required_small_add": {
+                            "occurrence": False,
+                            "attempted_count": 0,
+                            "attempted_ticker_count": 0,
+                        },
+                        "strategy_advisory_only_scorecard_block": {
+                            "occurrence": True,
+                            "occurrence_count": 1,
+                            "blocked_count": 1,
+                            "blocked_ticker_count": 1,
+                        },
+                    },
+                    "cash_drift_attribution": {
+                        "actual_cash_delta": 0.02,
+                        "bucket_total": 0.02,
+                        "residual": 0.0,
+                        "buckets": {
+                            "buy_blocked_by_gate": {"delta": 0.0, "event_count": 0},
+                            "target_builder_conservative": {"delta": 0.0, "event_count": 0},
+                            "sell_side_active_trim": {"delta": 0.02, "event_count": 1},
+                            "execution_not_realized": {"delta": 0.0, "event_count": 0},
+                        },
+                    },
                     "first_blocker_distribution": {},
                     "stateless_all_blocker_distribution": {},
                     "stateful_incremental_blocker_distribution": {},
                     "stateful_pass_through_base_by_layer": {},
                     "single_blocker_candidate_count": 0,
                 },
-            ]
+            ],
+            execution_logs=[
+                {
+                    "analysis_id": 101,
+                    "command_id": "analysis_101",
+                    "command_type": "weight_adjustment",
+                    "lifecycle_state": "reconciled",
+                    "status": "reconciled",
+                    "command_payload": {"weights": {"SPY": 0.02}},
+                }
+            ],
         )
 
         metrics = build_weekly_review_metrics(
@@ -506,6 +564,38 @@ class WeekendReviewMetricsTests(unittest.TestCase):
             0.05,
         )
         self.assertEqual(funnel["sell_side_attribution"]["changed_by_sell_delta"]["turnover_clip"], 0.05)
+        scorecard_acceptance = funnel["scorecard_semantic_acceptance"]
+        self.assertEqual(
+            scorecard_acceptance["metrics"][
+                "limited_data_quality_human_required_small_add_attempted_count"
+            ],
+            1,
+        )
+        self.assertEqual(
+            scorecard_acceptance["metrics"][
+                "limited_data_quality_human_required_small_add_reconciled_count"
+            ],
+            1,
+        )
+        self.assertEqual(
+            scorecard_acceptance["acceptance"]["limited_data_quality_human_required_small_add"]["status"],
+            "PENDING_OR_FAILED",
+        )
+        self.assertEqual(scorecard_acceptance["metrics"]["strategy_advisory_only_occurrence_count"], 1)
+        self.assertEqual(
+            scorecard_acceptance["metrics"]["strategy_advisory_only_scorecard_block_count"],
+            1,
+        )
+        self.assertEqual(
+            scorecard_acceptance["acceptance"]["strategy_advisory_only_scorecard_block"]["status"],
+            "CONFIRMED",
+        )
+        cash_drift = funnel["cash_drift_attribution"]
+        self.assertEqual(cash_drift["actual_cash_delta_sum"], 0.07)
+        self.assertEqual(cash_drift["bucket_total_sum"], 0.08)
+        self.assertEqual(cash_drift["residual_sum"], -0.01)
+        self.assertEqual(cash_drift["bucket_delta"]["sell_side_active_trim"], 0.05)
+        self.assertEqual(cash_drift["bucket_delta"]["execution_not_realized"], 0.01)
         self.assertEqual(
             funnel["decision_degradation_split"]["normal"]["metrics"]["buy_delta_suppression_ratio_avg"],
             0.8,

@@ -845,6 +845,9 @@ def build_decision_funnel_metrics(
     sell_reason_delta: dict[str, float] = {}
     sell_changed_by_distribution: dict[str, int] = {}
     sell_changed_by_delta: dict[str, float] = {}
+    semantic_acceptance = _empty_scorecard_semantic_acceptance_metrics()
+    cash_drift = _empty_cash_drift_attribution_metrics()
+    reconciled_analysis_ids = _reconciled_analysis_ids(data)
     split = _empty_decision_funnel_split()
 
     for row in rows:
@@ -948,6 +951,13 @@ def build_decision_funnel_metrics(
         split[bucket]["metrics"]["single_blocker_candidate_count"] += int(row.get("single_blocker_candidate_count") or 0)
         style_split["metrics"]["single_blocker_candidate_count"] += int(row.get("single_blocker_candidate_count") or 0)
 
+        _accumulate_scorecard_semantic_acceptance(
+            semantic_acceptance,
+            row,
+            reconciled_analysis_ids=reconciled_analysis_ids,
+        )
+        _accumulate_cash_drift_attribution(cash_drift, row)
+
     finalized_metrics = _round_decision_funnel_metrics({
         **metrics,
         "buy_delta_suppression_ratio_avg": _avg(suppression_values),
@@ -972,6 +982,8 @@ def build_decision_funnel_metrics(
                 "it must not block risk-reducing sells"
             ),
         },
+        "scorecard_semantic_acceptance": _finalize_scorecard_semantic_acceptance(semantic_acceptance),
+        "cash_drift_attribution": _finalize_cash_drift_attribution(cash_drift),
         "decision_degradation_split": _finalize_decision_funnel_split(
             {"normal": split["normal"], "degraded": split["degraded"]},
             min_sample_n=min_sample_n,
@@ -1466,6 +1478,156 @@ def _empty_decision_funnel_metrics() -> dict[str, Any]:
         "sell_delta_after_gates": 0.0,
         "hard_risk_sell_delta": 0.0,
     }
+
+
+def _empty_scorecard_semantic_acceptance_metrics() -> dict[str, Any]:
+    return {
+        "limited_data_quality_human_required_occurrence_count": 0,
+        "limited_data_quality_human_required_small_add_attempted_count": 0,
+        "limited_data_quality_human_required_small_add_reconciled_count": 0,
+        "limited_data_quality_human_required_small_add_attempted_ticker_count": 0,
+        "strategy_advisory_only_occurrence_count": 0,
+        "strategy_advisory_only_scorecard_block_count": 0,
+        "strategy_advisory_only_blocked_ticker_count": 0,
+    }
+
+
+def _empty_cash_drift_attribution_metrics() -> dict[str, Any]:
+    return {
+        "bucket_delta": {
+            "buy_blocked_by_gate": 0.0,
+            "target_builder_conservative": 0.0,
+            "sell_side_active_trim": 0.0,
+            "execution_not_realized": 0.0,
+        },
+        "bucket_event_count": {
+            "buy_blocked_by_gate": 0,
+            "target_builder_conservative": 0,
+            "sell_side_active_trim": 0,
+            "execution_not_realized": 0,
+        },
+        "actual_cash_delta_sum": 0.0,
+        "bucket_total_sum": 0.0,
+        "residual_sum": 0.0,
+        "sample_count": 0,
+    }
+
+
+def _accumulate_scorecard_semantic_acceptance(
+    out: dict[str, Any],
+    row: dict[str, Any],
+    *,
+    reconciled_analysis_ids: set[int],
+) -> None:
+    payload = row.get("scorecard_semantic_acceptance") if isinstance(row.get("scorecard_semantic_acceptance"), dict) else {}
+    limited = payload.get("limited_data_quality_human_required_small_add") if isinstance(payload.get("limited_data_quality_human_required_small_add"), dict) else {}
+    strategy = payload.get("strategy_advisory_only_scorecard_block") if isinstance(payload.get("strategy_advisory_only_scorecard_block"), dict) else {}
+
+    if bool(limited.get("occurrence")):
+        out["limited_data_quality_human_required_occurrence_count"] += 1
+    attempted = int(limited.get("attempted_count") or 0)
+    out["limited_data_quality_human_required_small_add_attempted_count"] += attempted
+    out["limited_data_quality_human_required_small_add_attempted_ticker_count"] += int(limited.get("attempted_ticker_count") or 0)
+    analysis_id = _int(row.get("analysis_id"), default=-1)
+    if attempted > 0 and analysis_id in reconciled_analysis_ids:
+        out["limited_data_quality_human_required_small_add_reconciled_count"] += attempted
+
+    out["strategy_advisory_only_occurrence_count"] += int(strategy.get("occurrence_count") or (1 if bool(strategy.get("occurrence")) else 0))
+    out["strategy_advisory_only_scorecard_block_count"] += int(strategy.get("blocked_count") or 0)
+    out["strategy_advisory_only_blocked_ticker_count"] += int(strategy.get("blocked_ticker_count") or 0)
+
+
+def _accumulate_cash_drift_attribution(out: dict[str, Any], row: dict[str, Any]) -> None:
+    payload = row.get("cash_drift_attribution") if isinstance(row.get("cash_drift_attribution"), dict) else {}
+    if not payload:
+        return
+    out["sample_count"] += 1
+    out["actual_cash_delta_sum"] += float(_float(payload.get("actual_cash_delta"), 0.0) or 0.0)
+    out["bucket_total_sum"] += float(_float(payload.get("bucket_total"), 0.0) or 0.0)
+    out["residual_sum"] += float(_float(payload.get("residual"), 0.0) or 0.0)
+    buckets = payload.get("buckets") if isinstance(payload.get("buckets"), dict) else {}
+    for bucket, bucket_payload in buckets.items():
+        if not isinstance(bucket_payload, dict):
+            continue
+        if bucket not in out["bucket_delta"]:
+            out["bucket_delta"][bucket] = 0.0
+            out["bucket_event_count"][bucket] = 0
+        out["bucket_delta"][bucket] += float(_float(bucket_payload.get("delta"), 0.0) or 0.0)
+        out["bucket_event_count"][bucket] += int(bucket_payload.get("event_count") or 0)
+
+
+def _finalize_scorecard_semantic_acceptance(metrics: dict[str, Any]) -> dict[str, Any]:
+    limited_attempted = int(metrics.get("limited_data_quality_human_required_small_add_attempted_count") or 0)
+    limited_reconciled = int(metrics.get("limited_data_quality_human_required_small_add_reconciled_count") or 0)
+    strategy_occurrences = int(metrics.get("strategy_advisory_only_occurrence_count") or 0)
+    strategy_blocks = int(metrics.get("strategy_advisory_only_scorecard_block_count") or 0)
+    limited_status = (
+        "CONFIRMED"
+        if limited_reconciled >= 3 and limited_reconciled == limited_attempted
+        else "NOT_YET_EXERCISED"
+        if limited_attempted == 0
+        else "PENDING_OR_FAILED"
+    )
+    strategy_status = (
+        "CONFIRMED"
+        if strategy_occurrences >= 1 and strategy_blocks == strategy_occurrences
+        else "NOT_YET_EXERCISED"
+        if strategy_occurrences == 0
+        else "UNEXPECTED_NOT_BLOCKED"
+    )
+    return {
+        "schema_version": "weekly_scorecard_semantic_acceptance_v1",
+        "metrics": dict(metrics),
+        "acceptance": {
+            "limited_data_quality_human_required_small_add": {
+                "status": limited_status,
+                "required_reconciled_count": 3,
+                "attempted_count": limited_attempted,
+                "reconciled_count": limited_reconciled,
+            },
+            "strategy_advisory_only_scorecard_block": {
+                "status": strategy_status,
+                "required_occurrence_count": 1,
+                "occurrence_count": strategy_occurrences,
+                "blocked_count": strategy_blocks,
+            },
+        },
+        "contract": (
+            "Do not mark scorecard semantic changes green when the path has not been exercised; "
+            "attempted/reconciled and occurrence/blocked denominators are required."
+        ),
+    }
+
+
+def _finalize_cash_drift_attribution(metrics: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": "weekly_cash_drift_four_bucket_v1",
+        "sample_count": int(metrics.get("sample_count") or 0),
+        "actual_cash_delta_sum": round(float(metrics.get("actual_cash_delta_sum") or 0.0), 6),
+        "bucket_total_sum": round(float(metrics.get("bucket_total_sum") or 0.0), 6),
+        "residual_sum": round(float(metrics.get("residual_sum") or 0.0), 6),
+        "bucket_delta": _round_float_counts(metrics.get("bucket_delta") or {}),
+        "bucket_event_count": dict(sorted((metrics.get("bucket_event_count") or {}).items())),
+        "accounting_note": (
+            "Buckets are mutually named but not all are actual cash-flow buckets: buy_blocked_by_gate "
+            "and target_builder_conservative are counterfactual/opportunity attribution; residual must be reviewed."
+        ),
+    }
+
+
+def _reconciled_analysis_ids(dataset: dict[str, Any]) -> set[int]:
+    out: set[int] = set()
+    for row in dataset.get("execution_logs") or []:
+        if not isinstance(row, dict):
+            continue
+        state = _execution_state(row)
+        if state not in TERMINAL_FILLED_STATES:
+            continue
+        for key in ("analysis_id", "source_analysis_id"):
+            value = _int(row.get(key), default=-1)
+            if value >= 0:
+                out.add(value)
+    return out
 
 
 def _empty_decision_funnel_bucket() -> dict[str, Any]:

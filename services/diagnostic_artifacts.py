@@ -184,6 +184,9 @@ class DecisionFunnelObservability(DiagnosticArtifact):
     net_position_drift: dict[str, Any] = Field(default_factory=dict)
     cash_trajectory_point: dict[str, Any] = Field(default_factory=dict)
     sell_side_attribution: dict[str, Any] = Field(default_factory=dict)
+    cash_drift_attribution: dict[str, Any] = Field(default_factory=dict)
+    scorecard_semantic_acceptance: dict[str, Any] = Field(default_factory=dict)
+    data_quality_flags: dict[str, Any] = Field(default_factory=dict)
     llm_chain_decision_influence: dict[str, Any] = Field(default_factory=dict)
     decision_style: dict[str, Any] = Field(default_factory=dict)
     decision_degradation: dict[str, Any] = Field(default_factory=dict)
@@ -372,6 +375,20 @@ def build_decision_funnel_observability(
         target_weights=target_weights,
         risk_out=risk_out or {},
     )
+    cash_drift_attribution = _cash_drift_attribution(
+        base_weights=base,
+        current_weights=current_weights,
+        target_weights=target_weights,
+        buy_intents=buy_intents,
+        first_blocker_distribution=first_blocker,
+        sell_side_attribution=sell_attribution,
+        risk_out=risk_out or {},
+    )
+    scorecard_semantic_acceptance = _scorecard_semantic_acceptance(
+        market_scorecard=market_scorecard or {},
+        buy_intents=buy_intents,
+        stateless_verdicts=stateless,
+    )
     style = pipeline_context.get("decision_style") if isinstance(pipeline_context.get("decision_style"), dict) else {}
     degradation = risk_out.get("decision_degradation") if isinstance(risk_out.get("decision_degradation"), dict) else {}
     return DecisionFunnelObservability(
@@ -403,6 +420,9 @@ def build_decision_funnel_observability(
             ),
         },
         sell_side_attribution=sell_attribution,
+        cash_drift_attribution=cash_drift_attribution,
+        scorecard_semantic_acceptance=scorecard_semantic_acceptance,
+        data_quality_flags=_data_quality_flags(market_scorecard or {}, degradation),
         llm_chain_decision_influence={
             "status": "shadow_unavailable",
             "reason": "no_verified_no_llm_dry_run_shadow_target",
@@ -432,6 +452,7 @@ def build_decision_funnel_observability(
             "stateless_layer_rates_use_all_buy_intents_as_denominator",
             "stateful_layer_rates_use_only_layer_pass_through_base_as_denominator",
             "llm_influence_rate_not_computed_without_verified_no_side_effect_dry_run_shadow",
+            "cash_drift_four_bucket_contains_counterfactual_and_actual_buckets_with_residual",
         ],
     )
 
@@ -840,6 +861,203 @@ def _buy_delta_metrics(buy_intents: list[dict[str, Any]]) -> dict[str, Any]:
         "allowed_buy_delta_after_gates": round(allowed, 6),
         "blocked_buy_delta": round(blocked, 6),
         "buy_delta_suppression_ratio": suppression,
+    }
+
+
+def _scorecard_semantic_acceptance(
+    *,
+    market_scorecard: dict[str, Any],
+    buy_intents: list[dict[str, Any]],
+    stateless_verdicts: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    triggered = {
+        str(item or "").lower().strip()
+        for item in (market_scorecard.get("triggered_rules") or [])
+    }
+    permission = str(market_scorecard.get("investment_permission") or "").lower().strip()
+    require_human = bool(market_scorecard.get("require_human_confirmation"))
+    scorecard_verdict = (stateless_verdicts.get("scorecard") or {}).get("verdict_by_ticker") or {}
+
+    limited_context = (
+        require_human
+        and permission == "small_overweight_only"
+        and "limited_data_quality" in triggered
+    )
+    attempted_tickers = [
+        str(row.get("ticker") or "").upper()
+        for row in buy_intents
+        if limited_context and float(row.get("allowed_buy_delta_after_gates") or 0.0) > 1e-9
+    ]
+    strategy_context = bool(triggered & {
+        "strategy_advisory_only",
+        "no_actionable_strategy_confidence",
+        "strategy_consensus_regime_conflict",
+    })
+    strategy_blocked = [
+        ticker
+        for ticker, verdict in sorted(scorecard_verdict.items())
+        if strategy_context and (verdict or {}).get("verdict") == "blocked"
+    ]
+    return {
+        "schema_version": "scorecard_semantic_acceptance_v1",
+        "limited_data_quality_human_required_small_add": {
+            "occurrence": limited_context,
+            "attempted_count": 1 if attempted_tickers else 0,
+            "attempted_ticker_count": len(attempted_tickers),
+            "attempted_tickers": attempted_tickers,
+            "reconciled_count": None,
+            "execution_truth_join_key": "analysis_id",
+            "status": "pending_execution_truth" if attempted_tickers else "not_attempted",
+        },
+        "strategy_advisory_only_scorecard_block": {
+            "occurrence": strategy_context,
+            "occurrence_count": 1 if strategy_context else 0,
+            "blocked_count": 1 if strategy_blocked else 0,
+            "blocked_ticker_count": len(strategy_blocked),
+            "blocked_tickers": strategy_blocked,
+            "status": "blocked" if strategy_blocked else "not_exercised" if not strategy_context else "unexpected_not_blocked",
+        },
+        "measurement_note": (
+            "human-required data-quality weakness may permit deterministic small adds; "
+            "strategy-autonomy weakness remains a no-add boundary"
+        ),
+    }
+
+
+def _cash_drift_attribution(
+    *,
+    base_weights: dict[str, float],
+    current_weights: dict[str, float],
+    target_weights: dict[str, float],
+    buy_intents: list[dict[str, Any]],
+    first_blocker_distribution: dict[str, int],
+    sell_side_attribution: dict[str, Any],
+    risk_out: dict[str, Any],
+) -> dict[str, Any]:
+    buy_blocked = sum(float(row.get("blocked_buy_delta") or 0.0) for row in buy_intents)
+    target_conservative = 0.0
+    target_conservative_items: list[dict[str, Any]] = []
+    for ticker in sorted((set(base_weights) | set(current_weights)) - {"CASH"}):
+        base = float(base_weights.get(ticker, 0.0) or 0.0)
+        current = float(current_weights.get(ticker, 0.0) or 0.0)
+        target = float(target_weights.get(ticker, 0.0) or 0.0)
+        if base >= current - 1e-9:
+            continue
+        conservative_delta = current - base
+        if target <= current + 1e-9:
+            target_conservative += conservative_delta
+            target_conservative_items.append({
+                "ticker": ticker,
+                "current_weight": round(current, 6),
+                "base_weight": round(base, 6),
+                "target_weight": round(target, 6),
+                "conservative_delta": round(conservative_delta, 6),
+            })
+
+    sell_trim = float(sell_side_attribution.get("sell_delta_after_gates") or 0.0)
+    execution_not_realized, execution_items = _execution_not_realized_from_risk_out(
+        current_weights=current_weights,
+        target_weights=target_weights,
+        risk_out=risk_out,
+    )
+    cash_delta = float(target_weights.get("CASH", 0.0) or 0.0) - float(current_weights.get("CASH", 0.0) or 0.0)
+    bucket_total = buy_blocked + target_conservative + sell_trim + execution_not_realized
+    return {
+        "schema_version": "cash_drift_four_bucket_v1",
+        "granularity": "per_symbol_per_decision",
+        "bucket_priority": [
+            "execution_not_realized",
+            "buy_blocked_by_gate",
+            "target_builder_conservative",
+            "sell_side_active_trim",
+        ],
+        "actual_cash_delta": round(cash_delta, 6),
+        "bucket_total": round(bucket_total, 6),
+        "residual": round(cash_delta - bucket_total, 6),
+        "buckets": {
+            "buy_blocked_by_gate": {
+                "delta": round(buy_blocked, 6),
+                "event_count": int(sum(first_blocker_distribution.values())),
+                "counterfactual": True,
+            },
+            "target_builder_conservative": {
+                "delta": round(target_conservative, 6),
+                "event_count": len(target_conservative_items),
+                "counterfactual": True,
+                "top_items": sorted(
+                    target_conservative_items,
+                    key=lambda row: float(row.get("conservative_delta") or 0.0),
+                    reverse=True,
+                )[:10],
+            },
+            "sell_side_active_trim": {
+                "delta": round(sell_trim, 6),
+                "event_count": int(sell_side_attribution.get("sell_intent_count") or 0),
+                "counterfactual": False,
+            },
+            "execution_not_realized": {
+                "delta": round(execution_not_realized, 6),
+                "event_count": len(execution_items),
+                "counterfactual": False,
+                "top_items": execution_items[:10],
+            },
+        },
+        "accounting_note": (
+            "buy_blocked_by_gate and target_builder_conservative are counterfactual opportunity buckets; "
+            "sell_side_active_trim and execution_not_realized are target/execution buckets. Residual is expected "
+            "when counterfactual and actual cash movement are both present."
+        ),
+    }
+
+
+def _execution_not_realized_from_risk_out(
+    *,
+    current_weights: dict[str, float],
+    target_weights: dict[str, float],
+    risk_out: dict[str, Any],
+) -> tuple[float, list[dict[str, Any]]]:
+    broker_filter = risk_out.get("broker_order_filter") if isinstance(risk_out.get("broker_order_filter"), dict) else {}
+    suppressed = broker_filter.get("suppressed_orders") or broker_filter.get("suppressed_micro_orders") or []
+    items: list[dict[str, Any]] = []
+    total = 0.0
+    for row in suppressed:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or row.get("symbol") or "").upper().strip()
+        if not ticker or ticker == "CASH":
+            continue
+        current = float(current_weights.get(ticker, 0.0) or 0.0)
+        target = float(target_weights.get(ticker, 0.0) or 0.0)
+        delta = abs(target - current)
+        if delta <= 1e-9:
+            delta = abs(float(row.get("weight_delta") or row.get("delta") or 0.0) or 0.0)
+        if delta <= 1e-9:
+            continue
+        total += delta
+        items.append({
+            "ticker": ticker,
+            "delta": round(delta, 6),
+            "reason": row.get("reason") or row.get("status") or "suppressed_micro_order",
+        })
+    return total, sorted(items, key=lambda row: float(row.get("delta") or 0.0), reverse=True)
+
+
+def _data_quality_flags(market_scorecard: dict[str, Any], degradation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": "decision_time_data_quality_flags_v1",
+        "scorecard_data_quality": market_scorecard.get("data_quality"),
+        "scorecard_require_human_confirmation": bool(market_scorecard.get("require_human_confirmation")),
+        "scorecard_triggered_rules": [
+            str(item) for item in (market_scorecard.get("triggered_rules") or [])
+        ],
+        "scorecard_confirmation_classes": [
+            str(item) for item in (market_scorecard.get("confirmation_classes") or [])
+        ],
+        "decision_degraded": bool(degradation.get("is_degraded")),
+        "degradation_modes": [str(item) for item in (degradation.get("modes") or [])],
+        "fallback_paths": [str(item) for item in (degradation.get("fallback_paths") or [])],
+        "missing_inputs": [str(item) for item in (degradation.get("missing_inputs") or [])],
+        "frozen_at_decision_time": True,
     }
 
 

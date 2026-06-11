@@ -230,6 +230,7 @@ class DiagnosticArtifactTests(unittest.TestCase):
             market_scorecard={
                 "investment_permission": "small_overweight_only",
                 "require_human_confirmation": True,
+                "triggered_rules": ["limited_data_quality"],
             },
             risk_out={"target_weights": {"SPY": 0.02, "CASH": 0.98}},
             base_weights={"SPY": 0.04, "CASH": 0.96},
@@ -242,6 +243,12 @@ class DiagnosticArtifactTests(unittest.TestCase):
             payload["stateless_independent_verdicts"]["scorecard"]["verdict_by_ticker"]["SPY"]["verdict"],
             "passed",
         )
+        self.assertEqual(
+            payload["scorecard_semantic_acceptance"]["limited_data_quality_human_required_small_add"]["status"],
+            "pending_execution_truth",
+        )
+        self.assertTrue(payload["data_quality_flags"]["frozen_at_decision_time"])
+        self.assertEqual(payload["cash_drift_attribution"]["schema_version"], "cash_drift_four_bucket_v1")
 
     def test_decision_funnel_strategy_advisory_only_remains_scorecard_blocker(self):
         artifact = build_decision_funnel_observability(
@@ -268,6 +275,10 @@ class DiagnosticArtifactTests(unittest.TestCase):
         self.assertEqual(
             payload["stateless_independent_verdicts"]["scorecard"]["verdict_by_ticker"]["SPY"]["reason"],
             "scorecard_strategy_advisory_only",
+        )
+        self.assertEqual(
+            payload["scorecard_semantic_acceptance"]["strategy_advisory_only_scorecard_block"]["status"],
+            "blocked",
         )
 
 

@@ -31,7 +31,11 @@ def build_weekend_review_operator_view(payload: dict[str, Any]) -> dict[str, Any
     hedge = _section(sections, "hedge_review")
     debate = _section(sections, "debate_impact")
     basket = _section(sections, "basket_portfolio")
+    decision_funnel = _section(sections, "decision_funnel")
     self_assessment = _section(sections, "weekly_self_assessment")
+    scorecard_acceptance = decision_funnel.get("scorecard_semantic_acceptance") or {}
+    scorecard_acceptance_status = scorecard_acceptance.get("acceptance") or {}
+    cash_drift = decision_funnel.get("cash_drift_attribution") or {}
 
     view = {
         "schema_version": OPERATOR_VIEW_SCHEMA_VERSION,
@@ -61,6 +65,13 @@ def build_weekend_review_operator_view(payload: dict[str, Any]) -> dict[str, Any
             "debate_change_rate_status": _rate_status(debate, "debate_change_rate"),
             "decision_degraded_sample_count": _metric(degradation, "degraded_sample_count"),
             "decision_normal_sample_count": _metric(degradation, "normal_sample_count"),
+            "scorecard_limited_small_add_status": (
+                (scorecard_acceptance_status.get("limited_data_quality_human_required_small_add") or {}).get("status")
+            ),
+            "scorecard_strategy_advisory_block_status": (
+                (scorecard_acceptance_status.get("strategy_advisory_only_scorecard_block") or {}).get("status")
+            ),
+            "cash_drift_residual_sum": cash_drift.get("residual_sum"),
             "safety_invariant_finding_count": int(safety.get("finding_count") or 0),
             "safety_fail_safe_required": bool(safety.get("fail_safe_required")),
         },
@@ -108,6 +119,14 @@ def build_weekend_review_operator_view(payload: dict[str, Any]) -> dict[str, Any
                 "metrics": basket.get("metrics") or {},
                 "rates": basket.get("rates") or {},
                 "decision_degradation_split": basket.get("decision_degradation_split") or {},
+            },
+            "decision_funnel": {
+                "metrics": decision_funnel.get("metrics") or {},
+                "rates": decision_funnel.get("rates") or {},
+                "first_blocker_distribution": decision_funnel.get("first_blocker_distribution") or {},
+                "scorecard_semantic_acceptance": scorecard_acceptance,
+                "cash_drift_attribution": cash_drift,
+                "sell_side_attribution": decision_funnel.get("sell_side_attribution") or {},
             },
             "prior_review_self_assessment": {
                 "metrics": self_assessment.get("metrics") or {},
@@ -206,6 +225,9 @@ def format_weekend_review_operator_text(view: dict[str, Any]) -> str:
     hedge = (sections.get("hedge_review") or {}).get("metrics") or {}
     labels = (sections.get("label_maturity") or {}).get("metrics") or {}
     debate = (sections.get("debate_value") or {}).get("rates") or {}
+    decision_funnel = sections.get("decision_funnel") or {}
+    scorecard_acceptance = (decision_funnel.get("scorecard_semantic_acceptance") or {}).get("acceptance") or {}
+    cash_drift = decision_funnel.get("cash_drift_attribution") or {}
     self_assessment = (sections.get("prior_review_self_assessment") or {}).get("metrics") or {}
     recommendations = view.get("recommendations") if isinstance(view.get("recommendations"), list) else []
     recommendation_lines = [
@@ -257,6 +279,19 @@ def format_weekend_review_operator_text(view: dict[str, Any]) -> str:
             f"would_hurt={hedge.get('hedge_would_have_hurt_count', 0)}"
         ),
         f"Debate change rate: {_rate_label(debate.get('debate_change_rate'))}",
+        (
+            "Scorecard semantics: "
+            f"limited_small_add="
+            f"{(scorecard_acceptance.get('limited_data_quality_human_required_small_add') or {}).get('status', 'unknown')} "
+            f"strategy_advisory_block="
+            f"{(scorecard_acceptance.get('strategy_advisory_only_scorecard_block') or {}).get('status', 'unknown')}"
+        ),
+        (
+            "Cash drift attribution: "
+            f"actual={cash_drift.get('actual_cash_delta_sum', 0)} "
+            f"bucket_total={cash_drift.get('bucket_total_sum', 0)} "
+            f"residual={cash_drift.get('residual_sum', 0)}"
+        ),
         (
             "Prior review: "
             f"mature={self_assessment.get('prior_recommendation_mature_count', 0)} "
