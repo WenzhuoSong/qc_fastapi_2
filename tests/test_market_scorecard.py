@@ -175,6 +175,86 @@ class MarketScorecardTest(unittest.TestCase):
         self.assertTrue(scorecard["require_human_confirmation"])
         self.assertEqual(scorecard["confirmation_classes"], ["strategy_conflict", "data_quality"])
 
+    def test_certified_advisory_confidence_does_not_trigger_no_add_rule(self):
+        evidence = fresh_evidence(
+            strategies={
+                "playground_available": True,
+                "snapshot_count": 30,
+                "forward_return_samples": 8,
+                "historical_forward_return_samples": 289,
+                "strategy_results": [
+                    {"strategy_name": "momentum_lite_v1", "turnover": 0.20}
+                ],
+                "strategy_confidence": {
+                    "momentum_lite_v1": {
+                        "confidence_score": 0.70,
+                        "suggested_use": "advisory",
+                    }
+                },
+                "strategy_certification": {
+                    "items": {
+                        "momentum_lite_v1": {
+                            "status": "advisory",
+                            "approved_use": "advisory",
+                            "execution_evidence_status": "execution_grade_validated",
+                            "evidence_checks": {"failed": []},
+                        }
+                    }
+                },
+                "data_quality": "historical_supported",
+            },
+            data_quality={"overall": "historical_supported", "warnings": []},
+        )
+
+        scorecard = build_market_scorecard(evidence)
+
+        self.assertNotIn("insufficient_execution_evidence", scorecard["triggered_rules"])
+        self.assertNotIn("strategy_advisory_only", scorecard["triggered_rules"])
+        self.assertEqual(scorecard["investment_permission"], "normal_rebalance")
+        self.assertEqual(scorecard["strategy_execution_evidence"]["execution_grade_strategy_count"], 1)
+
+    def test_uncertified_advisory_confidence_reports_insufficient_execution_evidence(self):
+        evidence = fresh_evidence(
+            strategies={
+                "playground_available": True,
+                "snapshot_count": 30,
+                "forward_return_samples": 0,
+                "historical_forward_return_samples": 289,
+                "strategy_results": [
+                    {"strategy_name": "momentum_lite_v1", "turnover": 0.20}
+                ],
+                "strategy_confidence": {
+                    "momentum_lite_v1": {
+                        "confidence_score": 0.70,
+                        "suggested_use": "advisory",
+                    }
+                },
+                "strategy_certification": {
+                    "items": {
+                        "momentum_lite_v1": {
+                            "status": "research_supported",
+                            "approved_use": "research_only",
+                            "execution_evidence_status": "insufficient_execution_evidence",
+                            "evidence_checks": {"failed": ["live_samples_min"]},
+                        }
+                    }
+                },
+                "data_quality": "historical_supported",
+            },
+            data_quality={"overall": "historical_supported", "warnings": []},
+        )
+
+        scorecard = build_market_scorecard(evidence)
+
+        self.assertIn("insufficient_execution_evidence", scorecard["triggered_rules"])
+        self.assertNotIn("strategy_advisory_only", scorecard["triggered_rules"])
+        self.assertEqual(scorecard["investment_permission"], "small_overweight_only")
+        self.assertTrue(scorecard["require_human_confirmation"])
+        self.assertEqual(
+            scorecard["strategy_execution_evidence"]["insufficient_execution_evidence_count"],
+            1,
+        )
+
     def test_high_volatility_sets_defensive_limits(self):
         evidence = fresh_evidence(market={"vix": 34.0, "avg_atr_pct": 0.014})
 

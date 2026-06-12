@@ -1268,11 +1268,15 @@ def _replacement_candidates(
 ) -> list[dict[str, Any]]:
     decision_by_ticker = {str(row.get("ticker") or "").upper(): row for row in decisions}
     rank = {"primary": 0, "advisory": 1}
+    cert_items = ((strategy_evidence.get("strategy_certification") or {}).get("items") or {})
+    has_certification = isinstance(cert_items, dict) and bool(cert_items)
     candidates: dict[str, dict[str, Any]] = {}
     for row in strategy_evidence.get("strategy_results") or []:
         if not isinstance(row, dict):
             continue
         use = str(row.get("suggested_use") or "")
+        if has_certification and not _strategy_row_execution_approved(row, cert_items):
+            continue
         if use not in rank:
             continue
         strategy_name = str(row.get("strategy_name") or "")
@@ -1389,11 +1393,15 @@ def _confidence_score(value: Any) -> float:
 
 def _strategy_support_by_ticker(strategy_evidence: dict[str, Any]) -> dict[str, dict[str, Any]]:
     rank = {"primary": 4, "advisory": 3, "watch_only": 2, "ignore": 1, "none": 0}
+    cert_items = ((strategy_evidence.get("strategy_certification") or {}).get("items") or {})
+    has_certification = isinstance(cert_items, dict) and bool(cert_items)
     out: dict[str, dict[str, Any]] = {}
     for row in strategy_evidence.get("strategy_results") or []:
         if not isinstance(row, dict):
             continue
         use = str(row.get("suggested_use") or "watch_only")
+        if has_certification and not _strategy_row_execution_approved(row, cert_items):
+            use = "watch_only" if use in {"primary", "advisory"} else use
         name = str(row.get("strategy_name") or "")
         for ticker in row.get("selected_tickers") or []:
             key = str(ticker or "").upper().strip()
@@ -1405,6 +1413,15 @@ def _strategy_support_by_ticker(strategy_evidence: dict[str, Any]) -> dict[str, 
             if name:
                 current["strategies"].append(name)
     return out
+
+
+def _strategy_row_execution_approved(row: dict[str, Any], cert_items: dict[str, Any]) -> bool:
+    name = str(row.get("strategy_name") or "")
+    cert = cert_items.get(name) if isinstance(cert_items.get(name), dict) else {}
+    return (
+        cert.get("approved_use") == "advisory"
+        and cert.get("execution_evidence_status") == "execution_grade_validated"
+    )
 
 
 def _hard_risk_tickers(news_evidence: dict[str, Any]) -> set[str]:

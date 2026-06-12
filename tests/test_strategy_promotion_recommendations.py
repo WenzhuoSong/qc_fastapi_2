@@ -2,6 +2,10 @@ import unittest
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from env_setup import ensure_test_settings
+
+ensure_test_settings()
+
 from services.strategy_promotion_recommendations import build_strategy_promotion_recommendations
 
 

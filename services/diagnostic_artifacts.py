@@ -889,6 +889,7 @@ def _scorecard_semantic_acceptance(
         if limited_context and float(row.get("allowed_buy_delta_after_gates") or 0.0) > 1e-9
     ]
     strategy_context = bool(triggered & {
+        "insufficient_execution_evidence",
         "strategy_advisory_only",
         "no_actionable_strategy_confidence",
         "strategy_consensus_regime_conflict",
@@ -1053,6 +1054,7 @@ def _data_quality_flags(market_scorecard: dict[str, Any], degradation: dict[str,
         "scorecard_confirmation_classes": [
             str(item) for item in (market_scorecard.get("confirmation_classes") or [])
         ],
+        "strategy_execution_evidence": market_scorecard.get("strategy_execution_evidence") or {},
         "decision_degraded": bool(degradation.get("is_degraded")),
         "degradation_modes": [str(item) for item in (degradation.get("modes") or [])],
         "fallback_paths": [str(item) for item in (degradation.get("fallback_paths") or [])],

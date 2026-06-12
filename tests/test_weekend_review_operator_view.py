@@ -91,6 +91,7 @@ class WeekendReviewOperatorViewTests(unittest.TestCase):
         self.assertIn("Decision degradation:", text)
         self.assertIn("Scorecard semantics:", text)
         self.assertIn("Cash drift attribution:", text)
+        self.assertIn("Strategy evidence flips:", text)
         self.assertIn("Safety invariants:", text)
         self.assertIn("Prior review:", text)
 

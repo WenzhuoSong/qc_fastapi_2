@@ -151,13 +151,23 @@ def _normalize_strategy_row(row: dict[str, Any]) -> dict[str, Any]:
         row.get("alpha_source", card.get("alpha_source")),
     )
     suggested_use = str(row.get("suggested_use") or "watch_only")
-    actionable = bool(suggested_use in ACTIONABLE_USES and alpha_source)
+    approved_use = row.get("approved_use")
+    if approved_use is not None:
+        actionable_use = bool(
+            approved_use == "advisory"
+            and row.get("execution_evidence_status") == "execution_grade_validated"
+        )
+    else:
+        actionable_use = suggested_use in ACTIONABLE_USES
+    actionable = bool(actionable_use and alpha_source)
     return {
         "strategy_name": strategy_name,
         "raw_family": str(raw_family or "unknown"),
         "canonical_family": canonical,
         "alpha_source": bool(alpha_source),
         "suggested_use": suggested_use,
+        "approved_use": approved_use,
+        "execution_evidence_status": row.get("execution_evidence_status"),
         "actionable": actionable,
         "confidence_score": row.get("confidence_score"),
         "data_ready": bool(row.get("data_ready")),

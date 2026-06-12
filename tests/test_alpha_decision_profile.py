@@ -1,6 +1,10 @@
 import unittest
 from datetime import date, datetime, timezone
 
+from env_setup import ensure_test_settings
+
+ensure_test_settings()
+
 from services.alpha_decision_profile import (
     build_alpha_decision_profiles,
     redundancy_multiplier,

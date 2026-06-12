@@ -442,6 +442,18 @@ class WeekendReviewMetricsTests(unittest.TestCase):
                             "blocked_ticker_count": 0,
                         },
                     },
+                    "data_quality_flags": {
+                        "strategy_execution_evidence": {
+                            "schema_version": "strategy_execution_evidence_summary_v1",
+                            "rows": [
+                                {
+                                    "strategy_name": "momentum_lite_v1",
+                                    "execution_evidence_status": "insufficient_execution_evidence",
+                                    "failed_checks": ["live_samples_min"],
+                                }
+                            ],
+                        }
+                    },
                     "cash_drift_attribution": {
                         "actual_cash_delta": 0.05,
                         "bucket_total": 0.06,
@@ -508,6 +520,18 @@ class WeekendReviewMetricsTests(unittest.TestCase):
                             "blocked_ticker_count": 1,
                         },
                     },
+                    "data_quality_flags": {
+                        "strategy_execution_evidence": {
+                            "schema_version": "strategy_execution_evidence_summary_v1",
+                            "rows": [
+                                {
+                                    "strategy_name": "momentum_lite_v1",
+                                    "execution_evidence_status": "execution_grade_validated",
+                                    "failed_checks": [],
+                                }
+                            ],
+                        }
+                    },
                     "cash_drift_attribution": {
                         "actual_cash_delta": 0.02,
                         "bucket_total": 0.02,
@@ -555,6 +579,8 @@ class WeekendReviewMetricsTests(unittest.TestCase):
         self.assertEqual(funnel["metrics"]["sell_intent_count"], 2)
         self.assertEqual(funnel["metrics"]["sell_delta_after_gates"], 0.05)
         self.assertEqual(funnel["metrics"]["hard_risk_sell_delta"], 0.01)
+        self.assertEqual(funnel["metrics"]["certification_flip_count_7d"], 1)
+        self.assertEqual(funnel["metrics"]["certification_flip_alert_strategy_count"], 0)
         self.assertEqual(funnel["rates"]["blocked_buy_rate"]["value"], 0.5)
         self.assertEqual(funnel["stateless_blocker_distribution"]["scorecard"], 1)
         self.assertEqual(funnel["stateful_incremental_blocker_distribution"]["position_governance"], 1)
@@ -596,6 +622,16 @@ class WeekendReviewMetricsTests(unittest.TestCase):
         self.assertEqual(cash_drift["residual_sum"], -0.01)
         self.assertEqual(cash_drift["bucket_delta"]["sell_side_active_trim"], 0.05)
         self.assertEqual(cash_drift["bucket_delta"]["execution_not_realized"], 0.01)
+        monitor = funnel["strategy_execution_evidence_monitor"]
+        self.assertEqual(monitor["total_flip_count_7d"], 1)
+        self.assertEqual(
+            monitor["by_strategy"]["momentum_lite_v1"]["latest_status"],
+            "execution_grade_validated",
+        )
+        self.assertEqual(
+            monitor["by_strategy"]["momentum_lite_v1"]["transitions"][0]["from"],
+            "insufficient_execution_evidence",
+        )
         self.assertEqual(
             funnel["decision_degradation_split"]["normal"]["metrics"]["buy_delta_suppression_ratio_avg"],
             0.8,

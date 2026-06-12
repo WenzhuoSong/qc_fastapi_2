@@ -71,6 +71,33 @@ class StrategyDiversityTest(unittest.TestCase):
         self.assertEqual(momentum["actionable_alpha_strategy_count"], 2)
         self.assertTrue(momentum["independent_alpha_counted"])
 
+    def test_certification_controls_actionable_alpha_count_when_available(self):
+        summary = build_strategy_diversity_summary([
+            {
+                "strategy_name": "momentum_lite_v1",
+                "raw_family": "trend_following",
+                "suggested_use": "advisory",
+                "approved_use": "research_only",
+                "execution_evidence_status": "insufficient_execution_evidence",
+                "confidence_score": 0.75,
+                "data_ready": True,
+            },
+            {
+                "strategy_name": "dual_momentum_rotation",
+                "raw_family": "dual_momentum",
+                "suggested_use": "advisory",
+                "approved_use": "advisory",
+                "execution_evidence_status": "execution_grade_validated",
+                "confidence_score": 0.82,
+                "data_ready": True,
+            },
+        ])
+
+        self.assertEqual(summary["actionable_alpha_strategy_count"], 1)
+        self.assertEqual(summary["actionable_alpha_families"], ["momentum"])
+        momentum = next(row for row in summary["family_rows"] if row["family"] == "momentum")
+        self.assertEqual(momentum["actionable_alpha_strategy_names"], ["dual_momentum_rotation"])
+
 
 if __name__ == "__main__":
     unittest.main()

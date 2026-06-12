@@ -56,6 +56,63 @@ class StrategyUseConstraintsTest(unittest.TestCase):
         self.assertTrue(any("strategy_advisory_only:max_delta:SPY" in item for item in log))
         self.assertTrue(any("strategy_advisory_only:new_position_blocked:QQQ" in item for item in log))
 
+    def test_certified_advisory_uses_advisory_constraints(self):
+        out, log = apply_strategy_use_constraints(
+            base_weights={"SPY": 0.50, "CASH": 0.50},
+            adjusted_weights={"SPY": 0.60, "QQQ": 0.08, "CASH": 0.32},
+            strategy_evidence={
+                "playground_available": True,
+                "strategy_results": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "suggested_use": "advisory",
+                        "selected_tickers": ["SPY"],
+                    }
+                ],
+                "strategy_certification": {
+                    "items": {
+                        "momentum_lite_v1": {
+                            "approved_use": "advisory",
+                            "execution_evidence_status": "execution_grade_validated",
+                        }
+                    }
+                },
+            },
+        )
+
+        self.assertAlmostEqual(out["SPY"], 0.53, places=4)
+        self.assertNotIn("QQQ", out)
+        self.assertTrue(any("strategy_advisory_only:max_delta:SPY" in item for item in log))
+
+    def test_uncertified_advisory_is_treated_as_no_actionable_strategy(self):
+        out, log = apply_strategy_use_constraints(
+            base_weights={"SPY": 0.50, "CASH": 0.50},
+            adjusted_weights={"SPY": 0.60, "QQQ": 0.08, "CASH": 0.32},
+            strategy_evidence={
+                "playground_available": True,
+                "strategy_results": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "suggested_use": "advisory",
+                        "selected_tickers": ["SPY"],
+                    }
+                ],
+                "strategy_certification": {
+                    "items": {
+                        "momentum_lite_v1": {
+                            "approved_use": "research_only",
+                            "execution_evidence_status": "insufficient_execution_evidence",
+                        }
+                    }
+                },
+            },
+        )
+
+        self.assertAlmostEqual(out["SPY"], 0.51, places=4)
+        self.assertNotIn("QQQ", out)
+        self.assertTrue(any("no_actionable_strategy:max_delta:SPY" in item for item in log))
+        self.assertTrue(any("no_actionable_strategy:new_position_blocked:QQQ" in item for item in log))
+
     def test_no_actionable_strategy_caps_to_one_percent_and_blocks_new_positions(self):
         out, log = apply_strategy_use_constraints(
             base_weights={"SPY": 0.50, "CASH": 0.50},

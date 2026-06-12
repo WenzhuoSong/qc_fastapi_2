@@ -1,6 +1,10 @@
 from datetime import datetime, timedelta
 import unittest
 
+from env_setup import ensure_test_settings
+
+ensure_test_settings()
+
 try:
     from services.circuit_breaker import CircuitBreakerMonitor, CircuitConfig, CircuitState, TriggerResult
 except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env may omit DB deps

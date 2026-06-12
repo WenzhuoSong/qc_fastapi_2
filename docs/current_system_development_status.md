@@ -1,6 +1,6 @@
 # Current System Development Status
 
-Last updated: 2026-05-28
+Last updated: 2026-06-12
 
 This document summarizes the current engineering state of the trading system after the recent risk, execution, data, alpha-validation, and selective evidence-cap work. It is intended as a handoff document for review and follow-up development.
 
@@ -28,6 +28,51 @@ The current engineering direction is:
 > Keep safety code-enforced, keep diagnostics visible, and use paper/live evidence to decide which deprecated or weak alpha paths should be retired.
 
 ## Most Recent Completed Fixes
+
+### 0. Strategy Execution Evidence Gate
+
+The scorecard no longer treats `suggested_use=advisory` as a permanent
+no-add state by string matching alone. Strategy certification now emits an
+explicit `execution_evidence_status`:
+
+- `execution_grade_validated`
+- `insufficient_execution_evidence`
+- `not_actionable`
+
+Current state:
+
+- Certification is the single deterministic source for whether strategy
+  evidence is execution-grade.
+- `insufficient_execution_evidence` keeps add blocked.
+- `execution_grade_validated` releases only the existing scorecard
+  strategy-evidence no-add boundary.
+- The change does not create a new execution path.
+- The change does not alter small-add sizing, turnover, single-delta,
+  risk-manager, lifecycle, fingerprint, QC ACK, or reconciliation controls.
+- A kill switch, `strategy_execution_evidence_config.force_advisory_only`,
+  can force all strategy evidence back to advisory/research-only.
+- Weekend review now reports certification flips over seven days.
+
+Important risk-bound statement:
+
+> This change modifies admission into the existing small-add constraint system,
+> not the sizing limits themselves. The worst-case impact of an incorrect
+> certification is bounded by the already-existing small-add and risk controls,
+> and the kill switch can fail the gate closed.
+
+Runbook:
+
+- `docs/strategy_execution_evidence_runbook.md`
+
+Relevant files:
+
+- `services/strategy_certification.py`
+- `services/evidence_bundle.py`
+- `services/market_scorecard.py`
+- `services/strategy_use_constraints.py`
+- `services/position_governance.py`
+- `services/weekend_review_metrics.py`
+- `services/weekend_review_operator_view.py`
 
 ### 1. Executor PolicySync Coupling Removed
 

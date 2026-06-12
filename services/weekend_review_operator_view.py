@@ -36,6 +36,7 @@ def build_weekend_review_operator_view(payload: dict[str, Any]) -> dict[str, Any
     scorecard_acceptance = decision_funnel.get("scorecard_semantic_acceptance") or {}
     scorecard_acceptance_status = scorecard_acceptance.get("acceptance") or {}
     cash_drift = decision_funnel.get("cash_drift_attribution") or {}
+    strategy_evidence_monitor = decision_funnel.get("strategy_execution_evidence_monitor") or {}
 
     view = {
         "schema_version": OPERATOR_VIEW_SCHEMA_VERSION,
@@ -72,6 +73,8 @@ def build_weekend_review_operator_view(payload: dict[str, Any]) -> dict[str, Any
                 (scorecard_acceptance_status.get("strategy_advisory_only_scorecard_block") or {}).get("status")
             ),
             "cash_drift_residual_sum": cash_drift.get("residual_sum"),
+            "certification_flip_count_7d": int(strategy_evidence_monitor.get("total_flip_count_7d") or 0),
+            "certification_flip_alert_strategy_count": len(strategy_evidence_monitor.get("alert_strategies") or []),
             "safety_invariant_finding_count": int(safety.get("finding_count") or 0),
             "safety_fail_safe_required": bool(safety.get("fail_safe_required")),
         },
@@ -126,6 +129,7 @@ def build_weekend_review_operator_view(payload: dict[str, Any]) -> dict[str, Any
                 "first_blocker_distribution": decision_funnel.get("first_blocker_distribution") or {},
                 "scorecard_semantic_acceptance": scorecard_acceptance,
                 "cash_drift_attribution": cash_drift,
+                "strategy_execution_evidence_monitor": strategy_evidence_monitor,
                 "sell_side_attribution": decision_funnel.get("sell_side_attribution") or {},
             },
             "prior_review_self_assessment": {
@@ -228,6 +232,7 @@ def format_weekend_review_operator_text(view: dict[str, Any]) -> str:
     decision_funnel = sections.get("decision_funnel") or {}
     scorecard_acceptance = (decision_funnel.get("scorecard_semantic_acceptance") or {}).get("acceptance") or {}
     cash_drift = decision_funnel.get("cash_drift_attribution") or {}
+    strategy_evidence_monitor = decision_funnel.get("strategy_execution_evidence_monitor") or {}
     self_assessment = (sections.get("prior_review_self_assessment") or {}).get("metrics") or {}
     recommendations = view.get("recommendations") if isinstance(view.get("recommendations"), list) else []
     recommendation_lines = [
@@ -291,6 +296,11 @@ def format_weekend_review_operator_text(view: dict[str, Any]) -> str:
             f"actual={cash_drift.get('actual_cash_delta_sum', 0)} "
             f"bucket_total={cash_drift.get('bucket_total_sum', 0)} "
             f"residual={cash_drift.get('residual_sum', 0)}"
+        ),
+        (
+            "Strategy evidence flips: "
+            f"7d={int(strategy_evidence_monitor.get('total_flip_count_7d') or 0)} "
+            f"alerts={len(strategy_evidence_monitor.get('alert_strategies') or [])}"
         ),
         (
             "Prior review: "

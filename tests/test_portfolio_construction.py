@@ -1,6 +1,10 @@
 import inspect
 import unittest
 
+from env_setup import ensure_test_settings
+
+ensure_test_settings()
+
 import services.portfolio_construction as portfolio_construction_module
 from services.portfolio_construction_gate import construction_input_for_target_builder
 from services.portfolio_construction import (

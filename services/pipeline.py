@@ -117,6 +117,7 @@ from services.target_envelope import TargetEnvelope
 from services.target_envelope import default_target_envelope_config
 from services.evidence_cap_config import default_evidence_cap_config
 from services.alpha_decision_policy import default_alpha_decision_policy_config
+from services.strategy_certification import default_strategy_execution_evidence_config
 from services.portfolio_risk_diagnostic import load_portfolio_var_cvar_diagnostic
 from services.alpha_validation_persistence import persist_alpha_validation_run
 from services.validation_observation_loop import persist_observations_for_analysis
@@ -491,6 +492,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         transaction_cost_cfg = await get_system_config(db, "transaction_cost_gate_config")
         evidence_cap_cfg = await get_system_config(db, "evidence_cap_config")
         alpha_decision_policy_cfg = await get_system_config(db, "alpha_decision_policy_config")
+        strategy_execution_evidence_cfg = await get_system_config(db, "strategy_execution_evidence_config")
         target_envelope_cfg = await get_system_config(db, "target_envelope_config")
         override_cfg    = await get_system_config(db, "circuit_override")
         alert_cfg       = await get_system_config(db, "circuit_pause_alert")
@@ -581,6 +583,9 @@ async def _guard_and_config(trigger: str) -> dict | None:
     alpha_decision_policy_config = default_alpha_decision_policy_config(
         (alpha_decision_policy_cfg.value if alpha_decision_policy_cfg else {}) or {}
     )
+    strategy_execution_evidence_config = default_strategy_execution_evidence_config(
+        (strategy_execution_evidence_cfg.value if strategy_execution_evidence_cfg else {}) or {}
+    )
     target_envelope_config = default_target_envelope_config(
         (target_envelope_cfg.value if target_envelope_cfg else {}) or {}
     )
@@ -636,6 +641,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "transaction_cost_gate_config": transaction_cost_gate_config,
         "evidence_cap_config": evidence_cap_config,
         "alpha_decision_policy_config": alpha_decision_policy_config,
+        "strategy_execution_evidence_config": strategy_execution_evidence_config,
         "target_envelope_config": target_envelope_config,
     }
 
@@ -1136,6 +1142,7 @@ async def _run_pipeline_inner(trigger: str, *, trading_analysis_gate: dict[str, 
         playground_bundle=playground_bundle,
         news_evidence=news_evidence,
         empirical_profiles=empirical_profiles,
+        strategy_execution_evidence_config=pipeline_context.get("strategy_execution_evidence_config") or {},
     )
     market_scorecard = build_market_scorecard(evidence_bundle)
     try:

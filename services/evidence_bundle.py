@@ -36,6 +36,7 @@ def build_evidence_bundle(
     playground_bundle: dict[str, Any] | None = None,
     news_evidence: dict[str, Any] | None = None,
     empirical_profiles: dict[str, Any] | None = None,
+    strategy_execution_evidence_config: dict[str, Any] | None = None,
     max_age_seconds: int = DEFAULT_MAX_AGE_SECONDS,
 ) -> dict[str, Any]:
     brief = brief or {}
@@ -47,6 +48,7 @@ def build_evidence_bundle(
     news = _build_news_section(brief)
     structured_news_evidence = news_evidence or build_news_evidence(brief)
     strategies = _build_strategy_section(playground)
+    strategies["strategy_execution_evidence_config"] = strategy_execution_evidence_config or {}
     knowledge = _build_knowledge_section(
         brief=brief,
         market=market,
@@ -62,7 +64,12 @@ def build_evidence_bundle(
         strategies=strategies,
         calibration=calibration,
     )
-    strategies["strategy_certification"] = certify_strategies(strategies)
+    strategy_certification = certify_strategies(strategies)
+    strategies["strategy_certification"] = strategy_certification
+    strategies = _with_strategy_certification(
+        strategies=strategies,
+        certification=strategy_certification,
+    )
     strategies["execution_gateway"] = build_execution_gateway(strategies)
     knowledge["strategy_confidence_calibration"] = {
         "records": calibration.get("records") or [],
@@ -516,6 +523,48 @@ def _with_calibrated_strategy_confidence(
         calibrated_results.append(row)
     out["strategy_results"] = calibrated_results
     out["strategy_diversity"] = build_strategy_diversity_summary(calibrated_results)
+    return out
+
+
+def _with_strategy_certification(
+    *,
+    strategies: dict[str, Any],
+    certification: dict[str, Any],
+) -> dict[str, Any]:
+    items = certification.get("items") if isinstance(certification.get("items"), dict) else {}
+    if not items:
+        return strategies
+    out = dict(strategies)
+
+    certified_results: list[dict[str, Any]] = []
+    for item in strategies.get("strategy_results") or []:
+        row = dict(item)
+        name = str(row.get("strategy_name") or "")
+        cert = items.get(name) if isinstance(items.get(name), dict) else {}
+        if cert:
+            row["certification_status"] = cert.get("status")
+            row["approved_use"] = cert.get("approved_use")
+            row["execution_evidence_status"] = cert.get("execution_evidence_status")
+            row["promotion_blockers"] = cert.get("promotion_blockers") or []
+            row["demotion_reasons"] = cert.get("demotion_reasons") or []
+            row["evidence_checks"] = cert.get("evidence_checks") or {}
+        certified_results.append(row)
+    out["strategy_results"] = certified_results
+
+    certified_confidence: dict[str, Any] = {}
+    for name, value in (strategies.get("strategy_confidence") or {}).items():
+        row = dict(value) if isinstance(value, dict) else {}
+        cert = items.get(name) if isinstance(items.get(name), dict) else {}
+        if cert:
+            row["certification_status"] = cert.get("status")
+            row["approved_use"] = cert.get("approved_use")
+            row["execution_evidence_status"] = cert.get("execution_evidence_status")
+            row["promotion_blockers"] = cert.get("promotion_blockers") or []
+            row["demotion_reasons"] = cert.get("demotion_reasons") or []
+            row["evidence_checks"] = cert.get("evidence_checks") or {}
+        certified_confidence[name] = row
+    out["strategy_confidence"] = certified_confidence
+    out["strategy_diversity"] = build_strategy_diversity_summary(certified_results)
     return out
 
 

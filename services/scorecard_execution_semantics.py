@@ -7,6 +7,7 @@ from typing import Any
 NO_ADD_PERMISSIONS = {"hold_or_trim", "reduce_risk_only", "defensive_only", "cash_only"}
 
 STRATEGY_AUTONOMY_NO_ADD_RULES = {
+    "insufficient_execution_evidence",
     "strategy_advisory_only",
     "no_actionable_strategy_confidence",
     "strategy_consensus_regime_conflict",

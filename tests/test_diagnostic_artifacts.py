@@ -281,6 +281,52 @@ class DiagnosticArtifactTests(unittest.TestCase):
             "blocked",
         )
 
+    def test_decision_funnel_insufficient_execution_evidence_is_strategy_blocker(self):
+        artifact = build_decision_funnel_observability(
+            analysis_id=44,
+            as_of_time=datetime(2026, 6, 6, 1, 0, tzinfo=UTC),
+            pipeline_context={"decision_style": {}},
+            brief={"current_weights": {"CASH": 1.0}},
+            market_scorecard={
+                "investment_permission": "small_overweight_only",
+                "require_human_confirmation": True,
+                "triggered_rules": ["insufficient_execution_evidence"],
+                "strategy_execution_evidence": {
+                    "schema_version": "strategy_execution_evidence_summary_v1",
+                    "available": True,
+                    "execution_grade_strategy_count": 0,
+                    "insufficient_execution_evidence_count": 1,
+                    "rows": [
+                        {
+                            "strategy_name": "momentum_lite_v1",
+                            "execution_evidence_status": "insufficient_execution_evidence",
+                            "failed_checks": ["live_samples_min"],
+                        }
+                    ],
+                },
+            },
+            risk_out={"target_weights": {"SPY": 0.0, "CASH": 1.0}},
+            base_weights={"SPY": 0.04, "CASH": 0.96},
+        )
+
+        payload = serialize_artifact(artifact)
+        self.assertEqual(
+            payload["stateless_independent_verdicts"]["scorecard"]["verdict_by_ticker"]["SPY"]["reason"],
+            "scorecard_insufficient_execution_evidence",
+        )
+        self.assertEqual(
+            payload["scorecard_semantic_acceptance"]["strategy_advisory_only_scorecard_block"]["status"],
+            "blocked",
+        )
+        self.assertEqual(
+            payload["data_quality_flags"]["strategy_execution_evidence"]["insufficient_execution_evidence_count"],
+            1,
+        )
+        self.assertEqual(
+            payload["data_quality_flags"]["strategy_execution_evidence"]["rows"][0]["failed_checks"],
+            ["live_samples_min"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

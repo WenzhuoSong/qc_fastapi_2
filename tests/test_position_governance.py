@@ -318,6 +318,72 @@ class PositionGovernanceTest(unittest.TestCase):
         self.assertAlmostEqual(decision["target_after"], 0.0, places=4)
         self.assertTrue(any(item.startswith("buy_blocked:QQQ") for item in out.blocked_actions))
 
+    def test_uncertified_strategy_downgrade_blocks_add_without_forced_exit(self):
+        out = apply_position_governance(
+            target_weights={"QQQ": 0.06, "CASH": 0.94},
+            current_weights={"QQQ": 0.04, "CASH": 0.96},
+            holdings_meta=[],
+            strategy_evidence={
+                "strategy_results": [
+                    {"strategy_name": "momentum_lite_v1", "suggested_use": "advisory", "selected_tickers": ["QQQ"]}
+                ],
+                "strategy_certification": {
+                    "items": {
+                        "momentum_lite_v1": {
+                            "approved_use": "research_only",
+                            "execution_evidence_status": "insufficient_execution_evidence",
+                        }
+                    }
+                },
+            },
+            market_scorecard={
+                "investment_permission": "small_overweight_only",
+                "require_human_confirmation": True,
+                "triggered_rules": ["insufficient_execution_evidence"],
+                "confirmation_classes": ["data_quality"],
+            },
+            news_evidence={},
+        )
+
+        decision = _decision(out, "QQQ")
+        self.assertNotIn("add", decision["allowed_actions"])
+        self.assertIn("scorecard_insufficient_execution_evidence", decision["reason_codes"])
+        self.assertAlmostEqual(decision["target_after"], 0.04, places=4)
+        self.assertTrue(any(item.startswith("buy_blocked:QQQ") for item in out.blocked_actions))
+
+    def test_uncertified_strategy_downgrade_still_allows_risk_reducing_trim(self):
+        out = apply_position_governance(
+            target_weights={"QQQ": 0.02, "CASH": 0.98},
+            current_weights={"QQQ": 0.04, "CASH": 0.96},
+            holdings_meta=[],
+            strategy_evidence={
+                "strategy_results": [
+                    {"strategy_name": "momentum_lite_v1", "suggested_use": "advisory", "selected_tickers": ["QQQ"]}
+                ],
+                "strategy_certification": {
+                    "items": {
+                        "momentum_lite_v1": {
+                            "approved_use": "research_only",
+                            "execution_evidence_status": "insufficient_execution_evidence",
+                        }
+                    }
+                },
+            },
+            market_scorecard={
+                "investment_permission": "reduce_risk_only",
+                "require_human_confirmation": True,
+                "triggered_rules": ["insufficient_execution_evidence"],
+                "confirmation_classes": ["data_quality"],
+            },
+            news_evidence={},
+        )
+
+        decision = _decision(out, "QQQ")
+        self.assertIn("trim", decision["allowed_actions"])
+        self.assertNotIn("add", decision["allowed_actions"])
+        self.assertAlmostEqual(decision["target_after"], 0.02, places=4)
+        self.assertFalse(any(item.startswith("buy_blocked:QQQ") for item in out.blocked_actions))
+
     def test_market_stress_human_required_auto_trims_high_beta_position(self):
         out = apply_position_governance(
             target_weights={"QQQ": 0.12, "CASH": 0.88},

@@ -1,5 +1,9 @@
 from types import SimpleNamespace
 
+from env_setup import ensure_test_settings
+
+ensure_test_settings()
+
 from services.agent_analysis_queries import is_review_only_analysis
 
 

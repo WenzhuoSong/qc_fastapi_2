@@ -99,6 +99,7 @@ def build_market_scorecard(evidence_bundle: dict[str, Any] | None) -> dict[str, 
 
     resolved = resolve_conflicts(triggered)
     scorecard = {**base, **resolved}
+    scorecard["strategy_execution_evidence"] = _strategy_execution_evidence_summary(strategies)
     scorecard["market_condition"] = _market_condition(scorecard, regime, rotation_label)
     scorecard["reasons"] = _unique_list(scorecard.get("reasons") or [])
     scorecard["warnings"] = _unique_list(scorecard.get("warnings") or [])
@@ -356,9 +357,20 @@ def _strategy_confidence_rules(strategies: dict[str, Any]) -> list[dict[str, Any
     if not isinstance(confidence, dict) or not confidence:
         return []
 
-    rows = [row for row in confidence.values() if isinstance(row, dict)]
-    primary = [row for row in rows if row.get("suggested_use") == "primary"]
-    advisory = [row for row in rows if row.get("suggested_use") == "advisory"]
+    named_rows = [
+        (str(name), row)
+        for name, row in confidence.items()
+        if isinstance(row, dict)
+    ]
+    rows = [row for _, row in named_rows]
+    primary = [row for _, row in named_rows if row.get("suggested_use") == "primary"]
+    advisory = [row for _, row in named_rows if row.get("suggested_use") == "advisory"]
+    actionable = [
+        (name, row)
+        for name, row in named_rows
+        if row.get("suggested_use") in {"primary", "advisory"}
+    ]
+    execution_grade = _execution_grade_strategy_rows(strategies, actionable)
     consensus_conflict = any(bool(row.get("consensus_conflict")) for row in rows)
     best = max((_safe_float(row.get("confidence_score")) for row in rows), default=0.0)
 
@@ -375,18 +387,7 @@ def _strategy_confidence_rules(strategies: dict[str, Any]) -> list[dict[str, Any
             "reasons": ["Playground consensus is defensive while regime evidence is risk-on"],
         })
 
-    if not primary and advisory:
-        rules.append({
-            "name": "strategy_advisory_only",
-            "investment_permission": "small_overweight_only",
-            "max_adjustment_from_base": 0.03,
-            "max_turnover_per_cycle": 0.20,
-            "require_human_confirmation": True,
-            "confirmation_class": CONFIRMATION_DATA_QUALITY,
-            "warnings": ["Best strategy confidence is advisory-only; use direction, not full target weights"],
-            "reasons": [f"No primary strategy confidence; best confidence={best:.2f}"],
-        })
-    elif not primary and not advisory:
+    if not actionable:
         rules.append({
             "name": "no_actionable_strategy_confidence",
             "investment_permission": "hold_or_trim",
@@ -397,8 +398,107 @@ def _strategy_confidence_rules(strategies: dict[str, Any]) -> list[dict[str, Any
             "warnings": ["No strategy has actionable confidence"],
             "reasons": [f"Best strategy confidence={best:.2f}"],
         })
+    elif not execution_grade:
+        has_certification = bool(((strategies.get("strategy_certification") or {}).get("items") or {}))
+        rule_name = "insufficient_execution_evidence" if has_certification else "strategy_advisory_only"
+        warnings = (
+            ["Strategy evidence is not certified for automatic execution; use direction, not full target weights"]
+            if has_certification
+            else ["Best strategy confidence is advisory-only; use direction, not full target weights"]
+        )
+        reasons = [f"No execution-grade strategy evidence; best confidence={best:.2f}"]
+        failures = _execution_evidence_failures(strategies, actionable)
+        if failures:
+            reasons.append("Failed evidence checks: " + ", ".join(failures[:5]))
+        rules.append({
+            "name": rule_name,
+            "investment_permission": "small_overweight_only",
+            "max_adjustment_from_base": 0.03,
+            "max_turnover_per_cycle": 0.20,
+            "require_human_confirmation": True,
+            "confirmation_class": CONFIRMATION_DATA_QUALITY,
+            "warnings": warnings,
+            "reasons": reasons,
+        })
 
     return rules
+
+
+def _execution_grade_strategy_rows(
+    strategies: dict[str, Any],
+    actionable: list[tuple[str, dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    cert_items = ((strategies.get("strategy_certification") or {}).get("items") or {})
+    has_certification = isinstance(cert_items, dict) and bool(cert_items)
+    rows: list[dict[str, Any]] = []
+    for name, row in actionable:
+        if has_certification:
+            cert = cert_items.get(name) if isinstance(cert_items.get(name), dict) else {}
+            if (
+                cert.get("approved_use") == "advisory"
+                and cert.get("execution_evidence_status") == "execution_grade_validated"
+            ):
+                rows.append(row)
+        elif row.get("suggested_use") == "primary":
+            rows.append(row)
+    return rows
+
+
+def _execution_evidence_failures(
+    strategies: dict[str, Any],
+    actionable: list[tuple[str, dict[str, Any]]],
+) -> list[str]:
+    cert_items = ((strategies.get("strategy_certification") or {}).get("items") or {})
+    if not isinstance(cert_items, dict) or not cert_items:
+        return []
+    failures: list[str] = []
+    for name, _row in actionable:
+        cert = cert_items.get(name) if isinstance(cert_items.get(name), dict) else {}
+        checks = cert.get("evidence_checks") if isinstance(cert.get("evidence_checks"), dict) else {}
+        for item in checks.get("failed") or []:
+            text = f"{name}:{item}"
+            if text not in failures:
+                failures.append(text)
+    return failures
+
+
+def _strategy_execution_evidence_summary(strategies: dict[str, Any]) -> dict[str, Any]:
+    cert_items = ((strategies.get("strategy_certification") or {}).get("items") or {})
+    confidence = strategies.get("strategy_confidence") or {}
+    if not isinstance(cert_items, dict) or not cert_items:
+        return {
+            "schema_version": "strategy_execution_evidence_summary_v1",
+            "available": False,
+            "execution_grade_strategy_count": 0,
+            "insufficient_execution_evidence_count": 0,
+            "rows": [],
+        }
+    rows: list[dict[str, Any]] = []
+    for name, cert in sorted(cert_items.items()):
+        if not isinstance(cert, dict):
+            continue
+        confidence_row = confidence.get(name) if isinstance(confidence.get(name), dict) else {}
+        suggested_use = str(confidence_row.get("suggested_use") or cert.get("suggested_use") or "watch_only")
+        execution_status = str(cert.get("execution_evidence_status") or "unknown")
+        rows.append({
+            "strategy_name": name,
+            "suggested_use": suggested_use,
+            "certification_status": cert.get("status"),
+            "approved_use": cert.get("approved_use"),
+            "execution_evidence_status": execution_status,
+            "failed_checks": (cert.get("evidence_checks") or {}).get("failed") or [],
+        })
+    return {
+        "schema_version": "strategy_execution_evidence_summary_v1",
+        "available": True,
+        "execution_grade_strategy_count": sum(
+            1 for row in rows if row.get("execution_evidence_status") == "execution_grade_validated"
+        ),
+        "insufficient_execution_evidence_count": sum(
+            1 for row in rows if row.get("execution_evidence_status") == "insufficient_execution_evidence"
+        ),
+        "rows": rows,
+    }
 
 
 def _market_condition(scorecard: dict[str, Any], regime: str, rotation_label: str) -> str:

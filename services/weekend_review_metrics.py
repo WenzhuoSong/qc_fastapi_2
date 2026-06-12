@@ -829,10 +829,10 @@ def build_decision_funnel_metrics(
 ) -> dict[str, Any]:
     """Aggregate decision-funnel observability artifacts without execution authority."""
     data = _dataset_dict(dataset)
-    rows = [
+    rows = sorted([
         row for row in data.get("diagnostic_artifacts") or []
         if row.get("schema_version") == "decision_funnel_observability_v1"
-    ]
+    ], key=_decision_funnel_artifact_sort_key)
     metrics = _empty_decision_funnel_metrics()
     suppression_values: list[float] = []
     net_drifts: list[float] = []
@@ -847,10 +847,11 @@ def build_decision_funnel_metrics(
     sell_changed_by_delta: dict[str, float] = {}
     semantic_acceptance = _empty_scorecard_semantic_acceptance_metrics()
     cash_drift = _empty_cash_drift_attribution_metrics()
+    strategy_evidence_history: dict[str, list[dict[str, Any]]] = {}
     reconciled_analysis_ids = _reconciled_analysis_ids(data)
     split = _empty_decision_funnel_split()
 
-    for row in rows:
+    for sequence, row in enumerate(rows):
         bucket = "degraded" if _is_degraded_record(row) else "normal"
         style_bucket = _decision_funnel_style_bucket(row)
         _ensure_decision_funnel_style_bucket(split, style_bucket)
@@ -957,9 +958,13 @@ def build_decision_funnel_metrics(
             reconciled_analysis_ids=reconciled_analysis_ids,
         )
         _accumulate_cash_drift_attribution(cash_drift, row)
+        _accumulate_strategy_evidence_history(strategy_evidence_history, row, sequence=sequence)
 
+    strategy_evidence_monitor = _finalize_strategy_evidence_monitor(strategy_evidence_history)
     finalized_metrics = _round_decision_funnel_metrics({
         **metrics,
+        "certification_flip_count_7d": strategy_evidence_monitor["total_flip_count_7d"],
+        "certification_flip_alert_strategy_count": len(strategy_evidence_monitor["alert_strategies"]),
         "buy_delta_suppression_ratio_avg": _avg(suppression_values),
         "net_position_drift_avg": _avg(net_drifts),
         "cash_trajectory": _cash_trajectory_summary(cash_points),
@@ -984,6 +989,7 @@ def build_decision_funnel_metrics(
         },
         "scorecard_semantic_acceptance": _finalize_scorecard_semantic_acceptance(semantic_acceptance),
         "cash_drift_attribution": _finalize_cash_drift_attribution(cash_drift),
+        "strategy_execution_evidence_monitor": strategy_evidence_monitor,
         "decision_degradation_split": _finalize_decision_funnel_split(
             {"normal": split["normal"], "degraded": split["degraded"]},
             min_sample_n=min_sample_n,
@@ -1556,6 +1562,76 @@ def _accumulate_cash_drift_attribution(out: dict[str, Any], row: dict[str, Any])
         out["bucket_event_count"][bucket] += int(bucket_payload.get("event_count") or 0)
 
 
+def _accumulate_strategy_evidence_history(
+    out: dict[str, list[dict[str, Any]]],
+    row: dict[str, Any],
+    *,
+    sequence: int,
+) -> None:
+    flags = row.get("data_quality_flags") if isinstance(row.get("data_quality_flags"), dict) else {}
+    summary = flags.get("strategy_execution_evidence") if isinstance(flags.get("strategy_execution_evidence"), dict) else {}
+    if not summary:
+        summary = row.get("strategy_execution_evidence") if isinstance(row.get("strategy_execution_evidence"), dict) else {}
+    for item in summary.get("rows") or []:
+        if not isinstance(item, dict):
+            continue
+        strategy_name = str(item.get("strategy_name") or "").strip()
+        status = str(item.get("execution_evidence_status") or "").strip()
+        if not strategy_name or not status:
+            continue
+        out.setdefault(strategy_name, []).append({
+            "sequence": sequence,
+            "created_at": row.get("created_at") or row.get("as_of_time"),
+            "analysis_id": row.get("analysis_id"),
+            "execution_evidence_status": status,
+            "failed_checks": item.get("failed_checks") or [],
+        })
+
+
+def _finalize_strategy_evidence_monitor(history: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    by_strategy: dict[str, dict[str, Any]] = {}
+    total_flips = 0
+    for strategy_name, rows in sorted(history.items()):
+        ordered = sorted(rows, key=lambda item: int(item.get("sequence") or 0))
+        previous: str | None = None
+        transitions: list[dict[str, Any]] = []
+        for row in ordered:
+            status = str(row.get("execution_evidence_status") or "")
+            if previous is not None and status != previous:
+                transitions.append({
+                    "from": previous,
+                    "to": status,
+                    "analysis_id": row.get("analysis_id"),
+                    "created_at": row.get("created_at"),
+                })
+            previous = status
+        flip_count = len(transitions)
+        total_flips += flip_count
+        by_strategy[strategy_name] = {
+            "sample_count": len(ordered),
+            "flip_count_7d": flip_count,
+            "latest_status": ordered[-1].get("execution_evidence_status") if ordered else None,
+            "latest_failed_checks": ordered[-1].get("failed_checks") if ordered else [],
+            "transitions": transitions[:10],
+        }
+    alert_strategies = [
+        strategy_name
+        for strategy_name, item in by_strategy.items()
+        if int(item.get("flip_count_7d") or 0) >= 3
+    ]
+    return {
+        "schema_version": "strategy_execution_evidence_monitor_v1",
+        "total_flip_count_7d": total_flips,
+        "alert_threshold_7d": 3,
+        "alert_strategies": alert_strategies,
+        "by_strategy": by_strategy,
+        "contract": (
+            "Certification status is recomputed fail-closed; flip counts are observability-only "
+            "and should trigger hysteresis review, not mutate thresholds."
+        ),
+    }
+
+
 def _finalize_scorecard_semantic_acceptance(metrics: dict[str, Any]) -> dict[str, Any]:
     limited_attempted = int(metrics.get("limited_data_quality_human_required_small_add_attempted_count") or 0)
     limited_reconciled = int(metrics.get("limited_data_quality_human_required_small_add_reconciled_count") or 0)
@@ -1667,6 +1743,11 @@ def _decision_funnel_style_bucket(row: dict[str, Any]) -> str:
     trade_style = str(style.get("trade_style") or "unknown").strip() or "unknown"
     analysis_style = str(style.get("analysis_style") or "unknown").strip() or "unknown"
     return f"{analysis_style}:{trade_style}"
+
+
+def _decision_funnel_artifact_sort_key(row: dict[str, Any]) -> tuple[str, int]:
+    raw_time = row.get("created_at") or row.get("as_of_time") or row.get("observation_date") or ""
+    return (str(raw_time), _int(row.get("analysis_id"), default=0))
 
 
 def _decision_funnel_rates(metrics: dict[str, Any], *, min_sample_n: int) -> dict[str, Any]:

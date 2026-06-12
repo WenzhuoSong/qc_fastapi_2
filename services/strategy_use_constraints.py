@@ -22,7 +22,7 @@ def apply_strategy_use_constraints(
     if not strategies.get("playground_available"):
         return normalize_cash_first(adjusted_weights)[0], []
 
-    use_summary = strategies.get("strategy_use_summary") or {}
+    use_summary = _execution_approved_use_summary(strategies)
     primary = list(use_summary.get("primary") or [])
     advisory = list(use_summary.get("advisory") or [])
     if primary:
@@ -119,6 +119,40 @@ def _selected_tickers_for_uses(
     return tickers
 
 
+def _execution_approved_use_summary(strategies: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    cert_items = ((strategies.get("strategy_certification") or {}).get("items") or {})
+    has_certification = isinstance(cert_items, dict) and bool(cert_items)
+    if not has_certification:
+        return strategies.get("strategy_use_summary") or {}
+
+    summary: dict[str, list[dict[str, Any]]] = {
+        "primary": [],
+        "advisory": [],
+        "watch_only": [],
+        "ignore": [],
+    }
+    for row in strategies.get("strategy_results") or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("strategy_name") or "")
+        cert = cert_items.get(name) if isinstance(cert_items.get(name), dict) else {}
+        suggested_use = str(row.get("suggested_use") or "watch_only")
+        approved = (
+            cert.get("approved_use") == "advisory"
+            and cert.get("execution_evidence_status") == "execution_grade_validated"
+        )
+        if approved and suggested_use == "primary":
+            bucket = "primary"
+        elif approved and suggested_use == "advisory":
+            bucket = "advisory"
+        elif suggested_use == "ignore":
+            bucket = "ignore"
+        else:
+            bucket = "watch_only"
+        summary[bucket].append({"strategy_name": name})
+    return summary
+
+
 def _clean(weights: dict[str, Any] | None) -> dict[str, float]:
     out: dict[str, float] = {}
     for ticker, weight in (weights or {}).items():
@@ -130,4 +164,3 @@ def _clean(weights: dict[str, Any] | None) -> dict[str, float]:
         except (TypeError, ValueError):
             out[clean_ticker] = 0.0
     return out
-

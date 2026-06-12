@@ -11,11 +11,36 @@ from typing import Any
 
 
 MIN_HISTORICAL_SAMPLES = 120
+MIN_LIVE_SAMPLES_FOR_EXECUTION = 5
 MAX_ADVISORY_TURNOVER = 0.50
+
+DEFAULT_EXECUTION_EVIDENCE_CONFIG: dict[str, Any] = {
+    "enabled": True,
+    "force_advisory_only": False,
+    "min_live_samples_for_execution": MIN_LIVE_SAMPLES_FOR_EXECUTION,
+    "state_scope": "strategy_level",
+}
+
+
+def default_strategy_execution_evidence_config(raw: dict[str, Any] | None = None) -> dict[str, Any]:
+    value = raw if isinstance(raw, dict) else {}
+    cfg = dict(DEFAULT_EXECUTION_EVIDENCE_CONFIG)
+    if "enabled" in value:
+        cfg["enabled"] = _to_bool(value.get("enabled"))
+    if "force_advisory_only" in value:
+        cfg["force_advisory_only"] = _to_bool(value.get("force_advisory_only"))
+    parsed_min = _to_int(value.get("min_live_samples_for_execution"))
+    if parsed_min is not None:
+        cfg["min_live_samples_for_execution"] = max(parsed_min, 0)
+    cfg["_explicitly_configured"] = bool(value)
+    return cfg
 
 
 def certify_strategies(strategy_evidence: dict[str, Any] | None) -> dict[str, Any]:
     evidence = strategy_evidence or {}
+    execution_evidence_config = default_strategy_execution_evidence_config(
+        evidence.get("strategy_execution_evidence_config") or {}
+    )
     rows = evidence.get("strategy_results") or []
     certifications: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -24,7 +49,11 @@ def certify_strategies(strategy_evidence: dict[str, Any] | None) -> dict[str, An
         name = str(row.get("strategy_name") or "")
         if not name:
             continue
-        certifications[name] = _certify_one(row=row, evidence=evidence)
+        certifications[name] = _certify_one(
+            row=row,
+            evidence=evidence,
+            execution_evidence_config=execution_evidence_config,
+        )
 
     summary = _summary(certifications)
     return {
@@ -33,8 +62,13 @@ def certify_strategies(strategy_evidence: dict[str, Any] | None) -> dict[str, An
         "audit": build_strategy_certification_audit(certifications),
         "policy": {
             "min_historical_samples": MIN_HISTORICAL_SAMPLES,
+            "min_live_samples_for_execution": int(
+                execution_evidence_config.get("min_live_samples_for_execution")
+                or MIN_LIVE_SAMPLES_FOR_EXECUTION
+            ),
             "max_advisory_turnover": MAX_ADVISORY_TURNOVER,
             "certified_status_deferred": True,
+            "execution_evidence_config": execution_evidence_config,
         },
     }
 
@@ -118,7 +152,12 @@ def build_strategy_certification_audit(certifications: dict[str, dict[str, Any]]
     }
 
 
-def _certify_one(*, row: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
+def _certify_one(
+    *,
+    row: dict[str, Any],
+    evidence: dict[str, Any],
+    execution_evidence_config: dict[str, Any],
+) -> dict[str, Any]:
     name = str(row.get("strategy_name") or "")
     historical_samples = int(_to_float(row.get("historical_forward_return_samples"), 0) or 0)
     live_samples = int(_to_float(row.get("n_forward_return_samples"), 0) or 0)
@@ -134,6 +173,15 @@ def _certify_one(*, row: dict[str, Any], evidence: dict[str, Any]) -> dict[str, 
     suggested_use = str(row.get("suggested_use") or "watch_only")
     confidence = _to_float(row.get("confidence_score"), None)
     evidence_summary = evidence.get("evidence_summary") or {}
+    evidence_data_quality = str(evidence.get("data_quality") or "").lower().strip()
+    min_live_samples = int(
+        execution_evidence_config.get("min_live_samples_for_execution")
+        or MIN_LIVE_SAMPLES_FOR_EXECUTION
+    )
+    execution_evidence_disabled = (
+        not bool(execution_evidence_config.get("enabled", True))
+        or bool(execution_evidence_config.get("force_advisory_only", False))
+    )
     reason_codes = _unique(list(row.get("reason_codes") or []))
     live_fit = _strategy_live_fit(row=row, evidence_summary=evidence_summary)
     historical_evidence = _strategy_historical_evidence(row=row, evidence_summary=evidence_summary)
@@ -142,8 +190,14 @@ def _certify_one(*, row: dict[str, Any], evidence: dict[str, Any]) -> dict[str, 
     demotion_reasons: list[str] = []
     if not data_ready or not can_influence:
         blockers.append("data_not_ready")
+    if execution_evidence_disabled:
+        blockers.append("strategy_execution_evidence_disabled")
+    if evidence_data_quality in {"missing", "stale", "degraded"}:
+        blockers.append(f"strategy_data_quality_{evidence_data_quality}")
     if historical_samples < MIN_HISTORICAL_SAMPLES:
         blockers.append("historical_samples_insufficient")
+    if live_samples < min_live_samples:
+        blockers.append("live_samples_insufficient")
     if sharpe is not None and sharpe <= 0:
         blockers.append("historical_sharpe_nonpositive")
     if live_fit in {"conflicted"}:
@@ -163,18 +217,46 @@ def _certify_one(*, row: dict[str, Any], evidence: dict[str, Any]) -> dict[str, 
         historical_samples=historical_samples,
         historical_evidence=historical_evidence,
         live_fit=live_fit,
+        live_samples=live_samples,
+        min_live_samples=min_live_samples,
         turnover=turnover,
         suggested_use=suggested_use,
         sharpe=sharpe,
+        evidence_data_quality=evidence_data_quality,
+        execution_evidence_disabled=execution_evidence_disabled,
         walk_forward_level=walk_forward_level,
+    )
+    approved_use = _approved_use(status)
+    execution_evidence_status = (
+        "execution_grade_validated"
+        if approved_use == "advisory"
+        else "insufficient_execution_evidence"
+        if suggested_use in {"primary", "advisory"}
+        else "not_actionable"
     )
 
     return {
         "strategy_name": name,
         "status": status,
-        "approved_use": _approved_use(status),
+        "approved_use": approved_use,
+        "execution_evidence_status": execution_evidence_status,
+        "execution_evidence_scope": str(execution_evidence_config.get("state_scope") or "strategy_level"),
         "suggested_use": suggested_use,
         "confidence_score": confidence,
+        "evidence_checks": _evidence_checks(
+            data_ready=data_ready,
+            can_influence=can_influence,
+            evidence_data_quality=evidence_data_quality,
+            historical_samples=historical_samples,
+            sharpe=sharpe,
+            live_samples=live_samples,
+            min_live_samples=min_live_samples,
+            live_fit=live_fit,
+            walk_forward_level=walk_forward_level,
+            turnover=turnover,
+            suggested_use=suggested_use,
+            execution_evidence_disabled=execution_evidence_disabled,
+        ),
         "historical": {
             "samples": historical_samples,
             "evidence": historical_evidence,
@@ -238,15 +320,25 @@ def _status(
     historical_samples: int,
     historical_evidence: str,
     live_fit: str,
+    live_samples: int,
+    min_live_samples: int,
     turnover: float,
     suggested_use: str,
     sharpe: float | None,
+    evidence_data_quality: str,
+    execution_evidence_disabled: bool,
     walk_forward_level: str,
 ) -> str:
     if not data_ready or not can_influence or suggested_use == "ignore":
         return "disabled"
+    if execution_evidence_disabled:
+        return "research_supported"
+    if evidence_data_quality in {"missing", "stale", "degraded"}:
+        return "experimental"
     if historical_samples < MIN_HISTORICAL_SAMPLES:
         return "experimental"
+    if live_samples < min_live_samples:
+        return "research_supported"
     if sharpe is not None and sharpe <= 0:
         return "experimental"
     historical_supported = historical_evidence in {"strong", "medium", "historical_supported", "unknown"}
@@ -255,12 +347,81 @@ def _status(
     if walk_forward_level in {"weak", "insufficient"}:
         return "research_supported"
     if (
-        suggested_use == "advisory"
+        suggested_use in {"primary", "advisory"}
         and live_fit != "conflicted"
         and turnover <= MAX_ADVISORY_TURNOVER
     ):
         return "advisory"
     return "research_supported"
+
+
+def _evidence_checks(
+    *,
+    data_ready: bool,
+    can_influence: bool,
+    evidence_data_quality: str,
+    historical_samples: int,
+    sharpe: float | None,
+    live_samples: int,
+    min_live_samples: int,
+    live_fit: str,
+    walk_forward_level: str,
+    turnover: float,
+    suggested_use: str,
+    execution_evidence_disabled: bool,
+) -> dict[str, Any]:
+    checks = {
+        "execution_evidence_enabled": {
+            "pass": not execution_evidence_disabled,
+            "actual": not execution_evidence_disabled,
+        },
+        "data_ready_can_influence": {
+            "pass": bool(data_ready and can_influence),
+            "actual": {"data_ready": bool(data_ready), "can_influence_allocation": bool(can_influence)},
+        },
+        "strategy_data_quality_not_degraded": {
+            "pass": evidence_data_quality not in {"missing", "stale", "degraded"},
+            "actual": evidence_data_quality or "unknown",
+        },
+        "historical_samples_min": {
+            "pass": historical_samples >= MIN_HISTORICAL_SAMPLES,
+            "actual": historical_samples,
+            "threshold": MIN_HISTORICAL_SAMPLES,
+        },
+        "historical_sharpe_positive": {
+            "pass": sharpe is None or sharpe > 0,
+            "actual": sharpe,
+        },
+        "live_samples_min": {
+            "pass": live_samples >= min_live_samples,
+            "actual": live_samples,
+            "threshold": min_live_samples,
+        },
+        "live_fit_not_conflicted": {
+            "pass": live_fit != "conflicted",
+            "actual": live_fit,
+        },
+        "walk_forward_not_weak_or_insufficient": {
+            "pass": walk_forward_level not in {"weak", "insufficient"},
+            "actual": walk_forward_level,
+        },
+        "turnover_below_advisory_max": {
+            "pass": turnover <= MAX_ADVISORY_TURNOVER,
+            "actual": turnover,
+            "threshold": MAX_ADVISORY_TURNOVER,
+        },
+        "suggested_use_actionable": {
+            "pass": suggested_use in {"primary", "advisory"},
+            "actual": suggested_use,
+        },
+    }
+    failed = [name for name, row in checks.items() if not bool(row.get("pass"))]
+    return {
+        "schema_version": "strategy_execution_evidence_checks_v1",
+        "checks": checks,
+        "failed": failed,
+        "status": "pass" if not failed else "fail",
+    }
 
 
 def _approved_use(status: str) -> str:
@@ -297,6 +458,23 @@ def _to_float(value: Any, default: float | None = 0.0) -> float | None:
         return float(value) if value is not None else default
     except (TypeError, ValueError):
         return default
+
+
+def _to_int(value: Any, default: int | None = None) -> int | None:
+    try:
+        if value is None or value == "":
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    return bool(value)
 
 
 def _unique(values: list[str]) -> list[str]:

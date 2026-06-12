@@ -303,6 +303,20 @@ class EvidenceBundleTest(unittest.TestCase):
                     "momentum_lite_v1": {"n_forward_return_samples": 12},
                     "dual_momentum_rotation": {"n_forward_return_samples": 12},
                 },
+                "historical_replay_metrics": {
+                    "momentum_lite_v1": {
+                        "n_forward_return_samples": 289,
+                        "metric_reliability": {"level": "high"},
+                        "sharpe": 1.1,
+                        "hit_rate": 0.55,
+                    },
+                    "dual_momentum_rotation": {
+                        "n_forward_return_samples": 289,
+                        "metric_reliability": {"level": "high"},
+                        "sharpe": 1.2,
+                        "hit_rate": 0.56,
+                    },
+                },
             },
         )
 

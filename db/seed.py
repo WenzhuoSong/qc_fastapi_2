@@ -93,6 +93,16 @@ _DEFAULTS = {
         "feature_source": "yfinance",
     },
 
+    # Execution-grade strategy evidence gate. This does not create a new
+    # execution path; it controls whether certified strategy evidence may
+    # release the scorecard strategy-evidence no-add boundary.
+    "strategy_execution_evidence_config": {
+        "enabled": True,
+        "force_advisory_only": False,
+        "min_live_samples_for_execution": 5,
+        "state_scope": "strategy_level",
+    },
+
     # Portfolio Construction PR4 candidate diagnostics. Shadow is diagnostic-only.
     "portfolio_construction_promotion_config": {
         "portfolio_construction_mode": "shadow",
