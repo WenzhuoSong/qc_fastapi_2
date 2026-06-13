@@ -389,9 +389,21 @@ class WeekendReviewMetricsTests(unittest.TestCase):
         self.assertEqual(style["rates"]["defensive_style_hit_rate_5d"]["value"], 1.0)
         self.assertEqual(style["metrics"]["blocked_buy_mature_count"], 1)
         self.assertEqual(style["metrics"]["blocked_buy_outperformed_benchmark_count"], 1)
+        self.assertEqual(style["metrics"]["blocked_buy_mature_count_1d"], 1)
+        self.assertEqual(style["metrics"]["blocked_buy_outperformed_benchmark_count_1d"], 1)
+        self.assertEqual(style["metrics"]["blocked_buy_mature_count_5d"], 1)
+        self.assertEqual(style["metrics"]["blocked_buy_outperformed_benchmark_count_5d"], 1)
+        self.assertEqual(style["metrics"]["blocked_buy_mature_count_20d"], 0)
+        self.assertEqual(style["metrics"]["insufficient_blocked_buy_outcome_count_20d"], 1)
         self.assertGreater(style["metrics"]["blocked_buy_avg_excess_return_vs_benchmark"], 0)
+        self.assertGreater(style["metrics"]["blocked_buy_avg_excess_return_vs_benchmark_1d"], 0)
+        self.assertGreater(style["metrics"]["blocked_buy_avg_excess_return_vs_benchmark_5d"], 0)
+        self.assertIsNone(style["metrics"]["blocked_buy_avg_excess_return_vs_benchmark_20d"])
+        self.assertEqual(style["rates"]["blocked_buy_outperform_rate_1d"]["value"], 1.0)
         self.assertEqual(style["rates"]["blocked_buy_outperform_rate_5d"]["value"], 1.0)
+        self.assertIsNone(style["rates"]["blocked_buy_outperform_rate_20d"]["value"])
         self.assertIn("shadow candidate", style["metric_contract"]["blocked_buy_selection_bias_caveat"])
+        self.assertIn("1d, 5d, and 20d", style["metric_contract"]["blocked_buy_horizons"])
 
     def test_decision_funnel_metrics_preserve_denominators_and_cash_trend(self):
         dataset = build_weekend_review_dataset(
@@ -449,7 +461,72 @@ class WeekendReviewMetricsTests(unittest.TestCase):
                                 {
                                     "strategy_name": "momentum_lite_v1",
                                     "execution_evidence_status": "insufficient_execution_evidence",
+                                    "certification_status": "research_supported",
+                                    "approved_use": "research_only",
+                                    "suggested_use": "advisory",
                                     "failed_checks": ["live_samples_min"],
+                                    "evidence_checks": {
+                                        "schema_version": "strategy_execution_evidence_checks_v1",
+                                        "checks": {
+                                            "execution_evidence_enabled": {"pass": True, "actual": True},
+                                            "data_ready_can_influence": {
+                                                "pass": True,
+                                                "actual": {"data_ready": True, "can_influence_allocation": True},
+                                            },
+                                            "strategy_data_quality_not_degraded": {"pass": True, "actual": "ok"},
+                                            "historical_samples_min": {
+                                                "pass": True,
+                                                "actual": 130,
+                                                "threshold": 120,
+                                            },
+                                            "historical_sharpe_positive": {"pass": True, "actual": 0.4},
+                                            "live_samples_min": {
+                                                "pass": False,
+                                                "actual": 0,
+                                                "threshold": 5,
+                                            },
+                                            "live_fit_not_conflicted": {"pass": True, "actual": "ok"},
+                                            "walk_forward_not_weak_or_insufficient": {
+                                                "pass": True,
+                                                "actual": "medium",
+                                            },
+                                            "turnover_below_advisory_max": {
+                                                "pass": True,
+                                                "actual": 0.2,
+                                                "threshold": 0.5,
+                                            },
+                                            "suggested_use_actionable": {"pass": True, "actual": "advisory"},
+                                        },
+                                        "failed": ["live_samples_min"],
+                                        "status": "fail",
+                                    },
+                                },
+                                {
+                                    "strategy_name": "mean_reversion_lite",
+                                    "execution_evidence_status": "insufficient_execution_evidence",
+                                    "certification_status": "research_supported",
+                                    "approved_use": "research_only",
+                                    "suggested_use": "advisory",
+                                    "failed_checks": ["live_samples_min", "walk_forward_not_weak_or_insufficient"],
+                                    "evidence_checks": {
+                                        "schema_version": "strategy_execution_evidence_checks_v1",
+                                        "checks": {
+                                            "live_samples_min": {
+                                                "pass": False,
+                                                "actual": 0,
+                                                "threshold": 5,
+                                            },
+                                            "walk_forward_not_weak_or_insufficient": {
+                                                "pass": False,
+                                                "actual": "insufficient",
+                                            },
+                                        },
+                                        "failed": [
+                                            "live_samples_min",
+                                            "walk_forward_not_weak_or_insufficient",
+                                        ],
+                                        "status": "fail",
+                                    },
                                 }
                             ],
                         }
@@ -527,7 +604,91 @@ class WeekendReviewMetricsTests(unittest.TestCase):
                                 {
                                     "strategy_name": "momentum_lite_v1",
                                     "execution_evidence_status": "execution_grade_validated",
+                                    "certification_status": "advisory",
+                                    "approved_use": "advisory",
+                                    "suggested_use": "advisory",
                                     "failed_checks": [],
+                                    "evidence_checks": {
+                                        "schema_version": "strategy_execution_evidence_checks_v1",
+                                        "checks": {
+                                            "execution_evidence_enabled": {"pass": True, "actual": True},
+                                            "data_ready_can_influence": {
+                                                "pass": True,
+                                                "actual": {"data_ready": True, "can_influence_allocation": True},
+                                            },
+                                            "strategy_data_quality_not_degraded": {"pass": True, "actual": "ok"},
+                                            "historical_samples_min": {
+                                                "pass": True,
+                                                "actual": 130,
+                                                "threshold": 120,
+                                            },
+                                            "historical_sharpe_positive": {"pass": True, "actual": 0.4},
+                                            "live_samples_min": {
+                                                "pass": True,
+                                                "actual": 5,
+                                                "threshold": 5,
+                                            },
+                                            "live_fit_not_conflicted": {"pass": True, "actual": "ok"},
+                                            "walk_forward_not_weak_or_insufficient": {
+                                                "pass": True,
+                                                "actual": "medium",
+                                            },
+                                            "turnover_below_advisory_max": {
+                                                "pass": True,
+                                                "actual": 0.2,
+                                                "threshold": 0.5,
+                                            },
+                                            "suggested_use_actionable": {"pass": True, "actual": "advisory"},
+                                        },
+                                        "failed": [],
+                                        "status": "pass",
+                                    },
+                                },
+                                {
+                                    "strategy_name": "mean_reversion_lite",
+                                    "execution_evidence_status": "insufficient_execution_evidence",
+                                    "certification_status": "research_supported",
+                                    "approved_use": "research_only",
+                                    "suggested_use": "advisory",
+                                    "failed_checks": ["live_samples_min", "walk_forward_not_weak_or_insufficient"],
+                                    "evidence_checks": {
+                                        "schema_version": "strategy_execution_evidence_checks_v1",
+                                        "checks": {
+                                            "execution_evidence_enabled": {"pass": True, "actual": True},
+                                            "data_ready_can_influence": {
+                                                "pass": True,
+                                                "actual": {"data_ready": True, "can_influence_allocation": True},
+                                            },
+                                            "strategy_data_quality_not_degraded": {"pass": True, "actual": "ok"},
+                                            "historical_samples_min": {
+                                                "pass": True,
+                                                "actual": 150,
+                                                "threshold": 120,
+                                            },
+                                            "historical_sharpe_positive": {"pass": True, "actual": 0.2},
+                                            "live_samples_min": {
+                                                "pass": False,
+                                                "actual": 0,
+                                                "threshold": 5,
+                                            },
+                                            "live_fit_not_conflicted": {"pass": True, "actual": "ok"},
+                                            "walk_forward_not_weak_or_insufficient": {
+                                                "pass": False,
+                                                "actual": "insufficient",
+                                            },
+                                            "turnover_below_advisory_max": {
+                                                "pass": True,
+                                                "actual": 0.1,
+                                                "threshold": 0.5,
+                                            },
+                                            "suggested_use_actionable": {"pass": True, "actual": "advisory"},
+                                        },
+                                        "failed": [
+                                            "live_samples_min",
+                                            "walk_forward_not_weak_or_insufficient",
+                                        ],
+                                        "status": "fail",
+                                    },
                                 }
                             ],
                         }
@@ -543,6 +704,73 @@ class WeekendReviewMetricsTests(unittest.TestCase):
                             "execution_not_realized": {"delta": 0.0, "event_count": 0},
                         },
                     },
+                    "first_blocker_distribution": {},
+                    "stateless_all_blocker_distribution": {},
+                    "stateful_incremental_blocker_distribution": {},
+                    "stateful_pass_through_base_by_layer": {},
+                    "single_blocker_candidate_count": 0,
+                },
+                {
+                    "schema_version": "decision_funnel_observability_v1",
+                    "artifact_type": "decision_funnel_observability",
+                    "artifact_id": "decision_funnel_observability_v1:c",
+                    "created_at": "2026-06-03T15:00:00+00:00",
+                    "source_stage": "decision_funnel_observability",
+                    "execution_authority": "none",
+                    "target_weight_mutation": "none",
+                    "analysis_id": 103,
+                    "decision_style": {"analysis_style": "normal", "trade_style": "normal_rebalance"},
+                    "decision_degradation": {"is_degraded": False},
+                    "buy_delta_metrics": {
+                        "buy_intent_count": 0,
+                        "blocked_buy_count": 0,
+                        "desired_buy_delta_before_gates": 0.0,
+                        "allowed_buy_delta_after_gates": 0.0,
+                        "blocked_buy_delta": 0.0,
+                        "buy_delta_suppression_ratio": {"status": "not_applicable", "value": None},
+                    },
+                    "net_position_drift": {"net_position_drift": 0.0},
+                    "cash_trajectory_point": {
+                        "as_of_time": "2026-06-03T15:00:00+00:00",
+                        "target_cash_weight": 0.6,
+                    },
+                    "sell_side_attribution": {},
+                    "scorecard_semantic_acceptance": {},
+                    "data_quality_flags": {
+                        "strategy_execution_evidence": {
+                            "schema_version": "strategy_execution_evidence_summary_v1",
+                            "rows": [
+                                {
+                                    "strategy_name": "mean_reversion_lite",
+                                    "execution_evidence_status": "insufficient_execution_evidence",
+                                    "certification_status": "research_supported",
+                                    "approved_use": "research_only",
+                                    "suggested_use": "advisory",
+                                    "failed_checks": ["live_samples_min", "walk_forward_not_weak_or_insufficient"],
+                                    "evidence_checks": {
+                                        "schema_version": "strategy_execution_evidence_checks_v1",
+                                        "checks": {
+                                            "live_samples_min": {
+                                                "pass": False,
+                                                "actual": 0,
+                                                "threshold": 5,
+                                            },
+                                            "walk_forward_not_weak_or_insufficient": {
+                                                "pass": False,
+                                                "actual": "insufficient",
+                                            },
+                                        },
+                                        "failed": [
+                                            "live_samples_min",
+                                            "walk_forward_not_weak_or_insufficient",
+                                        ],
+                                        "status": "fail",
+                                    },
+                                }
+                            ],
+                        }
+                    },
+                    "cash_drift_attribution": {},
                     "first_blocker_distribution": {},
                     "stateless_all_blocker_distribution": {},
                     "stateful_incremental_blocker_distribution": {},
@@ -568,13 +796,13 @@ class WeekendReviewMetricsTests(unittest.TestCase):
         )
         funnel = metrics["sections"]["decision_funnel"]
 
-        self.assertEqual(funnel["metrics"]["funnel_artifact_count"], 2)
+        self.assertEqual(funnel["metrics"]["funnel_artifact_count"], 3)
         self.assertEqual(funnel["metrics"]["buy_intent_count"], 2)
         self.assertEqual(funnel["metrics"]["blocked_buy_count"], 1)
         self.assertEqual(funnel["metrics"]["suppression_ratio_sample_count"], 1)
-        self.assertEqual(funnel["metrics"]["suppression_ratio_not_applicable_count"], 1)
+        self.assertEqual(funnel["metrics"]["suppression_ratio_not_applicable_count"], 2)
         self.assertEqual(funnel["metrics"]["buy_delta_suppression_ratio_avg"], 0.8)
-        self.assertEqual(funnel["metrics"]["net_position_drift_avg"], -0.005)
+        self.assertEqual(funnel["metrics"]["net_position_drift_avg"], -0.003333)
         self.assertEqual(funnel["metrics"]["cash_trajectory"]["cash_delta"], 0.05)
         self.assertEqual(funnel["metrics"]["sell_intent_count"], 2)
         self.assertEqual(funnel["metrics"]["sell_delta_after_gates"], 0.05)
@@ -632,6 +860,28 @@ class WeekendReviewMetricsTests(unittest.TestCase):
             monitor["by_strategy"]["momentum_lite_v1"]["transitions"][0]["from"],
             "insufficient_execution_evidence",
         )
+        self.assertEqual(monitor["readiness_strategy_count"], 2)
+        self.assertEqual(monitor["execution_grade_strategy_count"], 1)
+        self.assertEqual(monitor["insufficient_execution_evidence_strategy_count"], 1)
+        self.assertEqual(monitor["live_samples_min_failed_strategy_count"], 1)
+        self.assertEqual(monitor["zero_live_sample_strategy_count"], 1)
+        self.assertEqual(monitor["live_sample_stalled_threshold_days"], 3)
+        self.assertEqual(monitor["live_sample_stalled_strategy_count"], 1)
+        self.assertEqual(
+            monitor["live_sample_stalled_strategies"][0]["strategy_name"],
+            "mean_reversion_lite",
+        )
+        self.assertEqual(monitor["failed_check_distribution"]["live_samples_min"], 1)
+        self.assertEqual(monitor["primary_blocker_distribution"]["live_samples"], 1)
+        self.assertEqual(monitor["closest_to_execution_grade"][0]["strategy_name"], "mean_reversion_lite")
+        self.assertEqual(monitor["closest_to_execution_grade"][0]["live_samples_gap"], 5)
+        self.assertEqual(
+            monitor["by_strategy"]["mean_reversion_lite"]["readiness"]["walk_forward_actual"],
+            "insufficient",
+        )
+        self.assertEqual(funnel["metrics"]["certification_readiness_strategy_count"], 2)
+        self.assertEqual(funnel["metrics"]["certification_zero_live_sample_strategy_count"], 1)
+        self.assertEqual(funnel["metrics"]["certification_live_sample_stalled_strategy_count"], 1)
         self.assertEqual(
             funnel["decision_degradation_split"]["normal"]["metrics"]["buy_delta_suppression_ratio_avg"],
             0.8,

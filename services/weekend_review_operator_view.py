@@ -31,6 +31,7 @@ def build_weekend_review_operator_view(payload: dict[str, Any]) -> dict[str, Any
     hedge = _section(sections, "hedge_review")
     debate = _section(sections, "debate_impact")
     basket = _section(sections, "basket_portfolio")
+    style_opportunity = _section(sections, "style_opportunity")
     decision_funnel = _section(sections, "decision_funnel")
     self_assessment = _section(sections, "weekly_self_assessment")
     scorecard_acceptance = decision_funnel.get("scorecard_semantic_acceptance") or {}
@@ -75,6 +76,36 @@ def build_weekend_review_operator_view(payload: dict[str, Any]) -> dict[str, Any
             "cash_drift_residual_sum": cash_drift.get("residual_sum"),
             "certification_flip_count_7d": int(strategy_evidence_monitor.get("total_flip_count_7d") or 0),
             "certification_flip_alert_strategy_count": len(strategy_evidence_monitor.get("alert_strategies") or []),
+            "certification_readiness_strategy_count": int(
+                strategy_evidence_monitor.get("readiness_strategy_count") or 0
+            ),
+            "certification_insufficient_strategy_count": int(
+                strategy_evidence_monitor.get("insufficient_execution_evidence_strategy_count") or 0
+            ),
+            "certification_live_samples_min_failed_strategy_count": int(
+                strategy_evidence_monitor.get("live_samples_min_failed_strategy_count") or 0
+            ),
+            "certification_zero_live_sample_strategy_count": int(
+                strategy_evidence_monitor.get("zero_live_sample_strategy_count") or 0
+            ),
+            "certification_live_sample_stalled_strategy_count": int(
+                strategy_evidence_monitor.get("live_sample_stalled_strategy_count") or 0
+            ),
+            "blocked_buy_mature_count_1d": _metric(style_opportunity, "blocked_buy_mature_count_1d"),
+            "blocked_buy_mature_count_5d": _metric(style_opportunity, "blocked_buy_mature_count_5d"),
+            "blocked_buy_mature_count_20d": _metric(style_opportunity, "blocked_buy_mature_count_20d"),
+            "blocked_buy_outperformed_benchmark_count_1d": _metric(
+                style_opportunity,
+                "blocked_buy_outperformed_benchmark_count_1d",
+            ),
+            "blocked_buy_outperformed_benchmark_count_5d": _metric(
+                style_opportunity,
+                "blocked_buy_outperformed_benchmark_count_5d",
+            ),
+            "blocked_buy_outperformed_benchmark_count_20d": _metric(
+                style_opportunity,
+                "blocked_buy_outperformed_benchmark_count_20d",
+            ),
             "safety_invariant_finding_count": int(safety.get("finding_count") or 0),
             "safety_fail_safe_required": bool(safety.get("fail_safe_required")),
         },
@@ -122,6 +153,12 @@ def build_weekend_review_operator_view(payload: dict[str, Any]) -> dict[str, Any
                 "metrics": basket.get("metrics") or {},
                 "rates": basket.get("rates") or {},
                 "decision_degradation_split": basket.get("decision_degradation_split") or {},
+            },
+            "style_opportunity": {
+                "metrics": style_opportunity.get("metrics") or {},
+                "rates": style_opportunity.get("rates") or {},
+                "decision_degradation_split": style_opportunity.get("decision_degradation_split") or {},
+                "metric_contract": style_opportunity.get("metric_contract") or {},
             },
             "decision_funnel": {
                 "metrics": decision_funnel.get("metrics") or {},
@@ -229,6 +266,8 @@ def format_weekend_review_operator_text(view: dict[str, Any]) -> str:
     hedge = (sections.get("hedge_review") or {}).get("metrics") or {}
     labels = (sections.get("label_maturity") or {}).get("metrics") or {}
     debate = (sections.get("debate_value") or {}).get("rates") or {}
+    style_opportunity = sections.get("style_opportunity") or {}
+    style_metrics = style_opportunity.get("metrics") or {}
     decision_funnel = sections.get("decision_funnel") or {}
     scorecard_acceptance = (decision_funnel.get("scorecard_semantic_acceptance") or {}).get("acceptance") or {}
     cash_drift = decision_funnel.get("cash_drift_attribution") or {}
@@ -303,6 +342,25 @@ def format_weekend_review_operator_text(view: dict[str, Any]) -> str:
             f"alerts={len(strategy_evidence_monitor.get('alert_strategies') or [])}"
         ),
         (
+            "Strategy evidence readiness: "
+            f"strategies={int(strategy_evidence_monitor.get('readiness_strategy_count') or 0)} "
+            f"insufficient={int(strategy_evidence_monitor.get('insufficient_execution_evidence_strategy_count') or 0)} "
+            f"live_min_failed={int(strategy_evidence_monitor.get('live_samples_min_failed_strategy_count') or 0)} "
+            f"live0={int(strategy_evidence_monitor.get('zero_live_sample_strategy_count') or 0)} "
+            f"stalled={int(strategy_evidence_monitor.get('live_sample_stalled_strategy_count') or 0)} "
+            f"closest={_strategy_evidence_closest_label(strategy_evidence_monitor)}"
+        ),
+        (
+            "Blocked-buy counterfactual: "
+            f"1d={style_metrics.get('blocked_buy_outperformed_benchmark_count_1d', 0)}/"
+            f"{style_metrics.get('blocked_buy_mature_count_1d', 0)} "
+            f"5d={style_metrics.get('blocked_buy_outperformed_benchmark_count_5d', 0)}/"
+            f"{style_metrics.get('blocked_buy_mature_count_5d', 0)} "
+            f"20d={style_metrics.get('blocked_buy_outperformed_benchmark_count_20d', 0)}/"
+            f"{style_metrics.get('blocked_buy_mature_count_20d', 0)} "
+            "review_only=true"
+        ),
+        (
             "Prior review: "
             f"mature={self_assessment.get('prior_recommendation_mature_count', 0)} "
             f"supported={self_assessment.get('prior_recommendation_supported_count', 0)} "
@@ -311,6 +369,20 @@ def format_weekend_review_operator_text(view: dict[str, Any]) -> str:
         "Review-only recommendations:",
         *recommendation_lines,
     ])
+
+
+def _strategy_evidence_closest_label(monitor: dict[str, Any]) -> str:
+    rows = monitor.get("closest_to_execution_grade") if isinstance(monitor.get("closest_to_execution_grade"), list) else []
+    if not rows:
+        return "none"
+    row = rows[0] if isinstance(rows[0], dict) else {}
+    name = row.get("strategy_name") or "unknown"
+    live_actual = row.get("live_samples_actual")
+    live_threshold = row.get("live_samples_threshold")
+    failed = row.get("failed_check_count")
+    if live_actual is not None and live_threshold is not None:
+        return f"{name}(live={live_actual}/{live_threshold}, failed={failed})"
+    return f"{name}(failed={failed})"
 
 
 def build_weekend_review_acceptance_answers(view: dict[str, Any]) -> list[dict[str, Any]]:

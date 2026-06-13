@@ -704,6 +704,7 @@ def build_style_opportunity_metrics(
         row for row in data.get("diagnostic_artifacts") or []
         if row.get("schema_version") == "decision_style_event_v1"
     ]
+    blocked_buy_events = _blocked_buy_counterfactual_events(data.get("diagnostic_artifacts") or [])
     metrics = {
         "style_event_count": len(style_events),
         "defensive_style_count": 0,
@@ -721,7 +722,16 @@ def build_style_opportunity_metrics(
         "insufficient_defensive_market_outcome_count_5d": 0,
         "insufficient_blocked_buy_outcome_count": 0,
     }
+    for blocked_horizon in _blocked_buy_counterfactual_horizons():
+        suffix = f"{blocked_horizon}d"
+        metrics[f"blocked_buy_candidate_count_{suffix}"] = 0
+        metrics[f"blocked_buy_mature_count_{suffix}"] = 0
+        metrics[f"blocked_buy_outperformed_benchmark_count_{suffix}"] = 0
+        metrics[f"insufficient_blocked_buy_outcome_count_{suffix}"] = 0
     excess_returns: list[float] = []
+    excess_returns_by_horizon: dict[int, list[float]] = {
+        horizon: [] for horizon in _blocked_buy_counterfactual_horizons()
+    }
     split = _empty_style_opportunity_split()
 
     for row in style_events:
@@ -755,39 +765,63 @@ def build_style_opportunity_metrics(
                     update_primary_aliases=False,
                 )
 
-        for ticker in _blocked_new_positions(row):
-            metrics["blocked_buy_candidate_count"] += 1
-            split_metrics["blocked_buy_candidate_count"] += 1
+    for event in blocked_buy_events:
+        bucket = "degraded" if bool(event.get("is_degraded")) else "normal"
+        split_metrics = split[bucket]["metrics"]
+        observation_date = event.get("observation_date")
+        ticker = str(event.get("ticker") or "").upper().strip()
+        if not ticker:
+            continue
+        metrics["blocked_buy_candidate_count"] += 1
+        split_metrics["blocked_buy_candidate_count"] += 1
+        for blocked_horizon in _blocked_buy_counterfactual_horizons():
+            suffix = f"{blocked_horizon}d"
+            _increment_named_metric(metrics, f"blocked_buy_candidate_count_{suffix}")
+            _increment_named_metric(split_metrics, f"blocked_buy_candidate_count_{suffix}")
             ticker_return = _forward_return_from_prices(
                 feature_rows,
                 ticker=ticker,
                 observation_date=observation_date,
-                horizon_days=horizon_days,
+                horizon_days=blocked_horizon,
             )
             benchmark_return = _forward_return_from_prices(
                 feature_rows,
                 ticker=opportunity_benchmark_ticker,
                 observation_date=observation_date,
-                horizon_days=horizon_days,
+                horizon_days=blocked_horizon,
             )
             if ticker_return is None or benchmark_return is None:
-                metrics["insufficient_blocked_buy_outcome_count"] += 1
-                split_metrics["insufficient_blocked_buy_outcome_count"] += 1
+                _increment_named_metric(metrics, f"insufficient_blocked_buy_outcome_count_{suffix}")
+                _increment_named_metric(split_metrics, f"insufficient_blocked_buy_outcome_count_{suffix}")
+                if int(blocked_horizon) == int(horizon_days):
+                    metrics["insufficient_blocked_buy_outcome_count"] += 1
+                    split_metrics["insufficient_blocked_buy_outcome_count"] += 1
                 continue
             excess = ticker_return - benchmark_return
-            excess_returns.append(excess)
-            split[bucket]["blocked_buy_excess_returns"].append(excess)
-            metrics["blocked_buy_mature_count"] += 1
-            split_metrics["blocked_buy_mature_count"] += 1
+            excess_returns_by_horizon[blocked_horizon].append(excess)
+            split[bucket]["blocked_buy_excess_returns_by_horizon"][suffix].append(excess)
+            _increment_named_metric(metrics, f"blocked_buy_mature_count_{suffix}")
+            _increment_named_metric(split_metrics, f"blocked_buy_mature_count_{suffix}")
+            if int(blocked_horizon) == int(horizon_days):
+                excess_returns.append(excess)
+                split[bucket]["blocked_buy_excess_returns"].append(excess)
+                metrics["blocked_buy_mature_count"] += 1
+                split_metrics["blocked_buy_mature_count"] += 1
             if excess > 0.0:
-                metrics["blocked_buy_outperformed_benchmark_count"] += 1
-                split_metrics["blocked_buy_outperformed_benchmark_count"] += 1
+                _increment_named_metric(metrics, f"blocked_buy_outperformed_benchmark_count_{suffix}")
+                _increment_named_metric(split_metrics, f"blocked_buy_outperformed_benchmark_count_{suffix}")
+                if int(blocked_horizon) == int(horizon_days):
+                    metrics["blocked_buy_outperformed_benchmark_count"] += 1
+                    split_metrics["blocked_buy_outperformed_benchmark_count"] += 1
 
     return _section({
         "schema_version": "weekly_style_opportunity_review_v1",
         "metrics": {
             **metrics,
             "blocked_buy_avg_excess_return_vs_benchmark": _avg(excess_returns),
+            "blocked_buy_avg_excess_return_vs_benchmark_1d": _avg(excess_returns_by_horizon[1]),
+            "blocked_buy_avg_excess_return_vs_benchmark_5d": _avg(excess_returns_by_horizon[5]),
+            "blocked_buy_avg_excess_return_vs_benchmark_20d": _avg(excess_returns_by_horizon[20]),
         },
         "rates": _style_opportunity_rates(
             metrics,
@@ -806,8 +840,9 @@ def build_style_opportunity_metrics(
                 "not against a high-cash actual portfolio"
             ),
             "blocked_buy_opportunity_cost": (
-                "blocked new buys are evaluated against a benchmark ticker, "
-                "not against cash-heavy actual allocation"
+                "blocked new buys are evaluated from frozen decision-funnel buy intents when available, "
+                "with decision-style blocked positions used only as legacy fallback; outcomes are compared "
+                "against a benchmark ticker, not against cash-heavy actual allocation"
             ),
             "blocked_buy_selection_bias_caveat": (
                 "blocked-buy outcomes are measured on candidates selected by the shadow/style path; "
@@ -817,6 +852,10 @@ def build_style_opportunity_metrics(
             "defensive_style_horizons": (
                 "risk_reduce_fast-style calls are evaluated at both 1d and 5d horizons; "
                 "small samples remain insufficient_sample"
+            ),
+            "blocked_buy_horizons": (
+                "blocked-buy counterfactuals are tracked at 1d, 5d, and 20d; mature outcomes are "
+                "review inputs only and must not automatically mutate scorecard or certification thresholds"
             ),
         },
     })
@@ -965,6 +1004,18 @@ def build_decision_funnel_metrics(
         **metrics,
         "certification_flip_count_7d": strategy_evidence_monitor["total_flip_count_7d"],
         "certification_flip_alert_strategy_count": len(strategy_evidence_monitor["alert_strategies"]),
+        "certification_readiness_strategy_count": strategy_evidence_monitor["readiness_strategy_count"],
+        "certification_insufficient_strategy_count": (
+            strategy_evidence_monitor["insufficient_execution_evidence_strategy_count"]
+        ),
+        "certification_execution_grade_strategy_count": strategy_evidence_monitor["execution_grade_strategy_count"],
+        "certification_live_samples_min_failed_strategy_count": (
+            strategy_evidence_monitor["live_samples_min_failed_strategy_count"]
+        ),
+        "certification_zero_live_sample_strategy_count": strategy_evidence_monitor["zero_live_sample_strategy_count"],
+        "certification_live_sample_stalled_strategy_count": (
+            strategy_evidence_monitor["live_sample_stalled_strategy_count"]
+        ),
         "buy_delta_suppression_ratio_avg": _avg(suppression_values),
         "net_position_drift_avg": _avg(net_drifts),
         "cash_trajectory": _cash_trajectory_summary(cash_points),
@@ -1390,7 +1441,7 @@ def _finalize_regime_split(split: dict[str, dict[str, Any]], *, min_sample_n: in
 
 
 def _empty_style_opportunity_metrics() -> dict[str, int]:
-    return {
+    metrics = {
         "style_event_count": 0,
         "defensive_style_count": 0,
         "defensive_style_market_outcome_count": 0,
@@ -1407,6 +1458,13 @@ def _empty_style_opportunity_metrics() -> dict[str, int]:
         "insufficient_defensive_market_outcome_count_5d": 0,
         "insufficient_blocked_buy_outcome_count": 0,
     }
+    for blocked_horizon in _blocked_buy_counterfactual_horizons():
+        suffix = f"{blocked_horizon}d"
+        metrics[f"blocked_buy_candidate_count_{suffix}"] = 0
+        metrics[f"blocked_buy_mature_count_{suffix}"] = 0
+        metrics[f"blocked_buy_outperformed_benchmark_count_{suffix}"] = 0
+        metrics[f"insufficient_blocked_buy_outcome_count_{suffix}"] = 0
+    return metrics
 
 
 def _empty_style_opportunity_split() -> dict[str, dict[str, Any]]:
@@ -1415,11 +1473,17 @@ def _empty_style_opportunity_split() -> dict[str, dict[str, Any]]:
             "sample_count": 0,
             "metrics": _empty_style_opportunity_metrics(),
             "blocked_buy_excess_returns": [],
+            "blocked_buy_excess_returns_by_horizon": {
+                f"{horizon}d": [] for horizon in _blocked_buy_counterfactual_horizons()
+            },
         },
         "degraded": {
             "sample_count": 0,
             "metrics": _empty_style_opportunity_metrics(),
             "blocked_buy_excess_returns": [],
+            "blocked_buy_excess_returns_by_horizon": {
+                f"{horizon}d": [] for horizon in _blocked_buy_counterfactual_horizons()
+            },
         },
     }
 
@@ -1444,6 +1508,18 @@ def _style_opportunity_rates(metrics: dict[str, int], *, min_sample_n: int) -> d
             denominator=int(metrics.get("blocked_buy_mature_count") or 0),
             min_sample_n=min_sample_n,
         ),
+        "blocked_buy_outperform_rate_1d": rate_metric(
+            "blocked_buy_outperform_rate_1d",
+            numerator=int(metrics.get("blocked_buy_outperformed_benchmark_count_1d") or 0),
+            denominator=int(metrics.get("blocked_buy_mature_count_1d") or 0),
+            min_sample_n=min_sample_n,
+        ),
+        "blocked_buy_outperform_rate_20d": rate_metric(
+            "blocked_buy_outperform_rate_20d",
+            numerator=int(metrics.get("blocked_buy_outperformed_benchmark_count_20d") or 0),
+            denominator=int(metrics.get("blocked_buy_mature_count_20d") or 0),
+            min_sample_n=min_sample_n,
+        ),
     }
 
 
@@ -1456,12 +1532,22 @@ def _finalize_style_opportunity_split(
     for bucket in ("normal", "degraded"):
         item = split.get(bucket) or {}
         metrics = item.get("metrics") or _empty_style_opportunity_metrics()
+        excess_by_horizon = item.get("blocked_buy_excess_returns_by_horizon") or {}
         out[bucket] = {
             "sample_count": int(item.get("sample_count") or 0),
             "metrics": {
                 **metrics,
                 "blocked_buy_avg_excess_return_vs_benchmark": _avg(
                     item.get("blocked_buy_excess_returns") or []
+                ),
+                "blocked_buy_avg_excess_return_vs_benchmark_1d": _avg(
+                    excess_by_horizon.get("1d") or []
+                ),
+                "blocked_buy_avg_excess_return_vs_benchmark_5d": _avg(
+                    excess_by_horizon.get("5d") or []
+                ),
+                "blocked_buy_avg_excess_return_vs_benchmark_20d": _avg(
+                    excess_by_horizon.get("20d") or []
                 ),
             },
             "rates": _style_opportunity_rates(metrics, min_sample_n=min_sample_n),
@@ -1583,14 +1669,22 @@ def _accumulate_strategy_evidence_history(
             "sequence": sequence,
             "created_at": row.get("created_at") or row.get("as_of_time"),
             "analysis_id": row.get("analysis_id"),
+            "strategy_name": strategy_name,
+            "suggested_use": item.get("suggested_use"),
+            "certification_status": item.get("certification_status"),
+            "approved_use": item.get("approved_use"),
             "execution_evidence_status": status,
             "failed_checks": item.get("failed_checks") or [],
+            "evidence_checks": item.get("evidence_checks") if isinstance(item.get("evidence_checks"), dict) else {},
         })
 
 
 def _finalize_strategy_evidence_monitor(history: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     by_strategy: dict[str, dict[str, Any]] = {}
     total_flips = 0
+    readiness_rows: list[dict[str, Any]] = []
+    failed_check_distribution: dict[str, int] = {}
+    primary_blocker_distribution: dict[str, int] = {}
     for strategy_name, rows in sorted(history.items()):
         ordered = sorted(rows, key=lambda item: int(item.get("sequence") or 0))
         previous: str | None = None
@@ -1607,11 +1701,21 @@ def _finalize_strategy_evidence_monitor(history: dict[str, list[dict[str, Any]]]
             previous = status
         flip_count = len(transitions)
         total_flips += flip_count
+        latest = ordered[-1] if ordered else {}
+        readiness = _strategy_evidence_readiness_row(strategy_name, latest)
+        readiness["zero_live_sample_streak_days"] = _zero_live_sample_streak_days(strategy_name, ordered)
+        readiness_rows.append(readiness)
+        for check_name in readiness.get("failed_checks") or []:
+            failed_check_distribution[check_name] = failed_check_distribution.get(check_name, 0) + 1
+        primary = readiness.get("primary_blocker")
+        if primary:
+            primary_blocker_distribution[primary] = primary_blocker_distribution.get(primary, 0) + 1
         by_strategy[strategy_name] = {
             "sample_count": len(ordered),
             "flip_count_7d": flip_count,
-            "latest_status": ordered[-1].get("execution_evidence_status") if ordered else None,
-            "latest_failed_checks": ordered[-1].get("failed_checks") if ordered else [],
+            "latest_status": latest.get("execution_evidence_status") if latest else None,
+            "latest_failed_checks": latest.get("failed_checks") if latest else [],
+            "readiness": readiness,
             "transitions": transitions[:10],
         }
     alert_strategies = [
@@ -1619,17 +1723,171 @@ def _finalize_strategy_evidence_monitor(history: dict[str, list[dict[str, Any]]]
         for strategy_name, item in by_strategy.items()
         if int(item.get("flip_count_7d") or 0) >= 3
     ]
+    sorted_readiness = sorted(
+        readiness_rows,
+        key=lambda row: (
+            0 if row.get("execution_evidence_status") != "execution_grade_validated" else 1,
+            int(row.get("failed_check_count") or 0),
+            int(row.get("live_samples_gap") or 0),
+            str(row.get("strategy_name") or ""),
+        ),
+    )
+    live_min_failed = [
+        row for row in readiness_rows
+        if "live_samples_min" in set(row.get("failed_checks") or [])
+    ]
+    zero_live = [
+        row for row in live_min_failed
+        if row.get("live_samples_actual") == 0
+    ]
+    stalled_threshold_days = 3
+    stalled_strategies = [
+        row for row in readiness_rows
+        if int(row.get("zero_live_sample_streak_days") or 0) >= stalled_threshold_days
+    ]
     return {
         "schema_version": "strategy_execution_evidence_monitor_v1",
         "total_flip_count_7d": total_flips,
         "alert_threshold_7d": 3,
         "alert_strategies": alert_strategies,
+        "readiness_strategy_count": len(readiness_rows),
+        "insufficient_execution_evidence_strategy_count": sum(
+            1 for row in readiness_rows
+            if row.get("execution_evidence_status") == "insufficient_execution_evidence"
+        ),
+        "execution_grade_strategy_count": sum(
+            1 for row in readiness_rows
+            if row.get("execution_evidence_status") == "execution_grade_validated"
+        ),
+        "live_samples_min_failed_strategy_count": len(live_min_failed),
+        "zero_live_sample_strategy_count": len(zero_live),
+        "live_sample_stalled_threshold_days": stalled_threshold_days,
+        "live_sample_stalled_strategy_count": len(stalled_strategies),
+        "live_sample_stalled_strategies": [
+            {
+                "strategy_name": row.get("strategy_name"),
+                "zero_live_sample_streak_days": row.get("zero_live_sample_streak_days"),
+                "live_samples_actual": row.get("live_samples_actual"),
+                "live_samples_threshold": row.get("live_samples_threshold"),
+                "primary_blocker": row.get("primary_blocker"),
+            }
+            for row in stalled_strategies[:10]
+        ],
+        "failed_check_distribution": dict(sorted(failed_check_distribution.items())),
+        "primary_blocker_distribution": dict(sorted(primary_blocker_distribution.items())),
+        "closest_to_execution_grade": sorted_readiness[:5],
         "by_strategy": by_strategy,
         "contract": (
             "Certification status is recomputed fail-closed; flip counts are observability-only "
-            "and should trigger hysteresis review, not mutate thresholds."
+            "and should trigger hysteresis review, not mutate thresholds. Readiness rows expose "
+            "distance-to-certification for operator review only."
         ),
     }
+
+
+def _strategy_evidence_readiness_row(strategy_name: str, latest: dict[str, Any]) -> dict[str, Any]:
+    evidence_checks = latest.get("evidence_checks") if isinstance(latest.get("evidence_checks"), dict) else {}
+    checks = evidence_checks.get("checks") if isinstance(evidence_checks.get("checks"), dict) else {}
+    failed_checks = list(latest.get("failed_checks") or evidence_checks.get("failed") or [])
+    total_checks = len(checks)
+    passed_checks = sum(1 for row in checks.values() if isinstance(row, dict) and bool(row.get("pass")))
+    live = _check_actual_threshold(checks, "live_samples_min")
+    historical = _check_actual_threshold(checks, "historical_samples_min")
+    turnover = _check_actual_threshold(checks, "turnover_below_advisory_max")
+    primary_blocker = _primary_strategy_evidence_blocker(failed_checks)
+    return {
+        "strategy_name": strategy_name,
+        "execution_evidence_status": latest.get("execution_evidence_status"),
+        "certification_status": latest.get("certification_status"),
+        "approved_use": latest.get("approved_use"),
+        "suggested_use": latest.get("suggested_use"),
+        "checks_passed": passed_checks,
+        "checks_total": total_checks,
+        "failed_check_count": len(failed_checks),
+        "failed_checks": failed_checks,
+        "primary_blocker": primary_blocker,
+        "live_samples_actual": live.get("actual"),
+        "live_samples_threshold": live.get("threshold"),
+        "live_samples_gap": _nonnegative_gap(live.get("actual"), live.get("threshold")),
+        "historical_samples_actual": historical.get("actual"),
+        "historical_samples_threshold": historical.get("threshold"),
+        "historical_samples_gap": _nonnegative_gap(historical.get("actual"), historical.get("threshold")),
+        "turnover_actual": turnover.get("actual"),
+        "turnover_threshold": turnover.get("threshold"),
+        "data_quality_actual": _check_actual(checks, "strategy_data_quality_not_degraded"),
+        "walk_forward_actual": _check_actual(checks, "walk_forward_not_weak_or_insufficient"),
+        "live_fit_actual": _check_actual(checks, "live_fit_not_conflicted"),
+        "suggested_use_actual": _check_actual(checks, "suggested_use_actionable"),
+    }
+
+
+def _zero_live_sample_streak_days(strategy_name: str, ordered: list[dict[str, Any]]) -> int:
+    streak = 0
+    seen_dates: set[str] = set()
+    for row in reversed(ordered):
+        date_key = _row_date_key(row)
+        if date_key in seen_dates:
+            continue
+        seen_dates.add(date_key)
+        readiness = _strategy_evidence_readiness_row(strategy_name, row)
+        if (
+            readiness.get("live_samples_actual") == 0
+            and "live_samples_min" in set(readiness.get("failed_checks") or [])
+        ):
+            streak += 1
+            continue
+        break
+    return streak
+
+
+def _row_date_key(row: dict[str, Any]) -> str:
+    raw = row.get("created_at")
+    if isinstance(raw, str) and len(raw) >= 10:
+        return raw[:10]
+    return f"sequence:{row.get('sequence')}"
+
+
+def _check_actual_threshold(checks: dict[str, Any], check_name: str) -> dict[str, Any]:
+    row = checks.get(check_name) if isinstance(checks.get(check_name), dict) else {}
+    return {
+        "actual": _float(row.get("actual")),
+        "threshold": _float(row.get("threshold")),
+    }
+
+
+def _check_actual(checks: dict[str, Any], check_name: str) -> Any:
+    row = checks.get(check_name) if isinstance(checks.get(check_name), dict) else {}
+    return row.get("actual")
+
+
+def _nonnegative_gap(actual: Any, threshold: Any) -> int | None:
+    actual_value = _float(actual)
+    threshold_value = _float(threshold)
+    if actual_value is None or threshold_value is None:
+        return None
+    return max(0, int(round(threshold_value - actual_value)))
+
+
+def _primary_strategy_evidence_blocker(failed_checks: list[str]) -> str | None:
+    priority = [
+        ("execution_evidence_enabled", "kill_switch"),
+        ("strategy_data_quality_not_degraded", "data_quality"),
+        ("data_ready_can_influence", "data_ready"),
+        ("historical_samples_min", "historical_samples"),
+        ("live_samples_min", "live_samples"),
+        ("historical_sharpe_positive", "historical_fit"),
+        ("walk_forward_not_weak_or_insufficient", "walk_forward"),
+        ("live_fit_not_conflicted", "live_fit"),
+        ("turnover_below_advisory_max", "turnover"),
+        ("suggested_use_actionable", "suggested_use"),
+    ]
+    failed = set(failed_checks)
+    for check_name, bucket in priority:
+        if check_name in failed:
+            return bucket
+    if failed_checks:
+        return "other"
+    return None
 
 
 def _finalize_scorecard_semantic_acceptance(metrics: dict[str, Any]) -> dict[str, Any]:
@@ -1686,7 +1944,10 @@ def _finalize_cash_drift_attribution(metrics: dict[str, Any]) -> dict[str, Any]:
         "bucket_event_count": dict(sorted((metrics.get("bucket_event_count") or {}).items())),
         "accounting_note": (
             "Buckets are mutually named but not all are actual cash-flow buckets: buy_blocked_by_gate "
-            "and target_builder_conservative are counterfactual/opportunity attribution; residual must be reviewed."
+            "and target_builder_conservative are counterfactual/opportunity attribution, while "
+            "sell_side_active_trim and execution_not_realized are realized target/execution attribution. "
+            "Do not interpret bucket_total_sum as an accounting identity for actual_cash_delta_sum; "
+            "residual must be reviewed."
         ),
     }
 
@@ -1865,6 +2126,61 @@ def _round_float_counts(values: dict[str, Any]) -> dict[str, float]:
         str(key): round(float(_float(raw, 0.0) or 0.0), 6)
         for key, raw in sorted((values or {}).items())
     }
+
+
+def _blocked_buy_counterfactual_horizons() -> tuple[int, int, int]:
+    return (1, 5, 20)
+
+
+def _blocked_buy_counterfactual_events(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    funnel_events: list[dict[str, Any]] = []
+    legacy_events: list[dict[str, Any]] = []
+    for row in rows:
+        schema = row.get("schema_version")
+        observation_date = _artifact_observation_date(row)
+        if schema == "decision_funnel_observability_v1":
+            for intent in row.get("buy_intents") or []:
+                if not isinstance(intent, dict) or not bool(intent.get("blocked")):
+                    continue
+                ticker = str(intent.get("ticker") or "").upper().strip()
+                if not ticker:
+                    continue
+                funnel_events.append({
+                    "ticker": ticker,
+                    "observation_date": observation_date,
+                    "source_schema": schema,
+                    "is_degraded": _is_degraded_record(row),
+                    "blocked_buy_delta": _float(intent.get("blocked_buy_delta"), 0.0) or 0.0,
+                    "first_blocker": _first_blocker_for_ticker(row, ticker),
+                })
+        elif schema == "decision_style_event_v1":
+            for ticker in _blocked_new_positions(row):
+                legacy_events.append({
+                    "ticker": ticker,
+                    "observation_date": observation_date,
+                    "source_schema": schema,
+                    "is_degraded": _is_degraded_record(row),
+                    "blocked_buy_delta": None,
+                    "first_blocker": "decision_style",
+                })
+    return funnel_events if funnel_events else legacy_events
+
+
+def _first_blocker_for_ticker(row: dict[str, Any], ticker: str) -> str | None:
+    for intent in row.get("buy_intents") or []:
+        if not isinstance(intent, dict):
+            continue
+        if str(intent.get("ticker") or "").upper().strip() != ticker:
+            continue
+        blockers = intent.get("blockers") or intent.get("first_blocker") or []
+        if isinstance(blockers, str):
+            return blockers
+        if isinstance(blockers, list) and blockers:
+            return str(blockers[0])
+    distribution = row.get("first_blocker_distribution") if isinstance(row.get("first_blocker_distribution"), dict) else {}
+    if len(distribution) == 1:
+        return next(iter(distribution))
+    return None
 
 
 def _defensive_style_horizons(primary_horizon_days: int) -> list[int]:

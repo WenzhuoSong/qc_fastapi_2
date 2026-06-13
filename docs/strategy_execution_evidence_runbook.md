@@ -84,8 +84,73 @@ Weekend review/operator pack reports:
 
 ```text
 Strategy evidence flips: 7d=<count> alerts=<count>
+Strategy evidence readiness: strategies=<count> insufficient=<count> live_min_failed=<count> live0=<count> stalled=<count> closest=<strategy>(live=<actual>/<threshold>, failed=<count>)
 ```
 
 If any strategy flips three or more times in seven days, treat it as an input
 to a future hysteresis sprint. The flip count is observability-only and must
 not mutate thresholds.
+
+## Readiness Distance
+
+The readiness line answers why a strategy is still blocked from execution-grade
+small adds. It is diagnostic-only and is computed from the frozen
+`evidence_checks` snapshot in the decision-funnel artifact.
+
+- `live_min_failed` counts strategies whose latest frozen check still lacks the
+  required live samples.
+- `live0` counts strategies that are blocked by live-sample evidence and have
+  zero live samples in the frozen snapshot.
+- `stalled` counts strategies whose latest frozen evidence has remained at
+  zero live samples for the configured observation window. Treat this as a
+  data/replay coverage investigation trigger, not as a reason to lower the
+  execution evidence gate.
+- `closest` shows the nearest strategy by failed-check count and live-sample
+  gap. It is an operator review cue, not an automatic promotion queue.
+- `signal_weighted_effective_n` remains an alpha observability trend and is not
+  a certification input.
+
+Use this section to distinguish "waiting for live evidence" from data-quality,
+walk-forward, turnover, or suggested-use blockers before changing any rule.
+
+## Bootstrap Deadlock Check
+
+After deploying readiness-distance artifacts, inspect the next production
+decision-funnel artifact first. It should include actual/threshold values for
+the live-sample check. If all execution candidates remain blocked by
+`live_samples_min` for three consecutive weekly reviews and the live-sample
+actuals do not improve, treat it as a possible bootstrap deadlock and open a
+human review. Do not silently keep waiting.
+
+The first question in that review is where the live samples come from:
+
+- If replay/shadow/out-of-sample evidence can feed the certification samples,
+  continue observing and fix data coverage if the sample counter is not moving.
+- If certification samples require real-money execution, the system may need a
+  separate, human-approved seeding decision. See the seeding boundary below.
+
+## Blocked-Buy Counterfactuals
+
+Weekend review also reports blocked-buy counterfactual outcomes:
+
+```text
+Blocked-buy counterfactual: 1d=<outperformed>/<mature> 5d=<outperformed>/<mature> 20d=<outperformed>/<mature> review_only=true
+```
+
+The source of truth is the frozen decision-funnel `buy_intents` artifact when
+available. Older decision-style blocked positions are used only as a legacy
+fallback. These outcomes answer whether blocked buy candidates later beat the
+benchmark. They are review inputs only and must not automatically change
+scorecard, certification, or sizing thresholds.
+
+Read 1d results as an early diagnostic only. Threshold review should wait for
+the intended 5d/20d horizons to mature and should account for trading costs,
+slippage, and candidate-selection bias.
+
+## Seeding Boundary
+
+Do not create an automatic seeding path for insufficient strategies. If review
+later proves that replay/shadow evidence cannot produce certification samples,
+the only acceptable first step is a separate human-reviewed seeding proposal
+with a tiny bounded size, explicit `seeding` labeling, and normal lifecycle,
+fingerprint, QC ACK, and reconciliation. That path does not exist by default.
