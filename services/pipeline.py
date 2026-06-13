@@ -118,6 +118,9 @@ from services.target_envelope import default_target_envelope_config
 from services.evidence_cap_config import default_evidence_cap_config
 from services.alpha_decision_policy import default_alpha_decision_policy_config
 from services.strategy_certification import default_strategy_execution_evidence_config
+from services.strategy_execution_evidence_notifications import (
+    notify_strategy_execution_evidence_certification,
+)
 from services.portfolio_risk_diagnostic import load_portfolio_var_cvar_diagnostic
 from services.alpha_validation_persistence import persist_alpha_validation_run
 from services.validation_observation_loop import persist_observations_for_analysis
@@ -2425,6 +2428,24 @@ async def _run_pipeline_inner(trigger: str, *, trading_analysis_gate: dict[str, 
             },
             duration_ms=0,
         )
+        try:
+            async with AsyncSessionLocal() as db:
+                notify_result = await notify_strategy_execution_evidence_certification(
+                    db=db,
+                    analysis_id=analysis_id,
+                    diagnostic_artifacts=risk_out.get("diagnostic_artifacts") or [],
+                    notifier=tool_send_telegram,
+                )
+            if notify_result.get("sent"):
+                logger.info(
+                    "[pipeline] strategy execution evidence certification notified: %s",
+                    notify_result,
+                )
+        except Exception as notify_exc:
+            logger.warning(
+                "[pipeline] strategy execution evidence certification notification failed: %s",
+                notify_exc,
+            )
     except Exception as e:
         logger.warning("[pipeline] diagnostic artifact build failed: %s", e)
         risk_out["diagnostic_artifacts_error"] = str(e)

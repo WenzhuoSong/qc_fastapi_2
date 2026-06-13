@@ -480,13 +480,15 @@ def _strategy_execution_evidence_summary(strategies: dict[str, Any]) -> dict[str
         confidence_row = confidence.get(name) if isinstance(confidence.get(name), dict) else {}
         suggested_use = str(confidence_row.get("suggested_use") or cert.get("suggested_use") or "watch_only")
         execution_status = str(cert.get("execution_evidence_status") or "unknown")
+        evidence_checks = cert.get("evidence_checks") if isinstance(cert.get("evidence_checks"), dict) else {}
         rows.append({
             "strategy_name": name,
             "suggested_use": suggested_use,
             "certification_status": cert.get("status"),
             "approved_use": cert.get("approved_use"),
             "execution_evidence_status": execution_status,
-            "failed_checks": (cert.get("evidence_checks") or {}).get("failed") or [],
+            "failed_checks": evidence_checks.get("failed") or [],
+            "evidence_checks": evidence_checks,
         })
     return {
         "schema_version": "strategy_execution_evidence_summary_v1",

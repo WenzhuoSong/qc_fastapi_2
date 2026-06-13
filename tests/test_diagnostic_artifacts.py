@@ -301,6 +301,12 @@ class DiagnosticArtifactTests(unittest.TestCase):
                             "strategy_name": "momentum_lite_v1",
                             "execution_evidence_status": "insufficient_execution_evidence",
                             "failed_checks": ["live_samples_min"],
+                            "evidence_checks": {
+                                "checks": {
+                                    "live_samples_min": {"pass": False, "actual": 0, "threshold": 5}
+                                },
+                                "failed": ["live_samples_min"],
+                            },
                         }
                     ],
                 },
@@ -325,6 +331,10 @@ class DiagnosticArtifactTests(unittest.TestCase):
         self.assertEqual(
             payload["data_quality_flags"]["strategy_execution_evidence"]["rows"][0]["failed_checks"],
             ["live_samples_min"],
+        )
+        self.assertFalse(
+            payload["data_quality_flags"]["strategy_execution_evidence"]["rows"][0]
+            ["evidence_checks"]["checks"]["live_samples_min"]["pass"],
         )
 
 

@@ -387,6 +387,23 @@ class TargetBuilderTest(unittest.TestCase):
         self.assertTrue(any(item.startswith("turnover_clip:") for item in out["violations"]))
         self.assertTrue(out["turnover"]["within_budget"])
 
+    def test_single_delta_and_turnover_caps_constrain_risk_reducing_sells(self):
+        out = build_target_weights(
+            base_weights={"SPY": 0.0, "CASH": 1.0},
+            current_weights={"SPY": 0.20, "CASH": 0.80},
+            market_scorecard={"investment_permission": "reduce_risk_only"},
+            decision_style={},
+            position_governance={"position_decisions": []},
+            validated_advisory=[],
+            constraints={"max_single_delta": 0.10, "max_turnover": 0.04},
+        ).to_dict()
+
+        self.assertGreaterEqual(out["target_weights"]["SPY"], 0.12)
+        self.assertLess(out["target_weights"]["SPY"], 0.20)
+        self.assertTrue(any(item.startswith("single_delta_clip:SPY") for item in out["violations"]))
+        self.assertTrue(any(item.startswith("turnover_clip:") for item in out["violations"]))
+        self.assertTrue(out["turnover"]["within_budget"])
+
     def test_policy_caps_release_excess_to_cash(self):
         out = build_target_weights(
             base_weights={"PSI": 0.08, "CASH": 0.92},

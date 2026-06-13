@@ -12,6 +12,48 @@ LLM explains and advises.
 Deterministic Python validates, constructs targets, audits, and executes.
 ```
 
+Two execution-control invariants sit above the layer model:
+
+```
+Execution safety is symmetric.
+Risk-intent admission is intentionally asymmetric.
+```
+
+Symmetric execution safety means both buy and sell targets must pass the same
+account truth, lifecycle, fingerprint/dedupe, preflight, QC ACK, and
+reconciliation controls before they count as real execution.
+
+Asymmetric risk admission means increasing risk is harder than reducing risk.
+Adds require execution-grade evidence and pass through scorecard, governance,
+target-builder, sizing, cost, and risk controls. Risk-reducing trims remain
+available in degraded/defensive states, but they are still capped, logged,
+audited, and reconciled.
+
+Invariant guard tests:
+
+- `tests/test_strategy_certification.py::test_degraded_strategy_data_quality_fails_closed`
+- `tests/test_strategy_certification.py::test_execution_evidence_kill_switch_round_trip_has_no_residual_state`
+- `tests/test_position_governance.py::test_uncertified_strategy_downgrade_blocks_add_without_forced_exit`
+- `tests/test_position_governance.py::test_uncertified_strategy_downgrade_still_allows_risk_reducing_trim`
+- `tests/test_target_builder.py::test_single_delta_and_turnover_caps_are_deterministic`
+- `tests/test_target_builder.py::test_single_delta_and_turnover_caps_constrain_risk_reducing_sells`
+- `tests/test_scorecard_execution_semantics.py::test_insufficient_execution_evidence_blocks_automatic_adds`
+- `tests/test_full_auto_llm_advisory_boundary.py::test_full_auto_llm_advisory_is_trim_only_source_contract`
+
+Any future change that lets collected labels, alpha validation, or other data
+automatically affect live-money behavior must satisfy all four conditions:
+
+1. Failure direction is conservative.
+2. Impact is bounded by existing sizing/risk limits, or those limits remain
+   unchanged.
+3. A kill switch or equivalent one-step rollback exists.
+4. Every activation leaves a frozen audit event.
+
+The strategy execution evidence gate satisfies this template: it changes
+admission into existing small-add constraints, does not change sizing limits,
+fails closed on degraded evidence, has `force_advisory_only`, and freezes
+strategy evidence into the decision-funnel artifacts.
+
 ---
 
 ## 1. System Boundary

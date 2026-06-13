@@ -73,6 +73,11 @@ When the first strategy flips to `execution_grade_validated`:
    reconciliation.
 5. Confirm the next outcome label is created on schedule.
 
+The pipeline sends a Telegram notification when a strategy newly enters
+`execution_grade_validated` from the frozen decision-funnel artifact. The
+notification is observability-only: it does not change target weights, sizing
+limits, execution authority, or scorecard thresholds.
+
 ## Flip Monitoring
 
 Weekend review/operator pack reports:
