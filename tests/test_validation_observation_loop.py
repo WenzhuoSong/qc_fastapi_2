@@ -13,6 +13,7 @@ from services.validation_observation_loop import (
     build_validation_observation_records_from_analysis,
     complete_hedge_observation_if_mature,
     forward_return_from_feature_rows,
+    _db_record,
     _validation_observation_market_open_verdict,
 )
 
@@ -290,6 +291,32 @@ class ValidationObservationLoopTests(unittest.TestCase):
         self.assertEqual(updated["outcome_payload"]["outcome_status"], "completed_t5")
         self.assertEqual(updated["outcome_payload"]["threshold_assessment"], "too_conservative")
         self.assertAlmostEqual(updated["metrics"]["spy_return_5d"], -0.06)
+
+    def test_db_record_coerces_observation_timestamps_from_model_dict(self):
+        record = {
+            "observation_id": "hedge_intent:43",
+            "observation_type": OBS_HEDGE_INTENT,
+            "analysis_id": 43,
+            "command_id": "analysis_43",
+            "observed_at": "2026-06-01T14:00:00",
+            "observation_date": "2026-06-01",
+            "horizon_days": 5,
+            "maturity_date": "2026-06-08",
+            "status": STATUS_COMPLETED,
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+            "observation_payload": {"schema_version": "test"},
+            "outcome_payload": {"outcome_status": "completed_t5"},
+            "metrics": {},
+            "recommendation": {},
+            "content_hash": "x" * 64,
+        }
+
+        db_record = _db_record(record)
+
+        self.assertIsInstance(db_record["observed_at"], datetime)
+        self.assertEqual(db_record["observation_date"], date(2026, 6, 1))
+        self.assertEqual(db_record["maturity_date"], date(2026, 6, 8))
 
     def test_builds_execution_truth_observation(self):
         record = build_execution_truth_observation_record({

@@ -1077,8 +1077,14 @@ def _order_summary(payload: dict[str, Any], qc_response: dict[str, Any]) -> dict
 
 def _db_record(record: dict[str, Any]) -> dict[str, Any]:
     now = _utcnow()
+    observed_at = _parse_datetime(record.get("observed_at")) or now
+    observation_date = _parse_date(record.get("observation_date")) or observed_at.date()
+    maturity_date = _parse_date(record.get("maturity_date"))
     return {
         **record,
+        "observed_at": observed_at.replace(tzinfo=None),
+        "observation_date": observation_date,
+        "maturity_date": maturity_date,
         "observation_payload": json_safe(record.get("observation_payload") or {}),
         "outcome_payload": json_safe(record.get("outcome_payload")),
         "metrics": json_safe(record.get("metrics") or {}),
