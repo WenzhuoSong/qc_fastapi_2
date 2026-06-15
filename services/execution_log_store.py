@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy import desc
@@ -36,6 +37,8 @@ RECONCILIATION_TERMINAL_QC_STATUSES = {
 }
 _ANALYSIS_EXECUTED_AT_SKIP_STATUSES = {"", "pending", "proposed", "running"}
 _NOT_SENT_DB_STATUSES = {"failed", "rejected", "skipped", "deferred", "deduped"}
+MARKET_ACTIVITY_TIMEZONE = "America/New_York"
+MARKET_ACTIVITY_TZ = ZoneInfo(MARKET_ACTIVITY_TIMEZONE)
 
 
 def _execution_log_db_status(status: str | None) -> str:
@@ -1097,7 +1100,7 @@ async def command_submission_state(command_id: str, analysis_id: int | None = No
 async def summarize_today_execution_activity(now: datetime | None = None) -> dict[str, Any]:
     now = now or _utcnow_db_naive()
     await reconcile_timeout_no_ack_commands(now=now)
-    start = datetime.combine(now.date(), time.min)
+    start, activity_date = _market_activity_start_db_naive(now)
     async with AsyncSessionLocal() as db:
         rows = (
             await db.execute(
@@ -1106,7 +1109,23 @@ async def summarize_today_execution_activity(now: datetime | None = None) -> dic
                 .where(ExecutionLog.executed_at >= start)
             )
         ).scalars().all()
-    return summarize_execution_activity_rows(rows)
+    summary = summarize_execution_activity_rows(rows)
+    summary["activity_date"] = activity_date
+    summary["activity_timezone"] = MARKET_ACTIVITY_TIMEZONE
+    summary["activity_start_utc"] = start.isoformat()
+    return summary
+
+
+def _market_activity_start_db_naive(now: datetime) -> tuple[datetime, str]:
+    """Return the DB-naive UTC start of the current US/Eastern market date."""
+    if now.tzinfo is None:
+        now_utc = now.replace(tzinfo=UTC)
+    else:
+        now_utc = now.astimezone(UTC)
+    market_date = now_utc.astimezone(MARKET_ACTIVITY_TZ).date()
+    market_start = datetime.combine(market_date, time.min, tzinfo=MARKET_ACTIVITY_TZ)
+    start_utc = market_start.astimezone(UTC).replace(tzinfo=None)
+    return start_utc, market_date.isoformat()
 
 
 def summarize_execution_activity_rows(rows: list[Any]) -> dict[str, Any]:

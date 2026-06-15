@@ -1,5 +1,6 @@
 import unittest
 import asyncio
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -19,6 +20,7 @@ from services.execution_preflight import (
     preflight_execution_weights,
 )
 from services.execution_log_store import summarize_execution_activity_rows
+from services.execution_log_store import _market_activity_start_db_naive
 from services.transaction_cost_gate import format_transaction_cost_gate_summary
 
 
@@ -438,6 +440,17 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertEqual(summary["sell_delta"], 0.02)
         self.assertEqual(summary["gross_turnover"], 0.025)
 
+    def test_daily_execution_activity_uses_us_eastern_activity_date(self):
+        start, activity_date = _market_activity_start_db_naive(datetime(2026, 6, 15, 15, 0))
+
+        self.assertEqual(activity_date, "2026-06-15")
+        self.assertEqual(start, datetime(2026, 6, 15, 4, 0))
+
+        early_utc_start, early_utc_activity_date = _market_activity_start_db_naive(datetime(2026, 6, 15, 2, 0))
+
+        self.assertEqual(early_utc_activity_date, "2026-06-14")
+        self.assertEqual(early_utc_start, datetime(2026, 6, 14, 4, 0))
+
     def test_same_target_dedupe_config_defaults_are_stable(self):
         config = _command_config({})
 
@@ -446,7 +459,7 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertEqual(config["max_buy_delta_per_day"], 0.10)
         self.assertEqual(config["shadow_real_money_max_buy_delta_per_day"], 0.03)
 
-    def test_preflight_blocks_projected_daily_buy_delta(self):
+    def test_preflight_hard_blocks_whole_command_when_projected_daily_buy_delta_exceeds_cap(self):
         async def run():
             with (
                 patch(
@@ -484,11 +497,13 @@ class ExecutorPreflightTests(unittest.TestCase):
 
         self.assertFalse(result["allowed"])
         self.assertIn("daily_buy_delta_ok", result["blockers"])
+        self.assertEqual(result["execution_authority"], "hard_block")
         check = result["checks"]["daily_buy_delta_ok"]
         self.assertEqual(check["actual"], 0.11)
         self.assertEqual(check["threshold"], 0.10)
         self.assertEqual(check["today_used"], 0.09)
         self.assertEqual(check["command_delta"], 0.02)
+        self.assertEqual(check["execution_effect"], "hard_block")
         self.assertFalse(check["shadow_real_money_would_pass"])
 
     def test_same_target_dedupe_extracts_sent_weights_as_fallback(self):
