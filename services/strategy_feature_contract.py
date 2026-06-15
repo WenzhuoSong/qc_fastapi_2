@@ -197,25 +197,25 @@ def _with_strategy_aliases(row: dict[str, Any]) -> dict[str, Any]:
 def _source_for_field(row: dict[str, Any], field: str) -> tuple[str, str, date | None]:
     """Infer field provenance from feature_sources, otherwise QC snapshot."""
     canonical = canonical_field_name(field)
+    matches: list[tuple[str, str, date | None]] = []
     for source_info in row.get("feature_sources") or []:
         filled_fields = set(source_info.get("filled_fields") or [])
         canonical_aliases = source_info.get("canonical_aliases") or {}
         source = str(source_info.get("source") or "unknown")
-        matched_field = None
-        if field in filled_fields:
-            matched_field = field
-        elif canonical in filled_fields:
-            matched_field = canonical
-        elif canonical_aliases.get(field) == canonical:
-            matched_field = field
-        if matched_field is None:
+        matched = field in filled_fields or canonical in filled_fields or canonical_aliases.get(field) == canonical
+        if not matched:
             continue
-        authority = _authority_from_source_info(source_info, matched_field, source)
-        return (
+        authority = _authority_from_source_info(source_info, field, source)
+        matches.append((
             source,
             authority,
             _parse_date(source_info.get("trading_date")),
-        )
+        ))
+    for match in matches:
+        if _is_authoritative_provenance(field, match[0], match[1]):
+            return match
+    if matches:
+        return matches[-1]
     source = "qc_snapshot"
     inferred_field = field if row.get(field) is not None else canonical
     authority = authority_for_field(inferred_field, source).value
@@ -232,6 +232,16 @@ def _authority_from_source_info(source_info: dict[str, Any], field: str, source:
     if is_authoritative(field, source):
         return authority_for_field(field, source).value
     return authority_for_field(field, source).value
+
+
+def _is_authoritative_provenance(field: str, source: str, authority: str) -> bool:
+    if authority in {
+        FeatureAuthority.DAILY_RESEARCH.value,
+        FeatureAuthority.LIVE_STATE.value,
+        FeatureAuthority.INTRADAY.value,
+    }:
+        return True
+    return is_authoritative(field, source)
 
 
 def _parse_date(value: Any) -> date | None:

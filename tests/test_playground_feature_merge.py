@@ -103,6 +103,52 @@ class PlaygroundFeatureMergeTests(unittest.TestCase):
         self.assertEqual(contract["verdict"], "ready")
         self.assertEqual(contract["non_authoritative_required_fields"], [])
 
+    def test_yfinance_provenance_wins_over_qc_daily_snapshot_for_strategy_fields(self):
+        strategy = get_strategy("momentum_lite_v1")
+        result = build_strategy_input(
+            strategy=strategy,
+            live_rows=[
+                {
+                    "ticker": "SOXX",
+                    "mom_20d": 0.01,
+                    "mom_60d": 0.02,
+                    "mom_252d": 0.03,
+                    "rsi_14": 60.0,
+                    "atr_pct": 0.04,
+                    "feature_sources": [
+                        {
+                            "source": "qc_daily_snapshot",
+                            "filled_fields": ["mom_20d", "mom_60d", "mom_252d", "rsi_14", "atr_pct"],
+                            "authority_by_field": {
+                                "mom_20d": "qc_eod_audit",
+                                "mom_60d": "qc_eod_audit",
+                                "mom_252d": "qc_eod_audit",
+                                "rsi_14": "qc_eod_audit",
+                                "atr_pct": "qc_eod_audit",
+                            },
+                            "trading_date": "2026-06-12",
+                        }
+                    ],
+                }
+            ],
+            feature_matrix={
+                "SOXX": _valid_momentum_feature("SOXX", 0.12, 0.76, 1.64),
+            },
+            as_of=date(2026, 5, 28),
+        )
+
+        self.assertEqual(result.status, "scored")
+        self.assertEqual(result.scorable_rows[0]["mom_20d"], 0.12)
+        self.assertEqual(result.field_provenance["SOXX"]["mom_20d"]["source"], "yfinance")
+
+        contract = build_strategy_feature_contract(
+            strategy,
+            result.scorable_rows,
+            as_of=date(2026, 5, 28),
+        )
+        self.assertEqual(contract["verdict"], "ready")
+        self.assertEqual(contract["non_authoritative_required_fields"], [])
+
     def test_young_etf_missing_long_history_is_isolated(self):
         strategy = get_strategy("momentum_lite_v1")
         result = build_strategy_input(

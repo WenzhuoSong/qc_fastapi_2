@@ -275,6 +275,7 @@ def _field_value(row: dict[str, Any], field: str) -> Any:
 
 def _source_for_field(row: dict[str, Any], field: str) -> dict[str, Any]:
     canonical = canonical_field_name(field)
+    matches: list[dict[str, Any]] = []
     for source_info in row.get("feature_sources") or []:
         filled = set(source_info.get("filled_fields") or [])
         aliases = source_info.get("canonical_aliases") or {}
@@ -283,11 +284,16 @@ def _source_for_field(row: dict[str, Any], field: str) -> dict[str, Any]:
         matched = field in filled or canonical in filled or aliases.get(field) == canonical
         if not matched:
             continue
-        return {
+        matches.append({
             "source": source,
             "authority": by_field.get(field) or by_field.get(canonical) or authority_for_field(field, source).value,
             "trading_date": source_info.get("trading_date"),
-        }
+        })
+    for match in matches:
+        if _provenance_is_authoritative(field, match):
+            return match
+    if matches:
+        return matches[-1]
     return {
         "source": "live_row",
         "authority": authority_for_field(field, "qc_heartbeat").value,
