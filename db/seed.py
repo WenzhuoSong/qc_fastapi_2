@@ -101,6 +101,10 @@ _DEFAULTS = {
         "force_advisory_only": False,
         "min_live_samples_for_execution": 5,
         "state_scope": "strategy_level",
+        "paper_live_outcome_evidence_enabled": True,
+        "paper_live_signal_source": "fastapi_live_freeze",
+        "paper_live_outcome_horizon_days": 1,
+        "paper_live_actions": ["increase"],
     },
 
     # Portfolio Construction PR4 candidate diagnostics. Shadow is diagnostic-only.

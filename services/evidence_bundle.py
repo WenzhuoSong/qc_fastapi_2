@@ -24,6 +24,7 @@ from services.strategy_diversity import (
     is_strategy_alpha_source,
 )
 from services.strategy_independence import empty_strategy_independence_summary
+from services.strategy_execution_evidence_sources import EXECUTION_TRUSTED_SIGNAL_SOURCE
 
 
 DEFAULT_MAX_AGE_SECONDS = 1800
@@ -47,7 +48,10 @@ def build_evidence_bundle(
     rotation = brief.get("sector_rotation") or {}
     news = _build_news_section(brief)
     structured_news_evidence = news_evidence or build_news_evidence(brief)
-    strategies = _build_strategy_section(playground)
+    strategies = _build_strategy_section(
+        playground,
+        strategy_execution_evidence_config=strategy_execution_evidence_config or {},
+    )
     strategies["strategy_execution_evidence_config"] = strategy_execution_evidence_config or {}
     knowledge = _build_knowledge_section(
         brief=brief,
@@ -159,7 +163,11 @@ def _build_news_section(brief: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]:
+def _build_strategy_section(
+    playground: dict[str, Any] | None,
+    *,
+    strategy_execution_evidence_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if not playground:
         return {
             "playground_available": False,
@@ -207,7 +215,11 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
     walk_forward_validation = playground.get("walk_forward_validation") or {}
     forward_samples = _max_forward_samples(replay_metrics)
     historical_samples = _max_forward_samples(historical_metrics)
-    strategy_results = _strategy_results(playground)
+    paper_live_outcome_evidence = _paper_live_outcome_evidence_section(playground)
+    strategy_results = _strategy_results(
+        playground,
+        paper_live_outcome_metrics=paper_live_outcome_evidence.get("items") or {},
+    )
     strategy_diversity = build_strategy_diversity_summary(strategy_results)
     strategy_independence = playground.get("strategy_independence") or empty_strategy_independence_summary(
         "strategy_independence_missing_from_playground"
@@ -260,15 +272,21 @@ def _build_strategy_section(playground: dict[str, Any] | None) -> dict[str, Any]
         "evidence_vote_summary": playground.get("evidence_vote_summary") or {},
         "evidence_cap_diagnostics": playground.get("evidence_cap_diagnostics") or {},
         "conviction_profile_summary": playground.get("conviction_profile_summary") or {},
+        "paper_live_outcome_evidence": paper_live_outcome_evidence,
         "turnover_warnings": turnover_warnings,
         "data_quality": data_quality,
         "warnings": _unique([str(item) for item in warnings] + turnover_warnings),
     }
 
 
-def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
+def _strategy_results(
+    playground: dict[str, Any],
+    *,
+    paper_live_outcome_metrics: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     replay_metrics = playground.get("replay_metrics") or {}
     historical_metrics = playground.get("historical_replay_metrics") or {}
+    paper_live_metrics = paper_live_outcome_metrics or {}
     confidence = playground.get("strategy_confidence") or {}
     walk_forward_items = (playground.get("walk_forward_validation") or {}).get("items") or {}
     out: list[dict[str, Any]] = []
@@ -277,6 +295,10 @@ def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         name = item.get("strategy_name")
         metrics = replay_metrics.get(name) or {}
+        execution_samples = _select_execution_sample_metrics(
+            qc_recent_metrics=metrics,
+            paper_live_metrics=paper_live_metrics.get(name) or {},
+        )
         hist_metrics = historical_metrics.get(name) or {}
         confidence_row = confidence.get(name) or {}
         walk_forward_row = walk_forward_items.get(name) or {}
@@ -305,6 +327,9 @@ def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
                 risk_profile.get("turnover"),
                 _to_float(item.get("expected_turnover_pct"), _to_float(metrics.get("avg_turnover"))),
             )
+        reason_codes = list(confidence_row.get("reason_codes") or [])
+        if execution_samples.get("sample_source") != "qc_recent_replay":
+            reason_codes.append("paper_live_outcome_supported")
         out.append(
             {
                 "strategy_name": name,
@@ -326,8 +351,11 @@ def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
                 "evidence_contract_version": item.get("evidence_contract_version"),
                 "evidence_cards": item.get("evidence_cards") or [],
                 "evidence_summary": item.get("evidence_summary") or {},
-                "metric_reliability": metrics.get("metric_reliability") or {},
-                "n_forward_return_samples": metrics.get("n_forward_return_samples"),
+                "metric_reliability": execution_samples.get("metric_reliability") or {},
+                "n_forward_return_samples": execution_samples.get("n_forward_return_samples"),
+                "execution_evidence_sample_source": execution_samples.get("sample_source"),
+                "execution_evidence_sample_source_counts": execution_samples.get("source_counts") or {},
+                "execution_evidence_sample_source_detail": execution_samples.get("source_detail") or {},
                 "historical_metric_reliability": hist_metrics.get("metric_reliability") or {},
                 "historical_forward_return_samples": hist_metrics.get("n_forward_return_samples"),
                 "historical_sharpe": hist_metrics.get("sharpe"),
@@ -338,10 +366,99 @@ def _strategy_results(playground: dict[str, Any]) -> list[dict[str, Any]]:
                 "walk_forward_stability_score": walk_forward_row.get("stability_score"),
                 "confidence_score": confidence_row.get("confidence_score"),
                 "suggested_use": confidence_row.get("suggested_use"),
-                "reason_codes": confidence_row.get("reason_codes") or [],
+                "reason_codes": _unique(reason_codes),
             }
         )
     return out
+
+
+def _paper_live_outcome_evidence_section(playground: dict[str, Any]) -> dict[str, Any]:
+    raw = playground.get("paper_live_outcome_metrics") or {}
+    if not isinstance(raw, dict) or not raw:
+        return {
+            "schema_version": "paper_live_strategy_execution_evidence_v1",
+            "enabled": False,
+            "reason": "not_loaded",
+            "items": {},
+            "summary": {"sample_count": 0, "strategy_count": 0},
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+        }
+    items = raw.get("items") if isinstance(raw.get("items"), dict) else raw
+    trusted_items: dict[str, Any] = {}
+    for name, row in (items or {}).items():
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("signal_source") or "") != EXECUTION_TRUSTED_SIGNAL_SOURCE:
+            continue
+        if not bool(row.get("trusted_for_execution_evidence")):
+            continue
+        trusted_items[str(name)] = row
+    return {
+        **raw,
+        "items": dict(sorted(trusted_items.items())),
+        "trusted_signal_source": EXECUTION_TRUSTED_SIGNAL_SOURCE,
+        "execution_authority": "none",
+        "target_weight_mutation": "none",
+    }
+
+
+def _select_execution_sample_metrics(
+    *,
+    qc_recent_metrics: dict[str, Any],
+    paper_live_metrics: dict[str, Any],
+) -> dict[str, Any]:
+    qc_samples = int(_to_float(qc_recent_metrics.get("n_forward_return_samples"), 0) or 0)
+    qc_reliability = qc_recent_metrics.get("metric_reliability") or {}
+    source_counts: dict[str, int] = {"qc_recent_replay": qc_samples}
+    selected = {
+        "n_forward_return_samples": qc_samples,
+        "metric_reliability": qc_reliability,
+        "sample_source": "qc_recent_replay",
+        "source_counts": source_counts,
+        "source_detail": {},
+    }
+    if not _trusted_paper_live_metric(paper_live_metrics):
+        return selected
+    paper_samples = int(_to_float(paper_live_metrics.get("n_forward_return_samples"), 0) or 0)
+    paper_source = str(paper_live_metrics.get("sample_source") or "paper_live:fastapi_live_freeze:h1")
+    source_counts[paper_source] = paper_samples
+    if paper_samples <= qc_samples:
+        selected["source_counts"] = source_counts
+        selected["source_detail"] = {"paper_live": _paper_live_metric_detail(paper_live_metrics)}
+        return selected
+    return {
+        "n_forward_return_samples": paper_samples,
+        "metric_reliability": paper_live_metrics.get("metric_reliability") or {},
+        "sample_source": paper_source,
+        "source_counts": source_counts,
+        "source_detail": {
+            "paper_live": _paper_live_metric_detail(paper_live_metrics),
+            "qc_recent_replay": {"n_forward_return_samples": qc_samples},
+        },
+    }
+
+
+def _trusted_paper_live_metric(row: dict[str, Any]) -> bool:
+    return (
+        isinstance(row, dict)
+        and bool(row.get("trusted_for_execution_evidence"))
+        and str(row.get("signal_source") or "") == EXECUTION_TRUSTED_SIGNAL_SOURCE
+    )
+
+
+def _paper_live_metric_detail(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "signal_source": row.get("signal_source"),
+        "horizon_days": row.get("horizon_days"),
+        "n_forward_return_samples": row.get("n_forward_return_samples"),
+        "avg_excess_vs_spy": row.get("avg_excess_vs_spy"),
+        "hit_rate": row.get("hit_rate"),
+        "label_date_min": row.get("label_date_min"),
+        "label_date_max": row.get("label_date_max"),
+        "action_counts": row.get("action_counts") or {},
+        "data_quality_counts": row.get("data_quality_counts") or {},
+    }
 
 
 def _execution_intel_section(

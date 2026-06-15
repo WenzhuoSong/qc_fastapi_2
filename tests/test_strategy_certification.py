@@ -97,6 +97,40 @@ class StrategyCertificationTest(unittest.TestCase):
         self.assertIn("live_samples_insufficient", row["promotion_blockers"])
         self.assertFalse(row["evidence_checks"]["checks"]["live_samples_min"]["pass"])
 
+    def test_live_samples_check_exposes_sample_source(self):
+        out = certify_strategies({
+            "evidence_summary": {
+                "historical_evidence": "strong",
+                "live_fit": "aligned",
+            },
+            "strategy_results": [
+                {
+                    "strategy_name": "momentum_lite_v1",
+                    "data_ready": True,
+                    "can_influence_allocation": True,
+                    "turnover": 0.20,
+                    "n_forward_return_samples": 8,
+                    "execution_evidence_sample_source": "paper_live:fastapi_live_freeze:h1",
+                    "execution_evidence_sample_source_counts": {
+                        "qc_recent_replay": 0,
+                        "paper_live:fastapi_live_freeze:h1": 8,
+                    },
+                    "historical_forward_return_samples": 289,
+                    "historical_sharpe": 1.2,
+                    "historical_hit_rate": 0.55,
+                    "suggested_use": "advisory",
+                    "confidence_score": 0.7,
+                }
+            ],
+        })
+
+        row = out["items"]["momentum_lite_v1"]
+        self.assertEqual(row["live"]["sample_source"], "paper_live:fastapi_live_freeze:h1")
+        self.assertEqual(row["live"]["source_counts"]["paper_live:fastapi_live_freeze:h1"], 8)
+        check = row["evidence_checks"]["checks"]["live_samples_min"]
+        self.assertEqual(check["source"], "paper_live:fastapi_live_freeze:h1")
+        self.assertEqual(check["source_counts"]["qc_recent_replay"], 0)
+
     def test_primary_can_be_execution_grade_when_evidence_passes(self):
         out = certify_strategies({
             "data_quality": "fresh",

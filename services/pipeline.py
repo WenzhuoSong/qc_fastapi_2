@@ -118,6 +118,10 @@ from services.target_envelope import default_target_envelope_config
 from services.evidence_cap_config import default_evidence_cap_config
 from services.alpha_decision_policy import default_alpha_decision_policy_config
 from services.strategy_certification import default_strategy_execution_evidence_config
+from services.strategy_execution_evidence_sources import (
+    disabled_paper_live_outcome_metrics,
+    load_paper_live_outcome_metrics,
+)
 from services.strategy_execution_evidence_notifications import (
     notify_strategy_execution_evidence_certification,
 )
@@ -1082,6 +1086,38 @@ async def _run_pipeline_inner(trigger: str, *, trading_analysis_gate: dict[str, 
             evidence_cap_config=pipeline_context.get("evidence_cap_config") or {},
         )
         playground_bundle = playground_bundle_obj.to_dict()
+        strategy_evidence_cfg = pipeline_context.get("strategy_execution_evidence_config") or {}
+        if (
+            bool(strategy_evidence_cfg.get("enabled", True))
+            and not bool(strategy_evidence_cfg.get("force_advisory_only", False))
+            and bool(strategy_evidence_cfg.get("paper_live_outcome_evidence_enabled", True))
+        ):
+            try:
+                async with AsyncSessionLocal() as db:
+                    playground_bundle["paper_live_outcome_metrics"] = await load_paper_live_outcome_metrics(
+                        db,
+                        signal_source=str(
+                            strategy_evidence_cfg.get("paper_live_signal_source")
+                            or "fastapi_live_freeze"
+                        ),
+                        horizon_days=int(
+                            strategy_evidence_cfg.get("paper_live_outcome_horizon_days")
+                            or 1
+                        ),
+                        actions=strategy_evidence_cfg.get("paper_live_actions") or ["increase"],
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Stage 2c paper-live execution evidence failed; continuing fail-closed: %s",
+                    e,
+                )
+                playground_bundle["paper_live_outcome_metrics"] = disabled_paper_live_outcome_metrics(
+                    f"load_failed:{e}"
+                )
+        else:
+            playground_bundle["paper_live_outcome_metrics"] = disabled_paper_live_outcome_metrics(
+                "disabled_by_strategy_execution_evidence_config"
+            )
         await _save_step_log(
             analysis_id, "2c_playground", "strategy_playground",
             input_data={"strategies": [s["strategy_name"] for s in playground_bundle.get("strategies", [])]},

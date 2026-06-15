@@ -19,6 +19,10 @@ DEFAULT_EXECUTION_EVIDENCE_CONFIG: dict[str, Any] = {
     "force_advisory_only": False,
     "min_live_samples_for_execution": MIN_LIVE_SAMPLES_FOR_EXECUTION,
     "state_scope": "strategy_level",
+    "paper_live_outcome_evidence_enabled": True,
+    "paper_live_signal_source": "fastapi_live_freeze",
+    "paper_live_outcome_horizon_days": 1,
+    "paper_live_actions": ["increase"],
 }
 
 
@@ -32,6 +36,21 @@ def default_strategy_execution_evidence_config(raw: dict[str, Any] | None = None
     parsed_min = _to_int(value.get("min_live_samples_for_execution"))
     if parsed_min is not None:
         cfg["min_live_samples_for_execution"] = max(parsed_min, 0)
+    if "paper_live_outcome_evidence_enabled" in value:
+        cfg["paper_live_outcome_evidence_enabled"] = _to_bool(
+            value.get("paper_live_outcome_evidence_enabled")
+        )
+    if value.get("paper_live_signal_source"):
+        cfg["paper_live_signal_source"] = str(value.get("paper_live_signal_source"))
+    parsed_horizon = _to_int(value.get("paper_live_outcome_horizon_days"))
+    if parsed_horizon is not None:
+        cfg["paper_live_outcome_horizon_days"] = max(parsed_horizon, 1)
+    if isinstance(value.get("paper_live_actions"), list):
+        cfg["paper_live_actions"] = [
+            str(item).strip()
+            for item in value.get("paper_live_actions") or []
+            if str(item).strip()
+        ]
     cfg["_explicitly_configured"] = bool(value)
     return cfg
 
@@ -161,6 +180,8 @@ def _certify_one(
     name = str(row.get("strategy_name") or "")
     historical_samples = int(_to_float(row.get("historical_forward_return_samples"), 0) or 0)
     live_samples = int(_to_float(row.get("n_forward_return_samples"), 0) or 0)
+    live_sample_source = str(row.get("execution_evidence_sample_source") or "qc_recent_replay")
+    live_sample_source_counts = row.get("execution_evidence_sample_source_counts") or {}
     turnover = _to_float(row.get("turnover"), 0.0) or 0.0
     sharpe = _to_float(row.get("historical_sharpe"), None)
     hit_rate = _to_float(row.get("historical_hit_rate"), None)
@@ -251,6 +272,8 @@ def _certify_one(
             sharpe=sharpe,
             live_samples=live_samples,
             min_live_samples=min_live_samples,
+            live_sample_source=live_sample_source,
+            live_sample_source_counts=live_sample_source_counts,
             live_fit=live_fit,
             walk_forward_level=walk_forward_level,
             turnover=turnover,
@@ -266,6 +289,8 @@ def _certify_one(
         "live": {
             "samples": live_samples,
             "fit": live_fit,
+            "sample_source": live_sample_source,
+            "source_counts": live_sample_source_counts,
         },
         "walk_forward": {
             "level": walk_forward_level,
@@ -364,6 +389,8 @@ def _evidence_checks(
     sharpe: float | None,
     live_samples: int,
     min_live_samples: int,
+    live_sample_source: str,
+    live_sample_source_counts: dict[str, Any],
     live_fit: str,
     walk_forward_level: str,
     turnover: float,
@@ -396,6 +423,8 @@ def _evidence_checks(
             "pass": live_samples >= min_live_samples,
             "actual": live_samples,
             "threshold": min_live_samples,
+            "source": live_sample_source,
+            "source_counts": live_sample_source_counts,
         },
         "live_fit_not_conflicted": {
             "pass": live_fit != "conflicted",

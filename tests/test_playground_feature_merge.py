@@ -1,8 +1,17 @@
 import unittest
 from datetime import date
 
+try:
+    from env_setup import ensure_test_settings
+except ModuleNotFoundError:
+    from tests.env_setup import ensure_test_settings
+
+ensure_test_settings()
+
+from services.playground import _rows_with_strategy_universe
 from services.strategy_input_builder import ExclusionReason, build_strategy_input
 from services.strategy_feature_contract import build_strategy_feature_contract
+from services.universe_policy import default_strategy_research_universe
 from strategies import get_strategy
 
 
@@ -21,6 +30,31 @@ def _valid_momentum_feature(ticker: str, mom20: float, mom60: float, mom252: flo
 
 
 class PlaygroundFeatureMergeTests(unittest.TestCase):
+    def test_generic_strategy_gets_default_research_universe(self):
+        rows = _rows_with_strategy_universe(
+            holdings=[{"ticker": "QQQ", "universe_role": "core"}],
+            strategy_names=["momentum_lite_v1"],
+        )
+
+        tickers = {row["ticker"] for row in rows}
+        self.assertTrue(set(default_strategy_research_universe()).issubset(tickers))
+        self.assertIn("SPY", tickers)
+        self.assertIn("SOXX", tickers)
+
+    def test_default_research_universe_excludes_hedges_for_generic_strategy(self):
+        rows = _rows_with_strategy_universe(
+            holdings=[
+                {"ticker": "QQQ", "universe_role": "core"},
+                {"ticker": "PSQ", "universe_role": "hedge"},
+            ],
+            strategy_names=["momentum_lite_v1"],
+        )
+
+        tickers = {row["ticker"] for row in rows}
+        self.assertNotIn("PSQ", tickers)
+        self.assertNotIn("TQQQ", tickers)
+        self.assertNotIn("UVXY", tickers)
+
     def test_yfinance_replaces_non_authoritative_qc_research_fields(self):
         strategy = get_strategy("momentum_lite_v1")
         result = build_strategy_input(

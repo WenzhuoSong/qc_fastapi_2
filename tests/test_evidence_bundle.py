@@ -492,6 +492,151 @@ class EvidenceBundleTest(unittest.TestCase):
         self.assertTrue(bundle["strategies"]["turnover_warnings"])
         self.assertIn("may erode returns", bundle["strategies"]["warnings"][0])
 
+    def test_paper_live_outcomes_can_supply_execution_live_samples(self):
+        bundle = build_evidence_bundle(
+            brief={
+                "key_facts": {},
+                "sector_rotation": {},
+                "news_context": {"macro_signals": []},
+                "holdings": [{"ticker": "SPY"}],
+            },
+            quant_baseline={"regime_result": {"regime": "trending_bull", "confidence": "medium"}},
+            playground_bundle={
+                "snapshot_count": 0,
+                "consensus_weights": {"SPY": 0.2, "CASH": 0.8},
+                "evidence_summary": {
+                    "historical_evidence": "strong",
+                    "live_fit": "insufficient",
+                    "execution_permission": "advisory",
+                },
+                "strategy_confidence": {
+                    "momentum_lite_v1": {
+                        "confidence_score": 0.72,
+                        "suggested_use": "advisory",
+                        "reason_codes": ["historical_strong"],
+                    }
+                },
+                "strategies": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "strategy_card": {"family": "trend_following", "alpha_source": True},
+                        "data_ready": True,
+                        "feature_contract": {"can_influence_allocation": True},
+                        "risk_profile": {"turnover": 0.20},
+                    }
+                ],
+                "replay_metrics": {
+                    "momentum_lite_v1": {"n_forward_return_samples": 0}
+                },
+                "paper_live_outcome_metrics": {
+                    "schema_version": "paper_live_strategy_execution_evidence_v1",
+                    "items": {
+                        "momentum_lite_v1": {
+                            "signal_source": "fastapi_live_freeze",
+                            "trusted_for_execution_evidence": True,
+                            "sample_source": "paper_live:fastapi_live_freeze:h1",
+                            "horizon_days": 1,
+                            "n_forward_return_samples": 8,
+                            "metric_reliability": {"level": "medium"},
+                            "avg_excess_vs_spy": 0.01,
+                            "hit_rate": 0.625,
+                        }
+                    },
+                },
+                "historical_replay_metrics": {
+                    "momentum_lite_v1": {
+                        "n_forward_return_samples": 289,
+                        "metric_reliability": {"level": "high"},
+                        "sharpe": 1.1,
+                        "hit_rate": 0.55,
+                    }
+                },
+                "walk_forward_validation": {
+                    "items": {
+                        "momentum_lite_v1": {
+                            "level": "medium",
+                            "valid_fold_count": 4,
+                            "pass_rate": 0.50,
+                        }
+                    }
+                },
+            },
+        )
+
+        row = bundle["strategies"]["strategy_results"][0]
+        self.assertEqual(row["n_forward_return_samples"], 8)
+        self.assertEqual(row["execution_evidence_sample_source"], "paper_live:fastapi_live_freeze:h1")
+        cert = bundle["strategies"]["strategy_certification"]["items"]["momentum_lite_v1"]
+        self.assertEqual(cert["execution_evidence_status"], "execution_grade_validated")
+        live_check = cert["evidence_checks"]["checks"]["live_samples_min"]
+        self.assertEqual(live_check["source"], "paper_live:fastapi_live_freeze:h1")
+        self.assertEqual(live_check["source_counts"]["paper_live:fastapi_live_freeze:h1"], 8)
+        self.assertEqual(live_check["source_counts"]["qc_recent_replay"], 0)
+
+    def test_yfinance_replay_outcomes_do_not_supply_execution_live_samples(self):
+        bundle = build_evidence_bundle(
+            brief={
+                "key_facts": {},
+                "sector_rotation": {},
+                "news_context": {"macro_signals": []},
+                "holdings": [{"ticker": "SPY"}],
+            },
+            quant_baseline={"regime_result": {"regime": "trending_bull", "confidence": "medium"}},
+            playground_bundle={
+                "snapshot_count": 0,
+                "consensus_weights": {"SPY": 0.2, "CASH": 0.8},
+                "strategy_confidence": {
+                    "momentum_lite_v1": {
+                        "confidence_score": 0.72,
+                        "suggested_use": "advisory",
+                        "reason_codes": ["historical_strong"],
+                    }
+                },
+                "strategies": [
+                    {
+                        "strategy_name": "momentum_lite_v1",
+                        "strategy_card": {"family": "trend_following", "alpha_source": True},
+                        "data_ready": True,
+                        "feature_contract": {"can_influence_allocation": True},
+                        "risk_profile": {"turnover": 0.20},
+                    }
+                ],
+                "replay_metrics": {
+                    "momentum_lite_v1": {"n_forward_return_samples": 0}
+                },
+                "paper_live_outcome_metrics": {
+                    "items": {
+                        "momentum_lite_v1": {
+                            "signal_source": "yfinance_replay",
+                            "trusted_for_execution_evidence": True,
+                            "sample_source": "paper_live:yfinance_replay:h5",
+                            "horizon_days": 5,
+                            "n_forward_return_samples": 500,
+                            "metric_reliability": {"level": "high"},
+                        }
+                    },
+                },
+                "historical_replay_metrics": {
+                    "momentum_lite_v1": {
+                        "n_forward_return_samples": 289,
+                        "metric_reliability": {"level": "high"},
+                        "sharpe": 1.1,
+                        "hit_rate": 0.55,
+                    }
+                },
+                "walk_forward_validation": {
+                    "items": {"momentum_lite_v1": {"level": "medium", "valid_fold_count": 4}}
+                },
+            },
+        )
+
+        row = bundle["strategies"]["strategy_results"][0]
+        self.assertEqual(row["n_forward_return_samples"], 0)
+        self.assertEqual(row["execution_evidence_sample_source"], "qc_recent_replay")
+        cert = bundle["strategies"]["strategy_certification"]["items"]["momentum_lite_v1"]
+        self.assertEqual(cert["execution_evidence_status"], "insufficient_execution_evidence")
+        self.assertIn("live_samples_insufficient", cert["promotion_blockers"])
+
 
 if __name__ == "__main__":
     unittest.main()

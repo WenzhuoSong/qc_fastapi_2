@@ -55,7 +55,7 @@ from services.strategy_independence import (
 )
 from services.strategy_breadth_calibration import build_strategy_breadth_calibration_report
 from services.strategy_validation_dashboard import load_validation_dashboard_summary
-from services.universe_policy import filter_tradable_research_rows
+from services.universe_policy import default_strategy_research_universe, filter_tradable_research_rows
 from services.walk_forward_validation import validate_walk_forward
 from strategies import ScoredTicker, compute_rebalance_actions, estimate_cost_pct, get_strategy
 
@@ -1023,11 +1023,18 @@ def _required_fields_for_strategies(strategy_names: list[str]) -> set[str]:
 
 def _required_universe_for_strategies(strategy_names: list[str]) -> set[str]:
     tickers: set[str] = set()
+    needs_default_universe = False
     for name in strategy_names:
         try:
-            tickers.update(get_strategy(name).universe_tickers)
+            strategy = get_strategy(name)
+            if strategy.universe_tickers:
+                tickers.update(strategy.universe_tickers)
+            elif not strategy.allow_hedge_research_tickers:
+                needs_default_universe = True
         except Exception as exc:
             logger.warning("[playground] could not read universe for %s: %s", name, exc)
+    if needs_default_universe:
+        tickers.update(default_strategy_research_universe())
     return {ticker.upper().strip() for ticker in tickers if ticker}
 
 
