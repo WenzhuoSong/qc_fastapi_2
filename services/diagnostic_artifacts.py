@@ -185,6 +185,8 @@ class DecisionFunnelObservability(DiagnosticArtifact):
     cash_trajectory_point: dict[str, Any] = Field(default_factory=dict)
     sell_side_attribution: dict[str, Any] = Field(default_factory=dict)
     cash_drift_attribution: dict[str, Any] = Field(default_factory=dict)
+    full_chain_buy_intent_trace: list[dict[str, Any]] = Field(default_factory=list)
+    full_chain_trace_summary: dict[str, Any] = Field(default_factory=dict)
     scorecard_semantic_acceptance: dict[str, Any] = Field(default_factory=dict)
     data_quality_flags: dict[str, Any] = Field(default_factory=dict)
     llm_chain_decision_influence: dict[str, Any] = Field(default_factory=dict)
@@ -384,6 +386,16 @@ def build_decision_funnel_observability(
         sell_side_attribution=sell_attribution,
         risk_out=risk_out or {},
     )
+    full_chain_trace = _full_chain_buy_intent_trace(
+        buy_intents=buy_intents,
+        stateless_verdicts=stateless,
+        stateful_blockers=stateful,
+        current_weights=current_weights,
+        target_weights=target_weights,
+        risk_out=risk_out or {},
+        min_buy_intent_delta=min_buy_intent_delta,
+    )
+    full_chain_summary = _full_chain_trace_summary(full_chain_trace)
     scorecard_semantic_acceptance = _scorecard_semantic_acceptance(
         market_scorecard=market_scorecard or {},
         buy_intents=buy_intents,
@@ -421,6 +433,8 @@ def build_decision_funnel_observability(
         },
         sell_side_attribution=sell_attribution,
         cash_drift_attribution=cash_drift_attribution,
+        full_chain_buy_intent_trace=full_chain_trace,
+        full_chain_trace_summary=full_chain_summary,
         scorecard_semantic_acceptance=scorecard_semantic_acceptance,
         data_quality_flags=_data_quality_flags(market_scorecard or {}, degradation),
         llm_chain_decision_influence={
@@ -451,6 +465,7 @@ def build_decision_funnel_observability(
             "buy_intent_delta_is_lower_than_execution_floor_to_observe_floor_suppression",
             "stateless_layer_rates_use_all_buy_intents_as_denominator",
             "stateful_layer_rates_use_only_layer_pass_through_base_as_denominator",
+            "full_chain_trace_is_observed_pipeline_diagnostics_not_a_gate-disabled_counterfactual_target",
             "llm_influence_rate_not_computed_without_verified_no_side_effect_dry_run_shadow",
             "cash_drift_four_bucket_contains_counterfactual_and_actual_buckets_with_residual",
         ],
@@ -862,6 +877,338 @@ def _buy_delta_metrics(buy_intents: list[dict[str, Any]]) -> dict[str, Any]:
         "blocked_buy_delta": round(blocked, 6),
         "buy_delta_suppression_ratio": suppression,
     }
+
+
+def _full_chain_buy_intent_trace(
+    *,
+    buy_intents: list[dict[str, Any]],
+    stateless_verdicts: dict[str, dict[str, Any]],
+    stateful_blockers: dict[str, dict[str, Any]],
+    current_weights: dict[str, float],
+    target_weights: dict[str, float],
+    risk_out: dict[str, Any],
+    min_buy_intent_delta: float,
+) -> list[dict[str, Any]]:
+    target_builder = risk_out.get("target_builder_input") or risk_out.get("target_builder_shadow") or {}
+    tb_rows = target_builder.get("per_ticker") if isinstance(target_builder, dict) else {}
+    if not isinstance(tb_rows, dict):
+        tb_rows = {}
+    broker_filter = risk_out.get("broker_order_filter") if isinstance(risk_out.get("broker_order_filter"), dict) else {}
+    suppressed = {
+        str(row.get("ticker") or row.get("symbol") or "").upper().strip(): row
+        for row in (broker_filter.get("suppressed_orders") or broker_filter.get("suppressed_micro_orders") or [])
+        if isinstance(row, dict) and str(row.get("ticker") or row.get("symbol") or "").strip()
+    }
+    final_validation = risk_out.get("final_validation") if isinstance(risk_out.get("final_validation"), dict) else {}
+    final_validation_blocked = bool(final_validation.get("allowed") is False or final_validation.get("approved") is False)
+
+    traces: list[dict[str, Any]] = []
+    for intent in buy_intents:
+        ticker = str(intent.get("ticker") or "").upper().strip()
+        if not ticker:
+            continue
+        tb_row = tb_rows.get(ticker) if isinstance(tb_rows.get(ticker), dict) else {}
+        changed_by = [str(item) for item in (tb_row.get("changed_by") or []) if str(item)]
+        reason_codes = [str(item) for item in (tb_row.get("reason_codes") or []) if str(item)]
+        allowed_actions = [str(item) for item in (tb_row.get("allowed_actions") or []) if str(item)]
+        gates = {
+            "scorecard": _trace_stateless_gate(stateless_verdicts, "scorecard", ticker),
+            "decision_style": _trace_stateless_gate(stateless_verdicts, "decision_style", ticker),
+            "position_governance": _trace_position_governance_gate(
+                stateful_blockers=stateful_blockers,
+                ticker=ticker,
+                allowed_actions=allowed_actions,
+                reason_codes=reason_codes,
+                tb_row=tb_row,
+            ),
+            "target_builder_scorecard_clip": _trace_changed_by_gate(
+                changed_by=changed_by,
+                reason_codes=reason_codes,
+                gate_name="scorecard_clip",
+                reason_prefix="scorecard_",
+            ),
+            "single_delta_clip": _trace_changed_by_gate(
+                changed_by=changed_by,
+                reason_codes=reason_codes,
+                gate_name="single_delta_clip",
+            ),
+            "turnover_clip": _trace_changed_by_gate(
+                changed_by=changed_by,
+                reason_codes=reason_codes,
+                gate_name="turnover_clip",
+            ),
+            "risk_manager_final_target": _trace_stateful_gate(
+                stateful_blockers=stateful_blockers,
+                layer="risk_manager_final_target",
+                ticker=ticker,
+            ),
+            "final_validation": _trace_final_validation_gate(
+                stateful_blockers=stateful_blockers,
+                ticker=ticker,
+                final_validation_blocked=final_validation_blocked,
+                final_validation=final_validation,
+            ),
+            "broker_order_filter": _trace_broker_filter_gate(
+                stateless_verdicts=stateless_verdicts,
+                ticker=ticker,
+                suppressed_row=suppressed.get(ticker),
+            ),
+        }
+        blockers = [
+            gate
+            for gate, payload in gates.items()
+            if str((payload or {}).get("verdict") or "") in {"blocked", "clipped", "suppressed"}
+        ]
+        current = float(current_weights.get(ticker, 0.0) or 0.0)
+        base = float(intent.get("base_weight") or 0.0)
+        final_target = float(target_weights.get(ticker, 0.0) or 0.0)
+        governance_target = _optional_trace_float(tb_row.get("governance_target"))
+        pre_normalized = _optional_trace_float(tb_row.get("pre_normalized_target"))
+        trace = {
+            "ticker": ticker,
+            "current_weight": round(current, 6),
+            "base_weight": round(base, 6),
+            "desired_buy_delta": round(float(intent.get("desired_buy_delta") or 0.0), 6),
+            "target_builder_stage_weights": {
+                "governance_target": round(governance_target, 6) if governance_target is not None else None,
+                "pre_normalized_target": round(pre_normalized, 6) if pre_normalized is not None else None,
+                "final_target": round(final_target, 6),
+            },
+            "stage_buy_deltas": {
+                "base_delta": round(max(base - current, 0.0), 6),
+                "post_governance_delta": (
+                    round(max(governance_target - current, 0.0), 6)
+                    if governance_target is not None
+                    else None
+                ),
+                "pre_normalized_delta": (
+                    round(max(pre_normalized - current, 0.0), 6)
+                    if pre_normalized is not None
+                    else None
+                ),
+                "final_allowed_delta": round(max(final_target - current, 0.0), 6),
+            },
+            "gates": gates,
+            "all_blockers": blockers,
+            "first_observed_blocker": blockers[0] if blockers else None,
+            "changed_by": changed_by,
+            "reason_codes": reason_codes,
+            "allowed_actions": allowed_actions,
+            "trace_contract": {
+                "schema_version": "full_chain_buy_intent_trace_row_v1",
+                "target_weight_mutation": "none",
+                "trace_kind": "observed_pipeline_diagnostics",
+                "not_a_gate_disabled_counterfactual": True,
+                "min_buy_intent_delta": float(min_buy_intent_delta),
+            },
+        }
+        traces.append(trace)
+    return traces
+
+
+def _trace_stateless_gate(
+    stateless_verdicts: dict[str, dict[str, Any]],
+    layer: str,
+    ticker: str,
+) -> dict[str, Any]:
+    layer_payload = stateless_verdicts.get(layer) or {}
+    verdict = ((layer_payload.get("verdict_by_ticker") or {}).get(ticker) or {})
+    return {
+        "verdict": verdict.get("verdict") or "unknown",
+        "reason": verdict.get("reason"),
+        "layer_type": layer_payload.get("layer_type") or "stateless_independent",
+        "denominator": layer_payload.get("denominator"),
+    }
+
+
+def _trace_stateful_gate(
+    *,
+    stateful_blockers: dict[str, dict[str, Any]],
+    layer: str,
+    ticker: str,
+) -> dict[str, Any]:
+    layer_payload = stateful_blockers.get(layer) or {}
+    pass_through = int(layer_payload.get("pass_through_base_count") or 0)
+    blocked = ticker in set(layer_payload.get("blocked_tickers") or [])
+    if pass_through <= 0:
+        return {
+            "verdict": "not_evaluated",
+            "reason": "no_candidate_reached_stateful_layer_due_to_upstream_blocker",
+            "layer_type": layer_payload.get("layer_type") or "stateful_incremental",
+            "pass_through_base_count": pass_through,
+        }
+    return {
+        "verdict": "blocked" if blocked else "passed",
+        "reason": layer if blocked else None,
+        "layer_type": layer_payload.get("layer_type") or "stateful_incremental",
+        "pass_through_base_count": pass_through,
+    }
+
+
+def _trace_position_governance_gate(
+    *,
+    stateful_blockers: dict[str, dict[str, Any]],
+    ticker: str,
+    allowed_actions: list[str],
+    reason_codes: list[str],
+    tb_row: dict[str, Any],
+) -> dict[str, Any]:
+    base = _trace_stateful_gate(
+        stateful_blockers=stateful_blockers,
+        layer="position_governance",
+        ticker=ticker,
+    )
+    add_allowed = "add" in {item.lower() for item in allowed_actions}
+    if allowed_actions and not add_allowed:
+        return {
+            **base,
+            "verdict": "blocked",
+            "reason": ",".join(reason_codes) if reason_codes else "add_not_allowed",
+            "allowed_actions": allowed_actions,
+            "target_after": tb_row.get("governance_target"),
+            "measurement_note": "allowed_actions captured from target_builder row",
+        }
+    if base["verdict"] == "not_evaluated" and allowed_actions:
+        return {
+            **base,
+            "verdict": "passed",
+            "reason": None,
+            "allowed_actions": allowed_actions,
+            "target_after": tb_row.get("governance_target"),
+            "measurement_note": "allowed_actions captured from target_builder row even when stateful denominator is zero",
+        }
+    return {
+        **base,
+        "allowed_actions": allowed_actions,
+        "target_after": tb_row.get("governance_target"),
+    }
+
+
+def _trace_changed_by_gate(
+    *,
+    changed_by: list[str],
+    reason_codes: list[str],
+    gate_name: str,
+    reason_prefix: str | None = None,
+) -> dict[str, Any]:
+    triggered = gate_name in set(changed_by)
+    reasons = [
+        item for item in reason_codes
+        if reason_prefix is None or item.startswith(reason_prefix)
+    ]
+    return {
+        "verdict": "clipped" if triggered else "passed",
+        "reason": ",".join(reasons) if triggered and reasons else gate_name if triggered else None,
+        "layer_type": "observed_target_builder_mutation",
+    }
+
+
+def _trace_final_validation_gate(
+    *,
+    stateful_blockers: dict[str, dict[str, Any]],
+    ticker: str,
+    final_validation_blocked: bool,
+    final_validation: dict[str, Any],
+) -> dict[str, Any]:
+    if final_validation_blocked:
+        return {
+            "verdict": "blocked",
+            "reason": ",".join(str(item) for item in (final_validation.get("violations") or []))
+            or final_validation.get("reason")
+            or "final_validation_blocked",
+            "layer_type": "portfolio_level_final_validation",
+            "pass_through_base_count": (stateful_blockers.get("final_validation") or {}).get("pass_through_base_count"),
+        }
+    return _trace_stateful_gate(
+        stateful_blockers=stateful_blockers,
+        layer="final_validation",
+        ticker=ticker,
+    )
+
+
+def _trace_broker_filter_gate(
+    *,
+    stateless_verdicts: dict[str, dict[str, Any]],
+    ticker: str,
+    suppressed_row: dict[str, Any] | None,
+) -> dict[str, Any]:
+    base = _trace_stateless_gate(stateless_verdicts, "broker_order_filter", ticker)
+    if suppressed_row:
+        return {
+            **base,
+            "verdict": "suppressed",
+            "reason": suppressed_row.get("reason") or suppressed_row.get("status") or "micro_order_suppressed",
+            "suppressed_order": suppressed_row,
+        }
+    return base
+
+
+def _full_chain_trace_summary(traces: list[dict[str, Any]]) -> dict[str, Any]:
+    desired = sum(float(row.get("desired_buy_delta") or 0.0) for row in traces)
+    final_allowed = sum(float((row.get("stage_buy_deltas") or {}).get("final_allowed_delta") or 0.0) for row in traces)
+    pre_normalized_values = [
+        float((row.get("stage_buy_deltas") or {}).get("pre_normalized_delta") or 0.0)
+        for row in traces
+        if (row.get("stage_buy_deltas") or {}).get("pre_normalized_delta") is not None
+    ]
+    post_governance_values = [
+        float((row.get("stage_buy_deltas") or {}).get("post_governance_delta") or 0.0)
+        for row in traces
+        if (row.get("stage_buy_deltas") or {}).get("post_governance_delta") is not None
+    ]
+    blocker_counts: dict[str, int] = {}
+    for row in traces:
+        for blocker in row.get("all_blockers") or []:
+            blocker_counts[blocker] = blocker_counts.get(blocker, 0) + 1
+    return {
+        "schema_version": "full_chain_buy_intent_trace_summary_v1",
+        "intent_count": len(traces),
+        "desired_buy_delta": round(desired, 6),
+        "post_governance_buy_delta": (
+            round(sum(post_governance_values), 6)
+            if post_governance_values
+            else None
+        ),
+        "pre_normalized_buy_delta": (
+            round(sum(pre_normalized_values), 6)
+            if pre_normalized_values
+            else None
+        ),
+        "final_allowed_buy_delta": round(final_allowed, 6),
+        "suppression_ratio": (
+            {
+                "status": "not_applicable",
+                "reason": "no_desired_buy_delta",
+                "value": None,
+            }
+            if desired <= 0
+            else {
+                "status": "ok",
+                "value": round(max(0.0, min(1.0, 1.0 - final_allowed / desired)), 6),
+                "denominator": round(desired, 6),
+            }
+        ),
+        "blocker_counts": dict(sorted(blocker_counts.items())),
+        "zero_final_delta_count": sum(
+            1 for row in traces
+            if float((row.get("stage_buy_deltas") or {}).get("final_allowed_delta") or 0.0) <= 1e-9
+        ),
+        "large_desired_buy_delta_warning": desired > 0.20,
+        "large_final_allowed_buy_delta_warning": final_allowed > 0.20,
+        "measurement_note": (
+            "Observed pipeline trace only. It does not disable gates or produce an executable "
+            "counterfactual target; use it to see which observed gates clipped each buy intent."
+        ),
+    }
+
+
+def _optional_trace_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _scorecard_semantic_acceptance(

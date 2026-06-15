@@ -247,6 +247,11 @@ class DiagnosticArtifactTests(unittest.TestCase):
             payload["scorecard_semantic_acceptance"]["limited_data_quality_human_required_small_add"]["status"],
             "pending_execution_truth",
         )
+        trace = payload["full_chain_buy_intent_trace"][0]
+        self.assertEqual(trace["ticker"], "SPY")
+        self.assertEqual(trace["gates"]["scorecard"]["verdict"], "passed")
+        self.assertEqual(trace["stage_buy_deltas"]["final_allowed_delta"], 0.02)
+        self.assertEqual(payload["full_chain_trace_summary"]["final_allowed_buy_delta"], 0.02)
         self.assertTrue(payload["data_quality_flags"]["frozen_at_decision_time"])
         self.assertEqual(payload["cash_drift_attribution"]["schema_version"], "cash_drift_four_bucket_v1")
 
@@ -261,7 +266,23 @@ class DiagnosticArtifactTests(unittest.TestCase):
                 "require_human_confirmation": True,
                 "triggered_rules": ["strategy_advisory_only"],
             },
-            risk_out={"target_weights": {"SPY": 0.0, "CASH": 1.0}},
+            risk_out={
+                "target_weights": {"SPY": 0.0, "CASH": 1.0},
+                "target_builder_input": {
+                    "per_ticker": {
+                        "SPY": {
+                            "base_weight": 0.04,
+                            "current_weight": 0.0,
+                            "governance_target": 0.0,
+                            "pre_normalized_target": 0.0,
+                            "final_target": 0.0,
+                            "allowed_actions": ["hold", "trim"],
+                            "reason_codes": ["scorecard_insufficient_execution_evidence"],
+                            "changed_by": ["scorecard_clip"],
+                        }
+                    }
+                },
+            },
             base_weights={"SPY": 0.04, "CASH": 0.96},
         )
 
@@ -280,6 +301,12 @@ class DiagnosticArtifactTests(unittest.TestCase):
             payload["scorecard_semantic_acceptance"]["strategy_advisory_only_scorecard_block"]["status"],
             "blocked",
         )
+        trace = payload["full_chain_buy_intent_trace"][0]
+        self.assertEqual(trace["gates"]["scorecard"]["verdict"], "blocked")
+        self.assertEqual(trace["gates"]["position_governance"]["verdict"], "blocked")
+        self.assertEqual(trace["gates"]["target_builder_scorecard_clip"]["verdict"], "clipped")
+        self.assertIn("scorecard", trace["all_blockers"])
+        self.assertEqual(payload["full_chain_trace_summary"]["blocker_counts"]["scorecard"], 1)
 
     def test_decision_funnel_insufficient_execution_evidence_is_strategy_blocker(self):
         artifact = build_decision_funnel_observability(
@@ -328,6 +355,9 @@ class DiagnosticArtifactTests(unittest.TestCase):
             payload["data_quality_flags"]["strategy_execution_evidence"]["insufficient_execution_evidence_count"],
             1,
         )
+        trace = payload["full_chain_buy_intent_trace"][0]
+        self.assertEqual(trace["gates"]["position_governance"]["verdict"], "not_evaluated")
+        self.assertTrue(payload["full_chain_trace_summary"]["large_desired_buy_delta_warning"] is False)
         self.assertEqual(
             payload["data_quality_flags"]["strategy_execution_evidence"]["rows"][0]["failed_checks"],
             ["live_samples_min"],
