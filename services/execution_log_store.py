@@ -1113,6 +1113,8 @@ def summarize_execution_activity_rows(rows: list[Any]) -> dict[str, Any]:
     """Summarize execution rows using the same daily-cap counting rules."""
     command_rows = [row for row in rows if _counts_toward_daily_command(row)]
     gross_turnover = 0.0
+    buy_delta = 0.0
+    sell_delta = 0.0
     risk_reduce_command_count = 0
     risk_reduce_gross_turnover = 0.0
     for row in command_rows:
@@ -1124,12 +1126,19 @@ def summarize_execution_activity_rows(rows: list[Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             continue
         gross_turnover += row_turnover
+        try:
+            buy_delta += float(metrics.get("buy_delta") or 0.0)
+            sell_delta += float(metrics.get("sell_delta") or 0.0)
+        except (TypeError, ValueError):
+            pass
         if _metrics_are_risk_reduce(metrics):
             risk_reduce_command_count += 1
             risk_reduce_gross_turnover += row_turnover
     return {
         "command_count": len(command_rows),
         "gross_turnover": round(gross_turnover, 6),
+        "buy_delta": round(buy_delta, 6),
+        "sell_delta": round(sell_delta, 6),
         "risk_reduce_command_count": risk_reduce_command_count,
         "risk_reduce_gross_turnover": round(risk_reduce_gross_turnover, 6),
         "ordinary_command_count": len(command_rows) - risk_reduce_command_count,

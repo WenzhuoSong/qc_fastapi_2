@@ -1,5 +1,7 @@
 import unittest
+import asyncio
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from services.execution_preflight import (
     DEFAULT_COMMAND_PREFLIGHT_CONFIG,
@@ -13,8 +15,10 @@ from services.execution_preflight import (
     _policy_sync_ack_status,
     command_weight_delta_metrics,
     format_command_preflight_blockers,
+    preflight_execution_command,
     preflight_execution_weights,
 )
+from services.execution_log_store import summarize_execution_activity_rows
 from services.transaction_cost_gate import format_transaction_cost_gate_summary
 
 
@@ -25,6 +29,8 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["risk_reduce_reserved_commands"], 4)
         self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["risk_reduce_gross_turnover_per_day"], 0.25)
         self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["max_buy_delta"], 0.15)
+        self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["max_buy_delta_per_day"], 0.10)
+        self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["shadow_real_money_max_buy_delta_per_day"], 0.03)
         self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["max_sell_delta"], 0.20)
 
     def test_config_migration_relaxes_production_execution_command_limits(self):
@@ -35,6 +41,8 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn('"risk_reduce_reserved_commands": 4', sql)
         self.assertIn('"risk_reduce_gross_turnover_per_day": 0.25', sql)
         self.assertGreaterEqual(sql.count('"max_buy_delta": 0.15'), 2)
+        self.assertGreaterEqual(sql.count('"max_buy_delta_per_day": 0.10'), 2)
+        self.assertGreaterEqual(sql.count('"shadow_real_money_max_buy_delta_per_day": 0.03'), 2)
         self.assertGreaterEqual(sql.count('"max_sell_delta": 0.20'), 2)
         self.assertIn("ON CONFLICT (key) DO UPDATE", sql)
 
@@ -397,11 +405,91 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn('"timeout_no_ack"', text)
         self.assertIn("if not _counts_toward_daily_turnover(row):", text)
 
+    def test_daily_execution_activity_tracks_realized_buy_delta(self):
+        def row(status: str, qc_status: str, buy_delta: float, sell_delta: float = 0.0):
+            return type(
+                "Row",
+                (),
+                {
+                    "command_type": "weight_adjustment",
+                    "status": status,
+                    "qc_status": qc_status,
+                    "qc_response": {},
+                    "command_payload": {
+                        "command_preflight": {
+                            "metrics": {
+                                "buy_delta": buy_delta,
+                                "sell_delta": sell_delta,
+                                "gross_turnover": round((buy_delta + sell_delta) / 2.0, 6),
+                            }
+                        }
+                    },
+                },
+            )()
+
+        summary = summarize_execution_activity_rows([
+            row("accepted", "reconciled", 0.02),
+            row("accepted", "rejected", 0.50),
+            row("accepted", "filled", 0.01, 0.02),
+        ])
+
+        self.assertEqual(summary["command_count"], 2)
+        self.assertEqual(summary["buy_delta"], 0.03)
+        self.assertEqual(summary["sell_delta"], 0.02)
+        self.assertEqual(summary["gross_turnover"], 0.025)
+
     def test_same_target_dedupe_config_defaults_are_stable(self):
         config = _command_config({})
 
         self.assertEqual(config["recent_same_target_dedupe_minutes"], 5)
         self.assertEqual(config["recent_same_target_dedupe_tolerance"], 0.005)
+        self.assertEqual(config["max_buy_delta_per_day"], 0.10)
+        self.assertEqual(config["shadow_real_money_max_buy_delta_per_day"], 0.03)
+
+    def test_preflight_blocks_projected_daily_buy_delta(self):
+        async def run():
+            with (
+                patch(
+                    "services.execution_log_store.command_submission_state",
+                    new=AsyncMock(return_value={
+                        "command_id_exists": False,
+                        "analysis_id_submitted": False,
+                    }),
+                ),
+                patch(
+                    "services.execution_log_store.summarize_today_execution_activity",
+                    new=AsyncMock(return_value={
+                        "command_count": 1,
+                        "gross_turnover": 0.045,
+                        "buy_delta": 0.09,
+                        "sell_delta": 0.0,
+                    }),
+                ),
+            ):
+                return await preflight_execution_command(
+                    command_id="analysis_999",
+                    analysis_id=999,
+                    target_weights={"SPY": 0.02, "CASH": 0.98},
+                    current_weights={"CASH": 1.0},
+                    policy_version="sprint8a",
+                    policy_sync_result={"ack_status": "accepted"},
+                    policy_alignment_result={"aligned": True},
+                    config={
+                        "max_buy_delta_per_day": 0.10,
+                        "shadow_real_money_max_buy_delta_per_day": 0.03,
+                    },
+                )
+
+        result = asyncio.run(run())
+
+        self.assertFalse(result["allowed"])
+        self.assertIn("daily_buy_delta_ok", result["blockers"])
+        check = result["checks"]["daily_buy_delta_ok"]
+        self.assertEqual(check["actual"], 0.11)
+        self.assertEqual(check["threshold"], 0.10)
+        self.assertEqual(check["today_used"], 0.09)
+        self.assertEqual(check["command_delta"], 0.02)
+        self.assertFalse(check["shadow_real_money_would_pass"])
 
     def test_same_target_dedupe_extracts_sent_weights_as_fallback(self):
         row = type(

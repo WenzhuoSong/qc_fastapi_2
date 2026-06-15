@@ -13,6 +13,8 @@ DEFAULT_COMMAND_PREFLIGHT_CONFIG = {
     "risk_reduce_reserved_commands": 4,
     "risk_reduce_gross_turnover_per_day": 0.25,
     "max_buy_delta": 0.15,
+    "max_buy_delta_per_day": 0.10,
+    "shadow_real_money_max_buy_delta_per_day": 0.03,
     "max_sell_delta": 0.20,
     "recent_same_target_dedupe_minutes": 5,
     "recent_same_target_dedupe_tolerance": 0.005,
@@ -28,12 +30,14 @@ COMMAND_PREFLIGHT_BLOCKER_LABELS = {
     "policy_alignment_confirmed": "policy alignment not confirmed",
     "daily_command_count_ok": "daily command cap exceeded",
     "daily_gross_turnover_ok": "daily turnover cap exceeded",
+    "daily_buy_delta_ok": "daily buy delta cap exceeded",
     "buy_delta_ok": "buy delta cap exceeded",
     "sell_delta_ok": "sell delta cap exceeded",
 }
 
 _PERCENT_CHECKS = {
     "daily_gross_turnover_ok",
+    "daily_buy_delta_ok",
     "buy_delta_ok",
     "sell_delta_ok",
 }
@@ -81,6 +85,12 @@ async def preflight_execution_command(
     policy_transport_ok = _policy_alignment_ok(policy_alignment_result)
     command_count_limit = _daily_command_limit(cfg, command_class)
     gross_turnover_limit = _daily_turnover_limit(cfg, command_class)
+    projected_daily_buy_delta = round(
+        float(today.get("buy_delta") or 0.0) + metrics["buy_delta"],
+        6,
+    )
+    max_daily_buy_delta = float(cfg["max_buy_delta_per_day"])
+    shadow_real_money_max_daily_buy_delta = float(cfg["shadow_real_money_max_buy_delta_per_day"])
 
     checks: dict[str, dict[str, Any]] = {
         "command_id_present": {
@@ -132,6 +142,17 @@ async def preflight_execution_command(
             "base_threshold": float(cfg["max_gross_turnover_per_day"]),
             "reserve_applied": round(float(gross_turnover_limit) - float(cfg["max_gross_turnover_per_day"]), 6),
             "bucket": command_class,
+        },
+        "daily_buy_delta_ok": {
+            "pass": projected_daily_buy_delta <= max_daily_buy_delta + 1e-12,
+            "actual": projected_daily_buy_delta,
+            "threshold": max_daily_buy_delta,
+            "today_used": round(float(today.get("buy_delta") or 0.0), 6),
+            "command_delta": metrics["buy_delta"],
+            "shadow_real_money_threshold": shadow_real_money_max_daily_buy_delta,
+            "shadow_real_money_would_pass": projected_daily_buy_delta <= shadow_real_money_max_daily_buy_delta + 1e-12,
+            "execution_effect": "hard_block",
+            "shadow_execution_effect": "diagnostic_only",
         },
         "buy_delta_ok": {
             "pass": metrics["buy_delta"] <= float(cfg["max_buy_delta"]) + 1e-12,
