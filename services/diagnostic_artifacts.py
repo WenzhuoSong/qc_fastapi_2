@@ -696,6 +696,11 @@ def _decision_funnel_stateless_verdicts(
         for row in (broker_filter.get("suppressed_orders") or broker_filter.get("suppressed_micro_orders") or [])
         if isinstance(row, dict)
     }
+    rounded = {
+        str(row.get("ticker") or row.get("symbol") or "").upper().strip()
+        for row in (broker_filter.get("rounded_orders") or [])
+        if isinstance(row, dict)
+    }
     return {
         "scorecard": {
             "layer_type": "stateless_independent",
@@ -731,8 +736,20 @@ def _decision_funnel_stateless_verdicts(
             "blocked_tickers": sorted(ticker for ticker in tickers if ticker in suppressed),
             "verdict_by_ticker": {
                 ticker: {
-                    "verdict": "blocked" if ticker in suppressed else "not_evaluated",
-                    "reason": "micro_order_suppressed" if ticker in suppressed else "broker_filter_runs_after_execution_intent",
+                    "verdict": (
+                        "blocked"
+                        if ticker in suppressed
+                        else "rounded"
+                        if ticker in rounded
+                        else "not_evaluated"
+                    ),
+                    "reason": (
+                        "micro_order_suppressed"
+                        if ticker in suppressed
+                        else "micro_buy_rounded_up"
+                        if ticker in rounded
+                        else "broker_filter_runs_after_execution_intent"
+                    ),
                 }
                 for ticker in tickers
             },
@@ -899,6 +916,11 @@ def _full_chain_buy_intent_trace(
         for row in (broker_filter.get("suppressed_orders") or broker_filter.get("suppressed_micro_orders") or [])
         if isinstance(row, dict) and str(row.get("ticker") or row.get("symbol") or "").strip()
     }
+    rounded = {
+        str(row.get("ticker") or row.get("symbol") or "").upper().strip(): row
+        for row in (broker_filter.get("rounded_orders") or [])
+        if isinstance(row, dict) and str(row.get("ticker") or row.get("symbol") or "").strip()
+    }
     final_validation = risk_out.get("final_validation") if isinstance(risk_out.get("final_validation"), dict) else {}
     final_validation_blocked = bool(final_validation.get("allowed") is False or final_validation.get("approved") is False)
 
@@ -952,6 +974,7 @@ def _full_chain_buy_intent_trace(
                 stateless_verdicts=stateless_verdicts,
                 ticker=ticker,
                 suppressed_row=suppressed.get(ticker),
+                rounded_row=rounded.get(ticker),
             ),
         }
         blockers = [
@@ -1131,6 +1154,7 @@ def _trace_broker_filter_gate(
     stateless_verdicts: dict[str, dict[str, Any]],
     ticker: str,
     suppressed_row: dict[str, Any] | None,
+    rounded_row: dict[str, Any] | None,
 ) -> dict[str, Any]:
     base = _trace_stateless_gate(stateless_verdicts, "broker_order_filter", ticker)
     if suppressed_row:
@@ -1139,6 +1163,13 @@ def _trace_broker_filter_gate(
             "verdict": "suppressed",
             "reason": suppressed_row.get("reason") or suppressed_row.get("status") or "micro_order_suppressed",
             "suppressed_order": suppressed_row,
+        }
+    if rounded_row:
+        return {
+            **base,
+            "verdict": "rounded",
+            "reason": rounded_row.get("reason") or "micro_buy_rounded_up",
+            "rounded_order": rounded_row,
         }
     return base
 

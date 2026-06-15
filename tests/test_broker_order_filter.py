@@ -79,6 +79,56 @@ class BrokerOrderFilterTests(unittest.TestCase):
         self.assertIn("price:QQQ", result["missing_inputs"])
         self.assertAlmostEqual(result["target_weights"]["QQQ"], 0.05)
 
+    def test_rounds_up_buy_micro_order_to_min_executable_shares(self):
+        result = apply_broker_order_filter_to_snapshot(
+            target_weights={"SMH": 0.009, "CASH": 0.991},
+            current_weights={"SMH": 0.0, "CASH": 1.0},
+            snapshot={"total_value": 100000.0, "prices": {"SMH": 600.0}},
+        )
+
+        self.assertTrue(result["adjusted"], result)
+        self.assertEqual(result["reason"], "micro_buy_orders_rounded_up")
+        self.assertEqual(len(result["suppressed_orders"]), 0)
+        self.assertEqual(len(result["rounded_orders"]), 1)
+        rounded = result["rounded_orders"][0]
+        self.assertEqual(rounded["ticker"], "SMH")
+        self.assertEqual(rounded["reason"], "rounded_up_to_min_executable_buy")
+        self.assertAlmostEqual(rounded["original_delta_weight"], 0.009, places=6)
+        self.assertAlmostEqual(rounded["rounded_delta_weight"], 0.012, places=6)
+        self.assertAlmostEqual(result["target_weights"]["SMH"], 0.012, places=6)
+        self.assertAlmostEqual(result["metrics_after"]["buy_delta"], 0.012, places=6)
+
+    def test_does_not_round_up_buy_when_multiplier_is_too_large(self):
+        result = apply_broker_order_filter_to_snapshot(
+            target_weights={"SMH": 0.002, "CASH": 0.998},
+            current_weights={"SMH": 0.0, "CASH": 1.0},
+            snapshot={"total_value": 100000.0, "prices": {"SMH": 600.0}},
+        )
+
+        self.assertTrue(result["adjusted"], result)
+        self.assertEqual(len(result["rounded_orders"]), 0)
+        self.assertEqual(result["suppressed_orders"][0]["ticker"], "SMH")
+        self.assertEqual(result["suppressed_orders"][0]["reason"], "below_min_non_liquidation_share_delta")
+        attempt = result["suppressed_orders"][0]["round_up_attempt"]
+        self.assertFalse(attempt["allowed"])
+        self.assertEqual(attempt["reason"], "round_up_multiplier_exceeds_limit")
+        self.assertAlmostEqual(result["target_weights"]["SMH"], 0.0, places=6)
+
+    def test_does_not_round_up_sell_micro_order(self):
+        result = apply_broker_order_filter_to_snapshot(
+            target_weights={"SMH": 0.011, "CASH": 0.989},
+            current_weights={"SMH": 0.02, "CASH": 0.98},
+            snapshot={"total_value": 100000.0, "prices": {"SMH": 600.0}},
+            config={"broker_allow_reduce_only_micro_sells": False},
+        )
+
+        self.assertTrue(result["adjusted"], result)
+        self.assertEqual(len(result["rounded_orders"]), 0)
+        self.assertEqual(result["suppressed_orders"][0]["ticker"], "SMH")
+        self.assertEqual(result["suppressed_orders"][0]["side"], "sell")
+        self.assertNotIn("round_up_attempt", result["suppressed_orders"][0])
+        self.assertAlmostEqual(result["target_weights"]["SMH"], 0.02, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

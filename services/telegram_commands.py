@@ -152,7 +152,8 @@ async def _cmd_confirm() -> str:
         await mark_proposal_done(pending.get("analysis_id"), "skipped_broker_order_filter")
         return (
             "⏭ Command not sent: broker order filter left no executable delta.\n"
-            f"Suppressed micro orders: {len(broker_order_filter.get('suppressed_orders') or [])}."
+            f"Suppressed micro orders: {len(broker_order_filter.get('suppressed_orders') or [])}. "
+            f"Rounded buy orders: {len(broker_order_filter.get('rounded_orders') or [])}."
         )
 
     active_execution = await load_active_execution_command()

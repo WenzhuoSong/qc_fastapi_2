@@ -10,6 +10,8 @@ from services.execution_lifecycle import is_reduce_only_vs_actual
 DEFAULT_BROKER_ORDER_FILTER_CONFIG: dict[str, Any] = {
     "broker_order_filter_enabled": True,
     "broker_allow_reduce_only_micro_sells": True,
+    "broker_buy_round_up_enabled": True,
+    "broker_buy_round_up_max_multiplier": 1.5,
     "broker_min_non_liquidation_share_delta": 2.0,
     "broker_min_order_notional_usd": 500.0,
     "broker_estimated_order_fee_usd": 1.0,
@@ -62,6 +64,7 @@ def apply_broker_order_filter_to_snapshot(
         "reason": None,
         "config": cfg,
         "suppressed_orders": [],
+        "rounded_orders": [],
         "allowed_orders": [],
         "missing_inputs": [],
         "portfolio_reduce_only": portfolio_reduce_only,
@@ -125,17 +128,31 @@ def apply_broker_order_filter_to_snapshot(
                 order["would_have_suppressed_reason"] = suppress_reason
             diagnostic["allowed_orders"].append(order)
             continue
+        rounded_order = _try_round_up_buy_order(
+            order=order,
+            cfg=cfg,
+            current_weight=cur_w,
+            total_value=float(total_value),
+        )
+        if rounded_order is not None and rounded_order.get("allowed"):
+            rounded_target_weight = float(rounded_order["rounded_target_weight"])
+            after[ticker] = rounded_target_weight
+            diagnostic["rounded_orders"].append(rounded_order)
+            diagnostic["allowed_orders"].append(rounded_order)
+            continue
         after[ticker] = cur_w
         order["sanitized_target_weight"] = round(cur_w, 6)
         order["reason"] = suppress_reason
+        if rounded_order is not None:
+            order["round_up_attempt"] = rounded_order
         diagnostic["suppressed_orders"].append(order)
 
     after = _with_cash_residual(after)
     after_metrics = _delta_metrics(after, current)
     diagnostic["target_weights"] = after
     diagnostic["metrics_after"] = after_metrics
-    diagnostic["adjusted"] = bool(diagnostic["suppressed_orders"])
-    diagnostic["reason"] = "micro_orders_suppressed" if diagnostic["adjusted"] else "pass"
+    diagnostic["adjusted"] = bool(diagnostic["suppressed_orders"] or diagnostic["rounded_orders"])
+    diagnostic["reason"] = _filter_reason(diagnostic)
     diagnostic["no_executable_delta"] = after_metrics["gross_turnover"] <= float(cfg["broker_noop_weight_delta_epsilon"])
     return diagnostic
 
@@ -163,6 +180,93 @@ def _suppression_reason(order: dict[str, Any], cfg: dict[str, Any]) -> str | Non
     if fee_bps is not None and float(fee_bps) > float(cfg["broker_max_fee_bps"]):
         return "fee_bps_above_threshold"
     return None
+
+
+def _try_round_up_buy_order(
+    *,
+    order: dict[str, Any],
+    cfg: dict[str, Any],
+    current_weight: float,
+    total_value: float,
+) -> dict[str, Any] | None:
+    if not bool(cfg.get("broker_buy_round_up_enabled", True)):
+        return None
+    if order.get("side") != "buy":
+        return None
+    if total_value <= 0:
+        return None
+    original_delta = float(order.get("delta_weight") or 0.0)
+    if original_delta <= 0:
+        return None
+    min_shares = float(cfg["broker_min_non_liquidation_share_delta"])
+    original_shares = float(order.get("estimated_share_delta") or 0.0)
+    if original_shares >= min_shares:
+        return None
+    price = float(order.get("price") or 0.0)
+    if price <= 0:
+        return None
+
+    rounded_notional = min_shares * price
+    rounded_delta = rounded_notional / total_value
+    multiplier = rounded_delta / original_delta if original_delta > 0 else float("inf")
+    attempt = dict(order)
+    attempt.update(
+        {
+            "round_up_policy": "buy_min_executable_shares_v1",
+            "original_target_weight": order.get("target_weight"),
+            "original_delta_weight": order.get("delta_weight"),
+            "original_estimated_share_delta": order.get("estimated_share_delta"),
+            "rounded_share_delta": round(min_shares, 4),
+            "rounded_notional_usd": round(rounded_notional, 2),
+            "rounded_delta_weight": round(rounded_delta, 6),
+            "rounded_target_weight": round(current_weight + rounded_delta, 6),
+            "round_up_multiplier": round(multiplier, 6),
+        }
+    )
+    max_multiplier = float(cfg["broker_buy_round_up_max_multiplier"])
+    if multiplier > max_multiplier:
+        attempt["allowed"] = False
+        attempt["reason"] = "round_up_multiplier_exceeds_limit"
+        attempt["max_round_up_multiplier"] = round(max_multiplier, 6)
+        return attempt
+
+    rounded_fee_bps = (
+        float(cfg["broker_estimated_order_fee_usd"]) / rounded_notional * 10000.0
+        if rounded_notional > 0
+        else None
+    )
+    rounded_check = {
+        **order,
+        "estimated_share_delta": min_shares,
+        "estimated_notional_usd": rounded_notional,
+        "fee_bps": rounded_fee_bps,
+    }
+    residual_reason = _suppression_reason(rounded_check, cfg)
+    if residual_reason is not None:
+        attempt["allowed"] = False
+        attempt["reason"] = f"round_up_still_{residual_reason}"
+        return attempt
+
+    attempt["allowed"] = True
+    attempt["reason"] = "rounded_up_to_min_executable_buy"
+    attempt["target_weight"] = attempt["rounded_target_weight"]
+    attempt["delta_weight"] = attempt["rounded_delta_weight"]
+    attempt["estimated_notional_usd"] = attempt["rounded_notional_usd"]
+    attempt["estimated_share_delta"] = attempt["rounded_share_delta"]
+    attempt["fee_bps"] = round(rounded_fee_bps, 4) if rounded_fee_bps is not None else None
+    return attempt
+
+
+def _filter_reason(diagnostic: dict[str, Any]) -> str:
+    suppressed = bool(diagnostic.get("suppressed_orders"))
+    rounded = bool(diagnostic.get("rounded_orders"))
+    if suppressed and rounded:
+        return "micro_orders_suppressed_and_rounded"
+    if rounded:
+        return "micro_buy_orders_rounded_up"
+    if suppressed:
+        return "micro_orders_suppressed"
+    return "pass"
 
 
 async def _load_latest_broker_snapshot() -> dict[str, Any]:

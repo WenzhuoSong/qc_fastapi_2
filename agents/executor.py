@@ -199,10 +199,12 @@ async def run_executor_async(
         weights = broker_order_filter.get("target_weights") or weights
         equity_w = {k: v for k, v in weights.items() if k != "CASH"}
         suppressed = broker_order_filter.get("suppressed_orders") or []
+        rounded = broker_order_filter.get("rounded_orders") or []
         logger.info(
-            "[executor] broker order filter suppressed %s micro orders for analysis_id=%s",
-            len(suppressed),
+            "[executor] broker order filter adjusted analysis_id=%s suppressed=%s rounded=%s",
             analysis_id,
+            len(suppressed),
+            len(rounded),
         )
         post_broker_preflight = preflight_execution_weights(weights)
         if not post_broker_preflight.get("allowed"):
@@ -509,9 +511,12 @@ async def run_executor_async(
                 f"deferred {float(deferred or 0):.2%}"
             )
         if broker_order_filter.get("adjusted"):
+            suppressed_count = len(broker_order_filter.get("suppressed_orders") or [])
+            rounded_count = len(broker_order_filter.get("rounded_orders") or [])
             msg += (
                 "\nBroker order filter: "
-                f"suppressed {len(broker_order_filter.get('suppressed_orders') or [])} micro order(s)"
+                f"suppressed {suppressed_count} micro order(s), "
+                f"rounded {rounded_count} buy order(s)"
             )
         await tool_send_telegram({"text": msg})
         qc_ack = await wait_for_qc_ack_detail(command_id)
