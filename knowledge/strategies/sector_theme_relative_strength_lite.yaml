@@ -35,4 +35,40 @@ compatibility_mappings:
     weight_formula: confidence_cap_multiplier
     branch_label_template: "{regime}_sector_theme_relative_strength"
 sources: [jegadeesh_titman_1993, sector_rotation_literature, issuer_fact_sheet, risk_governance_policy]
-last_reviewed: 2026-05-25
+historical_prior_candidates:
+  - id: sector_theme_relative_strength_trending_bull_2026q2
+    status: review_only
+    basis: strategy_signal_outcomes
+    source: internal_alpha_quick_eval_2026_06_16
+    window:
+      signal_start: 2026-03-16
+      signal_end: 2026-06-15
+      mature_20d_signal_end: 2026-05-15
+    action: increase
+    role: sector_theme
+    signal_type: sector_theme_relative_strength
+    regimes: [trending_bull]
+    untested_regimes: [defensive, choppy, high_vol]
+    preferred_horizons: [5d, 20d]
+    tickers_observed: [XSD, FTXL, SOXX, PSI]
+    metrics:
+      horizon_5d:
+        n: 148
+        avg_excess_vs_spy: 0.033864
+        median_excess_vs_spy: 0.042254
+        hit_rate: 0.7297
+      horizon_20d:
+        n: 95
+        avg_excess_vs_spy: 0.127557
+        median_excess_vs_spy: 0.164050
+        hit_rate: 0.8105
+    caveats:
+      - review_only_not_execution_authority
+      - paper_frozen_signal_outcome_not_live_execution_pnl
+      - may_reflect_recent_semiconductor_led_trending_bull
+      - raw_n_inflated_by_sector_and_time_correlation
+    upgrade_gate:
+      - requires_positive_excess_through_non_bull_regime
+      - requires_weekly_or_sector_adjusted_effective_n_review
+      - requires_live_paper_execution_confirmation_before_execution_prior
+last_reviewed: 2026-06-16

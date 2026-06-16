@@ -84,3 +84,8 @@ sources:
     reliability: high
     title: Leveraged and inverse ETF handling policy
     use_for: [leveraged_etf, holding_policy]
+  internal_alpha_quick_eval_2026_06_16:
+    type: internal_empirical_review
+    reliability: review_only
+    title: Offline alpha quick evaluation from frozen signal outcomes
+    use_for: [historical_prior_candidate, review_only_alpha_reference]

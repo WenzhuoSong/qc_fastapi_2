@@ -157,6 +157,29 @@ Certification source:
 - `certified` is a later target after enough live samples and stable turnover
   evidence exist.
 
+### Review-Only Historical Prior Candidates
+
+Strategy YAML may include `historical_prior_candidates` when an empirical review
+finds a useful but unpromoted historical pattern. These entries are not
+execution authority and must not change scorecard thresholds, position sizing,
+or target weights.
+
+Required guardrails:
+
+- `status` must remain `review_only` until a separate promotion review changes
+  runtime code or derived certification state.
+- `basis`, `window`, sample metrics, and `source` must identify the exact
+  evidence used.
+- `untested_regimes` must call out missing regime coverage.
+- `caveats` should include whether results are paper/frozen-signal outcomes
+  rather than live execution PnL.
+- `upgrade_gate` must require non-bull-regime evidence and effective-sample
+  review, not only more time in the same regime.
+
+The June 2026 sector-theme momentum candidates are deliberately marked
+`review_only` because the evidence window is a semiconductor-led
+`trending_bull` period with correlated tickers and overlapping horizons.
+
 ### Regimes
 
 Files: `knowledge/regimes/*.yaml`
