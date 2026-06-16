@@ -216,6 +216,49 @@ class CommandLifecycleTests(unittest.TestCase):
         self.assertEqual(events[2]["event_status"], "reconciled")
         self.assertEqual(events[2]["payload"]["drift_tickers"], [])
 
+    def test_reconciliation_events_use_original_target_for_broker_round_up_hint(self):
+        events = build_command_reconciliation_events(
+            command_id="cmd_1",
+            command_payload={
+                "sent_weights": {"SMH": 0.019181, "CASH": 0.980819},
+                "proposed_weights": {"SMH": 0.017302, "CASH": 0.982698},
+                "command_preflight": {
+                    "broker_order_filter": {
+                        "rounded_orders": [
+                            {
+                                "ticker": "SMH",
+                                "original_target_weight": 0.017302,
+                                "rounded_target_weight": 0.019181,
+                            }
+                        ]
+                    }
+                },
+            },
+            qc_response={
+                "status": "accepted",
+                "actual_target_weights": {"SMH": 0.019181},
+                "actual_holdings_weights": {"SMH": 0.0141},
+                "order_summary": {
+                    "submitted_order_count": 1,
+                    "filled_order_count": 1,
+                    "open_order_count_after": 0,
+                    "all_filled": True,
+                },
+            },
+            account_state={
+                "open_order_count": 0,
+                "has_open_orders": False,
+                "holdings_weights": {"SMH": 0.0141},
+                "target_weights": {"SMH": 0.019181},
+                "total_value": 134_670.02,
+                "prices": {"SMH": 633.59},
+            },
+        )
+
+        self.assertEqual([event["event_type"] for event in events], ["orders_submitted", "filled", "reconciled"])
+        self.assertAlmostEqual(events[2]["payload"]["target_weights"]["SMH"], 0.017302, places=6)
+        self.assertEqual(events[2]["payload"]["drift_tickers"], [])
+
     def test_delayed_account_snapshot_holdings_override_stale_ack_holdings(self):
         events = build_command_reconciliation_events(
             command_id="cmd_1",

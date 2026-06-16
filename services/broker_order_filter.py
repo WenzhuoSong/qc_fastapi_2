@@ -171,6 +171,33 @@ def default_broker_order_filter_config(config: dict[str, Any] | None = None) -> 
     return out
 
 
+def reconciliation_target_weights_from_command_payload(payload: dict[str, Any] | None) -> dict[str, float]:
+    """Return the strategic reconciliation target for a broker-filtered command.
+
+    `sent_weights` may include operational round-up hints that make a small buy
+    executable. Reconciliation should not require the account to land exactly on
+    that rounded hint when the strategic target was lower and the residual is
+    within normal share-rounding tolerance.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    target = _clean_weights(payload.get("sent_weights") or payload.get("proposed_weights") or {})
+    if not target:
+        return {}
+    broker = payload.get("command_preflight")
+    broker = broker.get("broker_order_filter") if isinstance(broker, dict) else None
+    if not isinstance(broker, dict):
+        return target
+    for order in broker.get("rounded_orders") or []:
+        if not isinstance(order, dict):
+            continue
+        ticker = str(order.get("ticker") or "").upper().strip()
+        original_target = _float_or_none(order.get("original_target_weight"))
+        if ticker and original_target is not None:
+            target[ticker] = max(original_target, 0.0)
+    return _with_cash_residual(target)
+
+
 def _suppression_reason(order: dict[str, Any], cfg: dict[str, Any]) -> str | None:
     if float(order["estimated_share_delta"]) < float(cfg["broker_min_non_liquidation_share_delta"]):
         return "below_min_non_liquidation_share_delta"

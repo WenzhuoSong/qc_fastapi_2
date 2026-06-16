@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 import unittest
 
 from services.reconciliation_guard import (
+    _target_weights,
     calculate_reconciliation_drift,
     default_reconciliation_guard_config,
     evaluate_reconciliation_guard,
@@ -102,6 +103,41 @@ class ReconciliationGuardTests(unittest.TestCase):
             ),
             command=self._command({"QQQ": 0.040955, "CASH": 0.959045}),
             now=datetime(2026, 6, 6, 14, 31),
+        )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertFalse(result["should_block_current_run"])
+
+    def test_evaluate_guard_reconciles_against_original_target_for_round_up_hint(self):
+        payload = {
+            "sent_weights": {"SMH": 0.019181, "CASH": 0.980819},
+            "proposed_weights": {"SMH": 0.017302, "CASH": 0.982698},
+            "command_preflight": {
+                "broker_order_filter": {
+                    "rounded_orders": [
+                        {
+                            "ticker": "SMH",
+                            "original_target_weight": 0.017302,
+                            "rounded_target_weight": 0.019181,
+                        }
+                    ]
+                }
+            },
+        }
+
+        self.assertAlmostEqual(_target_weights(payload, {})["SMH"], 0.017302, places=6)
+        result = evaluate_reconciliation_guard(
+            snapshot=self._snapshot(
+                {"SMH": 0.0141, "CASH": 0.9859},
+                total_value=134_670.02,
+                prices={"SMH": 633.59},
+            ),
+            command=self._command(
+                state="filled",
+                target={"SMH": 0.017302, "CASH": 0.982698},
+                command_payload=payload,
+            ),
+            now=datetime(2026, 6, 16, 15, 1),
         )
 
         self.assertEqual(result["status"], "pass")

@@ -1,6 +1,9 @@
 import unittest
 
-from services.broker_order_filter import apply_broker_order_filter_to_snapshot
+from services.broker_order_filter import (
+    apply_broker_order_filter_to_snapshot,
+    reconciliation_target_weights_from_command_payload,
+)
 
 
 class BrokerOrderFilterTests(unittest.TestCase):
@@ -97,6 +100,24 @@ class BrokerOrderFilterTests(unittest.TestCase):
         self.assertAlmostEqual(rounded["rounded_delta_weight"], 0.012, places=6)
         self.assertAlmostEqual(result["target_weights"]["SMH"], 0.012, places=6)
         self.assertAlmostEqual(result["metrics_after"]["buy_delta"], 0.012, places=6)
+
+    def test_reconciliation_target_uses_original_target_for_rounded_buy_hint(self):
+        result = apply_broker_order_filter_to_snapshot(
+            target_weights={"SMH": 0.017302, "CASH": 0.982698},
+            current_weights={"SMH": 0.0096, "CASH": 0.9904},
+            snapshot={"total_value": 135_220.0, "prices": {"SMH": 647.77}},
+        )
+
+        payload = {
+            "sent_weights": result["target_weights"],
+            "proposed_weights": {"SMH": 0.017302, "CASH": 0.982698},
+            "command_preflight": {"broker_order_filter": result},
+        }
+
+        target = reconciliation_target_weights_from_command_payload(payload)
+
+        self.assertAlmostEqual(result["target_weights"]["SMH"], 0.019181, places=6)
+        self.assertAlmostEqual(target["SMH"], 0.017302, places=6)
 
     def test_does_not_round_up_buy_when_multiplier_is_too_large(self):
         result = apply_broker_order_filter_to_snapshot(

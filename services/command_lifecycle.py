@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from services.broker_order_filter import reconciliation_target_weights_from_command_payload
 from services.reconciliation_guard import calculate_reconciliation_drift
 from services.json_safety import json_safe
 
@@ -569,6 +570,7 @@ def _target_weights_for_reconciliation(
     account: dict[str, Any],
 ) -> dict[str, float]:
     for value in (
+        reconciliation_target_weights_from_command_payload(command_payload),
         response.get("actual_target_weights"),
         account.get("target_weights"),
         command_payload.get("sent_weights"),

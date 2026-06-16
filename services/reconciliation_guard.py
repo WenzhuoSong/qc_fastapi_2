@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from services.broker_order_filter import reconciliation_target_weights_from_command_payload
 from services.operator_messages import format_reconciliation_guard_alert_message
 
 
@@ -448,12 +449,16 @@ def _command_to_dict(row: Any) -> dict[str, Any]:
         "qc_ack_at": getattr(row, "qc_ack_at", None),
         "latest_qc_ack_at": getattr(row, "latest_qc_ack_at", None),
         "target_weights": _target_weights(payload, qc_response),
+        "command_payload": payload,
         "feedback_trust": lifecycle_metadata.get("feedback_trust") if isinstance(lifecycle_metadata, dict) else {},
     }
 
 
 def _target_weights(payload: dict[str, Any], qc_response: dict[str, Any]) -> dict[str, Any]:
     account_state = qc_response.get("account_state") if isinstance(qc_response.get("account_state"), dict) else {}
+    reconciliation_target = reconciliation_target_weights_from_command_payload(payload)
+    if reconciliation_target:
+        return reconciliation_target
     for value in (
         qc_response.get("actual_target_weights"),
         account_state.get("target_weights"),
