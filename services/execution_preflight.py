@@ -85,12 +85,24 @@ async def preflight_execution_command(
     policy_transport_ok = _policy_alignment_ok(policy_alignment_result)
     command_count_limit = _daily_command_limit(cfg, command_class)
     gross_turnover_limit = _daily_turnover_limit(cfg, command_class)
-    projected_daily_buy_delta = round(
-        float(today.get("buy_delta") or 0.0) + metrics["buy_delta"],
-        6,
-    )
+    today_buy_delta = float(today.get("buy_delta") or 0.0)
+    command_buy_delta = float(metrics["buy_delta"])
+    projected_daily_buy_delta = round(today_buy_delta + command_buy_delta, 6)
     max_daily_buy_delta = float(cfg["max_buy_delta_per_day"])
     shadow_real_money_max_daily_buy_delta = float(cfg["shadow_real_money_max_buy_delta_per_day"])
+    remaining_daily_buy_delta = round(max(max_daily_buy_delta - today_buy_delta, 0.0), 6)
+    shadow_real_money_remaining_buy_delta = round(
+        max(shadow_real_money_max_daily_buy_delta - today_buy_delta, 0.0),
+        6,
+    )
+    shadow_real_money_allowed_command_delta = round(
+        min(command_buy_delta, shadow_real_money_remaining_buy_delta),
+        6,
+    )
+    shadow_real_money_blocked_command_delta = round(
+        max(command_buy_delta - shadow_real_money_allowed_command_delta, 0.0),
+        6,
+    )
 
     checks: dict[str, dict[str, Any]] = {
         "command_id_present": {
@@ -147,10 +159,14 @@ async def preflight_execution_command(
             "pass": projected_daily_buy_delta <= max_daily_buy_delta + 1e-12,
             "actual": projected_daily_buy_delta,
             "threshold": max_daily_buy_delta,
-            "today_used": round(float(today.get("buy_delta") or 0.0), 6),
-            "command_delta": metrics["buy_delta"],
+            "today_used": round(today_buy_delta, 6),
+            "command_delta": command_buy_delta,
+            "remaining_delta": remaining_daily_buy_delta,
             "shadow_real_money_threshold": shadow_real_money_max_daily_buy_delta,
             "shadow_real_money_would_pass": projected_daily_buy_delta <= shadow_real_money_max_daily_buy_delta + 1e-12,
+            "shadow_real_money_remaining_delta": shadow_real_money_remaining_buy_delta,
+            "shadow_real_money_allowed_command_delta": shadow_real_money_allowed_command_delta,
+            "shadow_real_money_blocked_command_delta": shadow_real_money_blocked_command_delta,
             "execution_effect": "hard_block",
             "shadow_execution_effect": "diagnostic_only",
         },

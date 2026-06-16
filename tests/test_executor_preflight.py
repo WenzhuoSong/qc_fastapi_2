@@ -506,8 +506,59 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertEqual(check["threshold"], 0.10)
         self.assertEqual(check["today_used"], 0.09)
         self.assertEqual(check["command_delta"], 0.02)
+        self.assertEqual(check["remaining_delta"], 0.01)
         self.assertEqual(check["execution_effect"], "hard_block")
         self.assertFalse(check["shadow_real_money_would_pass"])
+        self.assertEqual(check["shadow_real_money_remaining_delta"], 0.0)
+        self.assertEqual(check["shadow_real_money_allowed_command_delta"], 0.0)
+        self.assertEqual(check["shadow_real_money_blocked_command_delta"], 0.02)
+
+    def test_preflight_daily_buy_cap_sums_multiple_buy_legs_in_one_command(self):
+        async def run():
+            with (
+                patch(
+                    "services.execution_log_store.command_submission_state",
+                    new=AsyncMock(return_value={
+                        "command_id_exists": False,
+                        "analysis_id_submitted": False,
+                    }),
+                ),
+                patch(
+                    "services.execution_log_store.summarize_today_execution_activity",
+                    new=AsyncMock(return_value={
+                        "command_count": 1,
+                        "gross_turnover": 0.02,
+                        "buy_delta": 0.075,
+                        "sell_delta": 0.0,
+                    }),
+                ),
+            ):
+                return await preflight_execution_command(
+                    command_id="analysis_1000",
+                    analysis_id=1000,
+                    target_weights={"CIBR": 0.02, "SMH": 0.02, "CASH": 0.96},
+                    current_weights={"CIBR": 0.01, "SMH": 0.005, "CASH": 0.985},
+                    policy_version="sprint8a",
+                    policy_sync_result={"ack_status": "accepted"},
+                    policy_alignment_result={"aligned": True},
+                    config={
+                        "max_buy_delta_per_day": 0.10,
+                        "shadow_real_money_max_buy_delta_per_day": 0.03,
+                    },
+                )
+
+        result = asyncio.run(run())
+
+        self.assertTrue(result["allowed"])
+        check = result["checks"]["daily_buy_delta_ok"]
+        self.assertEqual(check["today_used"], 0.075)
+        self.assertEqual(check["command_delta"], 0.025)
+        self.assertEqual(check["actual"], 0.1)
+        self.assertEqual(check["remaining_delta"], 0.025)
+        self.assertFalse(check["shadow_real_money_would_pass"])
+        self.assertEqual(check["shadow_real_money_remaining_delta"], 0.0)
+        self.assertEqual(check["shadow_real_money_allowed_command_delta"], 0.0)
+        self.assertEqual(check["shadow_real_money_blocked_command_delta"], 0.025)
 
     def test_same_target_dedupe_extracts_sent_weights_as_fallback(self):
         row = type(
