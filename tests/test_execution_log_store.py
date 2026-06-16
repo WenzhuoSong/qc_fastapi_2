@@ -609,6 +609,48 @@ class ExecutionLogStoreTests(unittest.TestCase):
         self.assertEqual(summary["ordinary_command_count"], 1)
         self.assertEqual(summary["risk_reduce_command_count"], 0)
 
+    def test_daily_activity_summary_counts_broker_executable_preflight_delta(self):
+        """Daily buy cap is a conservative reservation over executable command delta."""
+        rounded_buy = type(
+            "Row",
+            (),
+            {
+                "command_type": "weight_adjustment",
+                "status": "sent",
+                "qc_status": "filled",
+                "qc_response": {
+                    "account_state": {
+                        "holdings_weights": {"SMH": 0.0141, "CASH": 0.9859},
+                    },
+                },
+                "command_payload": {
+                    "sent_weights": {"SMH": 0.019181, "CASH": 0.980819},
+                    "proposed_weights": {"SMH": 0.017302, "CASH": 0.982698},
+                    "command_preflight": {
+                        "broker_order_filter": {
+                            "rounded_orders": [
+                                {
+                                    "ticker": "SMH",
+                                    "strategy_intent_weight": 0.017302,
+                                    "broker_executable_weight": 0.019181,
+                                }
+                            ]
+                        },
+                        "metrics": {
+                            "buy_delta": 0.009581,
+                            "sell_delta": 0.0,
+                            "gross_turnover": 0.0047905,
+                        },
+                    },
+                },
+            },
+        )()
+
+        summary = execution_log_store.summarize_execution_activity_rows([rounded_buy])
+
+        self.assertEqual(summary["buy_delta"], 0.009581)
+        self.assertEqual(summary["gross_turnover"], 0.00479)
+
     def test_daily_activity_summary_splits_risk_reduce_rows(self):
         risk_reduce = type(
             "Row",

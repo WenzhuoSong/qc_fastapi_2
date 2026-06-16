@@ -97,8 +97,11 @@ class BrokerOrderFilterTests(unittest.TestCase):
         rounded = result["rounded_orders"][0]
         self.assertEqual(rounded["ticker"], "SMH")
         self.assertEqual(rounded["reason"], "rounded_up_to_min_executable_buy")
+        self.assertEqual(rounded["target_semantics"], "broker_executable_hint_not_strategy_intent")
         self.assertAlmostEqual(rounded["original_delta_weight"], 0.009, places=6)
         self.assertAlmostEqual(rounded["rounded_delta_weight"], 0.012, places=6)
+        self.assertAlmostEqual(rounded["strategy_intent_weight"], 0.009, places=6)
+        self.assertAlmostEqual(rounded["broker_executable_weight"], 0.012, places=6)
         self.assertAlmostEqual(result["target_weights"]["SMH"], 0.012, places=6)
         self.assertAlmostEqual(result["metrics_after"]["buy_delta"], 0.012, places=6)
 
@@ -127,6 +130,8 @@ class BrokerOrderFilterTests(unittest.TestCase):
         )
         override = diagnostic["rounded_target_overrides"][0]
         self.assertEqual(override["ticker"], "SMH")
+        self.assertAlmostEqual(override["strategy_intent_weight"], 0.017302, places=6)
+        self.assertAlmostEqual(override["broker_executable_weight"], 0.019181, places=6)
         self.assertAlmostEqual(override["original_target_weight"], 0.017302, places=6)
         self.assertAlmostEqual(override["rounded_target_weight"], 0.019181, places=6)
         self.assertAlmostEqual(override["reconciliation_target_weight"], 0.017302, places=6)

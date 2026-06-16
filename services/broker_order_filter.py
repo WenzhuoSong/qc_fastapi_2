@@ -236,6 +236,8 @@ def reconciliation_target_diagnostics_from_command_payload(payload: dict[str, An
         overrides.append(
             {
                 "ticker": ticker,
+                "strategy_intent_weight": round(float(original_target), 6),
+                "broker_executable_weight": round(float(rounded_target), 6) if rounded_target is not None else None,
                 "original_target_weight": round(float(original_target), 6),
                 "rounded_target_weight": round(float(rounded_target), 6) if rounded_target is not None else None,
                 "sent_target_weight": sent.get(ticker),
@@ -291,12 +293,15 @@ def _try_round_up_buy_order(
     attempt.update(
         {
             "round_up_policy": "buy_min_executable_shares_v1",
+            "target_semantics": "broker_executable_hint_not_strategy_intent",
+            "strategy_intent_weight": order.get("target_weight"),
             "original_target_weight": order.get("target_weight"),
             "original_delta_weight": order.get("delta_weight"),
             "original_estimated_share_delta": order.get("estimated_share_delta"),
             "rounded_share_delta": round(min_shares, 4),
             "rounded_notional_usd": round(rounded_notional, 2),
             "rounded_delta_weight": round(rounded_delta, 6),
+            "broker_executable_weight": round(current_weight + rounded_delta, 6),
             "rounded_target_weight": round(current_weight + rounded_delta, 6),
             "round_up_multiplier": round(multiplier, 6),
         }
