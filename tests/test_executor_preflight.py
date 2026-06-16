@@ -115,6 +115,7 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn("No command sent to QC", text)
         self.assertIn("same target fingerprint", text)
         self.assertIn('command_preflight["broker_order_filter"] = broker_order_filter', text)
+        self.assertIn("proposed_weights=desired_weights", text)
 
     def test_executor_filters_broker_micro_orders_before_active_gate(self):
         text = Path("agents/executor.py").read_text()
@@ -195,6 +196,8 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertIn("Proposal invalidated before confirmation", confirm_body)
         self.assertIn("active execution is still pending reconciliation", confirm_body)
         self.assertIn('command_preflight["broker_order_filter"] = broker_order_filter', confirm_body)
+        self.assertIn("proposed_weights = dict(weights or {})", confirm_body)
+        self.assertIn("proposed_weights=proposed_weights", confirm_body)
 
     def test_timed_out_proposal_auto_execution_is_disabled(self):
         text = Path("services/proposal.py").read_text()

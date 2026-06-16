@@ -486,6 +486,7 @@ async def run_executor_async(
         await create_or_update_submitted_log(
             command_id=command_id,
             target_weights=weights,
+            proposed_weights=desired_weights,
             analysis_id=analysis_id,
             policy_version=policy_version,
             preflight_result=command_preflight,

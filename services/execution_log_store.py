@@ -287,6 +287,7 @@ async def create_or_update_submitted_log(
     *,
     command_id: str,
     target_weights: dict[str, Any],
+    proposed_weights: dict[str, Any] | None = None,
     analysis_id: int | None = None,
     policy_version: str | None = None,
     preflight_result: dict[str, Any] | None = None,
@@ -304,10 +305,12 @@ async def create_or_update_submitted_log(
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(ExecutionLog).where(ExecutionLog.command_id == command_id))
         row = result.scalar_one_or_none()
+        strategic_weights = proposed_weights if proposed_weights is not None else target_weights
         payload = {
             "action_status": "sent",
             "command_id": command_id,
             "sent_weights": target_weights,
+            "proposed_weights": strategic_weights,
             "policy_version": policy_version,
             "command_preflight": preflight_result or {},
             "policy_sync": policy_sync_result or {},

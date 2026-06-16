@@ -88,6 +88,7 @@ async def _cmd_confirm() -> str:
         return await _cmd_confirm_circuit_override()
 
     weights = pending.get("weights", {})
+    proposed_weights = dict(weights or {})
     token   = pending.get("token", "")
     final_validation = pending.get("final_validation") or {}
     if not final_validation or not final_validation.get("approved"):
@@ -245,6 +246,7 @@ async def _cmd_confirm() -> str:
         await create_or_update_submitted_log(
             command_id=command_id or result.get("command_id"),
             target_weights=weights,
+            proposed_weights=proposed_weights,
             analysis_id=analysis_id,
             policy_version=policy.get("version"),
             preflight_result=command_preflight,

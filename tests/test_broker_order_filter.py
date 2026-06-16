@@ -2,6 +2,7 @@ import unittest
 
 from services.broker_order_filter import (
     apply_broker_order_filter_to_snapshot,
+    reconciliation_target_diagnostics_from_command_payload,
     reconciliation_target_weights_from_command_payload,
 )
 
@@ -118,6 +119,17 @@ class BrokerOrderFilterTests(unittest.TestCase):
 
         self.assertAlmostEqual(result["target_weights"]["SMH"], 0.019181, places=6)
         self.assertAlmostEqual(target["SMH"], 0.017302, places=6)
+
+        diagnostic = reconciliation_target_diagnostics_from_command_payload(payload)
+        self.assertEqual(
+            diagnostic["target_source"],
+            "sent_weights_with_broker_round_up_original_target_overrides",
+        )
+        override = diagnostic["rounded_target_overrides"][0]
+        self.assertEqual(override["ticker"], "SMH")
+        self.assertAlmostEqual(override["original_target_weight"], 0.017302, places=6)
+        self.assertAlmostEqual(override["rounded_target_weight"], 0.019181, places=6)
+        self.assertAlmostEqual(override["reconciliation_target_weight"], 0.017302, places=6)
 
     def test_does_not_round_up_buy_when_multiplier_is_too_large(self):
         result = apply_broker_order_filter_to_snapshot(

@@ -198,6 +198,57 @@ def reconciliation_target_weights_from_command_payload(payload: dict[str, Any] |
     return _with_cash_residual(target)
 
 
+def reconciliation_target_diagnostics_from_command_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Return auditable reconciliation target semantics for broker-rounded commands."""
+    diagnostic: dict[str, Any] = {
+        "schema_version": "broker_reconciliation_target_v1",
+        "target_source": "none",
+        "rounded_target_overrides": [],
+        "target_weight_count": 0,
+    }
+    if not isinstance(payload, dict):
+        return diagnostic
+
+    sent = _clean_weights(payload.get("sent_weights") or {})
+    proposed = _clean_weights(payload.get("proposed_weights") or {})
+    target = reconciliation_target_weights_from_command_payload(payload)
+    if target:
+        diagnostic["target_weight_count"] = len(target)
+    if sent:
+        diagnostic["target_source"] = "sent_weights"
+    elif proposed:
+        diagnostic["target_source"] = "proposed_weights"
+
+    broker = payload.get("command_preflight")
+    broker = broker.get("broker_order_filter") if isinstance(broker, dict) else None
+    if not isinstance(broker, dict):
+        return diagnostic
+
+    overrides: list[dict[str, Any]] = []
+    for order in broker.get("rounded_orders") or []:
+        if not isinstance(order, dict):
+            continue
+        ticker = str(order.get("ticker") or "").upper().strip()
+        original_target = _float_or_none(order.get("original_target_weight"))
+        rounded_target = _float_or_none(order.get("rounded_target_weight") or order.get("target_weight"))
+        if not ticker or original_target is None:
+            continue
+        overrides.append(
+            {
+                "ticker": ticker,
+                "original_target_weight": round(float(original_target), 6),
+                "rounded_target_weight": round(float(rounded_target), 6) if rounded_target is not None else None,
+                "sent_target_weight": sent.get(ticker),
+                "reconciliation_target_weight": round(float(target.get(ticker, original_target)), 6),
+                "reason": "broker_round_up_execution_hint_not_strategic_target",
+            }
+        )
+    if overrides:
+        diagnostic["target_source"] = "sent_weights_with_broker_round_up_original_target_overrides"
+        diagnostic["rounded_target_overrides"] = overrides
+    return diagnostic
+
+
 def _suppression_reason(order: dict[str, Any], cfg: dict[str, Any]) -> str | None:
     if float(order["estimated_share_delta"]) < float(cfg["broker_min_non_liquidation_share_delta"]):
         return "below_min_non_liquidation_share_delta"
