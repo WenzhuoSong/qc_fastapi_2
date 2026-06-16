@@ -18,6 +18,7 @@ from services.command_lifecycle import (
 )
 from services.execution_lifecycle import classify_qc_feedback_trust
 from services.json_safety import json_safe
+from services.reconciliation_guard import calculate_reconciliation_drift
 from services.target_fingerprint import build_target_fingerprint
 
 RECONCILIATION_ACTIVE_QC_STATUSES = {
@@ -795,8 +796,8 @@ async def force_reconcile_command(
 
         target_weights = getattr(snapshot, "target_weights", None) or {}
         actual_weights = getattr(snapshot, "holdings_weights", None) or {}
-        drift = _weight_diff_for_force_reconcile(target_weights, actual_weights)
-        terminal_status = "reconciled" if float(drift.get("max_abs_diff") or 0.0) <= 0.01 else "reconciliation_drift"
+        drift = _reconciliation_drift_for_force_reconcile(snapshot, target_weights, actual_weights)
+        terminal_status = "reconciled" if not drift.get("drift_tickers") else "reconciliation_drift"
         row.qc_status = terminal_status
         row.qc_ack_at = row.qc_ack_at or now
         row.latest_qc_ack_at = now
@@ -1457,6 +1458,9 @@ async def append_reconciliation_from_account_snapshot(db, account_state: dict[st
     reconciliation_account_state = {
         "timestamp_utc": raw.get("timestamp_utc") or account_state.get("account_timestamp"),
         "policy_version": account_state.get("policy_version"),
+        "total_value": account_state.get("total_value") or raw.get("total_value") or raw.get("portfolio_value"),
+        "prices": _prices_from_raw_snapshot(raw),
+        "holdings_detail_rows": raw.get("holdings_detail_rows") or [],
         "open_order_count": account_state.get("open_order_count"),
         "has_open_orders": account_state.get("has_open_orders"),
         "holdings_weights": account_state.get("holdings_weights") or {},
@@ -1697,6 +1701,55 @@ def _weight_diff_for_force_reconcile(
             })
     diffs.sort(key=lambda row: (-abs(float(row.get("diff") or 0.0)), str(row.get("ticker") or "")))
     return {"max_abs_diff": round(max_abs, 6), "diffs": diffs}
+
+
+def _reconciliation_drift_for_force_reconcile(
+    snapshot: Any,
+    target_weights: dict[str, Any],
+    actual_weights: dict[str, Any],
+) -> dict[str, Any]:
+    diff = _weight_diff_for_force_reconcile(target_weights, actual_weights)
+    raw_snapshot = getattr(snapshot, "raw_snapshot", None) or {}
+    drift = calculate_reconciliation_drift(
+        target_weights,
+        actual_weights,
+        total_value=_float_or_none(getattr(snapshot, "total_value", None)),
+        prices=_prices_from_raw_snapshot(raw_snapshot),
+    )
+    return {
+        **drift,
+        "max_abs_diff": drift.get("raw_max_abs_diff"),
+        "diffs": diff["diffs"],
+    }
+
+
+def _prices_from_raw_snapshot(raw_snapshot: dict[str, Any] | None) -> dict[str, float]:
+    prices: dict[str, float] = {}
+    if not isinstance(raw_snapshot, dict):
+        return prices
+    rows = raw_snapshot.get("holdings_detail_rows")
+    if not isinstance(rows, list):
+        return prices
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or row.get("symbol") or "").upper().strip()
+        price = _float_or_none(row.get("market_price") or row.get("price"))
+        if ticker and price and price > 0:
+            prices[ticker] = price
+    return prices
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in {float("inf"), float("-inf")}:
+        return None
+    return number
 
 
 def _clean_weight_dict_for_force_reconcile(weights: dict[str, Any] | None) -> dict[str, float]:

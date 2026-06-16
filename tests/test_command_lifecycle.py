@@ -157,6 +157,65 @@ class CommandLifecycleTests(unittest.TestCase):
         self.assertEqual(events[0]["event_type"], "reconciliation_drift")
         self.assertGreater(events[0]["payload"]["max_abs_diff"], 0.01)
 
+    def test_reconciliation_events_use_guard_tolerance_not_one_percent(self):
+        events = build_command_reconciliation_events(
+            command_id="cmd_1",
+            command_payload={"sent_weights": {"SMH": 0.019181}},
+            qc_response={
+                "status": "accepted",
+                "actual_target_weights": {"SMH": 0.019181},
+                "actual_holdings_weights": {"SMH": 0.0143},
+                "order_summary": {
+                    "submitted_order_count": 1,
+                    "filled_order_count": 1,
+                    "open_order_count_after": 0,
+                    "all_filled": True,
+                },
+            },
+            account_state={
+                "open_order_count": 0,
+                "has_open_orders": False,
+                "holdings_weights": {"SMH": 0.0143},
+                "target_weights": {"SMH": 0.019181},
+                "total_value": 135_000.0,
+                "prices": {"SMH": 650.0},
+            },
+        )
+
+        self.assertEqual([event["event_type"] for event in events], ["orders_submitted", "filled", "reconciliation_drift"])
+        self.assertEqual(events[2]["event_status"], "drift")
+        self.assertLess(events[2]["payload"]["max_abs_diff"], 0.01)
+        self.assertEqual(events[2]["payload"]["drift_tickers"][0]["ticker"], "SMH")
+
+    def test_reconciliation_events_allow_whole_share_rounding_residual(self):
+        events = build_command_reconciliation_events(
+            command_id="cmd_1",
+            command_payload={"sent_weights": {"QQQ": 0.040955}},
+            qc_response={
+                "status": "accepted",
+                "actual_target_weights": {"QQQ": 0.040955},
+                "actual_holdings_weights": {"QQQ": 0.0378},
+                "order_summary": {
+                    "submitted_order_count": 1,
+                    "filled_order_count": 1,
+                    "open_order_count_after": 0,
+                    "all_filled": True,
+                },
+            },
+            account_state={
+                "open_order_count": 0,
+                "has_open_orders": False,
+                "holdings_weights": {"QQQ": 0.0378},
+                "target_weights": {"QQQ": 0.040955},
+                "total_value": 133_020.14,
+                "prices": {"QQQ": 717.56},
+            },
+        )
+
+        self.assertEqual([event["event_type"] for event in events], ["orders_submitted", "filled", "reconciled"])
+        self.assertEqual(events[2]["event_status"], "reconciled")
+        self.assertEqual(events[2]["payload"]["drift_tickers"], [])
+
     def test_delayed_account_snapshot_holdings_override_stale_ack_holdings(self):
         events = build_command_reconciliation_events(
             command_id="cmd_1",

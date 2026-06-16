@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from services.reconciliation_guard import calculate_reconciliation_drift
 from services.json_safety import json_safe
 
 
@@ -31,7 +32,7 @@ VALID_EVENT_TYPES = {
     "unknown_command_feedback",
 }
 
-DEFAULT_RECONCILIATION_TOLERANCE = 0.01
+DEFAULT_RECONCILIATION_TOLERANCE = 0.0025
 DEFAULT_RECONCILIATION_MAX_AGE_MINUTES = 30
 RECONCILIATION_TERMINAL_EVENTS = {
     "reconciled",
@@ -303,17 +304,20 @@ def build_command_reconciliation_events(
     if not target or not holdings:
         return events
 
-    diff = _weight_diff(target, holdings)
+    drift = _reconciliation_drift(target, holdings, account=account, tolerance=tolerance)
     payload = {
         "tolerance": tolerance,
-        "max_abs_diff": diff["max_abs_diff"],
-        "diffs": diff["diffs"],
+        "threshold": drift["threshold"],
+        "max_abs_diff": drift["raw_max_abs_diff"],
+        "max_drift": drift["max_drift"],
+        "diffs": drift["diffs"],
+        "drift_tickers": drift["drift_tickers"],
         "target_weights": target,
         "actual_holdings_weights": holdings,
         "order_summary": order_summary,
         "account_state": _account_reconciliation_payload(account),
     }
-    if diff["max_abs_diff"] <= float(tolerance) and not _has_open_orders(order_summary, account):
+    if not drift["drift_tickers"] and not _has_open_orders(order_summary, account):
         events.append(build_command_lifecycle_event(
             command_id=command_id,
             analysis_id=analysis_id,
@@ -324,7 +328,7 @@ def build_command_reconciliation_events(
             payload=payload,
             event_time=event_time,
         ))
-    elif diff["max_abs_diff"] > float(tolerance) and not _has_open_orders(order_summary, account):
+    elif drift["drift_tickers"] and not _has_open_orders(order_summary, account):
         events.append(build_command_lifecycle_event(
             command_id=command_id,
             analysis_id=analysis_id,
@@ -595,6 +599,7 @@ def _account_reconciliation_payload(account: dict[str, Any]) -> dict[str, Any]:
         "timestamp_utc": account.get("timestamp_utc"),
         "algorithm_time": account.get("algorithm_time"),
         "policy_version": account.get("policy_version"),
+        "total_value": account.get("total_value"),
         "open_order_count": account.get("open_order_count"),
         "has_open_orders": account.get("has_open_orders"),
         "last_command_id": account.get("last_command_id"),
@@ -602,6 +607,69 @@ def _account_reconciliation_payload(account: dict[str, Any]) -> dict[str, Any]:
         "active_execution_status": account.get("active_execution_status"),
         "processed_command_count": account.get("processed_command_count"),
     }
+
+
+def _reconciliation_drift(
+    target: dict[str, float],
+    actual: dict[str, float],
+    *,
+    account: dict[str, Any],
+    tolerance: float,
+) -> dict[str, Any]:
+    drift = calculate_reconciliation_drift(
+        target,
+        actual,
+        total_value=_float_or_none(account.get("total_value")),
+        prices=_prices_from_account_state(account),
+        config={"relative_weight_tolerance": tolerance},
+    )
+    return {
+        **drift,
+        "diffs": _weight_diff(target, actual)["diffs"],
+    }
+
+
+def _prices_from_account_state(account: dict[str, Any]) -> dict[str, float]:
+    if not isinstance(account, dict):
+        return {}
+    explicit = account.get("prices")
+    prices = _clean_prices(explicit)
+    if prices:
+        return prices
+    for key in ("holdings_detail_rows", "holdings"):
+        rows = account.get(key)
+        if isinstance(rows, list):
+            prices.update(_prices_from_holdings_rows(rows))
+    raw = account.get("raw_snapshot")
+    if isinstance(raw, dict):
+        rows = raw.get("holdings_detail_rows")
+        if isinstance(rows, list):
+            prices.update(_prices_from_holdings_rows(rows))
+    return prices
+
+
+def _prices_from_holdings_rows(rows: list[Any]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or row.get("symbol") or "").upper().strip()
+        price = _float_or_none(row.get("market_price") or row.get("price"))
+        if ticker and price and price > 0:
+            out[ticker] = price
+    return out
+
+
+def _clean_prices(value: Any) -> dict[str, float]:
+    out: dict[str, float] = {}
+    if not isinstance(value, dict):
+        return out
+    for ticker, raw in value.items():
+        key = str(ticker or "").upper().strip()
+        price = _float_or_none(raw)
+        if key and price and price > 0:
+            out[key] = price
+    return out
 
 
 def _weight_diff(target: dict[str, float], actual: dict[str, float]) -> dict[str, Any]:

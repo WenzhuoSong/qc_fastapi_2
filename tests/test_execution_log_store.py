@@ -27,18 +27,24 @@ def _load_utcnow_db_naive():
     lifecycle.lifecycle_state_from_status = lambda **kwargs: "created"
     lifecycle.next_lifecycle_state = lambda current, proposed: proposed if current in (None, "") else current
 
-    with patch.dict(
-        "sys.modules",
-        {
-            "sqlalchemy": sqlalchemy,
-            "db": type(sys)("db"),
-            "db.models": models,
-            "db.session": session,
-            "services.command_lifecycle": lifecycle,
-        },
-    ):
-        module = importlib.import_module("services.execution_log_store")
-        return module
+    previous = sys.modules.pop("services.execution_log_store", None)
+    try:
+        with patch.dict(
+            "sys.modules",
+            {
+                "sqlalchemy": sqlalchemy,
+                "db": type(sys)("db"),
+                "db.models": models,
+                "db.session": session,
+                "services.command_lifecycle": lifecycle,
+            },
+        ):
+            return importlib.import_module("services.execution_log_store")
+    finally:
+        if previous is not None:
+            sys.modules["services.execution_log_store"] = previous
+        else:
+            sys.modules.pop("services.execution_log_store", None)
 
 
 execution_log_store = _load_utcnow_db_naive()
@@ -705,6 +711,18 @@ class ExecutionLogStoreTests(unittest.TestCase):
         self.assertIn('event_type="cancel_orders_requested_by_operator"', text)
         self.assertIn("operator_cancel_orders", text)
 
+    def test_delayed_reconciliation_account_state_is_reachable_contract(self):
+        text = Path("services/execution_log_store.py").read_text()
+
+        self.assertIn(
+            "if qc_status not in RECONCILIATION_ACTIVE_QC_STATUSES:\n"
+            "        return 0\n"
+            "    reconciliation_account_state = {",
+            text,
+        )
+        self.assertIn('"total_value": account_state.get("total_value")', text)
+        self.assertIn('"prices": _prices_from_raw_snapshot(raw)', text)
+
     def test_qc_feedback_trust_is_stored_on_lifecycle_row_contract(self):
         text = Path("services/execution_log_store.py").read_text()
 
@@ -722,6 +740,29 @@ class ExecutionLogStoreTests(unittest.TestCase):
 
         self.assertEqual(diff["max_abs_diff"], 0.1)
         self.assertEqual(diff["diffs"][0]["ticker"], "SPY")
+
+    def test_force_reconcile_uses_guard_drift_not_one_percent(self):
+        snapshot = type(
+            "Snapshot",
+            (),
+            {
+                "total_value": 135_000.0,
+                "raw_snapshot": {
+                    "holdings_detail_rows": [
+                        {"ticker": "SMH", "market_price": 650.0},
+                    ],
+                },
+            },
+        )()
+
+        drift = execution_log_store._reconciliation_drift_for_force_reconcile(
+            snapshot,
+            {"SMH": 0.019181},
+            {"SMH": 0.0143},
+        )
+
+        self.assertLess(drift["max_abs_diff"], 0.01)
+        self.assertEqual(drift["drift_tickers"][0]["ticker"], "SMH")
 
 
 if __name__ == "__main__":
