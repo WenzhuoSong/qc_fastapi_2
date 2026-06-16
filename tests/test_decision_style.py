@@ -103,7 +103,7 @@ class DecisionStyleTest(unittest.TestCase):
                         "max_adjustment_multiplier": 0.6,
                         "max_turnover_per_cycle": 0.15,
                         "max_single_trade_pct": 0.04,
-                        "max_new_buys_per_cycle": 2,
+                        "max_new_buys_per_cycle": 4,
                         "min_cash_floor_addition": 0.05,
                     },
                 },
@@ -126,7 +126,7 @@ class DecisionStyleTest(unittest.TestCase):
         self.assertEqual(resolved["style_limits"]["max_adjustment_multiplier"], 0.6)
         self.assertEqual(resolved["style_limits"]["max_turnover_per_cycle"], 0.10)
         self.assertEqual(resolved["style_limits"]["max_single_trade_pct"], 0.04)
-        self.assertEqual(resolved["style_limits"]["max_new_buys_per_cycle"], 2)
+        self.assertEqual(resolved["style_limits"]["max_new_buys_per_cycle"], 4)
         self.assertEqual(resolved["style_limits"]["min_cash_floor_addition"], 0.05)
         self.assertEqual(resolved["style_limits"]["rebalance_threshold_boost"], 0.02)
 
@@ -176,6 +176,17 @@ class DecisionStyleTest(unittest.TestCase):
         )
 
         self.assertNotIn("strategy_data_quality", resolved["triggered_style_rules"])
+
+    def test_small_overweight_step_in_allows_four_new_buys_per_cycle(self):
+        resolved = resolve_decision_style(
+            market_scorecard=_scorecard(investment_permission="small_overweight_only"),
+            news_evidence=_news(),
+            strategy_evidence=_strategies(),
+        )
+
+        self.assertEqual(resolved["trade_style"], "step_in")
+        self.assertIn("scorecard_small_overweight", resolved["triggered_style_rules"])
+        self.assertEqual(resolved["style_limits"]["max_new_buys_per_cycle"], 4)
 
     def test_macro_negative_high_impact_triggers_macro_defensive(self):
         resolved = resolve_decision_style(
@@ -274,6 +285,7 @@ class DecisionStyleTest(unittest.TestCase):
         self.assertEqual(resolved["analysis_style"], "conservative")
         self.assertEqual(resolved["trade_style"], "step_in")
         self.assertIn("forced_style_config", resolved["triggered_style_rules"])
+        self.assertEqual(resolved["style_limits"]["max_new_buys_per_cycle"], 4)
         self.assertEqual(resolved["style_limits"]["min_cash_floor_addition"], 0.05)
 
     def test_apply_style_limits_cash_floor_is_additive(self):

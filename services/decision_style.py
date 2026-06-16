@@ -56,13 +56,17 @@ BASE_STYLE_LIMITS = {
     "max_adjustment_multiplier": 1.0,
     "max_turnover_per_cycle": 0.30,
     "max_single_trade_pct": 0.05,
-    "max_new_buys_per_cycle": 3,
+    "max_new_buys_per_cycle": 4,
     "min_cash_floor_addition": 0.0,
     "rebalance_threshold_boost": 0.0,
     "allow_new_positions": True,
     "prefer_hedges": False,
     "sell_priority": False,
 }
+
+# Paper-live Step 3: allow more independent small-add executions per cycle
+# while daily buy delta and turnover caps remain the hard total-risk controls.
+STEP_IN_MAX_NEW_BUYS_PER_CYCLE = 4
 
 GLOBAL_HARD_RISK_TYPES = {
     "bank_crisis",
@@ -338,7 +342,7 @@ def _scorecard_rules(scorecard: dict[str, Any]) -> list[dict[str, Any]]:
                     "max_adjustment_multiplier": 0.7,
                     "max_turnover_per_cycle": 0.15,
                     "max_single_trade_pct": 0.04,
-                    "max_new_buys_per_cycle": 2,
+                    "max_new_buys_per_cycle": STEP_IN_MAX_NEW_BUYS_PER_CYCLE,
                     "min_cash_floor_addition": 0.03,
                 },
                 reasons=["Market scorecard limits changes to small overweights"],
@@ -498,7 +502,11 @@ def _limits_for_forced_style(analysis: str, trade: str) -> dict[str, Any]:
         limits.update({"max_adjustment_multiplier": 1.1})
 
     if trade == "step_in":
-        limits.update({"max_single_trade_pct": 0.04, "max_new_buys_per_cycle": 2, "max_turnover_per_cycle": 0.15})
+        limits.update({
+            "max_single_trade_pct": 0.04,
+            "max_new_buys_per_cycle": STEP_IN_MAX_NEW_BUYS_PER_CYCLE,
+            "max_turnover_per_cycle": 0.15,
+        })
     elif trade == "hold_unless_strong":
         limits.update({"max_adjustment_multiplier": 0.5, "max_turnover_per_cycle": 0.10})
     elif trade == "risk_reduce_fast":
@@ -518,7 +526,7 @@ def _limited_data_rule(name: str, reason: str) -> dict[str, Any]:
             "max_adjustment_multiplier": 0.6,
             "max_turnover_per_cycle": 0.15,
             "max_single_trade_pct": 0.04,
-            "max_new_buys_per_cycle": 2,
+            "max_new_buys_per_cycle": STEP_IN_MAX_NEW_BUYS_PER_CYCLE,
             "min_cash_floor_addition": 0.05,
         },
         reasons=[reason],

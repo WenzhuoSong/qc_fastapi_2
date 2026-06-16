@@ -485,7 +485,7 @@ async def _cmd_config(text: str) -> str:
 
     Usage:
       /config
-      /config position_manager_config max_new_buys_per_cycle 2
+      /config position_manager_config max_new_buys_per_cycle 4
       /config pm max_turnover_per_cycle 0.25
     """
     allowed_keys = {

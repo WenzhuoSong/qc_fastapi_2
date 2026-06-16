@@ -34,7 +34,7 @@ DEFAULT_ATR_THRESHOLD = 2.0         # 2x ATR for intraday move threshold
 
 @dataclass
 class PositionConstraints:
-    max_new_buys_per_cycle: int = 3
+    max_new_buys_per_cycle: int = 4
     max_positions: int = 12
     max_single_trade_pct: float = 0.08
     max_turnover_per_cycle: float = 0.30
