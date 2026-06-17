@@ -25,13 +25,13 @@ from services.transaction_cost_gate import format_transaction_cost_gate_summary
 
 
 class ExecutorPreflightTests(unittest.TestCase):
-    def test_default_execution_command_limits_are_widened_for_live_calibration(self):
+    def test_default_execution_command_limits_match_post_pressure_test_paper_cadence(self):
         self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["max_daily_commands"], 12)
         self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["max_gross_turnover_per_day"], 1.50)
         self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["risk_reduce_reserved_commands"], 4)
         self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["risk_reduce_gross_turnover_per_day"], 0.25)
         self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["max_buy_delta"], 0.15)
-        self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["max_buy_delta_per_day"], 0.10)
+        self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["max_buy_delta_per_day"], 0.04)
         self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["shadow_real_money_max_buy_delta_per_day"], 0.03)
         self.assertEqual(DEFAULT_COMMAND_PREFLIGHT_CONFIG["max_sell_delta"], 0.20)
 
@@ -46,6 +46,14 @@ class ExecutorPreflightTests(unittest.TestCase):
         self.assertGreaterEqual(sql.count('"max_buy_delta_per_day": 0.10'), 2)
         self.assertGreaterEqual(sql.count('"shadow_real_money_max_buy_delta_per_day": 0.03'), 2)
         self.assertGreaterEqual(sql.count('"max_sell_delta": 0.20'), 2)
+        self.assertIn("ON CONFLICT (key) DO UPDATE", sql)
+
+    def test_config_migration_reduces_paper_daily_buy_cap_after_pressure_test(self):
+        sql = Path("db/migrations/20260617_reduce_paper_daily_buy_cap.sql").read_text()
+
+        self.assertGreaterEqual(sql.count('"max_buy_delta_per_day": 0.04'), 2)
+        self.assertGreaterEqual(sql.count('"shadow_real_money_max_buy_delta_per_day": 0.03'), 2)
+        self.assertIn("migration_20260617_reduce_paper_daily_buy_cap", sql)
         self.assertIn("ON CONFLICT (key) DO UPDATE", sql)
 
     def test_blocks_unknown_positive_weight(self):
@@ -459,7 +467,7 @@ class ExecutorPreflightTests(unittest.TestCase):
 
         self.assertEqual(config["recent_same_target_dedupe_minutes"], 5)
         self.assertEqual(config["recent_same_target_dedupe_tolerance"], 0.005)
-        self.assertEqual(config["max_buy_delta_per_day"], 0.10)
+        self.assertEqual(config["max_buy_delta_per_day"], 0.04)
         self.assertEqual(config["shadow_real_money_max_buy_delta_per_day"], 0.03)
 
     def test_preflight_hard_blocks_whole_command_when_projected_daily_buy_delta_exceeds_cap(self):

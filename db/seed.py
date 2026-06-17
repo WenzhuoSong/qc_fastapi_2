@@ -149,7 +149,7 @@ _DEFAULTS = {
         "risk_reduce_reserved_commands": 4,
         "risk_reduce_gross_turnover_per_day": 0.25,
         "max_buy_delta": 0.15,
-        "max_buy_delta_per_day": 0.10,
+        "max_buy_delta_per_day": 0.04,
         "shadow_real_money_max_buy_delta_per_day": 0.03,
         "max_sell_delta": 0.20,
     },
