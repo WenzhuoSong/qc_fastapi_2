@@ -23,6 +23,9 @@ def default_pc_promotion_config(raw: dict | None) -> dict:
     out.setdefault("require_semi_auto_gated_before_full_auto", True)
     out.setdefault("min_gated_semi_auto_confirmed_cycles", 5)
     out.setdefault("allow_full_auto_gated", False)
+    out.setdefault("require_regime_coverage", True)
+    out.setdefault("min_non_bull_regime_cycles", 2)
+    out.setdefault("min_regime_confidence_for_coverage", 0.60)
     return out
 
 
@@ -38,6 +41,8 @@ def format_pc_promotion_config(config: dict) -> str:
         f"  min_pass_rate: {_config_float(config, 'min_pass_rate', 0.90):.0%}\n"
         f"  max_material_diff: {_config_float(config, 'max_material_diff', 0.015):.1%}\n"
         f"  max_turnover_diff: {_config_float(config, 'max_turnover_diff', 0.02):.1%}\n"
+        f"  require_regime_coverage: {bool(config.get('require_regime_coverage', True))}\n"
+        f"  min_non_bull_regime_cycles: {_config_int(config, 'min_non_bull_regime_cycles', 2)}\n"
         f"  min_gated_semi_auto_confirmed_cycles: {_config_int(config, 'min_gated_semi_auto_confirmed_cycles', 5)}\n"
         f"  allow_full_auto_gated: {bool(config.get('allow_full_auto_gated'))}\n"
         "  execution_authority: none"

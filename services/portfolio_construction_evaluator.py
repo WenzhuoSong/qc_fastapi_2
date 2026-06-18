@@ -28,6 +28,7 @@ class PortfolioConstructionEvaluation:
     warnings: list[str]
     metrics: dict[str, Any]
     criteria: dict[str, Any]
+    regime_context: dict[str, Any] | None = None
     execution_authority: str = "none"
 
     def to_dict(self) -> dict[str, Any]:
@@ -43,6 +44,7 @@ def evaluate_portfolio_construction_shadow(
     basket_evaluation: dict[str, Any] | None = None,
     objective_terms: dict[str, Any] | None = None,
     hard_risk_tickers: list[str] | set[str] | None = None,
+    regime_context: dict[str, Any] | None = None,
     criteria: PortfolioConstructionPromotionCriteria | None = None,
 ) -> PortfolioConstructionEvaluation:
     """Evaluate whether PC shadow output is mature enough to consider promotion."""
@@ -155,6 +157,7 @@ def evaluate_portfolio_construction_shadow(
             "max_subscale_position_rate": cfg.max_subscale_position_rate,
             "require_no_unclassified_mutations": cfg.require_no_unclassified_mutations,
         },
+        regime_context=_normalize_regime_context(regime_context),
     )
 
 
@@ -187,6 +190,12 @@ def readiness_limits_from_pc_promotion_config(config: dict[str, Any] | None) -> 
         "max_mean_weight_deviation": _safe_float(cfg.get("max_material_diff"), 0.015),
         "max_subscale_position_rate": _safe_float(cfg.get("max_subscale_position_rate"), 0.10),
         "require_no_unclassified_mutations": bool(cfg.get("require_no_unclassified_mutations", True)),
+        "require_regime_coverage": bool(cfg.get("require_regime_coverage", True)),
+        "min_non_bull_regime_cycles": _safe_int(cfg.get("min_non_bull_regime_cycles"), 2),
+        "min_regime_confidence_for_coverage": _safe_float(
+            cfg.get("min_regime_confidence_for_coverage"),
+            0.60,
+        ),
     }
 
 
@@ -201,6 +210,9 @@ def summarize_portfolio_construction_readiness(
     max_mean_weight_deviation: float = 0.015,
     max_subscale_position_rate: float = 0.10,
     require_no_unclassified_mutations: bool = True,
+    require_regime_coverage: bool = True,
+    min_non_bull_regime_cycles: int = 2,
+    min_regime_confidence_for_coverage: float = 0.60,
 ) -> dict[str, Any]:
     rows = [row for row in evaluations if isinstance(row, dict)]
     total = len(rows)
@@ -215,6 +227,11 @@ def summarize_portfolio_construction_readiness(
     turnover_ok_count = 0
     subscale_present_count = 0
     unclassified_mutation_count = 0
+    regime_coverage = _summarize_regime_coverage(
+        rows,
+        min_non_bull_regime_cycles=min_non_bull_regime_cycles,
+        min_confidence=min_regime_confidence_for_coverage,
+    )
 
     for row in rows:
         for blocker in row.get("blockers") or []:
@@ -263,6 +280,8 @@ def summarize_portfolio_construction_readiness(
         readiness_blockers.append("unclassified_mutations_present")
     if blocker_counts:
         readiness_blockers.append("rolling_blockers_present")
+    if require_regime_coverage and not bool(regime_coverage.get("satisfied")):
+        readiness_blockers.append("non_bull_regime_coverage_insufficient")
 
     promotion_ready = not readiness_blockers
     status = "rolling_promotion_candidate" if promotion_ready else "collecting_evidence"
@@ -288,6 +307,8 @@ def summarize_portfolio_construction_readiness(
         "max_subscale_position_rate": max_subscale_position_rate,
         "unclassified_mutation_count": unclassified_mutation_count,
         "require_no_unclassified_mutations": require_no_unclassified_mutations,
+        "require_regime_coverage": require_regime_coverage,
+        "regime_coverage": regime_coverage,
         "blockers": readiness_blockers,
         "blocker_counts": dict(sorted(blocker_counts.items())),
         "warning_counts": dict(sorted(warning_counts.items())),
@@ -324,6 +345,10 @@ def build_portfolio_construction_promotion_gate(
         blockers.append("insufficient_cycles")
     if _safe_float(readiness.get("pass_rate"), 0.0) < min_pass_rate:
         blockers.append("pass_rate_below_threshold")
+    if bool(cfg.get("require_regime_coverage", True)):
+        regime_coverage = readiness.get("regime_coverage")
+        if not (isinstance(regime_coverage, dict) and bool(regime_coverage.get("satisfied"))):
+            blockers.append("non_bull_regime_coverage_insufficient")
     if readiness.get("blocker_counts"):
         blockers.append("rolling_blockers_present")
     if not bool(readiness.get("promotion_ready")):
@@ -350,6 +375,7 @@ def build_portfolio_construction_promotion_gate(
         "pass_rate": readiness.get("pass_rate", 0.0),
         "min_cycles": min_cycles,
         "min_pass_rate": min_pass_rate,
+        "regime_coverage": readiness.get("regime_coverage"),
         "execution_authority": "none",
         "would_promote_to": "portfolio_construction_gated" if eligible else None,
     }
@@ -424,6 +450,9 @@ async def load_portfolio_construction_readiness(
     max_mean_weight_deviation: float = 0.015,
     max_subscale_position_rate: float = 0.10,
     require_no_unclassified_mutations: bool = True,
+    require_regime_coverage: bool = True,
+    min_non_bull_regime_cycles: int = 2,
+    min_regime_confidence_for_coverage: float = 0.60,
 ) -> dict[str, Any]:
     from sqlalchemy import desc, select
 
@@ -455,7 +484,113 @@ async def load_portfolio_construction_readiness(
         max_mean_weight_deviation=max_mean_weight_deviation,
         max_subscale_position_rate=max_subscale_position_rate,
         require_no_unclassified_mutations=require_no_unclassified_mutations,
+        require_regime_coverage=require_regime_coverage,
+        min_non_bull_regime_cycles=min_non_bull_regime_cycles,
+        min_regime_confidence_for_coverage=min_regime_confidence_for_coverage,
     )
+
+
+def _normalize_regime_context(regime_context: dict[str, Any] | None) -> dict[str, Any]:
+    ctx = regime_context if isinstance(regime_context, dict) else {}
+    raw_regime = str(
+        ctx.get("regime")
+        or ctx.get("market_regime")
+        or ctx.get("market_condition")
+        or "unknown"
+    ).strip()
+    confidence = _confidence_value(ctx.get("confidence") or ctx.get("regime_confidence"))
+    bucket = _regime_bucket(raw_regime)
+    return {
+        "schema_version": "pc_regime_context_v1",
+        "source": str(ctx.get("source") or "pipeline_point_in_time"),
+        "regime": raw_regime or "unknown",
+        "bucket": bucket,
+        "confidence": confidence,
+        "confidence_label": ctx.get("confidence") or ctx.get("regime_confidence"),
+        "point_in_time": True,
+    }
+
+
+def _summarize_regime_coverage(
+    evaluations: list[dict[str, Any]],
+    *,
+    min_non_bull_regime_cycles: int,
+    min_confidence: float,
+) -> dict[str, Any]:
+    bucket_counts = {"bull": 0, "non_bull": 0, "unknown": 0}
+    qualified_non_bull_cycles = 0
+    qualified_non_bull_regimes: list[str] = []
+    raw_cycles: list[dict[str, Any]] = []
+
+    for row in evaluations:
+        ctx = _normalize_regime_context(row.get("regime_context"))
+        bucket = str(ctx.get("bucket") or "unknown")
+        if bucket not in bucket_counts:
+            bucket = "unknown"
+        bucket_counts[bucket] += 1
+        confidence = ctx.get("confidence")
+        confidence_ok = isinstance(confidence, (int, float)) and float(confidence) >= min_confidence
+        if bucket == "non_bull" and confidence_ok:
+            qualified_non_bull_cycles += 1
+            regime = str(ctx.get("regime") or "unknown")
+            if regime not in qualified_non_bull_regimes:
+                qualified_non_bull_regimes.append(regime)
+        raw_cycles.append(
+            {
+                "regime": ctx.get("regime"),
+                "bucket": bucket,
+                "confidence": confidence,
+                "confidence_ok": confidence_ok,
+            }
+        )
+
+    min_cycles = max(int(min_non_bull_regime_cycles or 0), 0)
+    return {
+        "schema_version": "pc_regime_coverage_v1",
+        "satisfied": qualified_non_bull_cycles >= min_cycles,
+        "bucket_counts": bucket_counts,
+        "qualified_non_bull_cycles": qualified_non_bull_cycles,
+        "qualified_non_bull_regimes": qualified_non_bull_regimes,
+        "min_non_bull_regime_cycles": min_cycles,
+        "min_regime_confidence_for_coverage": min_confidence,
+        "cycles": len(evaluations),
+        "recent_cycles": raw_cycles,
+        "measurement_note": (
+            "Regime coverage is evaluated from point-in-time frozen PC evaluation "
+            "regime_context rows; unknown or low-confidence regimes do not satisfy "
+            "non-bull coverage."
+        ),
+    }
+
+
+def _regime_bucket(regime: str) -> str:
+    clean = str(regime or "").strip().lower()
+    if not clean or clean == "unknown":
+        return "unknown"
+    if "bull" in clean or clean in {"risk_on", "uptrend", "growth"}:
+        return "bull"
+    if any(token in clean for token in ("bear", "defensive", "risk_off", "choppy", "range", "neutral", "stress")):
+        return "non_bull"
+    return "unknown"
+
+
+def _confidence_value(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    label = str(value).strip().lower()
+    if label in {"very_high", "strong"}:
+        return 0.90
+    if label == "high":
+        return 0.80
+    if label == "medium":
+        return 0.60
+    if label == "low":
+        return 0.40
+    return None
 
 
 async def load_gated_semi_auto_confirmed_cycles(*, limit: int = 50) -> dict[str, Any]:

@@ -17,6 +17,7 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
             shadow_weights={"SPY": 0.20, "QQQ": 0.10, "PSI": 0.05, "IWM": 0.05, "CASH": 0.60},
             actual_weights={"SPY": 0.20, "QQQ": 0.10, "PSI": 0.05, "IWM": 0.05, "CASH": 0.60},
             current_weights={"SPY": 0.18, "QQQ": 0.10, "PSI": 0.04, "IWM": 0.05, "CASH": 0.63},
+            regime_context={"regime": "defensive", "confidence": 0.8},
         ).to_dict()
 
         self.assertTrue(out["promotion_ready"])
@@ -24,6 +25,7 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
         self.assertEqual(out["execution_authority"], "none")
         self.assertTrue(out["metrics"]["basket_policy_ok"])
         self.assertTrue(out["metrics"]["candidate_policy_allowed"])
+        self.assertEqual(out["regime_context"]["bucket"], "non_bull")
 
     def test_blocks_shadow_policy_violation(self):
         out = evaluate_portfolio_construction_shadow(
@@ -81,18 +83,77 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
                     "subscale_count": 0,
                     "no_unclassified_mutations": True,
                 },
+                "regime_context": {"regime": "trending_bull", "confidence": 0.8},
             }
             for _ in range(3)
         ]
 
         out = summarize_portfolio_construction_readiness(evaluations, min_cycles=3, min_pass_rate=0.8)
 
-        self.assertTrue(out["promotion_ready"])
-        self.assertTrue(out["ready"])
-        self.assertEqual(out["status"], "rolling_promotion_candidate")
+        self.assertFalse(out["promotion_ready"])
+        self.assertFalse(out["ready"])
+        self.assertEqual(out["status"], "shadow_only")
         self.assertEqual(out["cycles"], 3)
         self.assertEqual(out["pass_rate"], 1.0)
         self.assertEqual(out["basket_policy_ok_rate"], 1.0)
+        self.assertIn("non_bull_regime_coverage_insufficient", out["blockers"])
+        self.assertEqual(out["regime_coverage"]["qualified_non_bull_cycles"], 0)
+
+    def test_readiness_passes_with_confident_non_bull_coverage(self):
+        evaluations = [
+            {
+                "promotion_ready": True,
+                "blockers": [],
+                "warnings": [],
+                "metrics": {
+                    "mean_abs_weight_deviation": 0.01,
+                    "turnover_delta": 0.0,
+                    "basket_policy_ok": True,
+                    "candidate_policy_allowed": True,
+                    "turnover_ok": True,
+                    "subscale_count": 0,
+                    "no_unclassified_mutations": True,
+                },
+                "regime_context": {"regime": regime, "confidence": confidence},
+            }
+            for regime, confidence in [
+                ("trending_bull", 0.8),
+                ("defensive", 0.75),
+                ("choppy", 0.7),
+            ]
+        ]
+
+        out = summarize_portfolio_construction_readiness(evaluations, min_cycles=3, min_pass_rate=0.8)
+
+        self.assertTrue(out["promotion_ready"])
+        self.assertEqual(out["regime_coverage"]["qualified_non_bull_cycles"], 2)
+        self.assertNotIn("non_bull_regime_coverage_insufficient", out["blockers"])
+
+    def test_low_confidence_non_bull_does_not_satisfy_regime_coverage(self):
+        evaluations = [
+            {
+                "promotion_ready": True,
+                "blockers": [],
+                "warnings": [],
+                "metrics": {
+                    "mean_abs_weight_deviation": 0.01,
+                    "turnover_delta": 0.0,
+                    "basket_policy_ok": True,
+                    "candidate_policy_allowed": True,
+                    "turnover_ok": True,
+                    "subscale_count": 0,
+                    "no_unclassified_mutations": True,
+                },
+                "regime_context": {"regime": "defensive", "confidence": 0.4},
+            }
+            for _ in range(3)
+        ]
+
+        out = summarize_portfolio_construction_readiness(evaluations, min_cycles=3, min_pass_rate=0.8)
+
+        self.assertFalse(out["promotion_ready"])
+        self.assertIn("non_bull_regime_coverage_insufficient", out["blockers"])
+        self.assertEqual(out["regime_coverage"]["qualified_non_bull_cycles"], 0)
 
     def test_summarizes_basket_readiness_low_rate_blocker(self):
         evaluations = [
@@ -149,6 +210,7 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
             "cycles": 20,
             "pass_rate": 1.0,
             "blocker_counts": {},
+            "regime_coverage": {"satisfied": True},
         }
 
         gate = build_portfolio_construction_promotion_gate(readiness)
@@ -167,6 +229,7 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
             "cycles": 20,
             "pass_rate": 0.9,
             "blocker_counts": {},
+            "regime_coverage": {"satisfied": True},
         }
 
         gate = build_portfolio_construction_promotion_gate(
@@ -189,6 +252,7 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
             "cycles": 20,
             "pass_rate": 1.0,
             "blocker_counts": {},
+            "regime_coverage": {"satisfied": True},
         }
 
         gate = build_portfolio_construction_promotion_gate(
@@ -209,6 +273,7 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
             "pass_rate": 1.0,
             "blocker_counts": {},
             "blockers": ["basket_policy_ok_rate_below_threshold"],
+            "regime_coverage": {"satisfied": True},
         }
 
         gate = build_portfolio_construction_promotion_gate(
@@ -248,6 +313,7 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
             "min_turnover_ok_rate": 0.0,
             "max_subscale_position_rate": 1.0,
             "require_no_unclassified_mutations": False,
+            "require_regime_coverage": False,
         }
 
         limits = readiness_limits_from_pc_promotion_config(cfg)
@@ -261,6 +327,9 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
             max_mean_weight_deviation=limits["max_mean_weight_deviation"],
             max_subscale_position_rate=limits["max_subscale_position_rate"],
             require_no_unclassified_mutations=limits["require_no_unclassified_mutations"],
+            require_regime_coverage=limits["require_regime_coverage"],
+            min_non_bull_regime_cycles=limits["min_non_bull_regime_cycles"],
+            min_regime_confidence_for_coverage=limits["min_regime_confidence_for_coverage"],
         )
         gate = build_portfolio_construction_rollout_gate(
             readiness,
@@ -281,6 +350,7 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
             "cycles": 20,
             "pass_rate": 1.0,
             "blocker_counts": {},
+            "regime_coverage": {"satisfied": True},
         }
 
         gate = build_portfolio_construction_rollout_gate(
@@ -300,6 +370,7 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
             "cycles": 20,
             "pass_rate": 1.0,
             "blocker_counts": {},
+            "regime_coverage": {"satisfied": True},
         }
 
         gate = build_portfolio_construction_rollout_gate(
@@ -321,6 +392,7 @@ class PortfolioConstructionEvaluatorTests(unittest.TestCase):
             "cycles": 20,
             "pass_rate": 1.0,
             "blocker_counts": {},
+            "regime_coverage": {"satisfied": True},
         }
 
         gate = build_portfolio_construction_rollout_gate(

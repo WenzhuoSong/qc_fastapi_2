@@ -1855,6 +1855,11 @@ async def _run_pipeline_inner(trigger: str, *, trading_analysis_gate: dict[str, 
                 basket_evaluation=(pc_payload or {}).get("basket_evaluation") or {},
                 objective_terms=(pc_payload or {}).get("objective_terms") or {},
                 hard_risk_tickers=_hard_risk_tickers_from_governance(risk_out.get("position_governance") or {}),
+                regime_context=_portfolio_construction_regime_context(
+                    market_scorecard=market_scorecard,
+                    research_report=research_report,
+                    quant_baseline=quant_baseline,
+                ),
                 criteria=criteria_from_pc_promotion_config(pc_config),
             ).to_dict()
             risk_out["portfolio_construction_evaluation"] = pc_eval
@@ -1877,6 +1882,11 @@ async def _run_pipeline_inner(trigger: str, *, trading_analysis_gate: dict[str, 
                     max_mean_weight_deviation=readiness_limits["max_mean_weight_deviation"],
                     max_subscale_position_rate=readiness_limits["max_subscale_position_rate"],
                     require_no_unclassified_mutations=readiness_limits["require_no_unclassified_mutations"],
+                    require_regime_coverage=readiness_limits["require_regime_coverage"],
+                    min_non_bull_regime_cycles=readiness_limits["min_non_bull_regime_cycles"],
+                    min_regime_confidence_for_coverage=readiness_limits[
+                        "min_regime_confidence_for_coverage"
+                    ],
                 )
                 confirmed_cycles = await load_gated_semi_auto_confirmed_cycles(
                     limit=max(
@@ -3730,6 +3740,49 @@ def _hard_risk_tickers_from_governance(position_governance: dict | None) -> list
     return tickers
 
 
+def _portfolio_construction_regime_context(
+    *,
+    market_scorecard: dict | None,
+    research_report: dict | None,
+    quant_baseline: dict | None,
+) -> dict[str, Any]:
+    """Freeze the point-in-time regime label used for PC promotion readiness."""
+    scorecard = market_scorecard if isinstance(market_scorecard, dict) else {}
+    research = research_report if isinstance(research_report, dict) else {}
+    quant = quant_baseline if isinstance(quant_baseline, dict) else {}
+    research_regime = research.get("market_regime")
+    if not isinstance(research_regime, dict):
+        research_regime = {}
+    quant_regime = quant.get("regime_result")
+    if not isinstance(quant_regime, dict):
+        quant_regime = {}
+
+    regime = (
+        scorecard.get("regime")
+        or research_regime.get("regime")
+        or research_regime.get("label")
+        or quant_regime.get("regime")
+        or scorecard.get("market_condition")
+        or "unknown"
+    )
+    confidence = (
+        scorecard.get("confidence")
+        or research_regime.get("confidence")
+        or quant_regime.get("confidence")
+    )
+    return {
+        "schema_version": "pc_regime_context_v1",
+        "source": "pipeline_point_in_time",
+        "regime": str(regime or "unknown"),
+        "confidence": confidence,
+        "scorecard_market_condition": scorecard.get("market_condition"),
+        "scorecard_permission": scorecard.get("investment_permission"),
+        "researcher_regime": research_regime.get("regime"),
+        "quant_regime": quant_regime.get("regime"),
+        "point_in_time": True,
+    }
+
+
 def _tickers_from_forced_trim_strings(rows: list[str]) -> list[str]:
     tickers: list[str] = []
     for row in rows or []:
@@ -3994,6 +4047,11 @@ async def _target_builder_construction_input(
                 max_mean_weight_deviation=readiness_limits["max_mean_weight_deviation"],
                 max_subscale_position_rate=readiness_limits["max_subscale_position_rate"],
                 require_no_unclassified_mutations=readiness_limits["require_no_unclassified_mutations"],
+                require_regime_coverage=readiness_limits["require_regime_coverage"],
+                min_non_bull_regime_cycles=readiness_limits["min_non_bull_regime_cycles"],
+                min_regime_confidence_for_coverage=readiness_limits[
+                    "min_regime_confidence_for_coverage"
+                ],
             )
             confirmed_cycles = await load_gated_semi_auto_confirmed_cycles(
                 limit=max(
