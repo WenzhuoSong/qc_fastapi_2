@@ -85,6 +85,14 @@ class MigrationSafetyTests(unittest.TestCase):
         self.assertIn('__tablename__ = "validation_observations"', models)
         self.assertRegex(models, r"\bobservation_payload\s*=\s*Column\(JSONB,\s*nullable=False\)")
         self.assertRegex(models, r"\boutcome_payload\s*=\s*Column\(JSONB\)")
+        self.assertIn('class StrategyRegistryEntry', models)
+        self.assertIn('__tablename__ = "strategy_registry_entries"', models)
+        self.assertRegex(models, r"\bexecution_authority\s*=\s*Column\(")
+        self.assertRegex(models, r"\btarget_weight_mutation\s*=\s*Column\(")
+        self.assertIn('class StrategyLiveSnapshot', models)
+        self.assertIn('__tablename__ = "strategy_live_snapshots"', models)
+        self.assertRegex(models, r"\bbenchmark_primary\s*=\s*Column\(")
+        self.assertRegex(models, r"\braw_payload\s*=\s*Column\(JSONB,\s*nullable=False\)")
 
     def test_holdings_factors_legacy_fields_remain_modeled(self):
         models = (REPO_ROOT / "db" / "models.py").read_text(encoding="utf-8")
@@ -95,6 +103,21 @@ class MigrationSafetyTests(unittest.TestCase):
         ]
 
         self.assertEqual(missing, [])
+
+    def test_newbase_live_monitoring_migration_is_append_only(self):
+        migration = (
+            REPO_ROOT
+            / "db"
+            / "migrations"
+            / "20260622_create_strategy_live_monitoring.sql"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("CREATE TABLE IF NOT EXISTS strategy_registry_entries", migration)
+        self.assertIn("CREATE TABLE IF NOT EXISTS strategy_live_snapshots", migration)
+        self.assertIn("CREATE INDEX IF NOT EXISTS idx_strategy_live_snapshots_strategy_recorded", migration)
+        self.assertIn("CONSTRAINT uq_strategy_live_snapshot_uid UNIQUE", migration)
+        self.assertIn("observer-only", migration)
+        self.assertNotRegex(migration, r"\bDROP\b|\bTRUNCATE\b|\bDELETE\s+FROM\b")
 
     def test_feature_sources_are_preserved_and_augmented_not_replaced(self):
         provenance = (REPO_ROOT / "services" / "feature_provenance.py").read_text(encoding="utf-8")

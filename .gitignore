@@ -58,3 +58,14 @@ htmlcov/
 
 # Railway
 .railway/
+
+# QuantConnect research/backtest artifacts
+# Keep generated strategy/research source files visible for explicit review,
+# but do not accidentally commit downloaded results, runner logs, or upload bundles.
+quantconnect_backtests_results/
+quantconnect_backtests_v2_research_results/
+quantconnect_newbase_overlay_results/
+quantconnect_newbase_validation_results/
+quantconnect_newbase_validation_reports/
+newbase_validation_results_bundle.json
+quantconnect_newbase_validation_results_upload.zip

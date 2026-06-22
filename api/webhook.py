@@ -15,6 +15,7 @@ from db.models import QCSnapshot, PortfolioTimeseries, HoldingsFactor, AccountSt
 from db.queries import upsert_system_config, upsert_alert, get_recent_alerts
 from services.account_state_snapshot import build_account_state_snapshot
 from services.execution_log_store import append_reconciliation_from_account_snapshot
+from services.newbase_monitoring import persist_strategy_live_snapshot
 from services.qc_webhook_auth import verify_qc_signature
 from tools.notify_tools import tool_send_telegram
 from tools.qc_tools import tool_emergency_liquidate
@@ -164,6 +165,8 @@ async def receive_qc_packet(
 
         if packet_type in ("heartbeat", "daily_feature_snapshot"):
             await _process_market_snapshot(db, snapshot.id, payload)
+        elif packet_type == "newbase_live_snapshot":
+            await _process_newbase_live_snapshot(db, snapshot.id, payload, received_at=snapshot.received_at)
         elif packet_type == "alert":
             await _process_alert(db, snapshot.id, payload)
         elif packet_type == "emergency":
@@ -321,6 +324,32 @@ async def _process_alert(db: AsyncSession, snapshot_id: int, payload: dict):
         for ca in pending:
             await upsert_system_config(db, "pending_critical_alerts", {"alerts": pending}, "webhook")
         logger.warning(f"[ALERT] {len(critical_alerts)} critical alerts stored for downstream processing")
+
+
+async def _process_newbase_live_snapshot(
+    db: AsyncSession,
+    snapshot_id: int,
+    payload: dict,
+    *,
+    received_at: datetime,
+) -> None:
+    """Persist observer-only QC/newBase live telemetry.
+
+    This branch intentionally has no execution authority. It stores telemetry
+    for operator reports and never creates, edits, or submits target weights.
+    """
+    result = await persist_strategy_live_snapshot(
+        db,
+        payload,
+        qc_snapshot_id=snapshot_id,
+        received_at=received_at,
+    )
+    logger.info(
+        "[newBase] ingested live snapshot strategy=%s uid=%s trading_date=%s",
+        result.get("strategy_id"),
+        result.get("snapshot_uid"),
+        result.get("trading_date"),
+    )
 
 
 async def _process_emergency(db: AsyncSession, snapshot_id: int, payload: dict):

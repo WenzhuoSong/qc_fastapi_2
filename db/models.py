@@ -355,6 +355,63 @@ class ValidationObservation(Base):
     updated_at      = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
 
 
+class StrategyRegistryEntry(Base):
+    __tablename__ = "strategy_registry_entries"
+
+    strategy_id     = Column(String(100), primary_key=True)
+    source          = Column(String(40), nullable=False)
+    display_name    = Column(String(120))
+    benchmark_primary = Column(String(20), nullable=False)
+    benchmark_secondary = Column(String(20))
+    expected_profile = Column(JSONB, nullable=False)
+    execution_authority = Column(String(40), nullable=False, default="none")
+    target_weight_mutation = Column(String(40), nullable=False, default="none")
+    review_only     = Column(Boolean, nullable=False, default=True)
+    notes           = Column(Text)
+    created_at      = Column(DateTime, nullable=False, default=func.now())
+    updated_at      = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+
+class StrategyLiveSnapshot(Base):
+    __tablename__ = "strategy_live_snapshots"
+    __table_args__ = (
+        UniqueConstraint("snapshot_uid", name="uq_strategy_live_snapshot_uid"),
+    )
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    snapshot_uid    = Column(String(140), nullable=False, index=True)
+    strategy_id     = Column(String(100), nullable=False, index=True)
+    qc_snapshot_id  = Column(BigInteger, ForeignKey("qc_snapshots.id"), index=True)
+    recorded_at     = Column(DateTime, nullable=False, index=True)
+    trading_date    = Column(Date, nullable=False, index=True)
+    source          = Column(String(40), nullable=False, default="quantconnect")
+    mode            = Column(String(40))
+    algorithm_version = Column(String(80))
+    total_value     = Column(Float)
+    cash            = Column(Float)
+    cash_pct        = Column(Float)
+    daily_return    = Column(Float)
+    cumulative_return = Column(Float)
+    current_drawdown = Column(Float)
+    turnover        = Column(Float)
+    fees            = Column(Float)
+    benchmark_primary = Column(String(20), nullable=False, default="QQQ")
+    benchmark_primary_return = Column(Float)
+    benchmark_primary_cumulative_return = Column(Float)
+    benchmark_secondary = Column(String(20), nullable=False, default="SPY")
+    benchmark_secondary_return = Column(Float)
+    benchmark_secondary_cumulative_return = Column(Float)
+    rolling_beta_primary = Column(Float)
+    rolling_excess_primary = Column(Float)
+    holdings        = Column(JSONB)
+    orders          = Column(JSONB)
+    fills           = Column(JSONB)
+    diagnostics     = Column(JSONB)
+    raw_payload     = Column(JSONB, nullable=False)
+    content_hash    = Column(String(64), nullable=False)
+    created_at      = Column(DateTime, nullable=False, default=func.now())
+
+
 class AlertLog(Base):
     __tablename__ = "alerts_log"
     id           = Column(BigInteger, primary_key=True, autoincrement=True)

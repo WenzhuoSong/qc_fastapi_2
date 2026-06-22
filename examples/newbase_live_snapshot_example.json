@@ -1,0 +1,66 @@
+{
+  "packet_type": "newbase_live_snapshot",
+  "schema_version": "newbase_live_snapshot_v1",
+  "snapshot_uid": "newbase:2026-06-22:close:example",
+  "source": "quantconnect",
+  "trading_date": "2026-06-22",
+  "timestamp_utc": "2026-06-22T20:05:00Z",
+  "strategy": {
+    "strategy_id": "newbase",
+    "mode": "live_paper",
+    "algorithm_version": "newBase.py:example"
+  },
+  "portfolio": {
+    "total_value": 100000.0,
+    "cash": 12000.0,
+    "cash_pct": 0.12,
+    "daily_return": 0.0042,
+    "cumulative_return": 0.031,
+    "drawdown": -0.018,
+    "turnover": 0.015,
+    "fees": 1.35
+  },
+  "benchmarks": {
+    "QQQ": {
+      "daily_return": 0.003,
+      "cumulative_return": 0.026
+    },
+    "SPY": {
+      "daily_return": 0.0018,
+      "cumulative_return": 0.019
+    }
+  },
+  "metrics": {
+    "rolling_beta_vs_qqq": 0.82,
+    "rolling_excess_vs_qqq": 0.0012
+  },
+  "holdings": [
+    {
+      "ticker": "MSFT",
+      "quantity": 3,
+      "weight": 0.045,
+      "market_value": 4500.0,
+      "unrealized_pnl": 120.0
+    }
+  ],
+  "orders": [
+    {
+      "order_id": 1001,
+      "ticker": "MSFT",
+      "direction": "Buy",
+      "quantity": 1,
+      "status": "Filled"
+    }
+  ],
+  "fills": [
+    {
+      "order_id": 1001,
+      "ticker": "MSFT",
+      "direction": "Buy",
+      "quantity": 1,
+      "fill_price": 450.0,
+      "fee": 0.01,
+      "time_utc": "2026-06-22T19:58:00Z"
+    }
+  ]
+}
