@@ -24,7 +24,7 @@ class QCSnapshot(Base):
     trading_date   = Column(Date, nullable=False)
     packet_type    = Column(String(40), nullable=False)  # heartbeat|daily_feature_snapshot|alert|emergency
     trading_session = Column(String(20))
-    schema_version = Column(String(10))
+    schema_version = Column(String(80))
     checksum       = Column(String(32))
     raw_payload    = Column(JSONB, nullable=False)
     is_processed   = Column(Boolean, default=False)
