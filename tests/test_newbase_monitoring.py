@@ -1,7 +1,7 @@
 import unittest
 import json
 import re
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from services.newbase_monitoring import (
@@ -9,7 +9,9 @@ from services.newbase_monitoring import (
     build_newbase_operator_snapshot,
     build_newbase_registry_record,
     build_strategy_live_snapshot_record,
+    evaluate_newbase_full_auto_monitor,
     format_newbase_operator_snapshot_text,
+    is_newbase_observer_strategy,
 )
 
 
@@ -111,6 +113,45 @@ class NewBaseMonitoringTests(unittest.TestCase):
         self.assertNotIn("append_reconciliation_from_account_snapshot", handler_body)
         self.assertNotIn("tool_emergency_liquidate", handler_body)
         self.assertNotIn("tool_send_telegram", handler_body)
+
+    def test_newbase_strategy_aliases_route_to_observer_mode(self):
+        self.assertTrue(is_newbase_observer_strategy("newbase"))
+        self.assertTrue(is_newbase_observer_strategy("newbase_observer_v1"))
+        self.assertFalse(is_newbase_observer_strategy("momentum_lite_v1"))
+
+    def test_full_auto_monitor_allows_prior_snapshot_before_post_close_due(self):
+        monitor = evaluate_newbase_full_auto_monitor(
+            {"as_of_recorded_at": "2026-06-23T20:10:00"},
+            now=datetime(2026, 6, 24, 13, 50, tzinfo=UTC),
+        )
+
+        self.assertEqual(monitor["status"], "ok")
+        self.assertFalse(monitor["should_alert"])
+        self.assertEqual(monitor["expected_snapshot_trading_date"], "2026-06-23")
+        self.assertEqual(monitor["execution_authority"], "none")
+        self.assertEqual(monitor["target_weight_mutation"], "none")
+
+    def test_full_auto_monitor_requires_today_after_post_close_due(self):
+        monitor = evaluate_newbase_full_auto_monitor(
+            {"as_of_recorded_at": "2026-06-23T20:10:00"},
+            now=datetime(2026, 6, 24, 22, 0, tzinfo=UTC),
+        )
+
+        self.assertEqual(monitor["status"], "stale")
+        self.assertTrue(monitor["should_alert"])
+        self.assertEqual(monitor["reason"], "newbase_live_snapshot_stale")
+        self.assertEqual(monitor["expected_snapshot_trading_date"], "2026-06-24")
+
+    def test_pipeline_routes_newbase_observer_before_legacy_guards(self):
+        source = Path("services/pipeline.py").read_text(encoding="utf-8")
+
+        newbase_branch = source.index('fastapi_control_mode") == "newbase_observer_only"')
+        account_guard = source.index("account_state_guard = await load_latest_account_state_guard")
+        executor = source.index("result = await run_executor_async")
+
+        self.assertLess(newbase_branch, account_guard)
+        self.assertLess(newbase_branch, executor)
+        self.assertIn("run_newbase_full_auto_monitor", source)
 
 
 if __name__ == "__main__":

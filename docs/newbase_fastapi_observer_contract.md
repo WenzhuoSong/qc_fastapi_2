@@ -15,6 +15,8 @@ FastAPI may:
 - persist equity, holdings, orders/fills, fees, turnover, and benchmark context,
 - produce review-only operator reports,
 - flag live profile drift for human review.
+- run FULL_AUTO monitoring that checks whether expected newBase telemetry has
+  arrived.
 
 FastAPI must not:
 
@@ -60,6 +62,16 @@ Secondary fields may include:
 
 Any red flag has exactly one allowed effect: it enters an operator pack for
 human review. Automatic trade response is forbidden.
+
+## FULL_AUTO Meaning
+
+When `active_strategy='newbase'`, `authorization_mode='FULL_AUTO'` means
+FastAPI automatically monitors the newBase telemetry stream. It does not enter
+the legacy strategy construction or SetWeights execution pipeline.
+
+The FULL_AUTO monitor may open a circuit if the expected post-close
+`newbase_live_snapshot` is missing or stale. It must not send target weights,
+cancel orders, or otherwise influence QC/newBase trading.
 
 ## Deployment Boundary
 

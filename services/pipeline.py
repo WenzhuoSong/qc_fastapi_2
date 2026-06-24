@@ -108,6 +108,10 @@ from services.policy_sync_recovery import (
     default_policy_sync_recovery_config,
     run_policy_sync_recovery,
 )
+from services.newbase_monitoring import (
+    is_newbase_observer_strategy,
+    run_newbase_full_auto_monitor,
+)
 from services.transaction_cost_gate import (
     default_transaction_cost_gate_config,
     evaluate_transaction_cost_gate,
@@ -524,6 +528,10 @@ async def _guard_and_config(trigger: str) -> dict | None:
     if auth_mode == "MANUAL":
         logger.info("MANUAL mode — pipeline skipped")
         return None
+    active_name = (active_cfg.value if active_cfg else {"value": "momentum_lite_v1"}).get(
+        "value", "momentum_lite_v1"
+    )
+    newbase_observer_only = is_newbase_observer_strategy(active_name)
 
     risk_params = (risk_cfg.value if risk_cfg else {}) or {}
 
@@ -533,7 +541,7 @@ async def _guard_and_config(trigger: str) -> dict | None:
     circuit_override_consumed = False
 
     # Phase 3: In FULL_AUTO with circuit ALERT/DEFENSIVE, alert instead of running
-    if auth_mode == "FULL_AUTO" and circuit in ("ALERT", "DEFENSIVE"):
+    if auth_mode == "FULL_AUTO" and circuit in ("ALERT", "DEFENSIVE") and not newbase_observer_only:
         circuit_override_consumed = await _consume_circuit_override(circuit, override_cfg)
         if circuit_override_consumed:
             logger.warning(f"[pipeline] FULL_AUTO circuit override consumed for circuit={circuit}")
@@ -542,9 +550,6 @@ async def _guard_and_config(trigger: str) -> dict | None:
             logger.warning(f"[pipeline] FULL_AUTO blocked by circuit={circuit}")
             return None
 
-    active_name = (active_cfg.value if active_cfg else {"value": "momentum_lite_v1"}).get(
-        "value", "momentum_lite_v1"
-    )
     pending_alerts = (alerts_cfg.value if alerts_cfg else {}).get("alerts", []) or []
     position_manager_config = (pm_cfg.value if pm_cfg else {}) or {}
     position_governance_config = (pg_cfg.value if pg_cfg else {}) or {}
@@ -597,13 +602,17 @@ async def _guard_and_config(trigger: str) -> dict | None:
         (target_envelope_cfg.value if target_envelope_cfg else {}) or {}
     )
 
-    full_auto_safety_violations = full_auto_safety_precondition_violations(
-        auth_mode=auth_mode,
-        account_state_guard_config=account_state_guard_config,
-        final_risk_validation_config=final_risk_validation_config,
-        auto_pause_config=auto_pause_config,
-        execution_lifecycle_config=execution_lifecycle_config,
-        reconciliation_guard_config=reconciliation_guard_config,
+    full_auto_safety_violations = (
+        []
+        if newbase_observer_only
+        else full_auto_safety_precondition_violations(
+            auth_mode=auth_mode,
+            account_state_guard_config=account_state_guard_config,
+            final_risk_validation_config=final_risk_validation_config,
+            auto_pause_config=auto_pause_config,
+            execution_lifecycle_config=execution_lifecycle_config,
+            reconciliation_guard_config=reconciliation_guard_config,
+        )
     )
     if full_auto_safety_violations:
         message = (
@@ -627,6 +636,11 @@ async def _guard_and_config(trigger: str) -> dict | None:
         "trigger":           trigger,
         "plan_id":           f"P-{datetime.utcnow().strftime('%Y%m%d-%H%M')}",
         "auth_mode":         auth_mode,
+        "fastapi_control_mode": (
+            "newbase_observer_only" if newbase_observer_only else "legacy_execution_pipeline"
+        ),
+        "execution_authority": "none" if newbase_observer_only else "target_envelope.final_target",
+        "target_weight_mutation": "none" if newbase_observer_only else "SetWeights",
         "operator_halt_state": operator_halt_state,
         "circuit_state":     circuit,
         "circuit_override_consumed": circuit_override_consumed,
@@ -854,6 +868,44 @@ async def _run_pipeline_inner(trigger: str, *, trading_analysis_gate: dict[str, 
     if pipeline_context is None:
         tracker.end_run("skipped_gated")
         return {"status": "skipped_gated"}
+    if pipeline_context.get("fastapi_control_mode") == "newbase_observer_only":
+        try:
+            newbase_monitor = await run_newbase_full_auto_monitor()
+        except Exception as exc:
+            newbase_monitor = {
+                "schema_version": "newbase_full_auto_monitor_v1",
+                "status": "unavailable",
+                "should_alert": True,
+                "reason": f"newbase_monitor_unavailable:{type(exc).__name__}",
+                "error": str(exc),
+                "execution_authority": "none",
+                "target_weight_mutation": "none",
+                "review_only": True,
+            }
+            logger.warning("[newBase] FULL_AUTO monitor unavailable: %s", exc)
+
+        if newbase_monitor.get("should_alert"):
+            from services.circuit_breaker import CircuitBreakerMonitor, CircuitState
+
+            reason = str(newbase_monitor.get("reason") or "newbase_monitor_alert")
+            await CircuitBreakerMonitor().update_circuit_state(
+                CircuitState.ALERT,
+                reason=reason,
+                primary_trigger="newbase_live_snapshot_monitor",
+            )
+            status = "newbase_monitor_alert"
+        else:
+            status = "newbase_monitor_ok"
+        tracker.end_run(status)
+        return {
+            "status": status,
+            "auth_mode": pipeline_context.get("auth_mode"),
+            "fastapi_control_mode": pipeline_context.get("fastapi_control_mode"),
+            "active_strategy": pipeline_context.get("active_strategy"),
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+            "newbase_monitor": newbase_monitor,
+        }
     if trading_analysis_gate:
         pipeline_context["trading_analysis_gate"] = trading_analysis_gate
         if trading_analysis_gate.get("news_degraded_mode"):

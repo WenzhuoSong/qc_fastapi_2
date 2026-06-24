@@ -9,13 +9,27 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Iterable
+
+from services.market_calendar import (
+    MARKET_TZ,
+    is_us_equity_trading_day,
+    previous_us_equity_trading_day,
+    us_equity_market_status,
+)
 
 
 NEWBASE_STRATEGY_ID = "newbase"
+NEWBASE_OBSERVER_STRATEGY_ALIASES = {
+    "newbase",
+    "newbase_observer",
+    "newbase_observer_v1",
+    "newbase_full_auto_monitor",
+}
 NEWBASE_LIVE_SNAPSHOT_SCHEMA_VERSION = "newbase_live_snapshot_v1"
 NEWBASE_OPERATOR_SNAPSHOT_SCHEMA_VERSION = "newbase_operator_snapshot_v1"
+NEWBASE_FULL_AUTO_MONITOR_SCHEMA_VERSION = "newbase_full_auto_monitor_v1"
 EXECUTION_AUTHORITY = "none"
 TARGET_WEIGHT_MUTATION = "none"
 PRIMARY_BENCHMARK = "QQQ"
@@ -28,6 +42,10 @@ ARCHITECTURE_INVARIANTS = {
     "execution_authority": EXECUTION_AUTHORITY,
     "target_weight_mutation": TARGET_WEIGHT_MUTATION,
 }
+
+
+def is_newbase_observer_strategy(name: str | None) -> bool:
+    return str(name or "").lower().strip() in NEWBASE_OBSERVER_STRATEGY_ALIASES
 
 
 def build_newbase_registry_record() -> dict[str, Any]:
@@ -317,6 +335,92 @@ def build_newbase_operator_snapshot(
     }
 
 
+def evaluate_newbase_full_auto_monitor(
+    operator_snapshot: dict[str, Any] | None,
+    *,
+    now: datetime | None = None,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Evaluate newBase observer freshness for FULL_AUTO monitor mode.
+
+    This has no execution authority. It only prevents FastAPI from treating
+    missing or stale newBase telemetry as a healthy monitoring state.
+    """
+    cfg = {
+        "enabled": True,
+        "post_close_grace_minutes": 90,
+    }
+    cfg.update(config or {})
+    current = _aware_utc(now or datetime.now(UTC))
+    market_now = current.astimezone(MARKET_TZ)
+    expected_date = _expected_newbase_snapshot_date(
+        market_now,
+        post_close_grace_minutes=int(cfg["post_close_grace_minutes"]),
+    )
+
+    base = {
+        "schema_version": NEWBASE_FULL_AUTO_MONITOR_SCHEMA_VERSION,
+        "enabled": bool(cfg.get("enabled", True)),
+        "execution_authority": EXECUTION_AUTHORITY,
+        "target_weight_mutation": TARGET_WEIGHT_MUTATION,
+        "review_only": True,
+        "market_status": us_equity_market_status(current).to_dict(),
+        "expected_snapshot_trading_date": expected_date.isoformat(),
+        "config": {
+            "post_close_grace_minutes": int(cfg["post_close_grace_minutes"]),
+        },
+    }
+    if not bool(cfg.get("enabled", True)):
+        return {
+            **base,
+            "status": "disabled",
+            "should_alert": False,
+            "reason": "newbase_full_auto_monitor_disabled",
+            "operator_snapshot": operator_snapshot,
+        }
+    if not operator_snapshot:
+        return {
+            **base,
+            "status": "missing",
+            "should_alert": True,
+            "reason": "newbase_live_snapshot_missing",
+            "operator_snapshot": None,
+        }
+
+    snapshot_date = _parse_date(operator_snapshot.get("as_of_recorded_at")) or _parse_date(
+        operator_snapshot.get("as_of_trading_date")
+    )
+    if snapshot_date is None:
+        return {
+            **base,
+            "status": "stale",
+            "should_alert": True,
+            "reason": "newbase_live_snapshot_missing_recorded_date",
+            "operator_snapshot": operator_snapshot,
+        }
+
+    stale = snapshot_date < expected_date
+    return {
+        **base,
+        "status": "stale" if stale else "ok",
+        "should_alert": stale,
+        "reason": "newbase_live_snapshot_stale" if stale else "newbase_live_snapshot_fresh",
+        "as_of_recorded_at": operator_snapshot.get("as_of_recorded_at"),
+        "as_of_snapshot_uid": operator_snapshot.get("as_of_snapshot_uid"),
+        "snapshot_trading_date": snapshot_date.isoformat(),
+        "operator_snapshot": operator_snapshot,
+    }
+
+
+async def run_newbase_full_auto_monitor(
+    *,
+    config: dict[str, Any] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    snapshot = await load_latest_newbase_operator_snapshot(limit=90)
+    return evaluate_newbase_full_auto_monitor(snapshot, now=now, config=config)
+
+
 def format_newbase_operator_snapshot_text(snapshot: dict[str, Any]) -> str:
     headline = snapshot.get("headline") or {}
     monitor = snapshot.get("profile_monitor") or {}
@@ -580,6 +684,30 @@ def _parse_date(value: Any) -> date | None:
         return date.fromisoformat(str(value)[:10])
     except ValueError:
         return None
+
+
+def _expected_newbase_snapshot_date(
+    market_now: datetime,
+    *,
+    post_close_grace_minutes: int,
+) -> date:
+    market_day = market_now.date()
+    if not is_us_equity_trading_day(market_day):
+        return previous_us_equity_trading_day(market_day)
+
+    due_time = (
+        datetime.combine(market_day, time(16, 0), tzinfo=MARKET_TZ)
+        + timedelta(minutes=max(int(post_close_grace_minutes), 0))
+    )
+    if market_now >= due_time:
+        return market_day
+    return previous_us_equity_trading_day(market_day)
+
+
+def _aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _utcnow_naive() -> datetime:
