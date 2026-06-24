@@ -48,6 +48,24 @@ def is_newbase_observer_strategy(name: str | None) -> bool:
     return str(name or "").lower().strip() in NEWBASE_OBSERVER_STRATEGY_ALIASES
 
 
+async def is_active_newbase_observer(db: Any | None = None) -> bool:
+    """Return True when production config routes FastAPI into newBase observer mode."""
+    from db.queries import get_system_config
+
+    async def _read(session: Any) -> bool:
+        cfg = await get_system_config(session, "active_strategy")
+        active = (cfg.value if cfg else {"value": ""}) or {}
+        return is_newbase_observer_strategy(active.get("value"))
+
+    if db is not None:
+        return await _read(db)
+
+    from db.session import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as session:
+        return await _read(session)
+
+
 def build_newbase_registry_record() -> dict[str, Any]:
     """Return the minimal registry row for newBase.
 

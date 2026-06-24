@@ -13,6 +13,10 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from services.cron_audit import audit_cron_run
+from services.newbase_monitoring import (
+    is_active_newbase_observer,
+    load_latest_newbase_operator_snapshot,
+)
 from services.position_manager import (
     run_position_health_check,
     persist_position_alerts,
@@ -62,6 +66,25 @@ def _diagnostic_line(diagnostics: dict) -> str:
 async def main() -> None:
     try:
         async with audit_cron_run("position_monitor") as audit:
+            if await is_active_newbase_observer():
+                snapshot = await load_latest_newbase_operator_snapshot(limit=90)
+                monitor = (snapshot or {}).get("profile_monitor") or {}
+                audit.mark_skipped("newbase_observer_uses_strategy_live_snapshots")
+                audit.set_summary(
+                    mode="newbase_observer_only",
+                    status=(snapshot or {}).get("status") or "no_newbase_live_snapshots",
+                    as_of_snapshot_uid=(snapshot or {}).get("as_of_snapshot_uid"),
+                    as_of_recorded_at=(snapshot or {}).get("as_of_recorded_at"),
+                    holding_count=monitor.get("holding_count"),
+                    order_count=monitor.get("order_count"),
+                    fill_count=monitor.get("fill_count"),
+                    review_flags=len((snapshot or {}).get("review_flags") or []),
+                    execution_authority="none",
+                    target_weight_mutation="none",
+                )
+                logger.info("[position_monitor] newBase observer-only; legacy position monitor skipped")
+                return
+
             logger.info("[position_monitor] Starting position health check...")
             result = await run_position_health_check()
             audit.set_summary(

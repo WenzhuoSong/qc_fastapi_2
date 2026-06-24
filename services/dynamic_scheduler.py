@@ -19,6 +19,7 @@ from sqlalchemy import select
 from db.session import AsyncSessionLocal
 from db.models import EarningsCalendar, MacroEventsCache, HoldingsFactor, QCSnapshot
 from db.queries import get_system_config, upsert_system_config, get_latest_snapshots
+from services.newbase_monitoring import is_active_newbase_observer
 from services.pipeline import run_full_pipeline
 
 logger = logging.getLogger("qc_fastapi_2.dynamic_scheduler")
@@ -37,6 +38,15 @@ async def check_and_trigger() -> dict:
     Returns {"checked_at": iso_string, "actions": [{"trigger": str, "result": str}]}.
     """
     now_utc = datetime.utcnow()
+    if await is_active_newbase_observer():
+        return {
+            "checked_at": now_utc.isoformat(),
+            "actions": [],
+            "status": "skipped_newbase_observer_only",
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+        }
+
     today = date.today()
     actions: list[dict] = []
 

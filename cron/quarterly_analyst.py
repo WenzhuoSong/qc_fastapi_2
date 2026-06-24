@@ -19,6 +19,7 @@ import logging
 from datetime import date
 
 from agents.quarterly_analyst import run_quarterly_analyst
+from services.newbase_monitoring import is_active_newbase_observer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,6 +47,13 @@ def is_first_trading_day_of_quarter() -> bool:
 
 
 async def main() -> None:
+    if await is_active_newbase_observer():
+        logger.info(
+            "[quarterly_analyst] active_strategy=newbase observer-only; "
+            "legacy MomentumLite quarterly review skipped."
+        )
+        return
+
     if not is_first_trading_day_of_quarter():
         logger.info(
             f"[quarterly_analyst] Today ({date.today()}) is not the first trading "

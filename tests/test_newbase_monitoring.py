@@ -119,6 +119,57 @@ class NewBaseMonitoringTests(unittest.TestCase):
         self.assertTrue(is_newbase_observer_strategy("newbase_observer_v1"))
         self.assertFalse(is_newbase_observer_strategy("momentum_lite_v1"))
 
+    def test_newbase_monitor_cron_is_observer_only(self):
+        source = Path("cron/newbase_monitor.py").read_text(encoding="utf-8")
+
+        self.assertIn('audit_cron_run("newbase_monitor")', source)
+        self.assertIn("is_active_newbase_observer", source)
+        self.assertIn("run_newbase_full_auto_monitor", source)
+        self.assertIn('execution_authority="none"', source)
+        self.assertIn('target_weight_mutation="none"', source)
+        self.assertNotIn("tool_send_weight_command", source)
+        self.assertNotIn("tool_send_cancel_orders_command", source)
+        self.assertNotIn("tool_emergency_liquidate", source)
+
+    def test_newbase_mode_blocks_legacy_qc_command_tools(self):
+        source = Path("tools/qc_tools.py").read_text(encoding="utf-8")
+
+        self.assertIn("_blocked_by_newbase_observer", source)
+        self.assertIn('await _blocked_by_newbase_observer("SetWeights")', source)
+        self.assertIn('await _blocked_by_newbase_observer("PolicySync")', source)
+        self.assertIn('await _blocked_by_newbase_observer("CancelOrders")', source)
+        self.assertIn('await _blocked_by_newbase_observer("EmergencyLiquidate")', source)
+        self.assertIn('"error": "newbase_observer_only"', source)
+        self.assertIn('"execution_authority": "none"', source)
+
+    def test_newbase_mode_disables_high_risk_telegram_commands(self):
+        source = Path("services/telegram_commands.py").read_text(encoding="utf-8")
+
+        self.assertIn("_HIGH_RISK_COMMANDS_DISABLED_IN_NEWBASE", source)
+        self.assertIn('"/confirm"', source)
+        self.assertIn('"/cancel_orders"', source)
+        self.assertIn('"/approve_strategy"', source)
+        self.assertIn('"/skip_strategy"', source)
+        self.assertIn('"/force_reconcile"', source)
+        self.assertIn("await is_active_newbase_observer()", source)
+        self.assertIn("active_strategy=newbase", source)
+        self.assertIn("control_mode", source)
+
+    def test_newbase_mode_blocks_emergency_auto_liquidation(self):
+        source = Path("api/webhook.py").read_text(encoding="utf-8")
+
+        self.assertIn("newbase_observer_only = await is_active_newbase_observer(db)", source)
+        self.assertIn("Auto-liquidate: DISABLED (newBase observer-only)", source)
+        self.assertIn("and not newbase_observer_only", source)
+
+    def test_morning_health_reports_newbase_observer_status(self):
+        source = Path("cron/morning_health.py").read_text(encoding="utf-8")
+
+        self.assertIn("run_newbase_full_auto_monitor", source)
+        self.assertIn("newBase observer:", source)
+        self.assertIn('execution_authority="none"', source)
+        self.assertIn('target_weight_mutation="none"', source)
+
     def test_full_auto_monitor_allows_prior_snapshot_before_post_close_due(self):
         monitor = evaluate_newbase_full_auto_monitor(
             {"as_of_recorded_at": "2026-06-23T20:10:00"},
@@ -152,6 +203,15 @@ class NewBaseMonitoringTests(unittest.TestCase):
         self.assertLess(newbase_branch, account_guard)
         self.assertLess(newbase_branch, executor)
         self.assertIn("run_newbase_full_auto_monitor", source)
+        self.assertIn("require_trading_gate and not newbase_observer_requested", source)
+        self.assertIn("if not await is_active_newbase_observer():", source)
+
+    def test_seed_defaults_newbase_observer_mode(self):
+        source = Path("db/seed.py").read_text(encoding="utf-8")
+
+        self.assertIn('"authorization_mode": {"value": "FULL_AUTO"}', source)
+        self.assertIn('"active_strategy": {"value": "newbase"}', source)
+        self.assertIn("FastAPI/Railway still has no execution authority", source)
 
 
 if __name__ == "__main__":

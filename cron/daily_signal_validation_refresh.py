@@ -17,6 +17,7 @@ from db.queries import get_system_config
 from db.session import AsyncSessionLocal
 from services.cron_audit import audit_cron_run
 from services.historical_signal_replay import DEFAULT_HORIZONS
+from services.newbase_monitoring import is_active_newbase_observer
 from services.signal_validation_refresh import refresh_signal_validation
 from tools.notify_tools import tool_send_telegram
 
@@ -35,6 +36,15 @@ async def main() -> None:
             if not config.get("enabled", True):
                 audit.mark_skipped("disabled_by_config")
                 logger.info("Daily signal validation refresh disabled by config")
+                return
+            if await is_active_newbase_observer() and not config.get("run_in_newbase_observer_mode", False):
+                audit.mark_skipped("newbase_observer_legacy_signal_validation_disabled")
+                audit.set_summary(
+                    mode="newbase_observer_only",
+                    execution_authority="none",
+                    target_weight_mutation="none",
+                )
+                logger.info("Daily signal validation refresh skipped in newBase observer-only mode")
                 return
 
             horizons = _parse_horizons(config.get("horizons") or DEFAULT_HORIZONS)

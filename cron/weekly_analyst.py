@@ -17,6 +17,7 @@ from sqlalchemy import select, func
 from config import get_settings
 from db.models import MemoryDaily, MemoryWeekly, PortfolioTimeseries
 from db.session import AsyncSessionLocal
+from services.newbase_monitoring import is_active_newbase_observer
 from services.openai_chat_compat import build_chat_completion_kwargs
 
 logging.basicConfig(
@@ -65,6 +66,10 @@ Output the following JSON structure:
 
 
 async def main() -> None:
+    if await is_active_newbase_observer():
+        logger.info("[WEEKLY_ANALYST] skipped in newBase observer-only mode")
+        return
+
     today = date.today()
     # Monday to Friday of current week
     week_start = today - timedelta(days=today.weekday())

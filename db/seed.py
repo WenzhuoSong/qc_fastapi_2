@@ -19,7 +19,9 @@ _DEFAULTS = {
         "max_hist_vol":            0.35,
         "max_broad_market":        0.40,
     },
-    "authorization_mode": {"value": "SEMI_AUTO"},
+    # In newBase production mode, FULL_AUTO means "monitor telemetry
+    # automatically"; FastAPI/Railway still has no execution authority.
+    "authorization_mode": {"value": "FULL_AUTO"},
     "circuit_state":      {"value": "CLOSED"},
     "operator_halt_state": {
         "halted": False,
@@ -41,8 +43,8 @@ _DEFAULTS = {
         "max_in_flight_age_seconds": 900,
     },
 
-    # 活跃策略指针
-    "active_strategy": {"value": "momentum_lite_v1"},
+    # 活跃策略指针。newBase runs in QuantConnect; FastAPI observes only.
+    "active_strategy": {"value": "newbase"},
 
     # MomentumLite v1.0 策略参数（与 strategies/momentum_lite.py 的 DEFAULT_PARAMS 一致）
     "strategy_momentum_lite_v1_params": {

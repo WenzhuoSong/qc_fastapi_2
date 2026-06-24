@@ -6,6 +6,12 @@ baseline, a Bull/Bear structured debate layer argues for and against, a
 CIO synthesizer arbitrates, and a Python risk officer applies overlays +
 hard checks before execution.
 
+Production is currently routed through `active_strategy=newbase`. In that mode
+QuantConnect/newBase owns decisions and trading; FastAPI/Railway observes,
+records, audits, and reports. Legacy pipeline and cron services remain present
+for research/history, but they are guarded so they do not submit SetWeights,
+cancel orders, or mutate target weights while newBase observer mode is active.
+
 ## Architecture
 
 ```
@@ -259,20 +265,28 @@ Monday pre-market analysis does not get a weekend grace for stale news.
 |---|---|---|
 | `python -m cron.pre_fetch_news` | `50 */2 * * *` | 24/7 multi-source news → DB (Finnhub + AV + RSS) |
 | `python -m cron.hourly_analysis` | 10:00–15:00 hourly | Full 10-stage pipeline |
+| `python -m cron.newbase_monitor` | after expected QC post-close export | newBase observer-only telemetry freshness monitor; may alert circuit, never trades |
 | `python -m cron.pending_check` | every 1 min | SEMI_AUTO timeout handler |
 | `python -m cron.playground_analysis` | after close | Research-only multi-strategy comparison |
 | `python -m cron.yfinance_backfill` | after close | Research/backfill OHLCV feature store, no execution authority |
 | `python -m cron.daily_signal_freeze` | after playground/yfinance | Observe-only EvidenceCard signal ledger; no execution authority |
 | `python -m cron.daily_signal_validation_refresh` | after signal freeze | Label mature signal outcomes and refresh conviction profiles; no execution authority |
 | `python -m cron.validation_observation_refresh` | hourly or after yfinance | Backfill hedge/basket/execution validation observations and mature T+5 outcomes; no execution authority |
-| `python -m cron.morning_health` | 09:00 | Pre-open health notification |
+| `python -m cron.morning_health` | 09:00 | Pre-open health notification; includes newBase observer status when active |
 | `python -m cron.post_market_report` | 16:35 | Daily report |
+
+When `active_strategy=newbase`, the legacy trading/pending/research crons either
+route to the newBase telemetry monitor or mark themselves skipped in
+`cron_run_log`. `post_market_report` sends the latest newBase operator snapshot
+instead of the legacy daily report.
 
 ## Strategy Registry
 
 `strategies/__init__.py` holds a registry dict mapping strategy name to
-a `Strategy` subclass. The active strategy is stored in
-`system_config.active_strategy` and can be switched at runtime.
+a `Strategy` subclass for the legacy FastAPI strategy pipeline. The active
+strategy is stored in `system_config.active_strategy` and can be switched at
+runtime. `newbase` is a special observer-only strategy id: it means QC/newBase
+is the trading core and FastAPI is not allowed to construct or execute weights.
 
 ## Manual Migrations
 
@@ -448,7 +462,9 @@ Optional yfinance backfill controls:
 
 ## Authorization Modes
 
-- **FULL_AUTO** — Fully autonomous execution
+- **FULL_AUTO** — Fully autonomous execution for legacy FastAPI strategies.
+  With `active_strategy=newbase`, this means automatic telemetry monitoring
+  only; execution authority remains in QuantConnect/newBase.
 - **SEMI_AUTO** — Send proposal to Telegram, wait for user confirmation
   (default 20 min timeout; auto-executes if VIX < 30 and cost under
   threshold, else skips)
@@ -456,7 +472,8 @@ Optional yfinance backfill controls:
 
 ## Telegram Commands
 
-- `/confirm` — Approve and execute the pending proposal
+- `/confirm` — Approve and execute the pending proposal; disabled in
+  newBase observer mode
 - `/skip` — Skip the current proposal
 - `/pause` — Switch to MANUAL mode
 - `/status` — Check system state

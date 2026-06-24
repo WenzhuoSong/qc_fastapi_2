@@ -73,6 +73,40 @@ The FULL_AUTO monitor may open a circuit if the expected post-close
 `newbase_live_snapshot` is missing or stale. It must not send target weights,
 cancel orders, or otherwise influence QC/newBase trading.
 
+## Production Cron Policy
+
+`cron.newbase_monitor` is the active Railway cron for newBase telemetry
+freshness. It records every run in `cron_run_log`, compares the latest
+`strategy_live_snapshots` record to the expected trading date, and may set a
+circuit alert when telemetry is missing or stale.
+
+When `active_strategy='newbase'`, legacy FastAPI strategy cron entrypoints are
+not allowed to run their old execution logic:
+
+- `cron.hourly_analysis` routes to the newBase monitor branch before legacy
+  account-state and execution guards.
+- `cron.pending_check`, dynamic scheduler timeout handling, quarterly analyst,
+  weekly/monthly analysts, legacy position monitor, validation observation
+  refresh, playground, signal freeze, and signal validation refresh mark
+  themselves skipped or return no-op summaries.
+- `cron.post_market_report` sends a newBase operator snapshot derived from
+  `strategy_live_snapshots`.
+- `cron.morning_health` keeps its operational checks and adds a read-only
+  newBase telemetry status block.
+
+## Command Boundary
+
+While `active_strategy='newbase'`, FastAPI command surfaces must fail closed for
+execution-grade actions:
+
+- Telegram `/confirm`, `/cancel_orders`, `/approve_strategy`,
+  `/skip_strategy`, `/pc_promotion`, and `/force_reconcile` return a
+  disabled-command message.
+- QC command tools block `SetWeights`, `PolicySync`, `CancelOrders`, and
+  `EmergencyLiquidate` before any outbound command is sent.
+- Emergency webhook handling may alert and update circuit state, but automatic
+  liquidation is disabled.
+
 ## Deployment Boundary
 
 QuantConnect owns trading decisions. The QC-side patch should only export a

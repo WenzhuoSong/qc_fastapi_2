@@ -21,6 +21,10 @@ from services.operational_health import (
 )
 from services.operational_alerts import send_operational_alerts
 from services.market_calendar import us_equity_market_status
+from services.newbase_monitoring import (
+    is_active_newbase_observer,
+    run_newbase_full_auto_monitor,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -94,6 +98,31 @@ async def main() -> None:
                 f"  Authorization mode: {mode}",
                 f"  Circuit state: {circuit}",
             ]
+
+            if await is_active_newbase_observer():
+                try:
+                    newbase_monitor = await run_newbase_full_auto_monitor()
+                    summary_lines.extend([
+                        "",
+                        "newBase observer:",
+                        f"  Status: {newbase_monitor.get('status')}",
+                        f"  Reason: {newbase_monitor.get('reason')}",
+                        f"  Expected trading date: {newbase_monitor.get('expected_snapshot_trading_date')}",
+                        f"  Latest snapshot: {newbase_monitor.get('as_of_snapshot_uid') or 'none'}",
+                        f"  Execution authority: {newbase_monitor.get('execution_authority')}",
+                    ])
+                    audit.set_summary(
+                        **(audit.summary or {}),
+                        mode="newbase_observer_only",
+                        newbase_status=newbase_monitor.get("status"),
+                        newbase_reason=newbase_monitor.get("reason"),
+                        newbase_should_alert=bool(newbase_monitor.get("should_alert")),
+                        newbase_snapshot_uid=newbase_monitor.get("as_of_snapshot_uid"),
+                        execution_authority="none",
+                        target_weight_mutation="none",
+                    )
+                except Exception as e:
+                    logger.warning(f"[morning_health] newBase observer status failed: {e}")
 
             # Phase 3: Add circuit health issues to summary
             if health and health.has_issues:

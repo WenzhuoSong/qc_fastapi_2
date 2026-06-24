@@ -17,6 +17,7 @@ from db.queries import get_system_config
 from db.session import AsyncSessionLocal
 from services.cron_audit import audit_cron_run
 from services.execution_policy import policy_snapshot
+from services.newbase_monitoring import is_active_newbase_observer
 from services.playground import run_playground_analysis
 from services.signal_ledger import freeze_playground_bundle, persist_frozen_signals
 from tools.notify_tools import tool_send_telegram
@@ -36,6 +37,15 @@ async def main() -> None:
             if not config.get("enabled", True):
                 audit.mark_skipped("disabled_by_config")
                 logger.info("Daily signal freeze disabled by config")
+                return
+            if await is_active_newbase_observer() and not config.get("run_in_newbase_observer_mode", False):
+                audit.mark_skipped("newbase_observer_legacy_signal_freeze_disabled")
+                audit.set_summary(
+                    mode="newbase_observer_only",
+                    execution_authority="none",
+                    target_weight_mutation="none",
+                )
+                logger.info("Daily signal freeze skipped in newBase observer-only mode")
                 return
 
             playground_cfg = await _read_playground_config()

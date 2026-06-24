@@ -40,10 +40,23 @@ from services.operator_halt import (
     build_operator_halt_state,
     normalize_operator_halt_state,
 )
+from services.newbase_monitoring import (
+    is_active_newbase_observer,
+    is_newbase_observer_strategy,
+)
 from config             import get_settings
 
 logger   = logging.getLogger("qc_fastapi_2.tg_cmd")
 settings = get_settings()
+
+_HIGH_RISK_COMMANDS_DISABLED_IN_NEWBASE = {
+    "/confirm",
+    "/cancel_orders",
+    "/approve_strategy",
+    "/skip_strategy",
+    "/pc_promotion",
+    "/force_reconcile",
+}
 
 
 async def handle_telegram_command(text: str, from_chat_id: str) -> str:
@@ -52,6 +65,9 @@ async def handle_telegram_command(text: str, from_chat_id: str) -> str:
         return ""
 
     cmd = text.strip().lower().split()[0]
+
+    if cmd in _HIGH_RISK_COMMANDS_DISABLED_IN_NEWBASE and await is_active_newbase_observer():
+        return _newbase_observer_disabled_command_message(cmd)
 
     if cmd == "/confirm":
         return await _cmd_confirm()
@@ -80,6 +96,15 @@ async def handle_telegram_command(text: str, from_chat_id: str) -> str:
     if cmd == "/cancel_orders":
         return await _cmd_cancel_orders(text)
     return "Unknown command. Available: /confirm /skip /pause /halt /resume /status /reset_circuit /approve_strategy /skip_strategy /config /pc_promotion /force_reconcile /cancel_orders"
+
+
+def _newbase_observer_disabled_command_message(cmd: str) -> str:
+    return (
+        f"{cmd} is disabled while active_strategy=newbase.\n"
+        "FastAPI/Railway is observer-only for newBase: it may record, audit, "
+        "monitor, and report, but it must not send SetWeights, CancelOrders, "
+        "or apply strategy revisions."
+    )
 
 
 async def _cmd_confirm() -> str:
@@ -365,11 +390,18 @@ async def _cmd_resume(text: str) -> str:
 async def _cmd_status() -> str:
     async with AsyncSessionLocal() as db:
         auth_cfg    = await get_system_config(db, "authorization_mode")
+        active_cfg  = await get_system_config(db, "active_strategy")
         circuit_cfg = await get_system_config(db, "circuit_state")
         halt_cfg    = await get_system_config(db, OPERATOR_HALT_CONFIG_KEY)
         latest      = await get_latest_portfolio(db)
 
     mode    = (auth_cfg.value    if auth_cfg    else {}).get("value", "SEMI_AUTO")
+    active_strategy = (active_cfg.value if active_cfg else {}).get("value", "unknown")
+    control_mode = (
+        "newbase_observer_only"
+        if is_newbase_observer_strategy(active_strategy)
+        else "legacy_execution_pipeline"
+    )
     circuit = (circuit_cfg.value if circuit_cfg else {}).get("value", "CLOSED")
     halt_state = normalize_operator_halt_state(halt_cfg.value if halt_cfg else None)
     val     = float(latest.total_value or 0)          if latest else 0
@@ -377,6 +409,8 @@ async def _cmd_status() -> str:
     return (
         f"📊 System status\n"
         f"  Authorization mode: {mode}\n"
+        f"  Active strategy: {active_strategy}\n"
+        f"  FastAPI control mode: {control_mode}\n"
         f"  Circuit state: {circuit}\n"
         f"  Operator halt: {'HALTED' if halt_state.get('halted') else 'running'}\n"
         f"  Operator halt reason: {halt_state.get('reason') or 'none'}\n"

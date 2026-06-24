@@ -109,6 +109,7 @@ from services.policy_sync_recovery import (
     run_policy_sync_recovery,
 )
 from services.newbase_monitoring import (
+    is_active_newbase_observer,
     is_newbase_observer_strategy,
     run_newbase_full_auto_monitor,
 )
@@ -805,8 +806,9 @@ async def run_full_pipeline(trigger: str = "scheduled_hourly", *, require_tradin
     """Run full agent pipeline."""
     logger.info(f"=== Pipeline START | trigger={trigger} ===")
     trading_analysis_gate: dict[str, Any] | None = None
+    newbase_observer_requested = await is_active_newbase_observer()
 
-    if require_trading_gate:
+    if require_trading_gate and not newbase_observer_requested:
         try:
             from services.trading_analysis_gate import evaluate_trading_analysis_gate
 
@@ -849,19 +851,20 @@ async def _run_pipeline_inner(trigger: str, *, trading_analysis_gate: dict[str, 
     risk_out_for_tracker: dict | None = None
     pipeline_status = "unknown"
 
-    # ── Phase 3: Circuit Breaker — evaluate triggers before pipeline runs ───────
-    from services.circuit_breaker import evaluate_and_apply
-    try:
-        transition = await evaluate_and_apply()
-        if transition:
-            logger.info(
-                f"[circuit_breaker] pre-pipeline transition: "
-                f"{transition.from_state.value} → {transition.to_state.value} | {transition.reason}"
-            )
-            tracker.log_circuit_transition(transition)
-            tracker.log_trigger_results(transition.all_trigger_results)
-    except Exception as e:
-        logger.warning(f"[circuit_breaker] trigger evaluation failed: {e}")
+    # ── Phase 3: Circuit Breaker — evaluate legacy triggers before legacy pipeline runs ───────
+    if not await is_active_newbase_observer():
+        from services.circuit_breaker import evaluate_and_apply
+        try:
+            transition = await evaluate_and_apply()
+            if transition:
+                logger.info(
+                    f"[circuit_breaker] pre-pipeline transition: "
+                    f"{transition.from_state.value} → {transition.to_state.value} | {transition.reason}"
+                )
+                tracker.log_circuit_transition(transition)
+                tracker.log_trigger_results(transition.all_trigger_results)
+        except Exception as e:
+            logger.warning(f"[circuit_breaker] trigger evaluation failed: {e}")
 
     # Stage 0: guard + config
     pipeline_context = await _guard_and_config(trigger)

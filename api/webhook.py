@@ -15,7 +15,7 @@ from db.models import QCSnapshot, PortfolioTimeseries, HoldingsFactor, AccountSt
 from db.queries import upsert_system_config, upsert_alert, get_recent_alerts
 from services.account_state_snapshot import build_account_state_snapshot
 from services.execution_log_store import append_reconciliation_from_account_snapshot
-from services.newbase_monitoring import persist_strategy_live_snapshot
+from services.newbase_monitoring import is_active_newbase_observer, persist_strategy_live_snapshot
 from services.qc_webhook_auth import verify_qc_signature
 from tools.notify_tools import tool_send_telegram
 from tools.qc_tools import tool_emergency_liquidate
@@ -363,6 +363,7 @@ async def _process_emergency(db: AsyncSession, snapshot_id: int, payload: dict):
     now = datetime.utcnow()
     reason = payload.get("reason", "Unknown emergency")
     details = payload.get("details", {})
+    newbase_observer_only = await is_active_newbase_observer(db)
 
     # 1. 触发熔断
     await upsert_system_config(db, "circuit_state", {"value": "ALERT"}, "webhook")
@@ -378,7 +379,9 @@ async def _process_emergency(db: AsyncSession, snapshot_id: int, payload: dict):
     )
     if details:
         text += f"  Details: {json.dumps(details, ensure_ascii=False)[:200]}\n"
-    if _emergency_auto_liquidate_enabled():
+    if newbase_observer_only:
+        text += "  Auto-liquidate: DISABLED (newBase observer-only)\n"
+    elif _emergency_auto_liquidate_enabled():
         text += "  🔥 Auto-liquidate: <b>ENABLED</b>"
     else:
         text += "  🔒 Auto-liquidate: DISABLED (manual action required)"
@@ -386,7 +389,7 @@ async def _process_emergency(db: AsyncSession, snapshot_id: int, payload: dict):
     await tool_send_telegram({"text": text})
 
     # 3. 可选：自动清仓
-    if _emergency_auto_liquidate_enabled():
+    if _emergency_auto_liquidate_enabled() and not newbase_observer_only:
         logger.warning("[EMERGENCY] emergency_auto_liquidate is True — executing liquidation")
         result = await tool_emergency_liquidate({})
         if result.get("success"):

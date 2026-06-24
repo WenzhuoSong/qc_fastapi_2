@@ -17,6 +17,7 @@ from db.queries import (
     get_latest_portfolio,
 )
 from db.models import AgentAnalysis
+from services.newbase_monitoring import is_active_newbase_observer
 from tools.notify_tools import tool_send_telegram
 from config import get_settings
 
@@ -60,6 +61,13 @@ async def check_and_handle_timeout() -> dict:
     sent to QC must pass through the hardened execution path with lifecycle,
     active-command, preflight, dedupe, and fingerprint controls.
     """
+    if await is_active_newbase_observer():
+        return {
+            "action": "skipped_newbase_observer_only",
+            "execution_authority": "none",
+            "target_weight_mutation": "none",
+        }
+
     pending = await load_pending_proposal()
     if not pending or pending.get("status") != "pending":
         return {"action": "none"}

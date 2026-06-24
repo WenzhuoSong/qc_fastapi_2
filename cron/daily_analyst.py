@@ -23,6 +23,7 @@ from db.models import AgentAnalysis, ExecutionLog, MemoryDaily, PortfolioTimeser
 from db.session import AsyncSessionLocal
 from services.agent_analysis_queries import load_latest_trade_decision_analysis
 from services.cron_audit import audit_cron_run
+from services.newbase_monitoring import is_active_newbase_observer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,6 +78,15 @@ Output the following JSON structure (all fields required; use null or empty arra
 
 async def main() -> None:
     async with audit_cron_run("daily_analyst") as audit:
+        if await is_active_newbase_observer():
+            audit.mark_skipped("newbase_observer_legacy_daily_memory_disabled")
+            audit.set_summary(
+                mode="newbase_observer_only",
+                execution_authority="none",
+                target_weight_mutation="none",
+            )
+            logger.info("[DAILY_ANALYST] skipped in newBase observer-only mode")
+            return
         await _main_impl(audit)
 
 

@@ -10,11 +10,44 @@ import httpx
 
 from config import get_settings
 from services.execution_policy import policy_snapshot
+from services.newbase_monitoring import is_active_newbase_observer
 
 logger   = logging.getLogger("qc_fastapi_2.qc")
 settings = get_settings()
 
 POLICY_SYNC_PROTOCOL_VERSION = "v2_payload_json"
+
+
+async def _blocked_by_newbase_observer(command_name: str) -> dict | None:
+    """Fail closed for QC live commands while FastAPI is observing newBase."""
+    try:
+        if await is_active_newbase_observer():
+            logger.warning(
+                "%s blocked: active_strategy=newbase observer-only; no QC command sent",
+                command_name,
+            )
+            return {
+                "success": False,
+                "blocked": True,
+                "error": "newbase_observer_only",
+                "command": command_name,
+                "execution_authority": "none",
+                "target_weight_mutation": "none",
+            }
+    except Exception as exc:
+        logger.error(
+            "%s blocked: failed to verify active_strategy before QC command: %s",
+            command_name,
+            exc,
+        )
+        return {
+            "success": False,
+            "blocked": True,
+            "error": "active_strategy_verification_failed",
+            "command": command_name,
+            "detail": str(exc),
+        }
+    return None
 
 
 def _qc_auth_headers() -> dict:
@@ -41,6 +74,10 @@ async def tool_send_weight_command(inp: dict) -> dict:
       Body: {"projectId": <int>, "command": <json-string>}
     QC 算法 on_command(data) 会收到 command 字符串解析后的对象。
     """
+    blocked = await _blocked_by_newbase_observer("SetWeights")
+    if blocked:
+        return blocked
+
     weights = inp.get("weights", {})
     command_id = inp.get("command_id") or inp.get("analysis_id") or f"weights_{int(time.time())}"
     policy_version = inp.get("policy_version") or policy_snapshot().get("version")
@@ -91,6 +128,10 @@ async def tool_send_weight_command(inp: dict) -> dict:
 
 async def tool_send_policy_sync(inp: dict | None = None) -> dict:
     """Manually sync FastAPI execution policy to QC for diagnostics/recovery."""
+    blocked = await _blocked_by_newbase_observer("PolicySync")
+    if blocked:
+        return blocked
+
     inp = inp or {}
     command_id = inp.get("command_id") or f"policy_sync_{int(time.time())}"
     payload = inp.get("payload") or policy_snapshot()
@@ -131,6 +172,10 @@ async def tool_send_policy_sync(inp: dict | None = None) -> dict:
 
 async def tool_send_cancel_orders_command(inp: dict | None = None) -> dict:
     """Ask QC to cancel currently open orders for an active execution."""
+    blocked = await _blocked_by_newbase_observer("CancelOrders")
+    if blocked:
+        return blocked
+
     inp = inp or {}
     command_id = inp.get("command_id") or f"cancel_orders_{int(time.time())}"
     target_command_id = inp.get("target_command_id")
@@ -196,6 +241,10 @@ def build_policy_sync_command_payload(command_id: str, payload: dict) -> dict:
 
 async def tool_emergency_liquidate(_input: dict) -> dict:
     """QC 紧急清仓指令。"""
+    blocked = await _blocked_by_newbase_observer("EmergencyLiquidate")
+    if blocked:
+        return blocked
+
     url = f"{settings.qc_api_url}/live/commands/create"
     command_payload = {"target": "EmergencyLiquidate"}
     body = {

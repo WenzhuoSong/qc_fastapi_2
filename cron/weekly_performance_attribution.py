@@ -17,6 +17,7 @@ from typing import Any
 from db.queries import get_system_config
 from db.session import AsyncSessionLocal
 from services.cron_audit import audit_cron_run
+from services.newbase_monitoring import is_active_newbase_observer
 from services.performance_attribution import (
     MIN_ATTRIBUTION_SAMPLES,
     build_and_persist_weekly_attribution,
@@ -34,6 +35,16 @@ logger = logging.getLogger("qc_fastapi_2.cron.weekly_performance_attribution")
 async def main() -> None:
     try:
         async with audit_cron_run("weekly_performance_attribution") as audit:
+            if await is_active_newbase_observer():
+                audit.mark_skipped("newbase_observer_legacy_attribution_disabled")
+                audit.set_summary(
+                    mode="newbase_observer_only",
+                    execution_authority="none",
+                    target_weight_mutation="none",
+                )
+                logger.info("Weekly performance attribution skipped in newBase observer-only mode")
+                return
+
             config = await _read_config()
             if not config.get("enabled", True):
                 audit.mark_skipped("disabled_by_config")

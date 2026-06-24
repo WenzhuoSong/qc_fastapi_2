@@ -18,6 +18,7 @@ from db.models import MemoryWeekly, MemoryMonthly, PortfolioTimeseries
 from db.queries import upsert_system_config
 from config import get_settings
 from openai import AsyncOpenAI
+from services.newbase_monitoring import is_active_newbase_observer
 from services.openai_chat_compat import build_chat_completion_kwargs
 
 logger = logging.getLogger("qc_fastapi_2.cron.monthly")
@@ -56,6 +57,10 @@ Return the following JSON structure. All fields are required; use null or empty 
 
 async def run_monthly_analyst() -> None:
     """主入口：每月末运行，提炼月度记忆并写入 memory_monthly。"""
+    if await is_active_newbase_observer():
+        logger.info("[MONTHLY_ANALYST] skipped in newBase observer-only mode")
+        return
+
     today = date.today()
     year = today.year
     month = today.month
