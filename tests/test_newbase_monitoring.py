@@ -6,6 +6,7 @@ from pathlib import Path
 
 from services.newbase_monitoring import (
     ARCHITECTURE_INVARIANTS,
+    CURRENT_NEWBASE_ALGORITHM_VERSION,
     build_newbase_operator_snapshot,
     build_newbase_registry_record,
     build_strategy_live_snapshot_record,
@@ -26,6 +27,20 @@ class NewBaseMonitoringTests(unittest.TestCase):
         self.assertTrue(record["review_only"])
         self.assertEqual(record["execution_authority"], "none")
         self.assertEqual(record["target_weight_mutation"], "none")
+        self.assertEqual(record["display_name"], "newBase stronger252 target3")
+        self.assertEqual(
+            record["expected_profile"]["algorithm_version"],
+            CURRENT_NEWBASE_ALGORITHM_VERSION,
+        )
+        self.assertEqual(record["expected_profile"]["strategy_variant"], "stronger252_target3")
+        self.assertAlmostEqual(
+            record["expected_profile"]["absolute_backtest_profile"]["full_2010_2026"]["cagr"],
+            0.24425,
+        )
+        self.assertAlmostEqual(
+            record["expected_profile"]["absolute_backtest_profile"]["recent_2023_2026"]["beta"],
+            0.868,
+        )
         self.assertTrue(record["expected_profile"]["operator_contract"]["red_flags_are_review_only"])
         self.assertEqual(
             record["expected_profile"]["operator_contract"]["automatic_trade_response"],
@@ -43,6 +58,7 @@ class NewBaseMonitoringTests(unittest.TestCase):
 
         self.assertEqual(record["snapshot_uid"], "newbase:2026-06-22:close:example")
         self.assertEqual(record["strategy_id"], "newbase")
+        self.assertEqual(record["algorithm_version"], CURRENT_NEWBASE_ALGORITHM_VERSION)
         self.assertEqual(record["qc_snapshot_id"], 42)
         self.assertEqual(record["trading_date"], date(2026, 6, 22))
         self.assertEqual(record["benchmark_primary"], "QQQ")
@@ -56,6 +72,7 @@ class NewBaseMonitoringTests(unittest.TestCase):
             {
                 "snapshot_uid": "a",
                 "strategy_id": "newbase",
+                "algorithm_version": CURRENT_NEWBASE_ALGORITHM_VERSION,
                 "recorded_at": datetime(2026, 6, 20, 20, 0),
                 "daily_return": 0.01,
                 "benchmark_primary_return": 0.005,
@@ -65,6 +82,7 @@ class NewBaseMonitoringTests(unittest.TestCase):
             {
                 "snapshot_uid": "b",
                 "strategy_id": "newbase",
+                "algorithm_version": CURRENT_NEWBASE_ALGORITHM_VERSION,
                 "recorded_at": datetime(2026, 6, 21, 20, 0),
                 "daily_return": 0.02,
                 "benchmark_primary_return": 0.01,
@@ -84,11 +102,100 @@ class NewBaseMonitoringTests(unittest.TestCase):
         self.assertEqual(snapshot["execution_authority"], "none")
         self.assertEqual(snapshot["target_weight_mutation"], "none")
         self.assertTrue(snapshot["review_only"])
+        self.assertEqual(snapshot["algorithm_version"], CURRENT_NEWBASE_ALGORITHM_VERSION)
         self.assertFalse(snapshot["architecture_invariants"]["monitoring_has_hands"])
         self.assertEqual(snapshot["benchmark_primary"], "QQQ")
         self.assertGreater(snapshot["headline"]["live_newbase_vs_qqq_cumulative_excess"], 0)
         self.assertIn("newBase vs QQQ cumulative excess", text.splitlines()[1])
+        self.assertIn(CURRENT_NEWBASE_ALGORITHM_VERSION, text.splitlines()[0])
         self.assertIn("operator_action=review_only", text)
+
+    def test_operator_snapshot_filters_prior_algorithm_versions(self):
+        rows = [
+            {
+                "snapshot_uid": "legacy",
+                "strategy_id": "newbase",
+                "algorithm_version": "newBase_live_fastapi_v1",
+                "recorded_at": datetime(2026, 6, 20, 20, 0),
+                "daily_return": 0.20,
+                "benchmark_primary_return": 0.0,
+            },
+            {
+                "snapshot_uid": "current-1",
+                "strategy_id": "newbase",
+                "algorithm_version": CURRENT_NEWBASE_ALGORITHM_VERSION,
+                "recorded_at": datetime(2026, 6, 21, 20, 0),
+                "daily_return": 0.01,
+                "benchmark_primary_return": 0.005,
+            },
+            {
+                "snapshot_uid": "current-2",
+                "strategy_id": "newbase",
+                "algorithm_version": CURRENT_NEWBASE_ALGORITHM_VERSION,
+                "recorded_at": datetime(2026, 6, 22, 20, 0),
+                "daily_return": 0.01,
+                "benchmark_primary_return": 0.005,
+            },
+        ]
+
+        snapshot = build_newbase_operator_snapshot(rows, as_of=datetime(2026, 6, 23, 0, 0))
+
+        self.assertEqual(snapshot["algorithm_version"], CURRENT_NEWBASE_ALGORITHM_VERSION)
+        self.assertEqual(snapshot["sample_count_all_versions"], 3)
+        self.assertEqual(snapshot["sample_count"], 2)
+        self.assertEqual(snapshot["ignored_prior_version_count"], 1)
+        self.assertIn("newBase_live_fastapi_v1", snapshot["observed_algorithm_versions"])
+        self.assertLess(snapshot["headline"]["live_newbase_vs_qqq_cumulative_excess"], 0.02)
+
+    def test_operator_snapshot_flags_wrong_algorithm_version(self):
+        rows = [
+            {
+                "snapshot_uid": "legacy",
+                "strategy_id": "newbase",
+                "algorithm_version": "newBase_live_fastapi_v1",
+                "recorded_at": datetime(2026, 6, 21, 20, 0),
+                "daily_return": 0.01,
+                "benchmark_primary_return": 0.005,
+            }
+        ]
+
+        snapshot = build_newbase_operator_snapshot(rows, as_of=datetime(2026, 6, 22, 0, 0))
+        flags = {flag["flag"] for flag in snapshot["review_flags"]}
+
+        self.assertEqual(snapshot["algorithm_version"], "newBase_live_fastapi_v1")
+        self.assertIn("algorithm_version_mismatch_review", flags)
+
+    def test_operator_snapshot_ignores_stale_registry_profile(self):
+        rows = [
+            {
+                "snapshot_uid": "current",
+                "strategy_id": "newbase",
+                "algorithm_version": CURRENT_NEWBASE_ALGORITHM_VERSION,
+                "recorded_at": datetime(2026, 6, 21, 20, 0),
+                "daily_return": 0.01,
+                "benchmark_primary_return": 0.005,
+                "rolling_beta_primary": 0.62,
+            }
+        ]
+        stale_registry = {
+            "expected_profile": {
+                "schema_version": "newbase_expected_profile_v1",
+                "absolute_backtest_profile": {
+                    "recent_2023_2026": {"beta": 0.10}
+                },
+                "monitoring_thresholds": {"rolling_beta_review_drift": 0.25},
+            }
+        }
+
+        snapshot = build_newbase_operator_snapshot(
+            rows,
+            registry=stale_registry,
+            as_of=datetime(2026, 6, 22, 0, 0),
+        )
+        flags = {flag["flag"] for flag in snapshot["review_flags"]}
+
+        self.assertEqual(snapshot["expected_algorithm_version"], CURRENT_NEWBASE_ALGORITHM_VERSION)
+        self.assertNotIn("beta_profile_drift_review", flags)
 
     def test_webhook_and_ops_are_observer_only(self):
         webhook = Path("api/webhook.py").read_text(encoding="utf-8")

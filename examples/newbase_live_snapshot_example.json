@@ -8,7 +8,7 @@
   "strategy": {
     "strategy_id": "newbase",
     "mode": "live_paper",
-    "algorithm_version": "newBase.py:example"
+    "algorithm_version": "stronger252_target3_v1"
   },
   "portfolio": {
     "total_value": 100000.0,

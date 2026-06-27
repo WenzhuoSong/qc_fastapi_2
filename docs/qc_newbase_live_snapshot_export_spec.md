@@ -27,7 +27,7 @@ canonical minimal example used by the FastAPI normalizer tests.
   "strategy": {
     "strategy_id": "newbase",
     "mode": "live_paper",
-    "algorithm_version": "newBase.py:<commit-or-version>"
+    "algorithm_version": "stronger252_target3_v1"
   },
   "portfolio": {
     "total_value": 123456.78,
@@ -99,6 +99,7 @@ Minimum viable fields:
 - `trading_date`
 - `timestamp_utc`
 - `strategy.strategy_id`
+- `strategy.algorithm_version`
 - `portfolio.total_value`
 - `portfolio.daily_return`
 - `benchmarks.QQQ.daily_return`
@@ -124,7 +125,7 @@ def send_newbase_live_snapshot(self):
         "strategy": {
             "strategy_id": "newbase",
             "mode": "live_paper" if self.LiveMode else "backtest",
-            "algorithm_version": "newBase.py:<version>",
+            "algorithm_version": "stronger252_target3_v1",
         },
         "portfolio": {
             "total_value": float(self.Portfolio.TotalPortfolioValue),

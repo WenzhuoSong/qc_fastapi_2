@@ -30,6 +30,7 @@ NEWBASE_OBSERVER_STRATEGY_ALIASES = {
 NEWBASE_LIVE_SNAPSHOT_SCHEMA_VERSION = "newbase_live_snapshot_v1"
 NEWBASE_OPERATOR_SNAPSHOT_SCHEMA_VERSION = "newbase_operator_snapshot_v1"
 NEWBASE_FULL_AUTO_MONITOR_SCHEMA_VERSION = "newbase_full_auto_monitor_v1"
+CURRENT_NEWBASE_ALGORITHM_VERSION = "stronger252_target3_v1"
 EXECUTION_AUTHORITY = "none"
 TARGET_WEIGHT_MUTATION = "none"
 PRIMARY_BENCHMARK = "QQQ"
@@ -76,7 +77,7 @@ def build_newbase_registry_record() -> dict[str, Any]:
     return {
         "strategy_id": NEWBASE_STRATEGY_ID,
         "source": "QuantConnect",
-        "display_name": "newBase",
+        "display_name": "newBase stronger252 target3",
         "benchmark_primary": PRIMARY_BENCHMARK,
         "benchmark_secondary": SECONDARY_BENCHMARK,
         "execution_authority": EXECUTION_AUTHORITY,
@@ -87,43 +88,57 @@ def build_newbase_registry_record() -> dict[str, Any]:
             "audits, and reports; QC/newBase decides and trades."
         ),
         "expected_profile": {
-            "schema_version": "newbase_expected_profile_v1",
+            "schema_version": "newbase_expected_profile_v2",
+            "algorithm_version": CURRENT_NEWBASE_ALGORITHM_VERSION,
+            "strategy_variant": "stronger252_target3",
             "comparison_basis": "QQQ-relative primary; SPY secondary reference",
-            "profile_source": "QC backtest overviews supplied by operator",
+            "profile_source": "QC target3 confirmation and candidate audit batches",
             "review_only": True,
             "execution_authority": EXECUTION_AUTHORITY,
             "target_weight_mutation": TARGET_WEIGHT_MUTATION,
             "absolute_backtest_profile": {
                 "full_2010_2026": {
-                    "cagr": 0.21781,
-                    "drawdown": 0.307,
-                    "sharpe": 0.824,
-                    "sortino": 0.915,
-                    "alpha": 0.088,
-                    "beta": 0.663,
-                    "information_ratio": 0.391,
-                    "turnover": 0.0383,
-                    "orders": 1980,
-                    "fees": 13440.86,
+                    "cagr": 0.24425,
+                    "drawdown": 0.32,
+                    "sharpe": 0.875,
+                    "sortino": 0.983,
+                    "alpha": 0.097,
+                    "beta": 0.575,
+                    "information_ratio": 0.273,
+                    "turnover": 0.0357,
+                    "orders": 1840,
+                    "fees": 17284.08,
                 },
                 "recent_2023_2026": {
-                    "cagr": 0.21701,
-                    "drawdown": 0.266,
-                    "sharpe": 0.547,
-                    "sortino": 0.617,
-                    "alpha": 0.041,
-                    "beta": 0.916,
-                    "information_ratio": 0.182,
-                    "turnover": 0.0402,
-                    "orders": 483,
-                    "fees": 533.17,
+                    "cagr": 0.28229,
+                    "drawdown": 0.235,
+                    "sharpe": 0.709,
+                    "sortino": 0.841,
+                    "alpha": 0.045,
+                    "beta": 0.868,
+                    "information_ratio": 0.143,
+                    "turnover": 0.0425,
+                    "orders": 444,
+                    "fees": 577.85,
+                },
+                "stress_2020_2022": {
+                    "cagr": 0.34543,
+                    "drawdown": 0.291,
+                    "sharpe": 1.037,
+                    "sortino": 1.243,
+                    "alpha": 0.217,
+                    "beta": 0.473,
+                    "information_ratio": 0.688,
+                    "turnover": 0.0288,
+                    "orders": 270,
+                    "fees": 397.85,
                 },
             },
             "benchmark_relative_profile": {
                 "primary_benchmark": PRIMARY_BENCHMARK,
                 "recent_2023_2026_note": (
-                    "Operator-side audit indicates recent newBase CAGR lagged QQQ; "
-                    "health reports must lead with live excess vs QQQ."
+                    "stronger252_target3 improves recent and full-period newBase metrics, "
+                    "but health reports still lead with live excess vs QQQ."
                 ),
                 "relative_metrics_to_fill_from_live": [
                     "cumulative_excess_vs_qqq",
@@ -131,6 +146,12 @@ def build_newbase_registry_record() -> dict[str, Any]:
                     "rolling_beta_vs_qqq",
                     "drawdown_vs_qqq_context",
                 ],
+            },
+            "known_fragility": {
+                "event_2020q1": (
+                    "Candidate audit showed weaker full 2020Q1 path than newbase_pure; "
+                    "monitor sharp crash/rebound transitions as review-only evidence."
+                )
             },
             "monitoring_thresholds": {
                 "rolling_beta_review_drift": 0.25,
@@ -252,10 +273,37 @@ def build_newbase_operator_snapshot(
     clean_rows = [_snapshot_row_to_dict(row) for row in rows]
     clean_rows = [row for row in clean_rows if row.get("strategy_id") == NEWBASE_STRATEGY_ID]
     clean_rows.sort(key=lambda row: (row.get("recorded_at") or datetime.min, row.get("snapshot_uid") or ""))
-    expected = _dict((registry or {}).get("expected_profile")) or build_newbase_registry_record()["expected_profile"]
+    default_expected = build_newbase_registry_record()["expected_profile"]
+    configured_expected = _dict((registry or {}).get("expected_profile"))
+    if _clean_str(configured_expected.get("algorithm_version")) == CURRENT_NEWBASE_ALGORITHM_VERSION:
+        expected = configured_expected
+    else:
+        expected = default_expected
+    expected_algorithm_version = _clean_str(expected.get("algorithm_version")) or CURRENT_NEWBASE_ALGORITHM_VERSION
+    observed_versions = sorted({
+        _clean_str(row.get("algorithm_version")) or "unknown"
+        for row in clean_rows
+    })
+    active_algorithm_version = expected_algorithm_version
+    ignored_prior_version_count = 0
+    sample_count_all_versions = len(clean_rows)
+    if clean_rows:
+        active_algorithm_version = (
+            _clean_str(clean_rows[-1].get("algorithm_version"))
+            or expected_algorithm_version
+        )
+        active_rows = [
+            row for row in clean_rows
+            if (_clean_str(row.get("algorithm_version")) or expected_algorithm_version) == active_algorithm_version
+        ]
+        ignored_prior_version_count = len(clean_rows) - len(active_rows)
+        clean_rows = active_rows
     base = {
         "schema_version": NEWBASE_OPERATOR_SNAPSHOT_SCHEMA_VERSION,
         "strategy_id": NEWBASE_STRATEGY_ID,
+        "algorithm_version": active_algorithm_version,
+        "expected_algorithm_version": expected_algorithm_version,
+        "observed_algorithm_versions": observed_versions,
         "generated_at": (as_of or _utcnow_naive()).isoformat(),
         "execution_authority": EXECUTION_AUTHORITY,
         "target_weight_mutation": TARGET_WEIGHT_MUTATION,
@@ -264,6 +312,8 @@ def build_newbase_operator_snapshot(
         "benchmark_primary": PRIMARY_BENCHMARK,
         "benchmark_secondary": SECONDARY_BENCHMARK,
         "sample_count": len(clean_rows),
+        "sample_count_all_versions": sample_count_all_versions,
+        "ignored_prior_version_count": ignored_prior_version_count,
     }
     if not clean_rows:
         return {
@@ -308,12 +358,14 @@ def build_newbase_operator_snapshot(
         latest=latest,
         beta_vs_qqq=beta_vs_qqq,
         expected=expected,
+        algorithm_version=active_algorithm_version,
     )
     return {
         **base,
         "status": "ok",
         "as_of_snapshot_uid": latest.get("snapshot_uid"),
         "as_of_recorded_at": _iso_or_none(latest.get("recorded_at")),
+        "as_of_algorithm_version": active_algorithm_version,
         "headline": {
             "live_newbase_vs_qqq_cumulative_excess": _round(excess_vs_qqq, 6),
             "live_newbase_cumulative_return": _round(strategy_cum, 6),
@@ -333,6 +385,14 @@ def build_newbase_operator_snapshot(
                 "excess": _round(excess_vs_spy, 6),
                 "joined_sample_count": len(joined_secondary),
             },
+        },
+        "version_boundary": {
+            "latest_algorithm_version": active_algorithm_version,
+            "expected_algorithm_version": expected_algorithm_version,
+            "observed_algorithm_versions": observed_versions,
+            "sample_count_all_versions": sample_count_all_versions,
+            "sample_count_current_version": len(clean_rows),
+            "ignored_prior_version_count": ignored_prior_version_count,
         },
         "profile_monitor": {
             "rolling_beta_vs_qqq": _round(beta_vs_qqq, 6),
@@ -443,8 +503,9 @@ def format_newbase_operator_snapshot_text(snapshot: dict[str, Any]) -> str:
     headline = snapshot.get("headline") or {}
     monitor = snapshot.get("profile_monitor") or {}
     flags = snapshot.get("review_flags") or []
+    algorithm_version = snapshot.get("algorithm_version") or CURRENT_NEWBASE_ALGORITHM_VERSION
     return (
-        "newBase operator snapshot (review-only)\n"
+        f"newBase operator snapshot ({algorithm_version}, review-only)\n"
         f"newBase vs QQQ cumulative excess: {_fmt_pct(headline.get('live_newbase_vs_qqq_cumulative_excess'))}\n"
         f"newBase cumulative: {_fmt_pct(headline.get('live_newbase_cumulative_return'))} | "
         f"QQQ cumulative: {_fmt_pct(headline.get('qqq_cumulative_return'))}\n"
@@ -510,6 +571,7 @@ async def persist_strategy_live_snapshot(
     return {
         "ingested": True,
         "strategy_id": record["strategy_id"],
+        "algorithm_version": record["algorithm_version"],
         "snapshot_uid": record["snapshot_uid"],
         "trading_date": record["trading_date"].isoformat(),
         "execution_authority": EXECUTION_AUTHORITY,
@@ -540,9 +602,24 @@ async def load_latest_newbase_operator_snapshot(*, limit: int = 90) -> dict[str,
     )
 
 
-def _review_flags(*, latest: dict[str, Any], beta_vs_qqq: float | None, expected: dict[str, Any]) -> list[dict[str, Any]]:
+def _review_flags(
+    *,
+    latest: dict[str, Any],
+    beta_vs_qqq: float | None,
+    expected: dict[str, Any],
+    algorithm_version: str | None,
+) -> list[dict[str, Any]]:
     thresholds = _dict(expected.get("monitoring_thresholds"))
     flags: list[dict[str, Any]] = []
+    expected_algorithm = _clean_str(expected.get("algorithm_version")) or CURRENT_NEWBASE_ALGORITHM_VERSION
+    if expected_algorithm and algorithm_version != expected_algorithm:
+        flags.append({
+            "flag": "algorithm_version_mismatch_review",
+            "value": algorithm_version,
+            "expected_reference": expected_algorithm,
+            "operator_action": "review_only",
+            "automatic_trade_response": "forbidden",
+        })
     drawdown = _num(latest.get("current_drawdown"))
     drawdown_threshold = _num(thresholds.get("drawdown_review_threshold")) or 0.30
     if drawdown is not None and abs(drawdown) >= drawdown_threshold:
@@ -576,6 +653,7 @@ def _snapshot_row_to_dict(row: Any) -> dict[str, Any]:
         keys = (
             "snapshot_uid",
             "strategy_id",
+            "algorithm_version",
             "recorded_at",
             "trading_date",
             "daily_return",

@@ -7,7 +7,10 @@ Monitoring has eyes, not hands.
 ## Scope
 
 This contract supports `newBase` as the QuantConnect trading core while keeping
-FastAPI/Railway out of target generation and execution.
+FastAPI/Railway out of target generation and execution. The active QC algorithm
+variant is `stronger252_target3_v1`; FastAPI stores it as
+`strategy_live_snapshots.algorithm_version` and must not mix it with older
+newBase live samples when calculating live profile metrics.
 
 FastAPI may:
 
@@ -31,6 +34,7 @@ FastAPI must not:
 
 - descriptive strategy metadata,
 - `strategy_id='newbase'`,
+- current expected `algorithm_version='stronger252_target3_v1'`,
 - `source='QuantConnect'`,
 - `benchmark_primary='QQQ'`,
 - `benchmark_secondary='SPY'`,
@@ -41,6 +45,7 @@ FastAPI must not:
 `strategy_live_snapshots`
 
 - point-in-time QC/newBase telemetry,
+- stores `algorithm_version` from QC so live profile reports can be version-aware,
 - primary comparison fields are QQQ-relative,
 - stores raw payload for audit,
 - stores orders/fills for observation only.
@@ -50,6 +55,10 @@ FastAPI must not:
 The first line of every operator snapshot must be:
 
 - live `newBase` cumulative/rolling excess versus QQQ.
+
+Operator snapshots must use only the latest observed `algorithm_version` for
+return/profile calculations. Prior-version rows may be counted as ignored
+history, but must not be compounded into the current live result.
 
 Secondary fields may include:
 
