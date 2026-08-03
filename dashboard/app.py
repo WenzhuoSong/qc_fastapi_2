@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import json
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 from html import escape
 from typing import Any
 
@@ -41,11 +41,16 @@ from db.models import (
     HoldingsFactor,
     PerformanceAttribution,
     PortfolioTimeseries,
+    QCObserverEvent,
+    QCObserverEventAnnotation,
+    QCObserverStreamReceipt,
     QCSnapshot,
     SystemConfig,
 )
 from db.session import AsyncSessionLocal
 from services.operational_health import build_operational_health_snapshot
+from services.execution_authority import execution_authority_status
+from services.qc_observer_health import summarize_observer_receipts
 from services.playground import _recent_snapshot_row_limit
 from services.evidence_cap_calibration import load_evidence_cap_calibration_report
 from services.alpha_attribution_report import load_monthly_alpha_attribution_report
@@ -107,6 +112,16 @@ async def api_account_truth(_: str = Depends(require_dashboard_auth)) -> dict[st
     execution_control = await _execution_control_status(latest_analysis)
     account_holdings = await _account_holdings_dashboard(latest_analysis)
     return _account_truth_view(account_holdings, execution_control)
+
+
+@app.get("/api/observer-monitor")
+async def api_observer_monitor(_: str = Depends(require_dashboard_auth)) -> dict[str, Any]:
+    return await _observer_monitor_dashboard()
+
+
+@app.get("/observer-monitor/fragment", response_class=HTMLResponse)
+async def observer_monitor_fragment(_: str = Depends(require_dashboard_auth)) -> str:
+    return _render_observer_monitor(await _observer_monitor_dashboard())
 
 
 @app.get("/api/weekend-review/latest")
@@ -210,6 +225,7 @@ async def build_dashboard_summary() -> dict[str, Any]:
     account_holdings = await _account_holdings_dashboard(latest_analysis)
     account_truth = _account_truth_view(account_holdings, execution_control)
     account_holdings["truth"] = account_truth
+    observer_monitor = await _observer_monitor_dashboard()
     replay = await _replay_diagnostics()
     return {
         "generated_at": datetime.utcnow().isoformat(),
@@ -217,6 +233,7 @@ async def build_dashboard_summary() -> dict[str, Any]:
         "latest_analysis": latest_analysis,
         "account_holdings": account_holdings,
         "account_truth": account_truth,
+        "observer_monitor": observer_monitor,
         "portfolio_construction_objective": pc_objective,
         "portfolio_construction_readiness": pc_readiness,
         "strategy_evidence": strategy_evidence,
@@ -242,6 +259,178 @@ async def build_dashboard_summary() -> dict[str, Any]:
         "weight_source_contract": _weight_source_contract_dashboard(),
         "config": config,
     }
+
+
+async def _observer_monitor_dashboard() -> dict[str, Any]:
+    """Build a current-deployment view without mixing historical observer streams."""
+    fence = execution_authority_status()
+    try:
+        async with AsyncSessionLocal() as db:
+            latest_event = await db.scalar(
+                select(QCObserverEvent)
+                .where(~QCObserverEvent.event_stream_id.like("observer-smoke:%"))
+                .order_by(desc(QCObserverEvent.received_at), desc(QCObserverEvent.id))
+                .limit(1)
+            )
+            if latest_event is None:
+                return {
+                    "available": False,
+                    "status": "awaiting_first_event",
+                    "reason": "no_observer_events",
+                    "read_only": True,
+                    "execution_fence": fence,
+                    "channels": [],
+                    "latest_events": [],
+                }
+
+            current_stream_id = str(latest_event.event_stream_id)
+            receipts = list(
+                (
+                    await db.scalars(
+                        select(QCObserverStreamReceipt)
+                        .where(QCObserverStreamReceipt.event_stream_id == current_stream_id)
+                        .order_by(QCObserverStreamReceipt.event_channel)
+                    )
+                ).all()
+            )
+            artifact_rows = (
+                await db.execute(
+                    select(
+                        QCObserverEvent.event_channel,
+                        func.count(func.distinct(QCObserverEvent.id)),
+                    )
+                    .join(
+                        QCObserverEventAnnotation,
+                        QCObserverEventAnnotation.raw_event_id == QCObserverEvent.id,
+                    )
+                    .where(
+                        QCObserverEvent.event_stream_id == current_stream_id,
+                        QCObserverEventAnnotation.excludes_from_evidence.is_(True),
+                    )
+                    .group_by(QCObserverEvent.event_channel)
+                )
+            ).all()
+            artifact_counts = {
+                (current_stream_id, str(channel)): int(count)
+                for channel, count in artifact_rows
+            }
+            health = summarize_observer_receipts(
+                receipts,
+                artifact_counts=artifact_counts,
+            )
+
+            raw_event_count = int(
+                await db.scalar(
+                    select(func.count(QCObserverEvent.id)).where(
+                        QCObserverEvent.event_stream_id == current_stream_id
+                    )
+                )
+                or 0
+            )
+            excluded_event_count = int(
+                await db.scalar(
+                    select(func.count(func.distinct(QCObserverEvent.id)))
+                    .join(
+                        QCObserverEventAnnotation,
+                        QCObserverEventAnnotation.raw_event_id == QCObserverEvent.id,
+                    )
+                    .where(
+                        QCObserverEvent.event_stream_id == current_stream_id,
+                        QCObserverEventAnnotation.excludes_from_evidence.is_(True),
+                    )
+                )
+                or 0
+            )
+            total_excluded_event_count = int(
+                await db.scalar(
+                    select(func.count(func.distinct(QCObserverEventAnnotation.raw_event_id))).where(
+                        QCObserverEventAnnotation.excludes_from_evidence.is_(True)
+                    )
+                )
+                or 0
+            )
+            stream_count = int(
+                await db.scalar(
+                    select(func.count(func.distinct(QCObserverEvent.event_stream_id)))
+                )
+                or 0
+            )
+            recent_events = list(
+                (
+                    await db.scalars(
+                        select(QCObserverEvent)
+                        .where(QCObserverEvent.event_stream_id == current_stream_id)
+                        .order_by(desc(QCObserverEvent.received_at), desc(QCObserverEvent.id))
+                        .limit(20)
+                    )
+                ).all()
+            )
+
+        now = datetime.now(timezone.utc)
+        received_at = latest_event.received_at
+        if received_at is not None and received_at.tzinfo is None:
+            received_at = received_at.replace(tzinfo=timezone.utc)
+        event_time = latest_event.event_time
+        if event_time is not None and event_time.tzinfo is None:
+            event_time = event_time.replace(tzinfo=timezone.utc)
+        receipt_age_seconds = (
+            max(0.0, (now - received_at).total_seconds()) if received_at is not None else None
+        )
+        transport_delay_seconds = (
+            max(0.0, (received_at - event_time).total_seconds())
+            if received_at is not None and event_time is not None
+            else None
+        )
+        return {
+            "available": True,
+            "schema_version": "qc_observer_dashboard_v1",
+            "status": health.get("overall_status") or "unknown",
+            "read_only": True,
+            "execution_authority": "none",
+            "execution_fence": fence,
+            "current_stream": {
+                "event_stream_id": current_stream_id,
+                "account_id": latest_event.account_id,
+                "deployment_id": latest_event.deployment_id,
+                "strategy_id": latest_event.strategy_id,
+                "source_fingerprint": latest_event.source_fingerprint,
+                "policy_fingerprint": latest_event.policy_fingerprint,
+                "last_event_type": latest_event.event_type,
+                "last_event_time": _iso(latest_event.event_time),
+                "last_received_at": _iso(latest_event.received_at),
+                "receipt_age_seconds": receipt_age_seconds,
+                "transport_delay_seconds": transport_delay_seconds,
+                "raw_event_count": raw_event_count,
+                "effective_event_count": raw_event_count - excluded_event_count,
+                "excluded_event_count": excluded_event_count,
+            },
+            "channels": health.get("receipts") or [],
+            "latest_events": [
+                {
+                    "channel": event.event_channel,
+                    "sequence": event.event_sequence,
+                    "type": event.event_type,
+                    "event_time": _iso(event.event_time),
+                    "received_at": _iso(event.received_at),
+                    "validation": event.validation_status,
+                }
+                for event in recent_events
+            ],
+            "history": {
+                "stream_count": stream_count,
+                "total_excluded_artifact_events": total_excluded_event_count,
+            },
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "status": "unavailable",
+            "reason": f"observer_monitor_unavailable:{type(exc).__name__}",
+            "read_only": True,
+            "execution_fence": fence,
+            "channels": [],
+            "latest_events": [],
+        }
 
 
 def _weight_source_contract_dashboard() -> dict[str, Any]:
@@ -3664,6 +3853,7 @@ def render_dashboard(summary: dict[str, Any]) -> str:
   {_render_top_status_bar(summary)}
   <nav class="quick-nav" aria-label="Dashboard sections">
     <a href="#overview">Overview</a>
+    <a href="#qc-observer">QC Observer</a>
     <a href="#account-holdings">Account</a>
     <a href="#system-window">System</a>
     <a href="#actions-window">Actions</a>
@@ -3690,6 +3880,8 @@ def render_dashboard(summary: dict[str, Any]) -> str:
       {_render_operator_windows(summary)}
     </section>
 
+    {_render_observer_monitor(summary.get("observer_monitor") or {})}
+
     {_render_account_holdings_panel(summary.get("account_holdings") or {})}
 
     <section id="operational-health" class="panel">
@@ -3712,7 +3904,7 @@ def render_dashboard(summary: dict[str, Any]) -> str:
 
     {section_html}
   </main>
-  <script>{_account_holdings_js()}{_weekend_review_js()}</script>
+  <script>{_account_holdings_js()}{_observer_monitor_js()}{_weekend_review_js()}</script>
 </body>
 </html>"""
     return html
@@ -3779,6 +3971,140 @@ def _render_account_holdings_panel(data: dict[str, Any]) -> str:
       </article>
     </section>
     """
+
+
+def _render_observer_monitor(data: dict[str, Any]) -> str:
+    status_value = str(data.get("status") or "unknown")
+    fence = data.get("execution_fence") or {}
+    if not data.get("available"):
+        return f"""
+        <section id="qc-observer" class="panel observer-panel">
+          <div class="section-heading">
+            <div><h2>QC Observer</h2><p>Read-only evidence transport from QuantConnect to FastAPI.</p></div>
+            <span class="status {escape(status_value)}">{escape(status_value)}</span>
+          </div>
+          <div class="observer-empty">{escape(str(data.get("reason") or "Observer evidence is not available."))}</div>
+        </section>
+        """
+
+    current = data.get("current_stream") or {}
+    channels = data.get("channels") or []
+    history = data.get("history") or {}
+    channel_html = "".join(_render_observer_channel(row) for row in channels)
+    if not channel_html:
+        channel_html = '<p class="muted">No committed channel receipt yet.</p>'
+    latest_rows = data.get("latest_events") or []
+    return f"""
+    <section id="qc-observer" class="panel observer-panel">
+      <div class="section-heading">
+        <div>
+          <h2>QC Observer</h2>
+          <p>Current deployment transport, audit continuity, evidence quality, and execution-authority fence.</p>
+        </div>
+        <span class="status {escape(status_value)}">{escape(status_value)}</span>
+      </div>
+      <div class="observer-summary-grid">
+        {_render_observer_stat("Deployment", current.get("deployment_id"), current.get("strategy_id"), status_value)}
+        {_render_observer_stat("Last Receipt", _fmt_duration(current.get("receipt_age_seconds")), current.get("last_event_type"), _freshness_tone(current.get("receipt_age_seconds")))}
+        {_render_observer_stat("Transport Delay", _fmt_duration(current.get("transport_delay_seconds")), "QC event to FastAPI commit", "ok" if (_json_safe_number(current.get("transport_delay_seconds")) or 0) < 60 else "warn")}
+        {_render_observer_stat("Effective Events", current.get("effective_event_count"), f"raw={current.get('raw_event_count')} excluded={current.get('excluded_event_count')}", "ok")}
+        {_render_observer_stat("Execution Authority", str(fence.get("execution_authority") or "none").upper(), "commands disabled", "ok" if fence.get("fence_enforced") and not fence.get("executable_commands_enabled") else "error")}
+        {_render_observer_stat("Audit History", history.get("stream_count"), f"excluded artifacts={history.get('total_excluded_artifact_events')}", "info")}
+      </div>
+      <div class="observer-layout">
+        <div>
+          <h3>Channel Continuity</h3>
+          <div class="observer-channels">{channel_html}</div>
+        </div>
+        <div>
+          <h3>Current Identity</h3>
+          <div class="observer-identity">
+            {_render_kv({
+                "account_id": current.get("account_id"),
+                "deployment_id": current.get("deployment_id"),
+                "strategy_id": current.get("strategy_id"),
+                "policy_fingerprint": current.get("policy_fingerprint"),
+                "source_fingerprint": current.get("source_fingerprint"),
+                "event_stream_id": current.get("event_stream_id"),
+            })}
+          </div>
+        </div>
+      </div>
+      <h3>Latest Current-Deployment Events</h3>
+      {_render_table(latest_rows, ["channel", "sequence", "type", "event_time", "received_at", "validation"])}
+      <p class="observer-footnote">P0 is broker/order lifecycle, P1 is durable account and decision evidence, and P2 is coalescible heartbeat telemetry. Historical streams never determine the current deployment status.</p>
+    </section>
+    """
+
+
+def _observer_monitor_js() -> str:
+    return """
+    (function () {
+      async function refreshObserverMonitor() {
+        const current = document.getElementById("qc-observer");
+        if (!current) return;
+        try {
+          const response = await fetch("/observer-monitor/fragment", { credentials: "same-origin" });
+          if (!response.ok) return;
+          const html = await response.text();
+          const template = document.createElement("template");
+          template.innerHTML = html.trim();
+          const replacement = template.content.firstElementChild;
+          if (replacement && replacement.id === "qc-observer") current.replaceWith(replacement);
+        } catch (_) {
+          // Preserve the last known-good observer state during transient refresh failures.
+        }
+      }
+      window.setInterval(refreshObserverMonitor, 60000);
+    })();
+    """
+
+
+def _render_observer_stat(label: str, value: Any, detail: Any, tone: str) -> str:
+    return f"""
+      <div class="observer-stat {escape(str(tone or 'unknown'))}">
+        <span>{escape(label)}</span>
+        <strong>{escape(_format_value(value))}</strong>
+        <small>{escape(_format_value(detail))}</small>
+      </div>
+    """
+
+
+def _render_observer_channel(row: dict[str, Any]) -> str:
+    status_value = str(row.get("status") or "unknown")
+    gaps = row.get("missing_sequences") or []
+    sequence = f"{int(row.get('highest_contiguous_sequence') or 0)}/{int(row.get('highest_seen_sequence') or 0)}"
+    return f"""
+      <div class="observer-channel {escape(status_value)}">
+        <div><span class="status-dot {escape(status_value)}"></span><strong>{escape(str(row.get("event_channel") or "?"))}</strong></div>
+        <span>{escape(status_value)}</span>
+        <span>sequence {escape(sequence)}</span>
+        <span>gaps {escape(str(len(gaps)))}</span>
+        <span>age {_fmt_duration(row.get("age_seconds"))}</span>
+      </div>
+    """
+
+
+def _fmt_duration(value: Any) -> str:
+    seconds = _json_safe_number(value)
+    if seconds is None:
+        return "n/a"
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.1f}m"
+    if seconds < 86400:
+        return f"{seconds / 3600:.1f}h"
+    return f"{seconds / 86400:.1f}d"
+
+
+def _freshness_tone(value: Any) -> str:
+    seconds = _json_safe_number(value)
+    if seconds is None:
+        return "warn"
+    if seconds <= 36 * 3600:
+        return "ok"
+    return "error"
 
 
 def _render_account_truth_strip(truth: dict[str, Any]) -> str:
@@ -4162,6 +4488,7 @@ def _render_top_status_bar(summary: dict[str, Any]) -> str:
     snapshot = control.get("latest_account_snapshot") or {}
     guard = control.get("account_state_guard") or {}
     ops = summary.get("ops") or {}
+    observer = summary.get("observer_monitor") or {}
     circuit_state = str(circuit.get("state") or circuit.get("value") or "unknown")
     can_trade = _dashboard_can_trade(summary)
     return f"""
@@ -4177,6 +4504,7 @@ def _render_top_status_bar(summary: dict[str, Any]) -> str:
           {_render_status_pill("Trade", "TRADEABLE" if can_trade else "BLOCKED", "ok" if can_trade else "error")}
           {_render_status_pill("Guard", guard.get("status") or "unknown", guard.get("status") or "unknown")}
           {_render_status_pill("Policy", snapshot.get("policy_version") or "unknown", "ok" if snapshot.get("policy_version") else "warn")}
+          {_render_status_pill("Observer", observer.get("status") or "unknown", observer.get("status") or "unknown")}
           {_render_status_pill("Ops", ops.get("overall") or "unknown", ops.get("overall") or "unknown")}
         </div>
       </div>
@@ -5634,6 +5962,35 @@ def _css() -> str:
     .stack-bar em { color:#64748b; font-size:9px; font-style:normal; max-width:44px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .legend { display:flex; align-items:center; gap:8px; margin-top:7px; color:#64748b; font-size:10px; }
     .legend span { width:8px; height:8px; border-radius:2px; display:inline-block; }
+    .observer-panel { display:grid; gap:14px; border-color:#1e293b; background:#0b1220; color:#dbe7f5; }
+    .observer-panel .section-heading { margin-bottom:0; }
+    .observer-panel .section-heading h2 { color:#f8fafc; }
+    .observer-panel .section-heading p, .observer-footnote { color:#7f91aa; }
+    .observer-summary-grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:8px; }
+    .observer-stat { min-width:0; border:1px solid #263247; border-top:3px solid #64748b; border-radius:8px; padding:11px 12px; background:#0f1a2b; }
+    .observer-stat.ok, .observer-stat.healthy { border-top-color:#10b981; }
+    .observer-stat.warn, .observer-stat.warning { border-top-color:#f59e0b; }
+    .observer-stat.error, .observer-stat.stale, .observer-stat.audit_incomplete { border-top-color:#ef4444; }
+    .observer-stat.info { border-top-color:#6366f1; }
+    .observer-stat span, .observer-stat small { display:block; color:#71839e; font-size:10px; }
+    .observer-stat span { font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
+    .observer-stat strong { display:block; margin:5px 0 3px; overflow:hidden; color:#f1f5f9; font-size:15px; text-overflow:ellipsis; white-space:nowrap; }
+    .observer-layout { display:grid; grid-template-columns:minmax(360px,.85fr) minmax(420px,1.15fr); gap:18px; }
+    .observer-layout h3, .observer-panel > h3 { margin-top:0; color:#dbe7f5; }
+    .observer-channels { display:grid; gap:8px; }
+    .observer-channel { display:grid; grid-template-columns:70px 100px 1fr 70px 90px; gap:8px; align-items:center; border:1px solid #263247; border-left:3px solid #64748b; border-radius:7px; padding:9px 10px; background:#0f1a2b; color:#94a3b8; font-size:12px; }
+    .observer-channel.healthy { border-left-color:#10b981; }
+    .observer-channel.stale, .observer-channel.audit_incomplete { border-left-color:#ef4444; }
+    .observer-channel > div { display:flex; align-items:center; gap:7px; color:#f1f5f9; }
+    .observer-identity { border-top:1px solid #263247; }
+    .observer-identity .kv { border-bottom-color:#263247; }
+    .observer-identity .kv span { color:#71839e; }
+    .observer-identity .kv strong { max-width:66%; color:#cbd5e1; font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .observer-panel .table-wrap { border-color:#263247; background:#0f1a2b; }
+    .observer-panel th { background:#101b2d; color:#71839e; }
+    .observer-panel td { border-bottom-color:#263247; color:#cbd5e1; font-size:12px; }
+    .observer-footnote { margin-top:0; font-size:11px; }
+    .observer-empty { border:1px dashed #334155; border-radius:8px; padding:18px; color:#94a3b8; }
     .account-holdings-panel { display:grid; gap:14px; background:#07090f; color:#c8d8ec; border-color:#1e2535; }
     .account-holdings-panel .section-heading { margin-bottom:0; }
     .account-holdings-panel .section-heading h2 { color:#e8f2ff; }
@@ -5706,6 +6063,7 @@ def _css() -> str:
     .action-label.loss_review, .action-label.hard_risk_review, .action-label.forced_trim { color:#f04a5a; }
     .action-label.trim_candidate, .action-label.trim_review, .action-label.no_add { color:#f5c842; }
     .account-contract-note { margin-top:9px; color:#4a5f7a; font-size:10px; }
-    @media (max-width: 1180px) { .account-top-strip { grid-template-columns:repeat(4,minmax(0,1fr)); } .account-truth-strip, .account-chart-grid { grid-template-columns:1fr; } }
-    @media (max-width: 720px) { .account-top-strip, .account-signal-grid { grid-template-columns:1fr 1fr; } .account-stat { border-right:0; border-bottom:1px solid #1e2535; } }
+    @media (max-width: 1280px) { .observer-summary-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+    @media (max-width: 1180px) { .account-top-strip { grid-template-columns:repeat(4,minmax(0,1fr)); } .account-truth-strip, .account-chart-grid, .observer-layout { grid-template-columns:1fr; } }
+    @media (max-width: 720px) { .account-top-strip, .account-signal-grid { grid-template-columns:1fr 1fr; } .account-stat { border-right:0; border-bottom:1px solid #1e2535; } .observer-summary-grid { grid-template-columns:1fr; } .observer-channel { grid-template-columns:1fr 1fr; } }
     """

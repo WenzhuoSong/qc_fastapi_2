@@ -14,6 +14,7 @@ ALERT_STATE_KEY = "operational_alert_state_v1"
 DEFAULT_COOLDOWN_HOURS = 6
 
 ALERT_CHECKS = {
+    "qc_observer_integrity": "critical",
     "qc_heartbeat": "critical",
     "daily_feature_snapshot": "warning",
     "yfinance_backfill": "warning",
@@ -141,7 +142,7 @@ def _active_alerts(snapshot: dict[str, Any], now: datetime) -> list[dict[str, An
     for key, level in ALERT_CHECKS.items():
         check = checks.get(key) or {}
         state = check.get("state")
-        if state is None or state == "ok":
+        if state is None or state in {"ok", "not_applicable"}:
             continue
         reason = str(check.get("reason") or check.get("state") or "not ok")
         title = str(check.get("label") or key)

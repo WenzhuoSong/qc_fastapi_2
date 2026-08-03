@@ -549,6 +549,7 @@ async def persist_strategy_live_snapshot(
     from sqlalchemy.dialects.postgresql import insert
 
     from db.models import StrategyLiveSnapshot
+    from services.execution_observer import record_observed_execution_tape
 
     await persist_newbase_registry(db)
     record = build_strategy_live_snapshot_record(
@@ -565,8 +566,14 @@ async def persist_strategy_live_snapshot(
     stmt = stmt.on_conflict_do_update(
         constraint="uq_strategy_live_snapshot_uid",
         set_=update_cols,
+    ).returning(StrategyLiveSnapshot.id)
+    result = await db.execute(stmt)
+    live_snapshot_id = result.scalar_one_or_none()
+    execution_tape = await record_observed_execution_tape(
+        db,
+        live_snapshot_id=live_snapshot_id,
+        snapshot_record=record,
     )
-    await db.execute(stmt)
     await db.commit()
     return {
         "ingested": True,
@@ -576,6 +583,7 @@ async def persist_strategy_live_snapshot(
         "trading_date": record["trading_date"].isoformat(),
         "execution_authority": EXECUTION_AUTHORITY,
         "target_weight_mutation": TARGET_WEIGHT_MUTATION,
+        "execution_tape": execution_tape,
     }
 
 

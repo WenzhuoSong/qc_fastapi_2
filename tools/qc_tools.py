@@ -9,6 +9,7 @@ import time
 import httpx
 
 from config import get_settings
+from services.execution_authority import blocked_qc_command_result
 from services.execution_policy import policy_snapshot
 from services.newbase_monitoring import is_active_newbase_observer
 
@@ -16,6 +17,19 @@ logger   = logging.getLogger("qc_fastapi_2.qc")
 settings = get_settings()
 
 POLICY_SYNC_PROTOCOL_VERSION = "v2_payload_json"
+
+
+def _blocked_by_global_execution_fence(command_name: str) -> dict:
+    """Single process-level choke point for every outbound QC live command."""
+    blocked = blocked_qc_command_result(command_name)
+    logger.warning(
+        "%s blocked by global execution fence: authority=%s configured=%s reason=%s",
+        command_name,
+        blocked["execution_authority"],
+        blocked["configured_execution_authority"],
+        blocked["error"],
+    )
+    return blocked
 
 
 async def _blocked_by_newbase_observer(command_name: str) -> dict | None:
@@ -74,6 +88,10 @@ async def tool_send_weight_command(inp: dict) -> dict:
       Body: {"projectId": <int>, "command": <json-string>}
     QC 算法 on_command(data) 会收到 command 字符串解析后的对象。
     """
+    blocked = _blocked_by_global_execution_fence("SetWeights")
+    if blocked:
+        return blocked
+
     blocked = await _blocked_by_newbase_observer("SetWeights")
     if blocked:
         return blocked
@@ -128,6 +146,10 @@ async def tool_send_weight_command(inp: dict) -> dict:
 
 async def tool_send_policy_sync(inp: dict | None = None) -> dict:
     """Manually sync FastAPI execution policy to QC for diagnostics/recovery."""
+    blocked = _blocked_by_global_execution_fence("PolicySync")
+    if blocked:
+        return blocked
+
     blocked = await _blocked_by_newbase_observer("PolicySync")
     if blocked:
         return blocked
@@ -172,6 +194,10 @@ async def tool_send_policy_sync(inp: dict | None = None) -> dict:
 
 async def tool_send_cancel_orders_command(inp: dict | None = None) -> dict:
     """Ask QC to cancel currently open orders for an active execution."""
+    blocked = _blocked_by_global_execution_fence("CancelOrders")
+    if blocked:
+        return blocked
+
     blocked = await _blocked_by_newbase_observer("CancelOrders")
     if blocked:
         return blocked

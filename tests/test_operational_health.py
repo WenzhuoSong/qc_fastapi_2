@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from services.operational_health import (
     _freshness_check,
     _heartbeat_freshness_check,
+    _not_applicable_check,
     _news_cache_freshness_check,
     _trading_day_freshness_check,
     _unresolved_failed_crons,
@@ -114,6 +115,26 @@ class OperationalHealthTests(unittest.TestCase):
 
         self.assertEqual(snapshot["overall"], "healthy")
         self.assertEqual(snapshot["research_degradations"], [])
+
+    def test_not_applicable_legacy_checks_do_not_degrade_observer_health(self):
+        now = datetime(2026, 7, 21, 14, 0, 0)
+        checks = {
+            "qc_heartbeat": {"label": "QC Observer heartbeat", "state": "ok"},
+            "daily_feature_snapshot": _not_applicable_check(
+                "Daily features", "observer-only deployment"
+            ),
+            "memory_write": _not_applicable_check(
+                "Memory write", "observer-only deployment"
+            ),
+            "news_cache": {"label": "News cache", "state": "ok"},
+        }
+
+        snapshot = classify_operational_health(checks, [], now=now)
+
+        self.assertEqual(snapshot["overall"], "healthy")
+        self.assertEqual(snapshot["research_degradations"], [])
+        report = format_operational_health_report(snapshot)
+        self.assertIn("Daily features: not applicable", report)
 
     def test_resolved_cron_failure_is_not_active_degradation(self):
         now = datetime(2026, 6, 10, 12, 0, 0)

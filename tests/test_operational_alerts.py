@@ -72,6 +72,28 @@ class OperationalAlertsTests(unittest.TestCase):
             previous["alerts"]["qc_heartbeat"]["last_sent_at"],
         )
 
+    def test_observer_gap_is_deduped_critical_alert_without_trading_mutation(self):
+        snapshot = {
+            "checks": {
+                "qc_observer_integrity": {
+                    "label": "QC Observer integrity",
+                    "state": "audit_incomplete",
+                    "reason": "observer_audit_incomplete",
+                    "blocking": False,
+                }
+            },
+            "failed_crons": [],
+        }
+
+        alerts, state = evaluate_operational_alerts(
+            snapshot, now=datetime(2026, 7, 21, 14, 0, 0)
+        )
+
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["key"], "qc_observer_integrity")
+        self.assertEqual(alerts[0]["level"], "critical")
+        self.assertIn("qc_observer_integrity", state["alerts"])
+
     def test_sends_changed_alert_inside_cooldown(self):
         now = datetime(2026, 5, 19, 14, 0, 0)
         snapshot = {

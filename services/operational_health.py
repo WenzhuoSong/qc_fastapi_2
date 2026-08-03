@@ -46,11 +46,15 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
         MacroNewsCache,
         MarketDailyFeature,
         MemoryDaily,
+        QCObserverEvent,
+        QCObserverStreamReceipt,
         QCSnapshot,
     )
     from db.session import AsyncSessionLocal
     from services.agent_analysis_queries import load_latest_trade_decision_analysis
     from services.execution_policy import TICKER_ROLES, TickerRole
+    from services.newbase_monitoring import is_active_newbase_observer
+    from services.qc_observer_health import load_current_observer_summary
 
     now = datetime.now(UTC).replace(tzinfo=None)
     failed_cron_cutoff = now - timedelta(hours=FAILED_CRON_LOOKBACK_HOURS)
@@ -62,14 +66,35 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
     )
 
     async with AsyncSessionLocal() as db:
-        heartbeat = (
-            await db.execute(
-                select(QCSnapshot)
-                .where(QCSnapshot.packet_type == "heartbeat")
-                .order_by(desc(QCSnapshot.received_at))
+        observer_active = await is_active_newbase_observer(db)
+        observer_heartbeat = None
+        observer_summary = None
+        if observer_active:
+            observer_summary = await load_current_observer_summary(db)
+            latest_observer_event = await db.scalar(
+                select(QCObserverEvent)
+                .where(~QCObserverEvent.event_stream_id.like("observer-smoke:%"))
+                .order_by(desc(QCObserverEvent.received_at), desc(QCObserverEvent.id))
                 .limit(1)
             )
-        ).scalar_one_or_none()
+            if latest_observer_event is not None:
+                observer_heartbeat = await db.scalar(
+                    select(QCObserverStreamReceipt).where(
+                        QCObserverStreamReceipt.event_stream_id
+                        == latest_observer_event.event_stream_id,
+                        QCObserverStreamReceipt.event_channel == "P2",
+                    )
+                )
+            heartbeat = None
+        else:
+            heartbeat = (
+                await db.execute(
+                    select(QCSnapshot)
+                    .where(QCSnapshot.packet_type == "heartbeat")
+                    .order_by(desc(QCSnapshot.received_at))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
         feature_snapshot = (
             await db.execute(
                 select(QCSnapshot)
@@ -148,22 +173,46 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
         now=now,
     )
 
+    heartbeat_timestamp = (
+        getattr(observer_heartbeat, "last_event_time", None)
+        if observer_active
+        else getattr(heartbeat, "received_at", None)
+    )
     checks = {
+        "qc_observer_integrity": (
+            {
+                "label": "QC Observer integrity",
+                "state": (
+                    "ok"
+                    if (observer_summary or {}).get("status") == "healthy"
+                    else str((observer_summary or {}).get("status") or "unavailable")
+                ),
+                "reason": (observer_summary or {}).get("reason") or "observer unavailable",
+                "as_of": (observer_summary or {}).get("last_received_at"),
+                "blocking": False,
+            }
+            if observer_active
+            else _not_applicable_check("QC Observer integrity", "legacy deployment")
+        ),
         "qc_heartbeat": _heartbeat_freshness_check(
-            label="QC heartbeat",
-            timestamp=getattr(heartbeat, "received_at", None),
+            label="QC Observer heartbeat" if observer_active else "QC heartbeat",
+            timestamp=heartbeat_timestamp,
             now=now,
             max_age_hours=FRESHNESS_LIMITS_HOURS["qc_heartbeat"],
             blocker=True,
             missing_blocker=True,
         ),
-        "daily_feature_snapshot": _trading_day_freshness_check(
-            label="Daily features",
-            timestamp=getattr(feature_snapshot, "received_at", None),
-            now=now,
-            max_age_hours=FRESHNESS_LIMITS_HOURS["daily_feature_snapshot"],
-            blocker=False,
-            missing_blocker=False,
+        "daily_feature_snapshot": (
+            _not_applicable_check("Daily features", "observer-only deployment")
+            if observer_active
+            else _trading_day_freshness_check(
+                label="Daily features",
+                timestamp=getattr(feature_snapshot, "received_at", None),
+                now=now,
+                max_age_hours=FRESHNESS_LIMITS_HOURS["daily_feature_snapshot"],
+                blocker=False,
+                missing_blocker=False,
+            )
         ),
         "yfinance_backfill": _trading_day_freshness_check(
             label="YFinance backfill",
@@ -180,17 +229,25 @@ async def build_operational_health_snapshot() -> dict[str, Any]:
             blocker=False,
             missing_blocker=False,
         ),
-        "memory_write": _trading_day_freshness_check(
-            label="Memory write",
-            timestamp=getattr(memory, "updated_at", None) or getattr(memory, "created_at", None),
-            now=now,
-            max_age_hours=FRESHNESS_LIMITS_HOURS["memory_write"],
-            blocker=False,
-            missing_blocker=False,
+        "memory_write": (
+            _not_applicable_check("Memory write", "observer-only deployment")
+            if observer_active
+            else _trading_day_freshness_check(
+                label="Memory write",
+                timestamp=getattr(memory, "updated_at", None) or getattr(memory, "created_at", None),
+                now=now,
+                max_age_hours=FRESHNESS_LIMITS_HOURS["memory_write"],
+                blocker=False,
+                missing_blocker=False,
+            )
         ),
         "pipeline_status": {
             "label": "Pipeline",
-            "status": getattr(analysis, "execution_status", None) or "unknown",
+            "status": (
+                "qc_observer_only"
+                if observer_active
+                else getattr(analysis, "execution_status", None) or "unknown"
+            ),
             "as_of": _iso_or_none(getattr(analysis, "analyzed_at", None)),
             "blocking": False,
         },
@@ -219,7 +276,7 @@ def classify_operational_health(
         state = check.get("state")
         if state is None:
             continue
-        if state == "ok":
+        if state in {"ok", "not_applicable"}:
             continue
         message = f"{check.get('label')}: {check.get('reason')}"
         if check.get("blocking"):
@@ -293,8 +350,18 @@ def format_operational_health_report(snapshot: dict[str, Any]) -> str:
     }.get(overall, f"Ops health: {overall}")
     checks = snapshot.get("checks") or {}
     lines = [title]
-    for key in ("qc_heartbeat", "daily_feature_snapshot", "yfinance_backfill", "news_cache", "memory_write"):
+    for key in (
+        "qc_observer_integrity",
+        "qc_heartbeat",
+        "daily_feature_snapshot",
+        "yfinance_backfill",
+        "news_cache",
+        "memory_write",
+    ):
         check = checks.get(key) or {}
+        if check.get("state") == "not_applicable":
+            lines.append(f"- {check.get('label', key)}: not applicable")
+            continue
         age = check.get("age_hours")
         age_text = "never updated" if age is None else f"{age:.1f}h"
         lines.append(f"- {check.get('label', key)}: {check.get('state', 'unknown')} ({age_text})")
@@ -317,6 +384,17 @@ def format_operational_health_report(snapshot: dict[str, Any]) -> str:
     if degradations:
         lines.append("Research degradation: " + "; ".join(degradations[:3]))
     return "\n".join(lines[:12])
+
+
+def _not_applicable_check(label: str, reason: str) -> dict[str, Any]:
+    return {
+        "label": label,
+        "state": "not_applicable",
+        "age_hours": None,
+        "as_of": None,
+        "reason": reason,
+        "blocking": False,
+    }
 
 
 def _freshness_check(

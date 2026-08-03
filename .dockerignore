@@ -63,3 +63,7 @@ docker-compose.yml
 # Misc
 *.log
 .DS_Store
+
+# Local QuantConnect research sources/results are not FastAPI runtime assets.
+quantconnect_*/
+newbase_walkforward_research_qc.py

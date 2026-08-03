@@ -111,7 +111,6 @@ from services.policy_sync_recovery import (
 from services.newbase_monitoring import (
     is_active_newbase_observer,
     is_newbase_observer_strategy,
-    run_newbase_full_auto_monitor,
 )
 from services.transaction_cost_gate import (
     default_transaction_cost_gate_config,
@@ -873,32 +872,27 @@ async def _run_pipeline_inner(trigger: str, *, trading_analysis_gate: dict[str, 
         return {"status": "skipped_gated"}
     if pipeline_context.get("fastapi_control_mode") == "newbase_observer_only":
         try:
-            newbase_monitor = await run_newbase_full_auto_monitor()
+            from services.qc_observer_health import load_current_observer_summary
+
+            observer_monitor = await load_current_observer_summary()
         except Exception as exc:
-            newbase_monitor = {
-                "schema_version": "newbase_full_auto_monitor_v1",
+            observer_monitor = {
+                "schema_version": "qc_observer_current_status_v1",
                 "status": "unavailable",
                 "should_alert": True,
-                "reason": f"newbase_monitor_unavailable:{type(exc).__name__}",
+                "reason": f"observer_monitor_unavailable:{type(exc).__name__}",
                 "error": str(exc),
                 "execution_authority": "none",
                 "target_weight_mutation": "none",
                 "review_only": True,
             }
-            logger.warning("[newBase] FULL_AUTO monitor unavailable: %s", exc)
+            logger.warning("[QC observer] monitor unavailable: %s", exc)
 
-        if newbase_monitor.get("should_alert"):
-            from services.circuit_breaker import CircuitBreakerMonitor, CircuitState
-
-            reason = str(newbase_monitor.get("reason") or "newbase_monitor_alert")
-            await CircuitBreakerMonitor().update_circuit_state(
-                CircuitState.ALERT,
-                reason=reason,
-                primary_trigger="newbase_live_snapshot_monitor",
-            )
-            status = "newbase_monitor_alert"
-        else:
-            status = "newbase_monitor_ok"
+        status = (
+            "qc_observer_ok"
+            if observer_monitor.get("status") == "healthy"
+            else "qc_observer_attention"
+        )
         tracker.end_run(status)
         return {
             "status": status,
@@ -907,7 +901,7 @@ async def _run_pipeline_inner(trigger: str, *, trading_analysis_gate: dict[str, 
             "active_strategy": pipeline_context.get("active_strategy"),
             "execution_authority": "none",
             "target_weight_mutation": "none",
-            "newbase_monitor": newbase_monitor,
+            "observer_monitor": observer_monitor,
         }
     if trading_analysis_gate:
         pipeline_context["trading_analysis_gate"] = trading_analysis_gate

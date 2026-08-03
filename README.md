@@ -1,4 +1,10 @@
-# QC FastAPI 2 — QC Agentic Trading System
+# QC FastAPI 2 — Trading Research, News, and QC Observation System
+
+## Trading-system design
+
+- [FastAPI2 / QuantConnect Observation and Audit System Design v2.1](docs/fastapi_qc_trading_system_design_v1.md)
+- [FastAPI2 / QuantConnect 交易观察与审计系统设计 v2.1（中文版）](docs/fastapi_qc_trading_system_design_v1_zh.md)
+- [FastAPI2 / QC Observation System Case Catalog v2.1](docs/fastapi_qc_trading_system_case_catalog_v1.md)
 
 An autonomous ETF trading system that integrates with QuantConnect.
 The pipeline is a **Python → LLM → Python 三段接力**: pure math computes a

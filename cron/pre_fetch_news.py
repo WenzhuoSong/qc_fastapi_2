@@ -31,9 +31,10 @@ from typing import Any
 
 from openai import AsyncOpenAI
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert
 
 from constants import DEFAULT_ETF_UNIVERSE, resolve_universe
-from db.models import MacroNewsCache, TickerNewsLibrary
+from db.models import MacroNewsCache, TickerNewsArchive, TickerNewsLibrary
 from db.session import AsyncSessionLocal
 from services.alphavantage_client import fetch_ticker_news_av
 from services.finnhub_client import (
@@ -550,6 +551,41 @@ async def _insert_external_news(
 async def _cleanup_old_news() -> int:
     cutoff = int(time.time()) - TTL_SECONDS
     async with AsyncSessionLocal() as db:
+        expired = (
+            await db.execute(
+                select(TickerNewsLibrary).where(TickerNewsLibrary.datetime_utc < cutoff)
+            )
+        ).scalars().all()
+        if expired:
+            archive_rows = [
+                {
+                    "source_library_id": row.id,
+                    "ticker": row.ticker,
+                    "url": row.url,
+                    "headline": row.headline,
+                    "source": row.source,
+                    "source_api": row.source_api,
+                    "summary": row.summary,
+                    "llm_summary": row.llm_summary,
+                    "sentiment": row.sentiment,
+                    "relevance": row.relevance,
+                    "is_hard_event": row.is_hard_event,
+                    "hard_risks": row.hard_risks,
+                    "category": row.category,
+                    "related": row.related,
+                    "datetime_utc": row.datetime_utc,
+                    "credibility": row.credibility,
+                    "source_created_at": row.created_at,
+                }
+                for row in expired
+            ]
+            await db.execute(
+                insert(TickerNewsArchive)
+                .values(archive_rows)
+                .on_conflict_do_nothing(
+                    index_elements=[TickerNewsArchive.ticker, TickerNewsArchive.url]
+                )
+            )
         stmt = delete(TickerNewsLibrary).where(TickerNewsLibrary.datetime_utc < cutoff)
         res = await db.execute(stmt)
         await db.commit()

@@ -3,6 +3,27 @@ from pathlib import Path
 
 
 class DashboardTests(unittest.TestCase):
+    def test_dashboard_surfaces_current_qc_observer_deployment(self):
+        source = Path("dashboard/app.py").read_text()
+
+        self.assertIn('@app.get("/api/observer-monitor")', source)
+        self.assertIn('@app.get("/observer-monitor/fragment", response_class=HTMLResponse)', source)
+        self.assertIn('"observer_monitor": observer_monitor', source)
+        self.assertIn("def _observer_monitor_dashboard", source)
+        self.assertIn("def _render_observer_monitor", source)
+        self.assertIn('href="#qc-observer"', source)
+        self.assertIn("QC Observer", source)
+        self.assertIn("Channel Continuity", source)
+        self.assertIn("Current Identity", source)
+        self.assertIn("Execution Authority", source)
+        self.assertIn("Historical streams never determine the current deployment status.", source)
+        self.assertIn("QCObserverEventAnnotation.excludes_from_evidence.is_(True)", source)
+        self.assertIn("execution_authority_status", source)
+        self.assertIn("commands disabled", source)
+        self.assertIn("def _observer_monitor_js", source)
+        self.assertIn('fetch("/observer-monitor/fragment"', source)
+        self.assertIn("window.setInterval(refreshObserverMonitor, 60000)", source)
+
     def test_dashboard_has_operator_overview_charts_and_collapsible_sections(self):
         source = Path("dashboard/app.py").read_text()
 

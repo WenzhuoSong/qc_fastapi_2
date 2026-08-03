@@ -5,11 +5,16 @@ import logging
 from typing import Any
 
 from pydantic import BaseModel
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.account_snapshot_store import ingest_execution_ack_snapshot
+from services.execution_observer import build_execution_tape_summary
 from services.execution_log_store import update_qc_status
 from services.qc_webhook_auth import verify_qc_signature
+from db.models import ExecutionObservedFill, ExecutionObservedOrder
+from db.session import get_db
 
 
 router = APIRouter(tags=["execution"])
@@ -93,4 +98,88 @@ async def receive_qc_ack(request: Request, ack: QCExecutionAck):
         "snapshot_ingestion": snapshot_ingestion,
         "qc_status_update": qc_status_update,
         "feedback_trust": qc_status_update.get("feedback_trust") if isinstance(qc_status_update, dict) else None,
+    }
+
+
+@router.get("/execution/observed/summary")
+async def observed_execution_summary(
+    db: AsyncSession = Depends(get_db),
+    strategy_id: str | None = Query(default="newbase"),
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    """Read-only execution tape summary from QC-owned observed orders/fills."""
+    return await build_execution_tape_summary(db, strategy_id=strategy_id, limit=limit)
+
+
+@router.get("/execution/observed/fills")
+async def observed_execution_fills(
+    db: AsyncSession = Depends(get_db),
+    strategy_id: str | None = Query(default="newbase"),
+    limit: int = Query(default=100, ge=1, le=1000),
+):
+    stmt = select(ExecutionObservedFill).order_by(
+        desc(ExecutionObservedFill.event_time),
+        desc(ExecutionObservedFill.id),
+    ).limit(limit)
+    if strategy_id:
+        stmt = stmt.where(ExecutionObservedFill.strategy_id == strategy_id.lower().strip())
+    rows = list((await db.execute(stmt)).scalars().all())
+    return {
+        "read_only": True,
+        "execution_authority": "none",
+        "count": len(rows),
+        "fills": [
+            {
+                "event_time": row.event_time.isoformat() if row.event_time else None,
+                "trading_date": row.trading_date.isoformat() if row.trading_date else None,
+                "strategy_id": row.strategy_id,
+                "algorithm_version": row.algorithm_version,
+                "order_id": row.order_id,
+                "ticker": row.ticker,
+                "direction": row.direction,
+                "quantity": row.quantity,
+                "fill_price": row.fill_price,
+                "fee": row.fee,
+                "notional": row.notional,
+                "fee_bps": row.fee_bps,
+                "snapshot_uid": row.snapshot_uid,
+            }
+            for row in rows
+        ],
+    }
+
+
+@router.get("/execution/observed/orders")
+async def observed_execution_orders(
+    db: AsyncSession = Depends(get_db),
+    strategy_id: str | None = Query(default="newbase"),
+    limit: int = Query(default=100, ge=1, le=1000),
+):
+    stmt = select(ExecutionObservedOrder).order_by(
+        desc(ExecutionObservedOrder.event_time),
+        desc(ExecutionObservedOrder.id),
+    ).limit(limit)
+    if strategy_id:
+        stmt = stmt.where(ExecutionObservedOrder.strategy_id == strategy_id.lower().strip())
+    rows = list((await db.execute(stmt)).scalars().all())
+    return {
+        "read_only": True,
+        "execution_authority": "none",
+        "count": len(rows),
+        "orders": [
+            {
+                "event_time": row.event_time.isoformat() if row.event_time else None,
+                "trading_date": row.trading_date.isoformat() if row.trading_date else None,
+                "strategy_id": row.strategy_id,
+                "algorithm_version": row.algorithm_version,
+                "order_id": row.order_id,
+                "ticker": row.ticker,
+                "direction": row.direction,
+                "quantity": row.quantity,
+                "status": row.status,
+                "order_type": row.order_type,
+                "snapshot_uid": row.snapshot_uid,
+            }
+            for row in rows
+        ],
     }

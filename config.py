@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     webhook_secret: str
     qc_webhook_secret: str = ""
     qc_webhook_allow_legacy_auth: bool = True
+    qc_observer_require_request_v2: bool = False
+    qc_observer_allowed_accounts: str = ""
+    qc_observer_allowed_deployments: str = ""
+    qc_observer_max_clock_skew_seconds: int = 600
 
     # QC REST API
     qc_api_url: str = "https://www.quantconnect.com/api/v2"

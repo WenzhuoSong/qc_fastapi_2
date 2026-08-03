@@ -3,7 +3,8 @@ import uuid
 from datetime import datetime, date
 from sqlalchemy import (
     BigInteger, Boolean, Column, Date, DateTime,
-    Float, Integer, Numeric, String, Text, ForeignKey, UniqueConstraint, func
+    CheckConstraint, Float, Integer, Numeric, String, Text, ForeignKey,
+    UniqueConstraint, func
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from db.session import Base
@@ -15,6 +16,366 @@ class SystemConfig(Base):
     value      = Column(JSONB, nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     updated_by = Column(String(50), default="user")
+
+
+class QCObserverEvent(Base):
+    """Immutable FastAPI-side copy of a QC observer fact."""
+
+    __tablename__ = "qc_observer_events"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_qc_observer_events_event_id"),
+        UniqueConstraint(
+            "event_stream_id",
+            "event_channel",
+            "event_sequence",
+            name="uq_qc_observer_events_stream_channel_sequence",
+        ),
+        CheckConstraint("event_sequence > 0", name="ck_qc_observer_events_sequence_positive"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    event_id = Column(String(128), nullable=False, index=True)
+    event_stream_id = Column(String(128), nullable=False, index=True)
+    event_channel = Column(String(16), nullable=False, index=True)
+    event_sequence = Column(BigInteger, nullable=False)
+    schema_version = Column(String(64), nullable=False)
+    event_type = Column(String(80), nullable=False, index=True)
+    account_id = Column(String(128), nullable=False, index=True)
+    deployment_id = Column(String(128), nullable=False, index=True)
+    strategy_id = Column(String(100), index=True)
+    event_time = Column(DateTime(timezone=True), nullable=False, index=True)
+    received_at = Column(DateTime(timezone=True), nullable=False, default=func.now(), index=True)
+    source_fingerprint = Column(String(128))
+    policy_fingerprint = Column(String(128))
+    content_hash = Column(String(64), nullable=False)
+    validation_status = Column(String(32), nullable=False, default="valid", index=True)
+    validation_errors = Column(JSONB)
+    payload = Column(JSONB, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+
+
+class QCObserverStreamReceipt(Base):
+    """Committed receive high-water mark for one independent event channel."""
+
+    __tablename__ = "qc_observer_stream_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "event_stream_id",
+            "event_channel",
+            name="uq_qc_observer_stream_receipts_stream_channel",
+        ),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    event_stream_id = Column(String(128), nullable=False, index=True)
+    event_channel = Column(String(16), nullable=False)
+    highest_contiguous_sequence = Column(BigInteger, nullable=False, default=0)
+    highest_seen_sequence = Column(BigInteger, nullable=False, default=0)
+    missing_sequences = Column(JSONB, nullable=False, default=list)
+    last_event_id = Column(String(128))
+    last_event_time = Column(DateTime(timezone=True))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=func.now(), onupdate=func.now())
+
+
+class QCObserverEventAnnotation(Base):
+    """Append-only evidence classification for an immutable observer fact."""
+
+    __tablename__ = "qc_observer_event_annotations"
+    __table_args__ = (
+        UniqueConstraint(
+            "raw_event_id",
+            "annotation_type",
+            name="uq_qc_observer_event_annotations_event_type",
+        ),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    raw_event_id = Column(BigInteger, ForeignKey("qc_observer_events.id"), nullable=False, index=True)
+    annotation_type = Column(String(40), nullable=False, index=True)
+    reason_code = Column(String(80), nullable=False, index=True)
+    reason = Column(Text, nullable=False)
+    excludes_from_evidence = Column(Boolean, nullable=False, default=False, index=True)
+    annotation_payload = Column(JSONB, nullable=False, default=dict)
+    created_by = Column(String(80), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+
+
+class QCObserverRequestNonce(Base):
+    """One accepted request nonce used to reject signed payload replay."""
+
+    __tablename__ = "qc_observer_request_nonces"
+
+    nonce = Column(String(128), primary_key=True)
+    account_id = Column(String(128), nullable=False, index=True)
+    deployment_id = Column(String(128), nullable=False, index=True)
+    request_timestamp = Column(DateTime(timezone=True), nullable=False)
+    body_hash = Column(String(64), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+
+
+class QCObserverRejectedEvent(Base):
+    """Quarantined event rejected without rolling back valid batch siblings."""
+
+    __tablename__ = "qc_observer_rejected_events"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    request_nonce = Column(String(128), index=True)
+    event_index = Column(Integer, nullable=False)
+    event_id = Column(String(128), index=True)
+    event_stream_id = Column(String(128), index=True)
+    event_channel = Column(String(16))
+    event_sequence = Column(BigInteger)
+    account_id = Column(String(128), index=True)
+    deployment_id = Column(String(128), index=True)
+    rejection_code = Column(String(80), nullable=False, index=True)
+    rejection_message = Column(Text, nullable=False)
+    raw_content_hash = Column(String(64), nullable=False)
+    raw_event = Column(JSONB, nullable=False)
+    received_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+
+
+class QCProjectionCheckpoint(Base):
+    """Rebuildable projection cursor, isolated by stream and channel."""
+
+    __tablename__ = "qc_projection_checkpoints"
+    __table_args__ = (
+        UniqueConstraint(
+            "projection_name",
+            "event_stream_id",
+            "event_channel",
+            name="uq_qc_projection_checkpoints_projection_stream_channel",
+        ),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    projection_name = Column(String(100), nullable=False, index=True)
+    projection_version = Column(String(40), nullable=False)
+    event_stream_id = Column(String(128), nullable=False)
+    event_channel = Column(String(16), nullable=False)
+    last_processed_sequence = Column(BigInteger, nullable=False, default=0)
+    status = Column(String(32), nullable=False, default="ready")
+    last_error = Column(Text)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=func.now(), onupdate=func.now())
+
+
+class QCDecisionManifestProjection(Base):
+    __tablename__ = "qc_decision_manifests"
+    __table_args__ = (
+        UniqueConstraint("raw_event_id", name="uq_qc_decision_manifests_raw_event"),
+        UniqueConstraint("event_stream_id", "decision_id", name="uq_qc_decision_manifests_stream_decision"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    raw_event_id = Column(BigInteger, ForeignKey("qc_observer_events.id"), nullable=False, index=True)
+    event_id = Column(String(128), nullable=False)
+    event_stream_id = Column(String(128), nullable=False, index=True)
+    account_id = Column(String(128), nullable=False, index=True)
+    deployment_id = Column(String(128), nullable=False, index=True)
+    strategy_id = Column(String(100), index=True)
+    event_sequence = Column(BigInteger, nullable=False)
+    event_time = Column(DateTime(timezone=True), nullable=False, index=True)
+    projection_version = Column(String(40), nullable=False)
+    decision_id = Column(String(128), nullable=False, index=True)
+    decision_kind = Column(String(80), nullable=False)
+    as_of = Column(DateTime(timezone=True), nullable=False)
+    basis_account_snapshot_id = Column(String(128))
+    market_data_cutoff = Column(DateTime(timezone=True))
+    strategy_version = Column(String(100))
+    execution_style = Column(String(40))
+    execution_authority = Column(String(40), nullable=False)
+    raw_target_weights = Column(JSONB, nullable=False, default=dict)
+    risk_adjusted_weights = Column(JSONB, nullable=False, default=dict)
+    final_target_weights = Column(JSONB, nullable=False, default=dict)
+    suppressed_deltas = Column(JSONB, nullable=False, default=dict)
+    payload_extra = Column(JSONB, nullable=False, default=dict)
+
+
+class QCDecisionRankingProjection(Base):
+    __tablename__ = "qc_decision_rankings"
+    __table_args__ = (
+        UniqueConstraint("decision_manifest_id", "security_id", name="uq_qc_decision_rankings_manifest_security"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    decision_manifest_id = Column(BigInteger, ForeignKey("qc_decision_manifests.id"), nullable=False, index=True)
+    raw_event_id = Column(BigInteger, ForeignKey("qc_observer_events.id"), nullable=False, index=True)
+    security_id = Column(String(128), nullable=False, index=True)
+    ticker = Column(String(32), index=True)
+    rank = Column(Integer, nullable=False)
+    score = Column(Numeric(24, 12))
+    history_hash = Column(String(128))
+    payload_extra = Column(JSONB, nullable=False, default=dict)
+
+
+class QCOrderIntentProjection(Base):
+    __tablename__ = "qc_order_intents"
+    __table_args__ = (
+        UniqueConstraint("raw_event_id", name="uq_qc_order_intents_raw_event"),
+        UniqueConstraint("event_stream_id", "order_intent_id", name="uq_qc_order_intents_stream_intent"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    raw_event_id = Column(BigInteger, ForeignKey("qc_observer_events.id"), nullable=False, index=True)
+    event_stream_id = Column(String(128), nullable=False, index=True)
+    account_id = Column(String(128), nullable=False)
+    deployment_id = Column(String(128), nullable=False)
+    event_time = Column(DateTime(timezone=True), nullable=False, index=True)
+    projection_version = Column(String(40), nullable=False)
+    order_intent_id = Column(String(128), nullable=False, index=True)
+    decision_id = Column(String(128), index=True)
+    security_id = Column(String(128), nullable=False, index=True)
+    ticker = Column(String(32), index=True)
+    requested_quantity = Column(Numeric(24, 8), nullable=False)
+    submitted_quantity = Column(Numeric(24, 8))
+    target_weight = Column(Numeric(18, 10))
+    reference_price = Column(Numeric(24, 8))
+    reference_time = Column(DateTime(timezone=True))
+    order_type = Column(String(40), nullable=False)
+    reason = Column(String(100), nullable=False)
+    risk_class = Column(String(40), nullable=False)
+    clipped = Column(Boolean)
+    payload_extra = Column(JSONB, nullable=False, default=dict)
+
+
+class QCOrderLifecycleProjection(Base):
+    __tablename__ = "qc_order_lifecycle_events"
+    __table_args__ = (UniqueConstraint("raw_event_id", name="uq_qc_order_lifecycle_raw_event"),)
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    raw_event_id = Column(BigInteger, ForeignKey("qc_observer_events.id"), nullable=False, index=True)
+    event_stream_id = Column(String(128), nullable=False, index=True)
+    account_id = Column(String(128), nullable=False)
+    deployment_id = Column(String(128), nullable=False)
+    event_time = Column(DateTime(timezone=True), nullable=False, index=True)
+    projection_version = Column(String(40), nullable=False)
+    broker_order_id = Column(String(128), nullable=False, index=True)
+    order_intent_id = Column(String(128), index=True)
+    security_id = Column(String(128), nullable=False, index=True)
+    ticker = Column(String(32), index=True)
+    status = Column(String(60), nullable=False, index=True)
+    quantity = Column(Numeric(24, 8))
+    fill_quantity = Column(Numeric(24, 8))
+    fill_quantity_semantics = Column(String(40), nullable=False)
+    fill_price = Column(Numeric(24, 8))
+    fee = Column(Numeric(24, 8))
+    message = Column(Text)
+    reconstructed = Column(Boolean, nullable=False, default=False)
+    reconstruction_source = Column(String(80))
+    remaining_quantity = Column(Numeric(24, 8))
+    payload_extra = Column(JSONB, nullable=False, default=dict)
+
+
+class QCLocalRiskProjection(Base):
+    __tablename__ = "qc_local_risk_events"
+    __table_args__ = (
+        UniqueConstraint("raw_event_id", name="uq_qc_local_risk_raw_event"),
+        UniqueConstraint("event_stream_id", "risk_event_id", name="uq_qc_local_risk_stream_event"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    raw_event_id = Column(BigInteger, ForeignKey("qc_observer_events.id"), nullable=False, index=True)
+    event_stream_id = Column(String(128), nullable=False, index=True)
+    account_id = Column(String(128), nullable=False)
+    deployment_id = Column(String(128), nullable=False)
+    event_time = Column(DateTime(timezone=True), nullable=False, index=True)
+    projection_version = Column(String(40), nullable=False)
+    risk_event_id = Column(String(128), nullable=False, index=True)
+    security_id = Column(String(128), nullable=False, index=True)
+    ticker = Column(String(32), index=True)
+    risk_type = Column(String(60), nullable=False, index=True)
+    stage = Column(String(60), nullable=False, index=True)
+    price = Column(Numeric(24, 8))
+    entry_price = Column(Numeric(24, 8))
+    anchor_price = Column(Numeric(24, 8))
+    cooldown_until = Column(DateTime(timezone=True))
+    details = Column(JSONB, nullable=False, default=dict)
+
+
+class QCAccountSnapshotProjection(Base):
+    __tablename__ = "qc_account_snapshots"
+    __table_args__ = (
+        UniqueConstraint("raw_event_id", name="uq_qc_account_snapshots_raw_event"),
+        UniqueConstraint("event_stream_id", "account_snapshot_id", name="uq_qc_account_snapshots_stream_snapshot"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    raw_event_id = Column(BigInteger, ForeignKey("qc_observer_events.id"), nullable=False, index=True)
+    event_stream_id = Column(String(128), nullable=False, index=True)
+    account_id = Column(String(128), nullable=False, index=True)
+    deployment_id = Column(String(128), nullable=False)
+    event_time = Column(DateTime(timezone=True), nullable=False, index=True)
+    projection_version = Column(String(40), nullable=False)
+    account_snapshot_id = Column(String(128), nullable=False, index=True)
+    equity = Column(Numeric(24, 8), nullable=False)
+    cash = Column(Numeric(24, 8), nullable=False)
+    buying_power = Column(Numeric(24, 8))
+    state_generation = Column(BigInteger, nullable=False)
+    state_active = Column(Boolean)
+    broker_reconciled = Column(Boolean, nullable=False)
+    pending_order_count = Column(Integer, nullable=False, default=0)
+    deferred_target_count = Column(Integer, nullable=False, default=0)
+    payload_extra = Column(JSONB, nullable=False, default=dict)
+
+
+class QCAccountSnapshotHoldingProjection(Base):
+    __tablename__ = "qc_account_snapshot_holdings"
+    __table_args__ = (
+        UniqueConstraint("account_snapshot_id", "security_id", name="uq_qc_snapshot_holdings_snapshot_security"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    account_snapshot_id = Column(BigInteger, ForeignKey("qc_account_snapshots.id"), nullable=False, index=True)
+    raw_event_id = Column(BigInteger, ForeignKey("qc_observer_events.id"), nullable=False, index=True)
+    security_id = Column(String(128), nullable=False, index=True)
+    ticker = Column(String(32), index=True)
+    quantity = Column(Numeric(24, 8), nullable=False)
+    average_price = Column(Numeric(24, 8))
+    holdings_value = Column(Numeric(24, 8))
+    payload_extra = Column(JSONB, nullable=False, default=dict)
+
+
+class QCAccountSnapshotOpenOrderProjection(Base):
+    __tablename__ = "qc_account_snapshot_open_orders"
+    __table_args__ = (
+        UniqueConstraint("account_snapshot_id", "broker_order_id", name="uq_qc_snapshot_orders_snapshot_order"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    account_snapshot_id = Column(BigInteger, ForeignKey("qc_account_snapshots.id"), nullable=False, index=True)
+    raw_event_id = Column(BigInteger, ForeignKey("qc_observer_events.id"), nullable=False, index=True)
+    broker_order_id = Column(String(128), nullable=False, index=True)
+    ticker = Column(String(32), index=True)
+    quantity = Column(Numeric(24, 8))
+    quantity_filled = Column(Numeric(24, 8))
+    payload_extra = Column(JSONB, nullable=False, default=dict)
+
+
+class NewsEvidenceSnapshot(Base):
+    """Immutable evidence captured only when a decision or incident cites news."""
+
+    __tablename__ = "news_evidence_snapshots"
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", name="uq_news_evidence_snapshots_snapshot_id"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    snapshot_id = Column(String(128), nullable=False, index=True)
+    raw_event_id = Column(BigInteger, ForeignKey("qc_observer_events.id"), index=True)
+    reference_type = Column(String(40), nullable=False, index=True)
+    reference_id = Column(String(128), nullable=False, index=True)
+    cited_at = Column(DateTime(timezone=True), nullable=False)
+    ticker = Column(String(20), index=True)
+    article_url = Column(Text, nullable=False)
+    article_title = Column(Text)
+    published_at = Column(DateTime(timezone=True))
+    source_name = Column(String(100))
+    credibility = Column(Numeric(8, 6))
+    relevance = Column(Numeric(8, 6))
+    freshness = Column(Numeric(8, 6))
+    content_hash = Column(String(64), nullable=False)
+    evidence_payload = Column(JSONB, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
 
 
 class QCSnapshot(Base):
@@ -412,6 +773,63 @@ class StrategyLiveSnapshot(Base):
     created_at      = Column(DateTime, nullable=False, default=func.now())
 
 
+class ExecutionObservedOrder(Base):
+    __tablename__ = "execution_observed_orders"
+    __table_args__ = (
+        UniqueConstraint("event_uid", name="uq_execution_observed_order_event_uid"),
+    )
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    event_uid       = Column(String(180), nullable=False, index=True)
+    strategy_live_snapshot_id = Column(BigInteger, ForeignKey("strategy_live_snapshots.id"), index=True)
+    qc_snapshot_id  = Column(BigInteger, ForeignKey("qc_snapshots.id"), index=True)
+    snapshot_uid    = Column(String(140), index=True)
+    strategy_id     = Column(String(100), nullable=False, index=True)
+    algorithm_version = Column(String(80))
+    trading_date    = Column(Date, nullable=False, index=True)
+    observed_at     = Column(DateTime, nullable=False, index=True)
+    event_time      = Column(DateTime, index=True)
+    order_id        = Column(String(80), index=True)
+    ticker          = Column(String(20), nullable=False, index=True)
+    direction       = Column(String(12))
+    quantity        = Column(Float)
+    status          = Column(String(40), index=True)
+    order_type      = Column(String(40))
+    limit_price     = Column(Float)
+    stop_price      = Column(Float)
+    raw_order       = Column(JSONB, nullable=False)
+    created_at      = Column(DateTime, nullable=False, default=func.now())
+
+
+class ExecutionObservedFill(Base):
+    __tablename__ = "execution_observed_fills"
+    __table_args__ = (
+        UniqueConstraint("fill_uid", name="uq_execution_observed_fill_uid"),
+    )
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    fill_uid        = Column(String(180), nullable=False, index=True)
+    strategy_live_snapshot_id = Column(BigInteger, ForeignKey("strategy_live_snapshots.id"), index=True)
+    qc_snapshot_id  = Column(BigInteger, ForeignKey("qc_snapshots.id"), index=True)
+    snapshot_uid    = Column(String(140), index=True)
+    strategy_id     = Column(String(100), nullable=False, index=True)
+    algorithm_version = Column(String(80))
+    trading_date    = Column(Date, nullable=False, index=True)
+    observed_at     = Column(DateTime, nullable=False, index=True)
+    event_time      = Column(DateTime, index=True)
+    order_id        = Column(String(80), index=True)
+    ticker          = Column(String(20), nullable=False, index=True)
+    direction       = Column(String(12))
+    quantity        = Column(Float)
+    fill_price      = Column(Float)
+    fee             = Column(Float)
+    notional        = Column(Float)
+    signed_notional = Column(Float)
+    fee_bps         = Column(Float)
+    raw_fill        = Column(JSONB, nullable=False)
+    created_at      = Column(DateTime, nullable=False, default=func.now())
+
+
 class AlertLog(Base):
     __tablename__ = "alerts_log"
     id           = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -587,6 +1005,36 @@ class TickerNewsLibrary(Base):
 
     __table_args__ = (
         UniqueConstraint("ticker", "url", name="uq_ticker_news_url"),
+    )
+
+
+class TickerNewsArchive(Base):
+    """Append-only research copy of news removed from the 48-hour live cache."""
+
+    __tablename__ = "ticker_news_archive"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    source_library_id = Column(BigInteger, nullable=False, index=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    url = Column(Text, nullable=False)
+    headline = Column(Text, nullable=False)
+    source = Column(String(100))
+    source_api = Column(String(20))
+    summary = Column(Text)
+    llm_summary = Column(Text)
+    sentiment = Column(String(10))
+    relevance = Column(String(15))
+    is_hard_event = Column(Boolean, default=False)
+    hard_risks = Column(JSONB)
+    category = Column(String(50))
+    related = Column(JSONB)
+    datetime_utc = Column(BigInteger, nullable=False, index=True)
+    credibility = Column(Integer)
+    source_created_at = Column(DateTime)
+    archived_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("ticker", "url", name="uq_ticker_news_archive_url"),
     )
 
 

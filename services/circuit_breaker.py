@@ -250,8 +250,21 @@ class CircuitBreakerMonitor:
         reason: str,
         primary_trigger: str = "",
     ) -> None:
-        """Write new state to system_config and send Telegram alert."""
+        """Write a changed state to system_config and send one Telegram alert."""
         async with AsyncSessionLocal() as db:
+            current_cfg = await get_system_config(db, "circuit_state")
+            current_value = (current_cfg.value if current_cfg else {}) or {}
+            if (
+                str(current_value.get("value") or "") == new_state.value
+                and str(current_value.get("reason") or "") == str(reason or "")
+                and str(current_value.get("primary_trigger") or "") == str(primary_trigger or "")
+            ):
+                logger.info(
+                    "[circuit_breaker] duplicate state notification suppressed: %s | %s",
+                    new_state.value,
+                    reason,
+                )
+                return
             await upsert_system_config(
                 db,
                 "circuit_state",

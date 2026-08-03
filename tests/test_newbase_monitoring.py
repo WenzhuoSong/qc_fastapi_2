@@ -231,7 +231,8 @@ class NewBaseMonitoringTests(unittest.TestCase):
 
         self.assertIn('audit_cron_run("newbase_monitor")', source)
         self.assertIn("is_active_newbase_observer", source)
-        self.assertIn("run_newbase_full_auto_monitor", source)
+        self.assertIn("load_current_observer_summary", source)
+        self.assertNotIn("newbase_live_snapshot_monitor", source)
         self.assertIn('execution_authority="none"', source)
         self.assertIn('target_weight_mutation="none"', source)
         self.assertNotIn("tool_send_weight_command", source)
@@ -272,8 +273,10 @@ class NewBaseMonitoringTests(unittest.TestCase):
     def test_morning_health_reports_newbase_observer_status(self):
         source = Path("cron/morning_health.py").read_text(encoding="utf-8")
 
-        self.assertIn("run_newbase_full_auto_monitor", source)
-        self.assertIn("newBase observer:", source)
+        self.assertIn("load_current_observer_summary", source)
+        self.assertIn("QC observer-only", source)
+        self.assertIn("Execution authority: NONE (hard fence)", source)
+        self.assertNotIn("newbase_live_snapshot_monitor", source)
         self.assertIn('execution_authority="none"', source)
         self.assertIn('target_weight_mutation="none"', source)
 
@@ -309,7 +312,8 @@ class NewBaseMonitoringTests(unittest.TestCase):
 
         self.assertLess(newbase_branch, account_guard)
         self.assertLess(newbase_branch, executor)
-        self.assertIn("run_newbase_full_auto_monitor", source)
+        self.assertIn("load_current_observer_summary", source)
+        self.assertNotIn("newbase_live_snapshot_monitor", source)
         self.assertIn("require_trading_gate and not newbase_observer_requested", source)
         self.assertIn("if not await is_active_newbase_observer():", source)
 
