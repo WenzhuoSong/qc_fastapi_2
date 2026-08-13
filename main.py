@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 
 from api.observer import router as observer_router
+from audit.worker import main as audit_worker_main
 from services.execution_authority import execution_authority_status
 from services.qc_observer_projections import backfill_observer_projections
 
@@ -22,6 +23,7 @@ logger = logging.getLogger("noble_flow")
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     projection_backfill = asyncio.create_task(backfill_observer_projections())
+    audit_worker = asyncio.create_task(audit_worker_main())
     logger.info("noble-flow observer ready; execution authority is disabled")
     try:
         yield
@@ -30,6 +32,10 @@ async def lifespan(_: FastAPI):
             projection_backfill.cancel()
             with suppress(asyncio.CancelledError):
                 await projection_backfill
+        if not audit_worker.done():
+            audit_worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await audit_worker
 
 
 app = FastAPI(

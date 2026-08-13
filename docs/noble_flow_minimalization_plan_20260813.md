@@ -30,6 +30,10 @@ Phase 2 开始后允许增加一个有意设计的第七个 service：
 7. `observer-audit-worker`：只读、可重放的 decision/fill、target/actual 和 risk-exit
    审计计算；固定 `execution_authority=none`，不得导入任何 command/execution gateway。
 
+初始 shadow 阶段允许该 worker 以内嵌隔离 task 运行：独立数据库事务、捕获全部异常、
+不在 observer ingestion 请求链中执行。连续两个周度周期验证后再拆为独立 Railway
+service；拆分前后使用同一 method version 和幂等 audit contract。
+
 ## Railway 停用候选
 
 以下服务不属于当前 QC observer 最小运行面：
