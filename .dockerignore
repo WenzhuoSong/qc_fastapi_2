@@ -43,6 +43,7 @@ ENV/
 .gitignore
 
 # Tests
+tests/
 .pytest_cache/
 .coverage
 htmlcov/
@@ -51,6 +52,13 @@ htmlcov/
 # Documentation
 *.md
 docs/
+
+# Legacy/research-only source is never shipped to noble-flow production.
+agents/
+strategies/
+knowledge/
+examples/
+tracking/
 
 # Docker
 Dockerfile
