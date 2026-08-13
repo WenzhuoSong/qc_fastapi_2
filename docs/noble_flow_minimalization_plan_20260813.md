@@ -25,6 +25,11 @@
 5. `cron-post-market-report`：账户、持仓、现金、当日风险/订单事实摘要；
 6. `cron-pre-fetch-news`：保留现有新闻 pipeline。
 
+Phase 2 开始后允许增加一个有意设计的第七个 service：
+
+7. `observer-audit-worker`：只读、可重放的 decision/fill、target/actual 和 risk-exit
+   审计计算；固定 `execution_authority=none`，不得导入任何 command/execution gateway。
+
 ## Railway 停用候选
 
 以下服务不属于当前 QC observer 最小运行面：

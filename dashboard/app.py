@@ -20,6 +20,7 @@ from db.session import AsyncSessionLocal
 from services.execution_authority import execution_authority_status
 from services.qc_observer_health import load_current_observer_summary
 from services.qc_observer_projections import load_observer_projection_status
+from audit.service import load_latest_audit_status
 
 
 app = FastAPI(title="noble-flow monitor", version="2.0.0-minimal")
@@ -52,6 +53,7 @@ async def build_monitor() -> dict[str, Any]:
     async with AsyncSessionLocal() as db:
         observer = await load_current_observer_summary(db)
         projection = await load_observer_projection_status(db)
+        audit = await load_latest_audit_status(db)
         stream = observer.get("event_stream_id")
         snapshot = None
         decision = None
@@ -87,6 +89,7 @@ async def build_monitor() -> dict[str, Any]:
             "execution_fence": execution_authority_status(),
             "observer": observer,
             "projection": projection,
+            "audit": audit,
             "account": None
             if snapshot is None
             else {
@@ -130,6 +133,8 @@ async def home(_: str = Depends(require_auth)) -> str:
     data = await build_monitor()
     account = data.get("account") or {}
     decision = data.get("latest_decision") or {}
+    audit = data.get("audit") or {}
+    decision_audit = audit.get("latest_decision") or {}
     holdings = account.get("holdings") or []
     rows = "".join(
         f"<tr><td>{escape(str(row['ticker']))}</td><td>{row['quantity']:.2f}</td>"
@@ -148,6 +153,10 @@ async def home(_: str = Depends(require_auth)) -> str:
     <div class='box'>Equity<br><b>${account.get('equity', 0):,.2f}</b></div>
     <div class='box'>Cash<br><b>{account.get('cash_pct', 0):.2%}</b></div>
     <div class='box'>Target exposure<br><b>{decision.get('target_exposure', 0):.2%}</b></div></div>
+    <div class='grid'><div class='box'>Audit<br><b>{escape(str(audit.get('status', 'pending')))}</b></div>
+    <div class='box'>Actual exposure<br><b>{(decision_audit.get('actual_exposure') or 0):.2%}</b></div>
+    <div class='box'>Tracking error L1<br><b>{(decision_audit.get('tracking_error_l1') or 0):.2%}</b></div>
+    <div class='box'>Orders terminal<br><b>{decision_audit.get('terminal_intent_count', 0)}/{decision_audit.get('intent_count', 0)}</b></div></div>
     <h2>Holdings</h2><table><thead><tr><th>Ticker</th><th>Qty</th><th>Weight</th><th>Value</th></tr></thead>
     <tbody>{rows}</tbody></table><h2>Latest decision</h2><code>{escape(str(decision.get('decision_id', 'none')))}</code>
     <p>Account as of {escape(str(account.get('as_of', 'n/a')))} · refreshes every 60 seconds</p></body></html>"""

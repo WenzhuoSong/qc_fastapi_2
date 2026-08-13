@@ -26,6 +26,7 @@ from services.qc_observer_projections import (
     run_observer_projection_batch,
 )
 from config import get_settings
+from audit.service import load_latest_audit_status
 
 
 router = APIRouter(prefix="/observer", tags=["observer"])
@@ -39,6 +40,11 @@ async def observer_status(db: AsyncSession = Depends(get_db)) -> dict:
 @router.get("/projections/status")
 async def observer_projection_status(db: AsyncSession = Depends(get_db)) -> dict:
     return await load_observer_projection_status(db)
+
+
+@router.get("/audit/status")
+async def observer_audit_status(db: AsyncSession = Depends(get_db)) -> dict:
+    return await load_latest_audit_status(db)
 
 
 @router.post("/events")

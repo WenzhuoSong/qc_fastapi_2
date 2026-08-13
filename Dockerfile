@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-RUN mkdir -p api db services dashboard cron tools
+RUN mkdir -p api db services dashboard cron tools audit
 COPY main.py config.py constants.py ./
 COPY api/__init__.py api/observer.py ./api/
 COPY db/__init__.py db/models.py db/session.py db/queries.py ./db/
@@ -35,6 +35,7 @@ COPY services/__init__.py \
 COPY dashboard/__init__.py dashboard/app.py ./dashboard/
 COPY cron/__init__.py cron/morning_health.py cron/post_market_report.py cron/pre_fetch_news.py ./cron/
 COPY tools/__init__.py tools/notify_tools.py ./tools/
+COPY audit/__init__.py audit/calculators.py audit/service.py audit/worker.py ./audit/
 
 EXPOSE ${PORT:-8000}
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]

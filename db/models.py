@@ -351,6 +351,101 @@ class QCAccountSnapshotOpenOrderProjection(Base):
     payload_extra = Column(JSONB, nullable=False, default=dict)
 
 
+class QCAuditRun(Base):
+    """Immutable, versioned computation over observer projections."""
+
+    __tablename__ = "qc_audit_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "audit_name",
+            "method_version",
+            "projection_cutoff_raw_event_id",
+            name="uq_qc_audit_runs_method_cutoff",
+        ),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    audit_name = Column(String(100), nullable=False, index=True)
+    method_version = Column(String(40), nullable=False)
+    projection_version = Column(String(40), nullable=False)
+    projection_cutoff_raw_event_id = Column(BigInteger, nullable=False, index=True)
+    input_hash = Column(String(64), nullable=False)
+    status = Column(String(32), nullable=False, index=True)
+    summary = Column(JSONB, nullable=False, default=dict)
+    error = Column(Text)
+    started_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    completed_at = Column(DateTime(timezone=True))
+
+
+class QCDecisionExecutionAudit(Base):
+    """Decision-to-order-to-fill and target-to-actual reconciliation result."""
+
+    __tablename__ = "qc_decision_execution_audits"
+    __table_args__ = (
+        UniqueConstraint("audit_run_id", "decision_manifest_id", name="uq_qc_decision_audit_run_manifest"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    audit_run_id = Column(BigInteger, ForeignKey("qc_audit_runs.id"), nullable=False, index=True)
+    decision_manifest_id = Column(
+        BigInteger, ForeignKey("qc_decision_manifests.id"), nullable=False, index=True
+    )
+    event_stream_id = Column(String(128), nullable=False, index=True)
+    decision_id = Column(String(128), nullable=False, index=True)
+    decision_time = Column(DateTime(timezone=True), nullable=False)
+    account_snapshot_id = Column(BigInteger, ForeignKey("qc_account_snapshots.id"), index=True)
+    status = Column(String(40), nullable=False, index=True)
+    target_exposure = Column(Numeric(18, 10), nullable=False)
+    actual_exposure = Column(Numeric(18, 10))
+    cash_weight = Column(Numeric(18, 10))
+    tracking_error_l1 = Column(Numeric(18, 10))
+    intent_count = Column(Integer, nullable=False, default=0)
+    terminal_intent_count = Column(Integer, nullable=False, default=0)
+    partial_fill_count = Column(Integer, nullable=False, default=0)
+    rejected_intent_count = Column(Integer, nullable=False, default=0)
+    clipped_intent_count = Column(Integer, nullable=False, default=0)
+    aggregate_fill_ratio = Column(Numeric(18, 10))
+    total_fees = Column(Numeric(24, 8), nullable=False, default=0)
+    first_submit_latency_seconds = Column(Numeric(24, 6))
+    terminal_latency_seconds = Column(Numeric(24, 6))
+    evidence_raw_event_ids = Column(JSONB, nullable=False, default=list)
+    details = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+
+
+class QCRiskExitAudit(Base):
+    """Observed local-risk event through the corresponding risk-reducing order path."""
+
+    __tablename__ = "qc_risk_exit_audits"
+    __table_args__ = (
+        UniqueConstraint("audit_run_id", "local_risk_event_id", name="uq_qc_risk_audit_run_event"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    audit_run_id = Column(BigInteger, ForeignKey("qc_audit_runs.id"), nullable=False, index=True)
+    local_risk_event_id = Column(
+        BigInteger, ForeignKey("qc_local_risk_events.id"), nullable=False, index=True
+    )
+    event_stream_id = Column(String(128), nullable=False, index=True)
+    risk_event_id = Column(String(128), nullable=False, index=True)
+    security_id = Column(String(128), nullable=False, index=True)
+    ticker = Column(String(32), index=True)
+    risk_type = Column(String(60), nullable=False)
+    risk_time = Column(DateTime(timezone=True), nullable=False)
+    order_intent_id = Column(BigInteger, ForeignKey("qc_order_intents.id"), index=True)
+    status = Column(String(40), nullable=False, index=True)
+    intent_latency_seconds = Column(Numeric(24, 6))
+    first_fill_latency_seconds = Column(Numeric(24, 6))
+    terminal_fill_latency_seconds = Column(Numeric(24, 6))
+    requested_quantity = Column(Numeric(24, 8))
+    filled_quantity = Column(Numeric(24, 8))
+    residual_quantity = Column(Numeric(24, 8))
+    residual_notional = Column(Numeric(24, 8))
+    evidence_raw_event_ids = Column(JSONB, nullable=False, default=list)
+    details = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+
+
 class NewsEvidenceSnapshot(Base):
     """Immutable evidence captured only when a decision or incident cites news."""
 
