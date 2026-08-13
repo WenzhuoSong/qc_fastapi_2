@@ -1,7 +1,18 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from audit.calculators import risk_intent_candidate, summarize_intent, target_reconciliation
+from audit.calculators import (
+    first_post_execution_snapshot,
+    risk_intent_candidate,
+    summarize_intent,
+    target_reconciliation,
+)
+
+
+class Snapshot:
+    def __init__(self, event_time, broker_reconciled=True):
+        self.event_time = event_time
+        self.broker_reconciled = broker_reconciled
 
 
 def test_target_reconciliation_explains_cash_and_tracking_error():
@@ -97,3 +108,19 @@ def test_risk_link_requires_same_stream_security_and_marker():
 
     assert risk_intent_candidate(risk, valid) is True
     assert risk_intent_candidate(risk, ordinary) is False
+
+
+def test_snapshot_selection_waits_for_terminal_execution_and_reconciliation():
+    decision = datetime(2026, 8, 10, 13, 20, tzinfo=timezone.utc)
+    terminal = decision + timedelta(minutes=10)
+    pre_trade = Snapshot(decision)
+    unreconciled = Snapshot(terminal + timedelta(minutes=1), broker_reconciled=False)
+    post_trade = Snapshot(terminal + timedelta(hours=6))
+
+    selected = first_post_execution_snapshot(
+        [pre_trade, unreconciled, post_trade],
+        decision_time=decision,
+        terminal_times=[terminal],
+    )
+
+    assert selected is post_trade

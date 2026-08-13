@@ -10,7 +10,13 @@ from typing import Any
 from sqlalchemy import desc, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from audit.calculators import decimal, risk_intent_candidate, summarize_intent, target_reconciliation
+from audit.calculators import (
+    decimal,
+    first_post_execution_snapshot,
+    risk_intent_candidate,
+    summarize_intent,
+    target_reconciliation,
+)
 from db.models import (
     QCAccountSnapshotHoldingProjection,
     QCAccountSnapshotProjection,
@@ -27,7 +33,7 @@ from services.qc_observer_projections import PROJECTION_VERSION
 
 
 AUDIT_NAME = "observer_execution_audit"
-AUDIT_METHOD_VERSION = "observer_audit.v1"
+AUDIT_METHOD_VERSION = "observer_audit.v2"
 
 
 def _row_dict(row: Any, fields: tuple[str, ...]) -> dict[str, Any]:
@@ -154,24 +160,6 @@ async def run_observer_audit(db: AsyncSession) -> dict[str, Any]:
             and row.event_time >= decision.event_time
             and (next_time is None or row.event_time < next_time)
         ]
-        snapshot = candidate_snapshots[0] if candidate_snapshots else None
-        holdings = []
-        if snapshot is not None:
-            holdings = list(
-                (await db.scalars(
-                    select(QCAccountSnapshotHoldingProjection)
-                    .where(QCAccountSnapshotHoldingProjection.account_snapshot_id == snapshot.id)
-                )).all()
-            )
-        reconciliation = target_reconciliation(
-            dict(decision.final_target_weights or {}),
-            equity=snapshot.equity if snapshot else None,
-            cash=snapshot.cash if snapshot else None,
-            holdings=[
-                _row_dict(row, ("security_id", "ticker", "quantity", "holdings_value"))
-                for row in holdings
-            ],
-        )
         intent_summaries = []
         evidence = [int(decision.raw_event_id)]
         for intent in decision_intents:
@@ -196,6 +184,28 @@ async def run_observer_audit(db: AsyncSession) -> dict[str, Any]:
         ratios = [item["fill_ratio"] for item in intent_summaries if item["fill_ratio"] is not None]
         first_times = [item["first_event_time"] for item in intent_summaries if item["first_event_time"]]
         terminal_times = [item["terminal_time"] for item in intent_summaries if item["terminal_time"]]
+        snapshot = first_post_execution_snapshot(
+            candidate_snapshots,
+            decision_time=decision.event_time,
+            terminal_times=terminal_times,
+        )
+        holdings = []
+        if snapshot is not None:
+            holdings = list(
+                (await db.scalars(
+                    select(QCAccountSnapshotHoldingProjection)
+                    .where(QCAccountSnapshotHoldingProjection.account_snapshot_id == snapshot.id)
+                )).all()
+            )
+        reconciliation = target_reconciliation(
+            dict(decision.final_target_weights or {}),
+            equity=snapshot.equity if snapshot else None,
+            cash=snapshot.cash if snapshot else None,
+            holdings=[
+                _row_dict(row, ("security_id", "ticker", "quantity", "holdings_value"))
+                for row in holdings
+            ],
+        )
         if snapshot is None:
             status = "evidence_blocked"
         elif decision_intents and terminal_count < len(decision_intents):
@@ -228,7 +238,7 @@ async def run_observer_audit(db: AsyncSession) -> dict[str, Any]:
             terminal_latency_seconds=_seconds(decision.event_time, max(terminal_times) if terminal_times else None),
             evidence_raw_event_ids=sorted(set(evidence + ([int(snapshot.raw_event_id)] if snapshot else []))),
             details=_json_value({
-                "snapshot_selection": "first_snapshot_after_decision_before_next_decision",
+                "snapshot_selection": "first_broker_reconciled_snapshot_after_terminal_execution",
                 "snapshot_event_time": snapshot.event_time if snapshot else None,
                 "unmatched_actual": reconciliation["unmatched_actual"],
                 "target_weights": reconciliation["target_weights"],

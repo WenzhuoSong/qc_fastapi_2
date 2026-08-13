@@ -134,3 +134,19 @@ def risk_intent_candidate(risk: dict[str, Any], intent: dict[str, Any]) -> bool:
         return False
     marker = f"{intent.get('risk_class', '')} {intent.get('reason', '')}".lower()
     return any(token in marker for token in ("risk", "atr", "stop", "exit", "liquidat"))
+
+
+def first_post_execution_snapshot(
+    snapshots: Iterable[Any],
+    *,
+    decision_time: Any,
+    terminal_times: Iterable[Any],
+) -> Any | None:
+    """Select the first reconciled account fact after the observed execution path closes."""
+    terminals = list(terminal_times)
+    cutoff = max(terminals) if terminals else decision_time
+    eligible = [
+        row for row in snapshots
+        if row.event_time > cutoff and bool(row.broker_reconciled)
+    ]
+    return min(eligible, key=lambda row: row.event_time) if eligible else None
