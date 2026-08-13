@@ -32,7 +32,7 @@ COPY services/__init__.py \
      services/retry_protocol.py \
      services/execution_policy.py \
      ./services/
-COPY dashboard/__init__.py dashboard/app.py ./dashboard/
+COPY dashboard/__init__.py dashboard/app.py dashboard/view_models.py ./dashboard/
 COPY cron/__init__.py cron/morning_health.py cron/post_market_report.py cron/pre_fetch_news.py ./cron/
 COPY tools/__init__.py tools/notify_tools.py ./tools/
 COPY audit/__init__.py audit/calculators.py audit/service.py audit/worker.py ./audit/
