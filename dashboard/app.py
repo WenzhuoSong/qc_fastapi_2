@@ -252,7 +252,7 @@ async def home(_: str = Depends(require_auth)) -> str:
       c.width=Math.max(1,Math.floor(r.width*d));c.height=Math.max(1,Math.floor(r.height*d));const x=c.getContext('2d');x.scale(d,d);
       const w=r.width,h=r.height,p={{l:58,r:44,t:22,b:34}};x.clearRect(0,0,w,h);if(!points.length)return;
       const values=points.map(v=>v.equity),lo=Math.min(...values)*0.995,hi=Math.max(...values)*1.005||1;
-      const px=i=>p.l+(w-p.l-p.r)*(points.length===1?.5:i/(points.length-1));const py=v=>p.t+(h-p.t-p.b)*(1-(v-lo)/(hi-lo||1));
+      const px=i=>p.l+(w-p.l-p.r)*(points.length === 1 ? 0.5 : i/(points.length-1));const py=v=>p.t+(h-p.t-p.b)*(1-(v-lo)/(hi-lo||1));
       x.strokeStyle='#dfe4e8';x.lineWidth=1;for(let i=0;i<4;i++){{const y=p.t+(h-p.t-p.b)*i/3;x.beginPath();x.moveTo(p.l,y);x.lineTo(w-p.r,y);x.stroke();}}
       const bw=Math.max(3,(w-p.l-p.r)/points.length*.42);x.fillStyle='#c8ced5';points.forEach((v,i)=>{{const bh=(h-p.t-p.b)*(v.cash_pct||0);x.fillRect(px(i)-bw/2,h-p.b-bh,bw,bh);}});
       x.strokeStyle='#1769aa';x.lineWidth=2;x.beginPath();points.forEach((v,i)=>{{const a=px(i),b=py(v.equity);i?x.lineTo(a,b):x.moveTo(a,b);}});x.stroke();
