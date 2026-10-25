@@ -9,6 +9,7 @@ Two independent products share this repository and one Railway Postgres:
 
 The shared news pipeline (`cron/pre_fetch_news.py`: Finnhub + Alpha Vantage + RSS) covers the QC universe plus Scout's watchlist and open ideas.
 
+Start here: [docs/project_overview_zh.md](docs/project_overview_zh.md) (architecture, deployment, code map, extension guide, known issues).
 Design: [docs/scout_opportunity_observer_design_v1_zh.md](docs/scout_opportunity_observer_design_v1_zh.md)
 
 ## Scout
