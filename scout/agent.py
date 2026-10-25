@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date
 from typing import Any, Awaitable, Callable
 
@@ -220,6 +221,9 @@ async def answer(question: str, channel: str = "telegram") -> str:
         "INSERT INTO scout.chat_messages (channel, role, content) VALUES (:c, :r, :t)",
         [{"c": channel, "r": "user", "t": question}, {"c": channel, "r": "assistant", "t": text}],
     )
+    if channel != "telegram":
+        return text
     from scout.telegram import esc
 
-    return esc(text) if channel == "telegram" else text
+    # Models often emit **bold** despite the plain-text instruction; render it.
+    return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", esc(text))
