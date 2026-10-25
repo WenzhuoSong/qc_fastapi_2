@@ -38,10 +38,10 @@ async def store(frames: dict[str, pd.DataFrame], replace: bool = False) -> int:
         await db.execute(
             "DELETE FROM scout.bars_daily WHERE ticker = ANY(:t)", {"t": list(frames)}
         )
-    total = 0
-    for ticker, frame in frames.items():
-        total += await db.execute_many(_UPSERT, _rows(ticker, frame))
-    return total
+    # One session for all tickers: per-ticker transactions cost a round trip each.
+    return await db.execute_many(
+        _UPSERT, (row for ticker, frame in frames.items() for row in _rows(ticker, frame))
+    )
 
 
 async def backfill(provider: MarketDataProvider, tickers: list[str], years: int) -> dict:
