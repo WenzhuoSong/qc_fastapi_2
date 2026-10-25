@@ -33,7 +33,7 @@ from openai import AsyncOpenAI
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 
-from constants import DEFAULT_ETF_UNIVERSE, resolve_universe
+from constants import resolve_universe
 from db.models import MacroNewsCache, TickerNewsArchive, TickerNewsLibrary
 from db.session import AsyncSessionLocal
 from services.alphavantage_client import fetch_ticker_news_av

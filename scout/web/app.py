@@ -5,7 +5,6 @@ import asyncio
 import logging
 import secrets
 from contextlib import asynccontextmanager
-from datetime import date
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse

@@ -14,15 +14,6 @@ def _get_settings():
     return get_settings()
 
 
-def verify_qc_signature(request_body: bytes, x_qc_signature: str | None) -> bool:
-    settings = _get_settings()
-    secret = settings.qc_webhook_secret or settings.webhook_secret
-    if not secret:
-        return False
-    expected = hmac.new(secret.encode(), request_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, x_qc_signature or "")
-
-
 class ObserverRequestAuthError(ValueError):
     def __init__(self, code: str, message: str, *, status_code: int = 401):
         super().__init__(message)

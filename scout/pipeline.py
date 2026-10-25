@@ -2,17 +2,17 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from scout import bars, base_rates, context, db, opportunities, telegram, thesis, tracker, universe
 from scout.config import get_scout_settings
 from scout.data.provider import get_provider
 from scout.features import SNAPSHOT_FEATURES, FeaturePanel, build_panel
+from scout.market_calendar import previous_us_equity_trading_day, us_equity_market_status
 
 logger = logging.getLogger("scout.pipeline")
 
 PANEL_LOOKBACK_DAYS = 420          # ≥ 252 sessions + 200-day SMA warm-up headroom
-STALE_AFTER_DAYS = 4               # asof older than this → data source problem
 MAX_PER_DETECTOR = 3               # keep one rule (e.g. a whole sector turning) from flooding the cards
 
 
@@ -80,6 +80,17 @@ def select_top(candidates: list, n: int, per_detector: int = MAX_PER_DETECTOR) -
     return picked
 
 
+def expected_session(now: datetime | None = None) -> tuple[date | None, str]:
+    """The session whose close an EOD scan covers; None on weekends/holidays."""
+    status = us_equity_market_status(now)
+    today = date.fromisoformat(status.market_date)
+    if not status.is_trading_day:
+        return None, status.reason
+    if status.reason == "after_close":
+        return today, "after_close"
+    return previous_us_equity_trading_day(today), "before_close"
+
+
 def days_to_next_earnings(earnings: dict[str, list[dict]], asof: date) -> dict[str, int]:
     out = {}
     for t, events in earnings.items():
@@ -89,18 +100,31 @@ def days_to_next_earnings(earnings: dict[str, list[dict]], asof: date) -> dict[s
     return out
 
 
-async def run_eod(push: bool = True) -> dict:
+async def run_eod(push: bool = True, force: bool = False) -> dict:
+    """After-close scan. Skips market holidays; a session is scanned and pushed
+    once — `force` rescans (e.g. to regenerate cards) without the guards."""
     settings = get_scout_settings()
-    summary: dict = {"prepare": await prepare()}
+    session, reason = expected_session()
+    if session is None:
+        if not force:
+            return {"skipped": reason}
+        session = previous_us_equity_trading_day(date.today())
+    summary: dict = {"session": session.isoformat(), "prepare": await prepare()}
     p = await load_panel()
     asof: date = p.dates[-1]
     summary["asof"] = asof.isoformat()
-    if (date.today() - asof).days > STALE_AFTER_DAYS:
-        raise RuntimeError(f"latest bar {asof} is stale; data source may be down")
+    if asof < session:
+        raise RuntimeError(f"bar for {session} not available yet (latest {asof}); data source may be lagging")
     summary["features"] = await store_features(p, asof)
 
     transitions = await tracker.update_all()
     summary["transitions"] = [t.__dict__ for t in transitions]
+    already = await db.fetch_one(
+        "SELECT 1 AS x FROM scout.briefs WHERE kind = 'eod' AND asof = :d LIMIT 1", {"d": asof}
+    )
+    if already and not force:
+        summary["skipped_scan"] = "session already scanned"
+        return summary
 
     summary["earnings_rows"] = await context.refresh_earnings()
     earnings = await context.earnings_map(asof)

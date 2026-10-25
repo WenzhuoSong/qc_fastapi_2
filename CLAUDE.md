@@ -38,9 +38,12 @@ Two independent products sharing one Postgres (see README.md):
 | `scout/tracker.py` | Lifecycle updates, outcomes, scoreboard |
 | `scout/telegram.py` | Card rendering, push, commands, feedback callbacks |
 | `scout/agent.py` | Read-only tool-calling Q&A agent |
-| `scout/pipeline.py` | `run_eod`, `run_weekly`, `prepare`, `ensure_base_rates` |
+| `scout/pipeline.py` | `run_eod` (skips holidays, scans/pushes a session once; `--force` reruns), `run_weekly`, `prepare`, `ensure_base_rates` |
+| `scout/market_calendar.py` | US equity trading days / holidays |
 | `scout/web/` | FastAPI app (webhook + dashboard) and HTML views |
 | `scout/jobs/` | `eod`, `weekly`, `backfill` entrypoints (`python -m scout.jobs.<name>`) |
+
+Reusable pieces of the removed trading system are catalogued in `docs/legacy_reusable_catalog_zh.md` (git tag `legacy-trading-system`); retrieve and adapt them rather than rewriting from scratch.
 
 To add a detector, append a `Detector` to `rules.DETECTORS`, then rerun `python -m scout.jobs.backfill` (or wait for the weekly job) so its base rate exists before it ranks well.
 
@@ -49,7 +52,7 @@ To add a detector, append a `Detector` to `rules.DETECTORS`, then rerun `python 
 ```bash
 python -m unittest discover -s tests -t .      # full test suite (unittest, no pytest)
 python -m scout.jobs.backfill                  # bootstrap Scout data
-python -m scout.jobs.eod --no-push             # after-close scan without Telegram
+python -m scout.jobs.eod --no-push [--force]    # after-close scan without Telegram (--force: rescan/holiday)
 uvicorn scout.web.app:app --port 8765          # Scout web (needs SCOUT_DASHBOARD_USER/PASSWORD)
 uvicorn main:app                               # QC observer API
 ```

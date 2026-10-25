@@ -11,6 +11,7 @@ The shared news pipeline (`cron/pre_fetch_news.py`: Finnhub + Alpha Vantage + RS
 
 Start here: [docs/project_overview_zh.md](docs/project_overview_zh.md) (architecture, deployment, code map, extension guide, known issues).
 Design: [docs/scout_opportunity_observer_design_v1_zh.md](docs/scout_opportunity_observer_design_v1_zh.md)
+Reusable legacy code: [docs/legacy_reusable_catalog_zh.md](docs/legacy_reusable_catalog_zh.md) (git tag `legacy-trading-system`)
 
 ## Scout
 

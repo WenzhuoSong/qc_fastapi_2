@@ -1,9 +1,10 @@
 # noble-flow 项目总览
 
-更新：2026-10-25 · 线上版本：`main` @ `e689e1d`
+更新：2026-10-25
 
 本文是 review 和后续开发的入口：讲清楚系统现在是什么、线上怎么跑、代码在哪里、怎么扩展、还有哪些已知问题。
 设计背景和取舍见 [scout_opportunity_observer_design_v1_zh.md](scout_opportunity_observer_design_v1_zh.md)。
+旧交易系统里仍有复用价值的模块见 [legacy_reusable_catalog_zh.md](legacy_reusable_catalog_zh.md)（tag `legacy-trading-system`）。
 
 ---
 
@@ -75,6 +76,7 @@ Telegram webhook：@wenzhuo_qc_bot → `scout-web/telegram`，带 secret token �
 
 ### 3.2 一次收盘扫描（`scout/pipeline.py::run_eod`）
 
+0. **交易日判断**（`scout/market_calendar.py`）：周末和美股休市日直接跳过；同一个交易日只扫描并推送一次（`--force` 可以重跑）。
 1. **prepare**：执行 migration、补 watchlist、增量拉最近 10 天日线。如果检测到拆股或复权变化（重叠日收盘价偏差 > 2%），就重拉该股全部历史。
 2. **load_panel**：读最近 420 天日线，构建宽表特征面板（日期 × 标的）。
 3. 写入当天的 `features_daily` 快照，供 Dashboard 和问答使用。
@@ -137,7 +139,8 @@ qc_fastapi_2/
 │   ├── tracker.py         142     生命周期、结果记录、记分板
 │   ├── telegram.py        284     卡片渲染、推送、命令、反馈回调、友好报错
 │   ├── agent.py           229     问答 agent：8 个只读工具，最多 6 轮工具调用
-│   ├── pipeline.py        212     run_eod / run_weekly / prepare / ensure_base_rates / 简报渲染
+│   ├── pipeline.py        235     run_eod / run_weekly / prepare / ensure_base_rates / 交易日判断 / 简报渲染
+│   ├── market_calendar.py 161     美股交易日与节假日（从旧系统取回）
 │   ├── web/app.py         293     FastAPI：/health、/telegram、Dashboard 6 个页面
 │   ├── web/views.py       115     HTML / CSS（亮暗主题）/ K 线图（lightweight-charts）
 │   └── jobs/              ...     _run.py（日志、job_runs、失败告警）、eod、weekly、backfill
@@ -150,7 +153,6 @@ qc_fastapi_2/
 │   ├── qc_observer_*.py  1391     事件接收、投影、健康度
 │   ├── qc_webhook_auth.py  145    HMAC 请求校验
 │   ├── execution_authority.py 73  执行围栏（永远 none）
-│   ├── execution_policy.py 497    QC 标的角色表（仅被 constants.resolve_universe 使用）
 │   ├── finnhub_client.py  291     ┐
 │   ├── alphavantage_client.py 147 ├ 新闻管线（共用）
 │   ├── rss_fetcher.py     154     │
@@ -158,14 +160,14 @@ qc_fastapi_2/
 │   ├── cron_audit.py      213     cron 运行记录
 │   └── retry_protocol.py  292     重试工具
 ├── cron/
-│   ├── pre_fetch_news.py  683     共用新闻 cron（覆盖 QC 标的 + Scout watchlist + 活跃机会）
+│   ├── pre_fetch_news.py  683     共用新闻 cron（约 60 只标的）
 │   ├── morning_health.py   39     观察器早间健康检查
 │   └── post_market_report.py 81   观察器盘后报告
 ├── tools/notify_tools.py   81     运维 Telegram 发送
-├── db/                            观察器 / 共用表的 ORM（models.py 含已冻结的旧表定义）+ SQL migrations
-├── constants.py           115     新闻覆盖的标的池（resolve_universe）
+├── db/                            观察器与新闻表的 ORM（22 个模型）+ SQL migrations（含旧表历史）
+├── constants.py            70     新闻覆盖的标的池：17 只 ETF + Scout watchlist / 活跃机会 + QC 最新持仓
 ├── config.py               34     观察器 Settings
-├── tests/                         unittest，108 个测试
+├── tests/                         unittest，91 个测试
 ├── docs/                          设计文档、本总览、观察器契约
 ├── Dockerfile / railway.toml      单镜像，按启动命令区分服务
 └── requirements.txt
@@ -183,7 +185,7 @@ qc_fastapi_2/
 | `scout` | `feedback`、`chat_messages`、`briefs`、`job_runs` | telegram / agent / pipeline | 反馈、对话、简报、任务记账 |
 | `public` | `ticker_news_library`、`macro_news_cache` | 新闻 cron | Scout 只读 |
 | `public` | `qc_observer_*`、`qc_*` 投影 / 审计表 | 观察器 | Scout 不碰 |
-| `public` | 旧交易系统的表（`agent_analysis`、`execution_log` 等） | 无 | 已冻结，暂不删除 |
+| `public` | 旧交易系统的表（约 30 张：`agent_analysis`、`execution_log`、`qc_snapshots` 等） | 无 | 已冻结；代码里已没有模型定义，删除前需导出 |
 
 ---
 
@@ -243,9 +245,8 @@ Dashboard（今日 / 机会看板 / 个股 K 线 / 记分板 / Watchlist / 问�
 | 历史基准有幸存者偏差 | 基准偏乐观 | 接入历史成分股数据 |
 | yfinance 是免费、非官方的数据源 | 偶尔会失败或延迟；收盘后才有数据 | 盘中功能上线前换成付费数据源（`MarketDataProvider` 已预留） |
 | `power_gap` 和 `sector_rotation` 的历史超额 ≤ 0 | 这些卡评分低，一般不会推送 | 积累约 8 周实盘数据后，按记分板决定降级或下线 |
-| `db/models.py` 还保留着 50 个 ORM 类（含旧交易表） | 只是代码冗余，不影响运行 | 旧表连续 90 天无读写后导出并删除，同时清理模型 |
-| `services/execution_policy.py` 只为新闻标的池留着 | 冗余 | 新闻标的池改成独立配置后删除 |
-| 新闻 cron 覆盖约 110 只标的，按 Finnhub 免费层限速 | 一轮约 5–10 分钟 | 标的数量继续增加时考虑付费层 |
+| 数据库里约 30 张旧交易表还在（代码已不再引用） | 占空间，无功能影响 | 确认不需要后导出再删除（不可逆，需你确认） |
+| `tests/test_observer_phase1_verifier.py` 依赖未纳入 git 的 `tools/observer_phase1_verifier.py` | 换台机器跑测试会失败 | 决定是把该工具纳入 git，还是删除这个测试 |
 
 ## 9. 路线图（下一步候选）
 
@@ -253,4 +254,4 @@ Dashboard（今日 / 机会看板 / 个股 K 线 / 记分板 / Watchlist / 问�
 2. **反馈闭环**：每周按记分板和 👍👎 自动降级或提示规则；在 Dashboard 上展示反馈统计。
 3. **问答增强**：同行业对比工具、财报历史跳空统计、"为什么没推这只"的解释。
 4. **数据质量**：历史成分股、付费行情、期权隐含波动。
-5. **清理**：旧表与 `db/models.py`、`execution_policy.py`。
+5. **清理**：数据库旧表导出后删除。

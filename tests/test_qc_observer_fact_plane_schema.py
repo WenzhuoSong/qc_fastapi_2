@@ -14,7 +14,6 @@ for _name, _value in {
     os.environ.setdefault(_name, _value)
 
 from db.models import (
-    NewsEvidenceSnapshot,
     QCAccountSnapshotHoldingProjection,
     QCAccountSnapshotOpenOrderProjection,
     QCAccountSnapshotProjection,
@@ -57,7 +56,6 @@ class QCObserverFactPlaneSchemaTests(unittest.TestCase):
             QCObserverStreamReceipt.__tablename__, "qc_observer_stream_receipts"
         )
         self.assertEqual(QCProjectionCheckpoint.__tablename__, "qc_projection_checkpoints")
-        self.assertEqual(NewsEvidenceSnapshot.__tablename__, "news_evidence_snapshots")
 
     def test_raw_event_has_both_idempotency_and_sequence_constraints(self):
         constraints = {item.name for item in QCObserverEvent.__table__.constraints}
@@ -97,14 +95,6 @@ class QCObserverFactPlaneSchemaTests(unittest.TestCase):
         ):
             self.assertNotIn(f"alter table {existing_table}", normalized)
             self.assertNotIn(f"drop table {existing_table}", normalized)
-
-    def test_news_evidence_is_reference_scoped_not_a_working_set_replacement(self):
-        columns = NewsEvidenceSnapshot.__table__.columns
-
-        self.assertIn("reference_type", columns)
-        self.assertIn("reference_id", columns)
-        self.assertIn("evidence_payload", columns)
-        self.assertIn("content_hash", columns)
 
     def test_request_replay_and_event_quarantine_are_additive(self):
         self.assertEqual(QCObserverRequestNonce.__tablename__, "qc_observer_request_nonces")

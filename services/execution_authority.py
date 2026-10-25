@@ -43,21 +43,6 @@ def evaluate_execution_authority_fence(
     }
 
 
-def blocked_qc_command_result(command_name: str) -> dict[str, Any]:
-    """Build the stable fail-closed response returned by QC command senders."""
-    decision = evaluate_execution_authority_fence(command_name)
-    return {
-        "success": False,
-        "blocked": True,
-        "error": decision["reason"],
-        "command": decision["command"],
-        "execution_authority": decision["execution_authority"],
-        "configured_execution_authority": decision["configured_execution_authority"],
-        "authority_source": decision["source"],
-        "target_weight_mutation": "none",
-    }
-
-
 def execution_authority_status(
     *,
     environ: Mapping[str, str] | None = None,

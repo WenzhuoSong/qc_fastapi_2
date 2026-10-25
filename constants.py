@@ -1,21 +1,12 @@
 """
-全局常量 —— ETF UNIVERSE 与市场分类。
+新闻覆盖的标的池。
 
-Phase 1 只做 ETF 维度。UNIVERSE 的来源策略（Option C）：
-    默认硬编码 17 个 ETF   ∪   execution policy 可交易 ticker   ∪   最新 QC 快照里出现过的所有 ticker
+`cron.pre_fetch_news` 每 2 小时为这些 ticker 抓取新闻：
+    默认 17 只 ETF  ∪  Scout watchlist 与活跃机会  ∪  QC 观察器记录的最新实际持仓
 
-这样可以保证：
-  - 冷启动时有 17 只可跑（硬编码）
-  - 所有可交易 policy ticker 都能被 yfinance/research 作业覆盖
-  - QC 实际发送不同 ETF 时自动扩展（动态 union）
-  - 某个硬编码 ETF 临时从 QC 消失也不会漏掉（仍在硬编码里）
+冷启动或数据库不可用时回落到默认 ETF。
 """
 from __future__ import annotations
-
-
-# ═══════════════════════════════════════════════════════════════
-# 默认 ETF UNIVERSE (17 支)
-# ═══════════════════════════════════════════════════════════════
 
 # 11 支 SPDR 行业 ETF
 SPDR_SECTORS = [
@@ -47,69 +38,31 @@ MACRO_HEDGE = [
 
 DEFAULT_ETF_UNIVERSE: list[str] = SPDR_SECTORS + BROAD_MARKET + MACRO_HEDGE
 
-# ═══════════════════════════════════════════════════════════════
-# 风格分桶（供 market_brief 的 risk_on_score 计算）
-# ═══════════════════════════════════════════════════════════════
+# Plain SQL keeps the observer/news code free of any scout imports.
+_SCOUT_TICKERS_SQL = """
+SELECT ticker FROM scout.watchlist WHERE active
+UNION SELECT ticker FROM scout.opportunities WHERE status IN ('new', 'triggered')
+"""
+_QC_HOLDINGS_SQL = """
+SELECT h.ticker FROM qc_account_snapshot_holdings h
+WHERE h.account_snapshot_id = (SELECT id FROM qc_account_snapshots ORDER BY event_time DESC LIMIT 1)
+  AND h.ticker IS NOT NULL AND h.quantity <> 0
+"""
 
-RISK_ON_SECTORS  = {"XLK", "XLY", "XLC", "XLI"}
-RISK_OFF_SECTORS = {"XLP", "XLU", "XLV", "XLRE"}
-
-# 广基暴露限制（用于 risk_manager.broad_market_ok）
-BROAD_MARKET_SET = set(BROAD_MARKET)
-
-
-# ═══════════════════════════════════════════════════════════════
-# UNIVERSE 解析
-# ═══════════════════════════════════════════════════════════════
 
 async def resolve_universe() -> list[str]:
-    """
-    返回新闻覆盖的 ticker = 默认硬编码 ETF ∪ execution policy 可交易 ticker ∪ Scout watchlist 与活跃机会
-    ∪ 最新 QC 快照里出现过的所有 ticker。
-
-    冷启动（无快照）时回落到 DEFAULT_ETF_UNIVERSE。
-    不读 CASH。
-    """
     tickers: set[str] = set(DEFAULT_ETF_UNIVERSE)
     try:
-        from services.execution_policy import TICKER_ROLES, TickerRole
-
-        tickers.update(
-            ticker
-            for ticker, role in TICKER_ROLES.items()
-            if role not in {TickerRole.WATCHLIST, TickerRole.UNKNOWN}
-        )
-    except Exception:
-        pass
-
-    try:
-        # Scout (market observer) watchlist and open ideas also get news coverage.
-        # Plain SQL keeps the observer code free of any scout imports.
         from sqlalchemy import text
         from db.session import AsyncSessionLocal
-
-        async with AsyncSessionLocal() as db:
-            rows = await db.execute(text(
-                "SELECT ticker FROM scout.watchlist WHERE active "
-                "UNION SELECT ticker FROM scout.opportunities WHERE status IN ('new', 'triggered')"
-            ))
-            tickers.update(r[0] for r in rows)
     except Exception:
-        pass  # scout schema not deployed yet
-
-    try:
-        from db.session import AsyncSessionLocal
-        from db.queries import get_latest_snapshots
-
-        async with AsyncSessionLocal() as db:
-            snaps = await get_latest_snapshots(db, limit=1)
-            if snaps:
-                payload = snaps[0].raw_payload or {}
-                for h in payload.get("holdings", []) or []:
-                    t = (h.get("ticker") or "").upper().strip()
-                    if t and t != "CASH":
-                        tickers.add(t)
-    except Exception:
-        pass  # 冷启动或 DB 未就绪时直接用默认
-
+        return sorted(tickers)
+    for sql in (_SCOUT_TICKERS_SQL, _QC_HOLDINGS_SQL):
+        try:
+            async with AsyncSessionLocal() as db:
+                rows = await db.execute(text(sql))
+                tickers.update(str(r[0]).upper().strip() for r in rows if r[0])
+        except Exception:
+            pass  # schema not deployed yet / cold start
+    tickers.discard("CASH")
     return sorted(tickers)
