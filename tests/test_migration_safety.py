@@ -33,21 +33,6 @@ class MigrationSafetyTests(unittest.TestCase):
 
         self.assertEqual(offenders, [])
 
-    def test_newbase_live_monitoring_migration_is_append_only(self):
-        migration = (
-            REPO_ROOT
-            / "db"
-            / "migrations"
-            / "20260622_create_strategy_live_monitoring.sql"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("CREATE TABLE IF NOT EXISTS strategy_registry_entries", migration)
-        self.assertIn("CREATE TABLE IF NOT EXISTS strategy_live_snapshots", migration)
-        self.assertIn("CREATE INDEX IF NOT EXISTS idx_strategy_live_snapshots_strategy_recorded", migration)
-        self.assertIn("CONSTRAINT uq_strategy_live_snapshot_uid UNIQUE", migration)
-        self.assertIn("observer-only", migration)
-        self.assertNotRegex(migration, r"\bDROP\b|\bTRUNCATE\b|\bDELETE\s+FROM\b")
-
 def _iter_schema_files():
     for path in MIGRATION_PATHS:
         if path.is_dir():

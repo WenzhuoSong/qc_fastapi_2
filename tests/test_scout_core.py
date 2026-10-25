@@ -201,7 +201,8 @@ class SecretLoggingTests(unittest.TestCase):
 
 
 class ScoutFenceTests(unittest.TestCase):
-    """Scout is a research product: it must never reach QC or execution code."""
+    """Scout is a research product: it must never reach trading/execution code
+    (the archived QC observer lives under git tag `qc-observer-final`)."""
 
     FORBIDDEN = ("services.execution", "services.qc_", "api.", "audit", "tools.", "main", "dashboard")
 
@@ -221,10 +222,13 @@ class ScoutFenceTests(unittest.TestCase):
                             f"{path.relative_to(ROOT)} imports {name}",
                         )
 
-    def test_observer_does_not_import_scout(self):
-        for folder in ("api", "audit", "dashboard", "services", "cron"):
-            for path in (ROOT / folder).rglob("*.py"):
-                self.assertNotIn("from scout", path.read_text(encoding="utf-8"), str(path))
+    def test_news_pipeline_does_not_import_scout(self):
+        """The shared news cron must keep running even if Scout is broken."""
+        paths = [ROOT / "constants.py", ROOT / "config.py"]
+        for folder in ("services", "cron", "db", "tools"):
+            paths += list((ROOT / folder).rglob("*.py"))
+        for path in paths:
+            self.assertNotIn("from scout", path.read_text(encoding="utf-8"), str(path))
 
 
 if __name__ == "__main__":

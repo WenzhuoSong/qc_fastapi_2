@@ -2,7 +2,7 @@
 新闻覆盖的标的池。
 
 `cron.pre_fetch_news` 每 2 小时为这些 ticker 抓取新闻：
-    默认 17 只 ETF  ∪  Scout watchlist 与活跃机会  ∪  QC 观察器记录的最新实际持仓
+    默认 17 只 ETF  ∪  Scout watchlist 与活跃机会
 
 冷启动或数据库不可用时回落到默认 ETF。
 """
@@ -38,15 +38,10 @@ MACRO_HEDGE = [
 
 DEFAULT_ETF_UNIVERSE: list[str] = SPDR_SECTORS + BROAD_MARKET + MACRO_HEDGE
 
-# Plain SQL keeps the observer/news code free of any scout imports.
+# Plain SQL keeps the news cron free of any scout imports.
 _SCOUT_TICKERS_SQL = """
 SELECT ticker FROM scout.watchlist WHERE active
 UNION SELECT ticker FROM scout.opportunities WHERE status IN ('new', 'triggered')
-"""
-_QC_HOLDINGS_SQL = """
-SELECT h.ticker FROM qc_account_snapshot_holdings h
-WHERE h.account_snapshot_id = (SELECT id FROM qc_account_snapshots ORDER BY event_time DESC LIMIT 1)
-  AND h.ticker IS NOT NULL AND h.quantity <> 0
 """
 
 
@@ -57,12 +52,10 @@ async def resolve_universe() -> list[str]:
         from db.session import AsyncSessionLocal
     except Exception:
         return sorted(tickers)
-    for sql in (_SCOUT_TICKERS_SQL, _QC_HOLDINGS_SQL):
-        try:
-            async with AsyncSessionLocal() as db:
-                rows = await db.execute(text(sql))
-                tickers.update(str(r[0]).upper().strip() for r in rows if r[0])
-        except Exception:
-            pass  # schema not deployed yet / cold start
-    tickers.discard("CASH")
+    try:
+        async with AsyncSessionLocal() as db:
+            rows = await db.execute(text(_SCOUT_TICKERS_SQL))
+            tickers.update(str(r[0]).upper().strip() for r in rows if r[0])
+    except Exception:
+        pass  # scout schema not deployed yet / cold start
     return sorted(tickers)

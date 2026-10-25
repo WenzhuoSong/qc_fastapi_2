@@ -1,43 +1,13 @@
-# Manual Database Migrations
+# Migrations for the shared news tables
 
-This project uses explicit, reviewed SQL files for schema changes. Do not rely
-on `Base.metadata.create_all()` to alter existing tables; it only creates tables
-that do not exist.
+Scout's own schema lives in `scout/migrations/` and is applied automatically.
+This folder holds the explicit, reviewed SQL for the `public` tables still in use
+(`cron_run_log`, `ticker_news_archive`; `ticker_news_library` and
+`macro_news_cache` are created by `db.session.init_db`).
 
-Process:
+Rules: one dated file per change, idempotent SQL (`IF NOT EXISTS`), never
+destructive (`tests/test_migration_safety.py` enforces this), and run it
+before deploying code that depends on it.
 
-1. When changing an ORM model in `db/models.py`, add a matching SQL file here.
-2. Name it with the date and a short description, for example:
-   `20260513_add_memory_daily_decision.sql`.
-3. Use idempotent SQL where practical, especially `ADD COLUMN IF NOT EXISTS`.
-4. Execute the SQL manually before deploying code that depends on the new field.
-5. Keep the SQL file committed so production schema history is auditable.
-
-Current required migration:
-
-```sql
-ALTER TABLE memory_daily
-ADD COLUMN IF NOT EXISTS decision JSONB;
-```
-
-```sql
-ALTER TABLE holdings_factors
-ADD COLUMN IF NOT EXISTS price NUMERIC(15,4),
-ADD COLUMN IF NOT EXISTS close_price NUMERIC(15,4),
-ADD COLUMN IF NOT EXISTS daily_return_pct NUMERIC(8,6);
-```
-
-```sql
-CREATE TABLE IF NOT EXISTS cron_run_log (
-    id BIGSERIAL PRIMARY KEY,
-    job_name VARCHAR(80) NOT NULL,
-    started_at TIMESTAMP NOT NULL DEFAULT now(),
-    finished_at TIMESTAMP,
-    status VARCHAR(20) NOT NULL DEFAULT 'running',
-    duration_ms INTEGER,
-    rows_written INTEGER DEFAULT 0,
-    summary JSONB,
-    error_message TEXT,
-    created_at TIMESTAMP NOT NULL DEFAULT now()
-);
-```
+History for the dropped legacy trading tables and the archived QC observer
+tables is kept under git tags `legacy-trading-system` and `qc-observer-final`.

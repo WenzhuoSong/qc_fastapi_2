@@ -4,19 +4,19 @@ Guidance for Claude Code when working in this repository.
 
 ## What lives here
 
-Two independent products sharing one Postgres (see README.md):
+**Scout** (`scout/`): a US-equity opportunity observer for a single user. It scans, ranks, explains and tracks opportunities, and answers questions through Telegram and a dashboard. It never trades.
 
-1. **Scout** (`scout/`): a US-equity opportunity observer for a single user. It scans, ranks, explains and tracks opportunities, and answers questions through Telegram and a dashboard. It never trades.
-2. **QC observer** (`main.py`, `api/observer.py`, `audit/`, `dashboard/`, `services/qc_observer_*`, `cron/morning_health.py`, `cron/post_market_report.py`): a read-only companion to the QuantConnect live algorithm. `execution_authority=none` is permanent.
+`cron/pre_fetch_news.py` (+ `services/*_client.py`, `news_summarizer.py`, `db/models.py`) is the shared news pipeline: it writes `ticker_news_library` / `ticker_news_archive`, which Scout reads.
 
-`cron/pre_fetch_news.py` is shared: it writes `ticker_news_library`, which Scout reads.
+Archived, not in this tree: the QC observer (git tag `qc-observer-final`, local copy `~/Work/trading/qc_observer_archive/`) and the legacy agentic trading system (tag `legacy-trading-system`, reusable parts listed in `docs/legacy_reusable_catalog_zh.md`).
 
 ## Hard boundaries
 
-- Scout must not import QC / execution modules (`services.execution*`, `services.qc_*`, `api.*`, `audit`, `dashboard`, `main`). Observer code must not import `scout`. Both directions are enforced by `tests/test_scout_core.py::ScoutFenceTests`.
+- Scout must not import trading/execution code; the news pipeline must not import `scout`. Both enforced by `tests/test_scout_core.py::ScoutFenceTests`.
 - Nothing in this repo sends orders or commands to QuantConnect or a broker.
 - In Scout, numbers come from Python. The LLM writes prose around Python-computed evidence; `scout/thesis.py` rejects numbers that cannot be traced to the evidence.
 - Do not tune detector parameters to the replay results. `detector_base_rates` measures the rules; it is not an optimisation target.
+- Never log secrets: httpx INFO logging is silenced because Telegram/Finnhub URLs carry tokens.
 
 ## Scout layout
 
@@ -43,7 +43,7 @@ Two independent products sharing one Postgres (see README.md):
 | `scout/web/` | FastAPI app (webhook + dashboard) and HTML views |
 | `scout/jobs/` | `eod`, `weekly`, `backfill` entrypoints (`python -m scout.jobs.<name>`) |
 
-Reusable pieces of the removed trading system are catalogued in `docs/legacy_reusable_catalog_zh.md` (git tag `legacy-trading-system`); retrieve and adapt them rather than rewriting from scratch.
+Reusable pieces of the removed trading system are catalogued in `docs/legacy_reusable_catalog_zh.md`; retrieve and adapt them rather than rewriting from scratch.
 
 To add a detector, append a `Detector` to `rules.DETECTORS`, then rerun `python -m scout.jobs.backfill` (or wait for the weekly job) so its base rate exists before it ranks well.
 
@@ -54,7 +54,6 @@ python -m unittest discover -s tests -t .      # full test suite (unittest, no p
 python -m scout.jobs.backfill                  # bootstrap Scout data
 python -m scout.jobs.eod --no-push [--force]    # after-close scan without Telegram (--force: rescan/holiday)
 uvicorn scout.web.app:app --port 8765          # Scout web (needs SCOUT_DASHBOARD_USER/PASSWORD)
-uvicorn main:app                               # QC observer API
 ```
 
 ## Conventions
