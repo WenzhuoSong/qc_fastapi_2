@@ -33,15 +33,49 @@ SYSTEM_PROMPT = """你是一名美股交易机会分析师，为一位有经验�
 
 输入是 Python 已经计算好的 evidence（JSON）：规则触发、价格特征、入场/止损/目标、该规则的历史基准、
 市场背景、近期新闻和财报信息。入场区间、止损和目标已经确定，你不需要也不能修改。
+百分比已经格式化好（例如 "-2.7%"），倍数保留一位小数（例如 4.4），请原样引用。
 
 写作规则：
-1. 只能使用 evidence 中出现的数字；不要自行计算新的数字（例如不要自己算涨幅或比例）。
-   百分比字段是小数（0.052 表示 5.2%），写成百分比时保留与原值一致的精度。
-2. 不要编造新闻、财报、分析师观点或任何 evidence 中没有的事实。没有新闻就说"近期无可匹配新闻"。
-3. 必须给出至少一条反方证据（例如大盘环境、历史胜率一般、距离 52 周高点、财报临近、量能不足等）。
-4. 历史基准要如实表述，样本少（n < 30）或平均超额 ≤ 0 时，置信度不能是 high。
-5. 历史基准存在幸存者偏差（用的是当前指数成分股），不要把它当成保证。
-6. 中文输出，简洁、具体，不写空话；不要出现"建议买入"之类的指令，用"机会/条件/失效"的语气。"""
+1. 只能引用 evidence 中出现的数字，按给出的格式原样书写；不要自行换算或计算新的数字。
+2. 不要编造新闻、财报、分析师观点或任何 evidence 中没有的事实。
+3. catalysts（催化剂）只能是事件：evidence.news 中的新闻、evidence.earnings 中的财报。
+   规则条件、技术指标、量能都不是催化剂。没有新闻和财报时 catalysts 返回空列表。
+4. base_rate 是"该规则在全市场股票上的历史表现"，不是这只股票自己的历史，表述时写"该规则历史……"。
+5. 必须给出至少一条反方证据（例如大盘环境、规则历史胜率一般、距离 52 周高点、财报临近、量能不足等）。
+6. 样本少（n < 30）或平均超额 ≤ 0 时，置信度不能是 high。历史基准存在幸存者偏差，不能当成保证。
+7. 中文输出，简洁、具体，不写空话；不要出现"建议买入"之类的指令，用"机会/条件/失效"的语气。"""
+
+# Evidence keys holding fractions (0.052 = 5.2%); shown to the LLM pre-formatted.
+_PCT_KEYS = {
+    "ret_1d", "ret_5d", "ret_20d", "ret_63d", "ret_252d", "dist_52w_high", "atr_pct", "gap_pct",
+    "rs_pct", "sector_rs_pct", "sector_rel_20", "stop_distance_pct", "trigger_rate", "win_rate",
+    "target_rate", "stop_rate", "avg_return", "median_return", "avg_excess", "avg_mfe", "avg_mae",
+    "spy_ret_1d", "spy_ret_20d", "qqq_ret_20d", "iwm_ret_20d", "smh_ret_20d",
+    "eps_surprise_pct", "revenue_surprise_pct",
+}
+_SECTOR_LIST_KEYS = {"sector_leaders_20d", "sector_laggards_20d"}
+# Conventional terms whose digits are names, not data ("52 周高点").
+_TERM_RE = re.compile(r"52\s*周")
+
+
+def _fmt_pct(x: float) -> str:
+    return f"{x * 100:.1f}%"
+
+
+def llm_view(value: Any, key: str | None = None) -> Any:
+    """Copy of the evidence with fractions as percent strings and short floats."""
+    if isinstance(value, dict):
+        return {k: llm_view(v, k) for k, v in value.items()}
+    if key in _SECTOR_LIST_KEYS and isinstance(value, list):
+        return [f"{name} {_fmt_pct(v)}" for name, v in value if v is not None]
+    if isinstance(value, list):
+        return [llm_view(v) for v in value]
+    if isinstance(value, bool) or not isinstance(value, float):
+        return value
+    if key in _PCT_KEYS:
+        return _fmt_pct(value)
+    return round(value, 1) if key in ("vol_ratio", "rsi14", "rsi2") else round(value, 2)
+
 
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _NUM_RE = re.compile(r"(?<![A-Za-z\d.])[-+]?\d+(?:\.\d+)?")
@@ -71,7 +105,7 @@ def allowed_numbers(evidence: dict) -> list[float]:
 
 def unsupported_numbers(text: str, allowed: list[float]) -> list[str]:
     bad = []
-    for token in _NUM_RE.findall(_DATE_RE.sub(" ", text)):
+    for token in _NUM_RE.findall(_TERM_RE.sub(" ", _DATE_RE.sub(" ", text))):
         x = float(token)
         if float(x).is_integer() and abs(x) <= _SMALL_INT_OK:
             continue
@@ -137,10 +171,11 @@ async def write_thesis(ev: dict) -> tuple[Thesis, str]:
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(api_key=settings.openai_api_key, timeout=settings.scout_llm_timeout_s)
-    allowed = allowed_numbers(ev)
+    view = llm_view(ev)
+    allowed = allowed_numbers(view)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": json.dumps(ev, ensure_ascii=False, default=str)},
+        {"role": "user", "content": json.dumps(view, ensure_ascii=False, default=str)},
     ]
     for attempt in range(2):
         try:

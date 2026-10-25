@@ -156,6 +156,20 @@ class ThesisGuardTests(unittest.TestCase):
         allowed = allowed_numbers(self.EV)
         self.assertEqual(unsupported_numbers("目标价 250，市盈率 35 倍", allowed), ["250", "35"])
 
+    def test_llm_view_formats_fractions_and_validation_follows_it(self):
+        from scout.thesis import llm_view
+
+        view = llm_view({**self.EV, "market": {"sector_leaders_20d": [["XLE", 0.1175]]}})
+        self.assertEqual(view["price"]["ret_20d"], "5.2%")
+        self.assertEqual(view["price"]["dist_52w_high"], "-4.0%")
+        self.assertEqual(view["market"]["sector_leaders_20d"], ["XLE 11.8%"])
+        allowed = allowed_numbers(view)
+        self.assertEqual(unsupported_numbers("20 日涨 5.2%，XLE 领涨 11.8%", allowed), [])
+        self.assertEqual(unsupported_numbers("距离高点 -0.04", allowed), ["-0.04"])
+
+    def test_52_week_is_a_term_not_a_number(self):
+        self.assertEqual(unsupported_numbers("距离 52 周高点不远，52周新高", allowed_numbers(self.EV)), [])
+
     def test_template_is_self_consistent(self):
         from scout.thesis import thesis_text
 
