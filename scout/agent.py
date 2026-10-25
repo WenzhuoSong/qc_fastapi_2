@@ -32,8 +32,9 @@ TOOLS = [
     {"name": "get_price_history", "description": "最近 N 个交易日的日线（日期、开高低收、成交量）",
      "parameters": {"type": "object", "properties": {"ticker": {"type": "string"},
                     "days": {"type": "integer", "minimum": 5, "maximum": 120}}, "required": ["ticker"]}},
-    {"name": "get_news", "description": "最近 72 小时与该股票相关的新闻（标题、来源、摘要）",
-     "parameters": {"type": "object", "properties": {"ticker": {"type": "string"}}, "required": ["ticker"]}},
+    {"name": "get_news", "description": "与该股票相关的新闻（标题、来源、摘要、时间），默认最近 3 天，最长可查 90 天历史",
+     "parameters": {"type": "object", "properties": {"ticker": {"type": "string"},
+                    "days": {"type": "integer", "minimum": 1, "maximum": 90}}, "required": ["ticker"]}},
     {"name": "get_earnings", "description": "该股票最近一次和下一次财报（日期、EPS 预期/实际）",
      "parameters": {"type": "object", "properties": {"ticker": {"type": "string"}}, "required": ["ticker"]}},
     {"name": "list_opportunities", "description": "规则触发的机会卡列表",
@@ -87,9 +88,11 @@ async def get_price_history(ticker: str, days: int = 30) -> dict:
     ], "columns": ["date", "open", "high", "low", "close", "volume"]}
 
 
-async def get_news(ticker: str) -> dict:
+async def get_news(ticker: str, days: int = 3) -> dict:
     t = universe.yahoo_symbol(ticker)
-    return {"ticker": t, "news": await context.load_news(t)}
+    days = min(max(int(days), 1), 90)
+    limit = context.MAX_HEADLINES if days <= 3 else 20
+    return {"ticker": t, "days": days, "news": await context.load_news(t, hours=days * 24, limit=limit)}
 
 
 async def get_earnings(ticker: str) -> dict:

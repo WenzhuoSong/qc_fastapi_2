@@ -167,7 +167,7 @@ qc_fastapi_2/
 ├── db/                            观察器与新闻表的 ORM（22 个模型）+ SQL migrations（含旧表历史）
 ├── constants.py            70     新闻覆盖的标的池：17 只 ETF + Scout watchlist / 活跃机会 + QC 最新持仓
 ├── config.py               34     观察器 Settings
-├── tests/                         unittest，91 个测试
+├── tests/                         unittest，84 个测试
 ├── docs/                          设计文档、本总览、观察器契约
 ├── Dockerfile / railway.toml      单镜像，按启动命令区分服务
 └── requirements.txt
@@ -185,7 +185,7 @@ qc_fastapi_2/
 | `scout` | `feedback`、`chat_messages`、`briefs`、`job_runs` | telegram / agent / pipeline | 反馈、对话、简报、任务记账 |
 | `public` | `ticker_news_library`、`macro_news_cache` | 新闻 cron | Scout 只读 |
 | `public` | `qc_observer_*`、`qc_*` 投影 / 审计表 | 观察器 | Scout 不碰 |
-| `public` | 旧交易系统的表（约 30 张：`agent_analysis`、`execution_log`、`qc_snapshots` 等） | 无 | 已冻结；代码里已没有模型定义，删除前需导出 |
+| `public` | `ticker_news_archive` | 新闻 cron | 新闻历史（2023-12 起，约 2.7 万条），问答 `get_news(days≤90)` 会读取 |
 
 ---
 
@@ -245,8 +245,7 @@ Dashboard（今日 / 机会看板 / 个股 K 线 / 记分板 / Watchlist / 问�
 | 历史基准有幸存者偏差 | 基准偏乐观 | 接入历史成分股数据 |
 | yfinance 是免费、非官方的数据源 | 偶尔会失败或延迟；收盘后才有数据 | 盘中功能上线前换成付费数据源（`MarketDataProvider` 已预留） |
 | `power_gap` 和 `sector_rotation` 的历史超额 ≤ 0 | 这些卡评分低，一般不会推送 | 积累约 8 周实盘数据后，按记分板决定降级或下线 |
-| 数据库里约 30 张旧交易表还在（代码已不再引用） | 占空间，无功能影响 | 确认不需要后导出再删除（不可逆，需你确认） |
-| `tests/test_observer_phase1_verifier.py` 依赖未纳入 git 的 `tools/observer_phase1_verifier.py` | 换台机器跑测试会失败 | 决定是把该工具纳入 git，还是删除这个测试 |
+| 本仓库里仍有约 22MB 未纳入 git 的 QC 研究文件（`quantconnect_*/`、`tools/` 下的研究脚本） | 不影响运行和部署 | 属于 `strategy_research_lab` 的范畴，可迁移过去 |
 
 ## 9. 路线图（下一步候选）
 
@@ -254,4 +253,20 @@ Dashboard（今日 / 机会看板 / 个股 K 线 / 记分板 / Watchlist / 问�
 2. **反馈闭环**：每周按记分板和 👍👎 自动降级或提示规则；在 Dashboard 上展示反馈统计。
 3. **问答增强**：同行业对比工具、财报历史跳空统计、"为什么没推这只"的解释。
 4. **数据质量**：历史成分股、付费行情、期权隐含波动。
-5. **清理**：数据库旧表导出后删除。
+5. **研究文件归位**：把本仓库里未纳入 git 的 QC 研究文件迁到 `strategy_research_lab`。
+
+---
+
+## 附：2026-10-25 数据库清理记录
+
+旧交易系统的 30 张表（约 275 MB，169,468 行）已从生产库删除：Agent 分析与步骤日志、策略信号与结果、旧 QC 快照、
+持仓因子、执行日志、记忆表等。新闻相关的三张表（`ticker_news_library`、`ticker_news_archive`、`macro_news_cache`）都保留。
+删除的表里没有需要迁移的数据：`market_daily_features` 只多出 45 只旧策略用的杠杆 / 反向 / 债券 ETF，yfinance 随时可以重拉；
+`macro_events_cache` 是过期缓存；`earnings_calendar` 和 `news_evidence_snapshots` 是空表。
+
+- 备份：`~/Work/trading/backups/noble_flow_legacy_tables_20261025.dump`（58 MB，pg_dump custom 格式；
+  已恢复到临时库校验，30 张表的行数与生产库完全一致）
+- 恢复（只恢复某一张表时加 `-t 表名`）：
+  ```bash
+  /opt/homebrew/opt/postgresql@18/bin/pg_restore --no-owner -d "$DATABASE_PUBLIC_URL" ~/Work/trading/backups/noble_flow_legacy_tables_20261025.dump
+  ```

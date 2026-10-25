@@ -19,18 +19,29 @@ NEWS_HOURS = 72
 MAX_HEADLINES = 6
 
 
-async def load_news(ticker: str, hours: int = NEWS_HOURS) -> list[dict]:
+_NEWS_COLUMNS = "headline, source, url, llm_summary, sentiment, datetime_utc, credibility"
+
+
+async def load_news(ticker: str, hours: int = NEWS_HOURS, limit: int = MAX_HEADLINES) -> list[dict]:
+    """Recent news from the shared library; spans beyond 48h also read the
+    archive (the library is pruned to 48h, the archive keeps history)."""
     since = int(time.time()) - hours * 3600
+    source = "public.ticker_news_library"
+    if hours > 48:
+        source = (
+            f"(SELECT {_NEWS_COLUMNS} , ticker FROM public.ticker_news_library "
+            f"UNION SELECT {_NEWS_COLUMNS} , ticker FROM public.ticker_news_archive) n"
+        )
     try:
         rows = await db.fetch_all(
-            """
-            SELECT headline, source, url, llm_summary, sentiment, datetime_utc, credibility
-            FROM public.ticker_news_library
+            f"""
+            SELECT {_NEWS_COLUMNS}
+            FROM {source}
             WHERE ticker = :t AND datetime_utc >= :since
-            ORDER BY credibility DESC NULLS LAST, datetime_utc DESC
+            ORDER BY {"datetime_utc DESC" if hours > 72 else "credibility DESC NULLS LAST, datetime_utc DESC"}
             LIMIT :n
             """,
-            {"t": ticker, "since": since, "n": MAX_HEADLINES},
+            {"t": ticker, "since": since, "n": limit},
         )
     except Exception as exc:  # table absent in a fresh database
         logger.debug("news library unavailable: %s", exc)
