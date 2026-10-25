@@ -166,9 +166,20 @@ async def handle_update(update: dict) -> None:
         reply = await dispatch(text)
     except Exception as exc:
         logger.exception("command failed")
-        reply = f"⚠️ 处理失败：{esc(repr(exc)[:300])}"
+        reply = friendly_error(exc)
     if reply:
         await send(reply, chat_id=chat_id)
+
+
+def friendly_error(exc: Exception) -> str:
+    name = type(exc).__name__
+    if name == "AuthenticationError":
+        return "⚠️ OpenAI key 无效或已过期，问答暂不可用。请在 Railway 的 main-service 更新 OPENAI_API_KEY。"
+    if name in ("RateLimitError", "InsufficientQuotaError"):
+        return "⚠️ OpenAI 额度不足或请求过于频繁，请稍后再试或检查账户余额。"
+    if name in ("APITimeoutError", "APIConnectionError"):
+        return "⚠️ 连接 OpenAI 超时，请稍后再试。"
+    return f"⚠️ 处理失败：{esc(name)}（详情见 scout-web 日志）"
 
 
 async def _handle_callback(cq: dict) -> None:
