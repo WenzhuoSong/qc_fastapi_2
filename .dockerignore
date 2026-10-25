@@ -53,12 +53,11 @@ htmlcov/
 *.md
 docs/
 
-# Legacy/research-only source is never shipped to noble-flow production.
-agents/
-strategies/
-knowledge/
+# Research-only material is never shipped.
 examples/
-tracking/
+*.zip
+*_results*/
+*_results_bundle.json
 
 # Docker
 docker-compose.yml

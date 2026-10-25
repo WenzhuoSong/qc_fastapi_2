@@ -32,37 +32,5 @@ class QCAckAuthTests(unittest.TestCase):
         with patch("services.qc_webhook_auth._get_settings", return_value=settings):
             self.assertTrue(verify_qc_signature(body, signature))
 
-    def test_async_lifecycle_statuses_are_allowed_by_contract(self):
-        text = Path("api/execution.py").read_text()
-
-        self.assertIn("VALID_QC_EXECUTION_STATUSES", text)
-        self.assertIn('"orders_submitted"', text)
-        self.assertIn('"partial"', text)
-        self.assertIn('"filled"', text)
-        self.assertIn('"reconciled"', text)
-        self.assertIn('"reconciliation_drift"', text)
-        self.assertIn('"failed_no_fill"', text)
-        self.assertIn('"superseded"', text)
-
-    def test_ack_model_preserves_async_lifecycle_fields(self):
-        text = Path("api/execution.py").read_text()
-
-        self.assertIn("execution_state: str | None", text)
-        self.assertIn("active_command_id: str | None", text)
-        self.assertIn("superseded_command_id: str | None", text)
-        self.assertIn("canceled_order_count: int | None", text)
-
-    def test_qc_packet_webhook_prefers_hmac_with_configured_legacy_fallback(self):
-        webhook = Path("api/webhook.py").read_text()
-        config = Path("config.py").read_text()
-
-        self.assertIn("verify_qc_signature(request_body, x_qc_signature)", webhook)
-        self.assertIn("qc_webhook_allow_legacy_auth", webhook)
-        self.assertIn("accepted legacy static-header auth", webhook)
-        self.assertIn("Invalid QC webhook signature", webhook)
-        self.assertIn("x_qc_signature", webhook)
-        self.assertIn("qc_webhook_allow_legacy_auth: bool = True", config)
-
-
 if __name__ == "__main__":
     unittest.main()

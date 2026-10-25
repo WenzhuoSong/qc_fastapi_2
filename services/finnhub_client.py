@@ -214,6 +214,21 @@ def fetch_earnings_calendar_detail(
         return []
 
 
+def fetch_earnings_range(start: str, end: str) -> List[dict]:
+    """全市场财报日历（不限 symbol），start/end 为 YYYY-MM-DD。失败返回空列表。"""
+    if not _token():
+        return []
+    try:
+        resp = _get(
+            f"{_BASE}/calendar/earnings",
+            params={"from": start, "to": end, "token": _token()},
+        )
+        return resp.json().get("earningsCalendar", []) or []
+    except Exception as e:
+        logger.error(f"fetch_earnings_range({start}, {end}) error: {e}")
+        return []
+
+
 # ═══════════════════════════════════════════════════════════════
 # Hard risk scanning —— 关键字匹配 (factual, not predictive)
 # ═══════════════════════════════════════════════════════════════

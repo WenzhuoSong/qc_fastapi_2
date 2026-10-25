@@ -55,8 +55,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("qc_fastapi_2.cron.pre_fetch_news")
 
-PRE_FETCH_TIMEOUT_S = 600       # 10 minutes overall timeout
+PRE_FETCH_TIMEOUT_S = 1500      # 25 minutes; ticker loop is paced for the Finnhub free tier
 TTL_SECONDS         = 48 * 3600 # 48h
+# Two Finnhub calls per ticker; 2.2s pacing keeps the loop under the free tier's 60 calls/min.
+FINNHUB_TICKER_PACING_S = 2.2
 
 # ═══════════════════════════════════════════════════════════════
 # News Structuring (Phase D')
@@ -616,7 +618,7 @@ async def run_pre_fetch() -> dict:
             finnhub_new += n
         except Exception as e:
             logger.error(f"  [finnhub] {ticker}: FAILED — {e}")
-        await asyncio.sleep(0.5)  # rate limit finnhub
+        await asyncio.sleep(FINNHUB_TICKER_PACING_S)
 
     # ── Phase B: Alpha Vantage (bulk ticker news) ──
     av_new = 0

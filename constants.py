@@ -64,7 +64,8 @@ BROAD_MARKET_SET = set(BROAD_MARKET)
 
 async def resolve_universe() -> list[str]:
     """
-    返回当前的 ETF UNIVERSE = 默认硬编码 ∪ execution policy 可交易 ticker ∪ 最新 QC 快照里出现过的所有 ticker。
+    返回新闻覆盖的 ticker = 默认硬编码 ETF ∪ execution policy 可交易 ticker ∪ Scout watchlist 与活跃机会
+    ∪ 最新 QC 快照里出现过的所有 ticker。
 
     冷启动（无快照）时回落到 DEFAULT_ETF_UNIVERSE。
     不读 CASH。
@@ -80,6 +81,21 @@ async def resolve_universe() -> list[str]:
         )
     except Exception:
         pass
+
+    try:
+        # Scout (market observer) watchlist and open ideas also get news coverage.
+        # Plain SQL keeps the observer code free of any scout imports.
+        from sqlalchemy import text
+        from db.session import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as db:
+            rows = await db.execute(text(
+                "SELECT ticker FROM scout.watchlist WHERE active "
+                "UNION SELECT ticker FROM scout.opportunities WHERE status IN ('new', 'triggered')"
+            ))
+            tickers.update(r[0] for r in rows)
+    except Exception:
+        pass  # scout schema not deployed yet
 
     try:
         from db.session import AsyncSessionLocal

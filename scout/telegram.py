@@ -1,0 +1,271 @@
+"""Telegram delivery: card rendering, push, commands and feedback buttons."""
+from __future__ import annotations
+
+import html
+import logging
+from typing import Any
+
+import httpx
+
+from scout import db, universe
+from scout.config import get_scout_settings
+
+logger = logging.getLogger("scout.telegram")
+
+MAX_CHARS = 3900
+FEEDBACK_ACTIONS = {"up": "👍 有用", "down": "👎 没用", "star": "⭐ 关注", "dismiss": "🙈 忽略"}
+STATUS_LABELS = {
+    "new": "待触发", "triggered": "已触发", "hit_target": "达到目标", "stopped": "止损",
+    "expired": "到期", "expired_untriggered": "未触发过期",
+}
+CONFIDENCE_LABELS = {"low": "低", "medium": "中", "high": "高"}
+
+HELP_TEXT = (
+    "<b>Scout 美股机会观察器</b>\n"
+    "/ideas — 活跃机会\n"
+    "/idea NVDA — 某只股票的最新机会卡\n"
+    "/why NVDA — 解释近期走势\n"
+    "/watch list | add NVDA [主题] | rm NVDA\n"
+    "/stats — 规则记分板\n"
+    "直接发文字即可提问（例如：今天最强的板块是什么？）"
+)
+
+
+def esc(x: Any) -> str:
+    return html.escape(str(x), quote=False)
+
+
+def pct(x: float | None, digits: int = 1, sign: bool = False) -> str:
+    if x is None:
+        return "—"
+    return f"{x * 100:+.{digits}f}%" if sign else f"{x * 100:.{digits}f}%"
+
+
+def render_card(o: dict) -> str:
+    ev, th, br = o.get("evidence") or {}, o.get("thesis") or {}, o.get("base_rate") or {}
+    setup = ev.get("setup") or {}
+    labels = setup.get("label") or o["primary_detector"]
+    extra = [d for d in (o.get("detectors") or []) if d != o["primary_detector"]]
+    head = f"🟢 <b>{esc(o['ticker'])}</b> · {esc(labels)}"
+    if extra:
+        head += f" +{len(extra)}"
+    head += f"　评分 {o['score']:.2f}"
+    if ev.get("theme"):
+        head += f"　#{esc(ev['theme'])}"
+    lines = [head]
+    if th.get("headline"):
+        lines.append(f"<i>{esc(th['headline'])}</i>")
+    lines.append(
+        f"入场 {o['entry_lo']:.2f}–{o['entry_hi']:.2f} | 止损 {o['stop']:.2f} | "
+        f"目标 {o['target1']:.2f} / {(o.get('target2') or o['target1']):.2f}"
+    )
+    lines.append(f"周期 {o['horizon_days']} 日 | R:R {o.get('risk_reward') or 0:.1f} | 状态 {STATUS_LABELS.get(o.get('status'), o.get('status'))}")
+    if br.get("n"):
+        lines.append(
+            f"📊 历史 {br['n']} 次（{esc(br.get('regime'))}）· 胜率 {pct(br.get('win_rate'), 0)} · "
+            f"平均超额 {pct(br.get('avg_excess'), 1, True)} · 达标率 {pct(br.get('target_rate'), 0)}"
+        )
+    if th.get("thesis"):
+        lines.append(f"\n📌 {esc(th['thesis'])}")
+    for c in th.get("catalysts") or []:
+        lines.append(f"➕ {esc(c)}")
+    for c in th.get("counter_evidence") or []:
+        lines.append(f"➖ {esc(c)}")
+    if th.get("key_risk"):
+        lines.append(f"⚠️ {esc(th['key_risk'])}")
+    if th.get("confidence"):
+        lines.append(f"置信度：{CONFIDENCE_LABELS.get(th['confidence'], th['confidence'])} — {esc(th.get('confidence_reason', ''))}")
+    lines.append("<i>历史基准基于当前成分股回放，存在幸存者偏差。非投资建议。</i>")
+    return "\n".join(lines)
+
+
+def feedback_keyboard(opp_id: str) -> dict:
+    return {"inline_keyboard": [[
+        {"text": label, "callback_data": f"fb:{action}:{opp_id}"} for action, label in FEEDBACK_ACTIONS.items()
+    ]]}
+
+
+async def _api(method: str, payload: dict) -> dict:
+    token = get_scout_settings().bot_token
+    if not token:
+        logger.warning("telegram not configured; skipping %s", method)
+        return {"ok": False, "description": "not configured"}
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(f"https://api.telegram.org/bot{token}/{method}", json=payload)
+    data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+    if not data.get("ok"):
+        logger.warning("telegram %s failed: %s", method, resp.text[:300])
+    return data
+
+
+def _chunks(text: str) -> list[str]:
+    if len(text) <= MAX_CHARS:
+        return [text]
+    out, buf = [], ""
+    for line in text.split("\n"):
+        if len(buf) + len(line) + 1 > MAX_CHARS and buf:
+            out.append(buf)
+            buf = ""
+        buf += line[:MAX_CHARS] + "\n"
+    if buf:
+        out.append(buf)
+    return out
+
+
+async def send(text: str, *, reply_markup: dict | None = None, chat_id: str | None = None) -> int | None:
+    chat = chat_id or get_scout_settings().chat_id
+    message_id = None
+    parts = _chunks(text)
+    for i, part in enumerate(parts):
+        payload: dict = {"chat_id": chat, "text": part, "parse_mode": "HTML", "disable_web_page_preview": True}
+        if reply_markup and i == len(parts) - 1:
+            payload["reply_markup"] = reply_markup
+        data = await _api("sendMessage", payload)
+        if not data.get("ok") and "parse" in str(data.get("description", "")).lower():
+            payload.pop("parse_mode")
+            data = await _api("sendMessage", payload)
+        message_id = (data.get("result") or {}).get("message_id", message_id)
+    return message_id
+
+
+async def push_card(o: dict) -> int | None:
+    message_id = await send(render_card(o), reply_markup=feedback_keyboard(o["id"]))
+    if message_id:
+        await db.execute(
+            "UPDATE scout.opportunities SET pushed_at = now(), tg_message_id = :m WHERE id = :id",
+            {"m": message_id, "id": o["id"]},
+        )
+    return message_id
+
+
+async def load_opportunity(opp_id: str) -> dict | None:
+    return await db.fetch_one("SELECT * FROM scout.opportunities WHERE id = :id", {"id": opp_id})
+
+
+# ─────────────────────────── inbound ───────────────────────────
+
+async def handle_update(update: dict) -> None:
+    settings = get_scout_settings()
+    if "callback_query" in update:
+        cq = update["callback_query"]
+        if str((cq.get("message") or {}).get("chat", {}).get("id")) != str(settings.chat_id):
+            return
+        await _handle_callback(cq)
+        return
+    msg = update.get("message") or {}
+    chat_id = str((msg.get("chat") or {}).get("id"))
+    if chat_id != str(settings.chat_id):
+        logger.warning("ignoring message from unauthorised chat %s", chat_id)
+        return
+    text = (msg.get("text") or "").strip()
+    if not text:
+        return
+    try:
+        reply = await dispatch(text)
+    except Exception as exc:
+        logger.exception("command failed")
+        reply = f"⚠️ 处理失败：{esc(repr(exc)[:300])}"
+    if reply:
+        await send(reply, chat_id=chat_id)
+
+
+async def _handle_callback(cq: dict) -> None:
+    data = cq.get("data") or ""
+    parts = data.split(":", 2)
+    if len(parts) == 3 and parts[0] == "fb" and parts[1] in FEEDBACK_ACTIONS:
+        await db.execute(
+            "INSERT INTO scout.feedback (opportunity_id, action) VALUES (:id, :a)",
+            {"id": parts[2], "a": parts[1]},
+        )
+        if parts[1] == "star":
+            opp = await load_opportunity(parts[2])
+            if opp:
+                await universe.add_watch(opp["ticker"])
+        await _api("answerCallbackQuery", {"callback_query_id": cq["id"], "text": f"已记录：{FEEDBACK_ACTIONS[parts[1]]}"})
+
+
+async def dispatch(text: str) -> str:
+    if not text.startswith("/"):
+        from scout.agent import answer
+
+        return await answer(text, channel="telegram")
+    cmd, *args = text.split()
+    cmd = cmd.split("@")[0].lower()
+    if cmd in ("/start", "/help"):
+        return HELP_TEXT
+    if cmd == "/ideas":
+        return await ideas_text()
+    if cmd == "/idea" and args:
+        return await idea_text(args[0])
+    if cmd == "/why" and args:
+        from scout.agent import answer
+
+        return await answer(f"解释 {args[0].upper()} 最近的走势：发生了什么、可能的原因、接下来要关注什么。", channel="telegram")
+    if cmd == "/watch":
+        return await watch_cmd(args)
+    if cmd == "/stats":
+        return await stats_text()
+    return HELP_TEXT
+
+
+async def ideas_text() -> str:
+    rows = await db.fetch_all(
+        "SELECT * FROM scout.opportunities WHERE status IN ('new', 'triggered') ORDER BY score DESC LIMIT 15"
+    )
+    if not rows:
+        return "当前没有活跃机会。"
+    lines = ["<b>活跃机会</b>"]
+    for o in rows:
+        label = (o.get("evidence") or {}).get("setup", {}).get("label", o["primary_detector"])
+        lines.append(
+            f"• <b>{esc(o['ticker'])}</b> {esc(label)} {o['score']:.2f} | {STATUS_LABELS.get(o['status'])} | "
+            f"入场 {o['entry_lo']:.2f}–{o['entry_hi']:.2f} 止损 {o['stop']:.2f} 目标 {o['target1']:.2f} | {o['asof']}"
+        )
+    lines.append("\n/idea TICKER 查看完整卡片")
+    return "\n".join(lines)
+
+
+async def idea_text(ticker: str) -> str:
+    t = universe.yahoo_symbol(ticker)
+    o = await db.fetch_one(
+        "SELECT * FROM scout.opportunities WHERE ticker = :t ORDER BY asof DESC, score DESC LIMIT 1", {"t": t}
+    )
+    if o:
+        return render_card(o)
+    from scout.agent import answer
+
+    return await answer(f"{t} 目前没有规则触发的机会卡。请基于数据评估它当前的形态、相对强度和风险，并说明需要什么条件才会成为机会。", channel="telegram")
+
+
+async def watch_cmd(args: list[str]) -> str:
+    if not args or args[0] == "list":
+        rows = await universe.load_watchlist()
+        by_theme: dict[str, list[str]] = {}
+        for r in rows:
+            by_theme.setdefault(r["theme"] or "未分类", []).append(r["ticker"])
+        return "<b>Watchlist</b>\n" + "\n".join(f"{esc(k)}：{' '.join(v)}" for k, v in by_theme.items())
+    if args[0] == "add" and len(args) >= 2:
+        await universe.add_watch(args[1], " ".join(args[2:]) or None)
+        return f"已加入 {esc(args[1].upper())}，下次收盘扫描生效。"
+    if args[0] in ("rm", "remove", "del") and len(args) >= 2:
+        await universe.remove_watch(args[1])
+        return f"已移除 {esc(args[1].upper())}。"
+    return "用法：/watch list | add NVDA [主题] | rm NVDA"
+
+
+async def stats_text() -> str:
+    from scout.tracker import scoreboard
+
+    rows = await scoreboard()
+    if not rows:
+        return "还没有机会记录。"
+    lines = ["<b>规则记分板</b>（实盘 vs 历史）"]
+    for r in rows:
+        br = r.get("base_rate") or {}
+        lines.append(
+            f"• {esc(r['detector'])}：共 {r['total']}，活跃 {r['active']}，已结束 {r['closed']}，"
+            f"胜率 {pct(r['win_rate'], 0)}，超额 {pct(r['avg_excess'], 1, True)} | "
+            f"历史胜率 {pct(br.get('win_rate'), 0)} 超额 {pct(br.get('avg_excess'), 1, True)} | "
+            f"👍{r['thumbs_up']} 👎{r['thumbs_down']}"
+        )
+    return "\n".join(lines)

@@ -1,0 +1,212 @@
+"""End-of-day and weekly pipelines."""
+from __future__ import annotations
+
+import logging
+from datetime import date, timedelta
+
+from scout import bars, base_rates, context, db, opportunities, telegram, thesis, tracker, universe
+from scout.config import get_scout_settings
+from scout.data.provider import get_provider
+from scout.features import SNAPSHOT_FEATURES, FeaturePanel, build_panel
+
+logger = logging.getLogger("scout.pipeline")
+
+PANEL_LOOKBACK_DAYS = 420          # ≥ 252 sessions + 200-day SMA warm-up headroom
+STALE_AFTER_DAYS = 4               # asof older than this → data source problem
+MAX_PER_DETECTOR = 3               # keep one rule (e.g. a whole sector turning) from flooding the cards
+
+
+async def prepare(full_backfill: bool = False) -> dict:
+    """Migrations, universe and bars. Idempotent."""
+    settings = get_scout_settings()
+    out: dict = {"migrations": await db.apply_migrations()}
+    out["watchlist_seeded"] = await universe.seed_watchlist()
+    count = await db.fetch_one("SELECT count(*) AS n FROM scout.instruments WHERE kind = 'stock'")
+    if full_backfill or not count or count["n"] < 400:
+        out["instruments"] = await universe.refresh_instruments()
+    await universe.ensure_watchlist_instruments()
+    tickers = [r["ticker"] for r in await universe.load_scan_instruments()]
+    provider = get_provider()
+    if full_backfill:
+        out["bars"] = await bars.backfill(provider, tickers, settings.scout_history_years)
+    else:
+        out["bars"] = await bars.refresh(provider, tickers, settings.scout_history_years)
+    return out
+
+
+async def load_panel(lookback_days: int | None = PANEL_LOOKBACK_DAYS) -> FeaturePanel:
+    settings = get_scout_settings()
+    instruments = {r["ticker"]: r for r in await universe.load_scan_instruments()}
+    since = date.today() - timedelta(days=lookback_days) if lookback_days else None
+    frames = await bars.load(list(instruments), since=since)
+    return build_panel(frames, instruments, settings.scout_min_price, settings.scout_min_dollar_volume)
+
+
+async def store_features(p: FeaturePanel, asof: date) -> int:
+    def rows():
+        for ticker in p["close"].columns:
+            payload = p.row(ticker, asof, SNAPSHOT_FEATURES)
+            if "close" in payload:
+                yield {"t": ticker, "d": asof, "p": db.jsonb({k: round(v, 6) for k, v in payload.items()})}
+
+    return await db.execute_many(
+        "INSERT INTO scout.features_daily (ticker, date, payload) VALUES (:t, :d, CAST(:p AS JSONB)) "
+        "ON CONFLICT (ticker, date) DO UPDATE SET payload = EXCLUDED.payload",
+        rows(),
+    )
+
+
+async def ensure_base_rates(force: bool = False) -> dict:
+    rates = {} if force else await base_rates.load()
+    if rates:
+        return rates
+    logger.info("computing base rates from full history")
+    full = await load_panel(lookback_days=None)
+    rates = base_rates.compute(full)
+    await base_rates.store(rates)
+    return rates
+
+
+def select_top(candidates: list, n: int, per_detector: int = MAX_PER_DETECTOR) -> list:
+    """Highest scores first, at most `per_detector` cards from any one rule."""
+    picked, counts = [], {}
+    for c in candidates:
+        if counts.get(c.primary.name, 0) >= per_detector:
+            continue
+        picked.append(c)
+        counts[c.primary.name] = counts.get(c.primary.name, 0) + 1
+        if len(picked) >= n:
+            break
+    return picked
+
+
+def days_to_next_earnings(earnings: dict[str, list[dict]], asof: date) -> dict[str, int]:
+    out = {}
+    for t, events in earnings.items():
+        nxt = [e["date"] for e in events if e["date"] >= asof]
+        if nxt:
+            out[t] = (nxt[0] - asof).days
+    return out
+
+
+async def run_eod(push: bool = True) -> dict:
+    settings = get_scout_settings()
+    summary: dict = {"prepare": await prepare()}
+    p = await load_panel()
+    asof: date = p.dates[-1]
+    summary["asof"] = asof.isoformat()
+    if (date.today() - asof).days > STALE_AFTER_DAYS:
+        raise RuntimeError(f"latest bar {asof} is stale; data source may be down")
+    summary["features"] = await store_features(p, asof)
+
+    transitions = await tracker.update_all()
+    summary["transitions"] = [t.__dict__ for t in transitions]
+
+    summary["earnings_rows"] = await context.refresh_earnings()
+    earnings = await context.earnings_map(asof)
+    rates = await ensure_base_rates()
+    watch = {r["ticker"]: r["theme"] for r in await universe.load_watchlist()}
+
+    candidates = opportunities.scan(
+        p, rates, asof,
+        recent=await opportunities.recent_keys(asof),
+        watchlist=watch,
+        feedback_weights=await opportunities.feedback_weights(),
+        days_to_earnings=days_to_next_earnings(earnings, asof),
+    )
+    summary["candidates"] = len(candidates)
+    market = opportunities.market_context(p, asof)
+    saved = []
+    for c in select_top(candidates, settings.scout_top_n):
+        c.context = {
+            "news": await context.load_news(c.ticker),
+            "earnings": context.earnings_summary(earnings.get(c.ticker, []), asof),
+        }
+        ev = opportunities.evidence(c, market)
+        th, source = await thesis.write_thesis(ev)
+        await opportunities.save(c, ev, th.model_dump(), source)
+        saved.append(c.id)
+    summary["saved"] = saved
+
+    brief = render_eod_brief(asof, market, candidates, transitions, saved)
+    await db.execute(
+        "INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('eod', :d, :c, CAST(:p AS JSONB))",
+        {"d": asof, "c": brief, "p": db.jsonb({"market": market, "saved": saved, "candidates": len(candidates)})},
+    )
+    if push:
+        await telegram.send(brief)
+        pushed = 0
+        for opp_id in saved:
+            o = await telegram.load_opportunity(opp_id)
+            if o and o["score"] >= settings.scout_push_threshold and pushed < settings.scout_max_push_cards:
+                if await telegram.push_card(o):
+                    pushed += 1
+        summary["pushed"] = pushed
+    return summary
+
+
+def render_eod_brief(asof: date, market: dict, candidates, transitions, saved: list[str]) -> str:
+    pct = telegram.pct
+    regime_zh = {"uptrend": "上升趋势", "mixed": "震荡", "downtrend": "下降趋势", "unknown": "未知"}
+    lines = [
+        f"🌇 <b>Scout 收盘扫描 {asof}</b>",
+        f"大盘：{regime_zh.get(market['regime'], market['regime'])} | SPY 当日 {pct(market.get('spy_ret_1d'), 1, True)}，"
+        f"20 日 {pct(market.get('spy_ret_20d'), 1, True)} | QQQ 20 日 {pct(market.get('qqq_ret_20d'), 1, True)} | "
+        f"SMH 20 日 {pct(market.get('smh_ret_20d'), 1, True)}",
+    ]
+    if market.get("sector_leaders_20d"):
+        lines.append("领涨板块(20日)：" + "，".join(f"{k} {pct(v, 1, True)}" for k, v in market["sector_leaders_20d"]))
+        lines.append("落后板块(20日)：" + "，".join(f"{k} {pct(v, 1, True)}" for k, v in market["sector_laggards_20d"]))
+    if transitions:
+        icon = {"triggered": "▶️", "hit_target": "🎯", "stopped": "🛑", "expired": "⌛", "expired_untriggered": "⌛"}
+        lines.append("\n<b>机会状态变化</b>")
+        for t in transitions:
+            ret = f" {pct(t.return_pct, 1, True)}" if t.return_pct is not None else ""
+            lines.append(f"{icon.get(t.new, '•')} {t.ticker} → {telegram.STATUS_LABELS.get(t.new, t.new)}{ret}")
+    if candidates:
+        by_det: dict[str, int] = {}
+        for c in candidates:
+            by_det[c.primary.label] = by_det.get(c.primary.label, 0) + 1
+        lines.append(f"\n今日触发 {len(candidates)} 个候选（{'，'.join(f'{k} {v}' for k, v in by_det.items())}），"
+                     f"入选 {len(saved)} 张卡片：")
+        chosen = set(saved)
+        for c in candidates:
+            if c.id in chosen:
+                lines.append(f"• <b>{c.ticker}</b> {c.primary.label} {c.score:.2f}")
+    else:
+        lines.append("\n今日没有规则触发。")
+    return "\n".join(lines)
+
+
+async def run_weekly(push: bool = True) -> dict:
+    summary: dict = {"prepare": await prepare(full_backfill=True)}
+    rates = await ensure_base_rates(force=True)
+    summary["base_rates"] = {d: b.get("all", {}).get("n", 0) for d, b in rates.items()}
+    report = await render_weekly_report()
+    await db.execute(
+        "INSERT INTO scout.briefs (kind, asof, content) VALUES ('weekly', :d, :c)", {"d": date.today(), "c": report}
+    )
+    if push:
+        await telegram.send(report)
+    return summary
+
+
+async def render_weekly_report() -> str:
+    since = date.today() - timedelta(days=7)
+    closed = await db.fetch_all(
+        "SELECT o.ticker, o.primary_detector, oc.outcome, oc.return_pct, oc.excess_pct "
+        "FROM scout.opportunity_outcomes oc JOIN scout.opportunities o ON o.id = oc.opportunity_id "
+        "WHERE oc.closed_on >= :d ORDER BY oc.closed_on", {"d": since},
+    )
+    new = await db.fetch_one("SELECT count(*) AS n FROM scout.opportunities WHERE asof >= :d", {"d": since})
+    pct = telegram.pct
+    lines = [f"🗓 <b>Scout 周报 {date.today()}</b>", f"本周新机会 {new['n'] if new else 0} 个，结束 {len(closed)} 个。"]
+    for r in closed:
+        lines.append(
+            f"• {r['ticker']} {r['primary_detector']} → {telegram.STATUS_LABELS.get(r['outcome'], r['outcome'])} "
+            f"{pct(r['return_pct'], 1, True)}（超额 {pct(r['excess_pct'], 1, True)}）"
+        )
+    lines.append("")
+    lines.append(await telegram.stats_text())
+    return "\n".join(lines)
+

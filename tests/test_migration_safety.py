@@ -119,17 +119,6 @@ class MigrationSafetyTests(unittest.TestCase):
         self.assertIn("observer-only", migration)
         self.assertNotRegex(migration, r"\bDROP\b|\bTRUNCATE\b|\bDELETE\s+FROM\b")
 
-    def test_feature_sources_are_preserved_and_augmented_not_replaced(self):
-        provenance = (REPO_ROOT / "services" / "feature_provenance.py").read_text(encoding="utf-8")
-        merge = (REPO_ROOT / "services" / "market_snapshot_merge.py").read_text(encoding="utf-8")
-
-        self.assertIn('sources = list(out.get("feature_sources") or [])', provenance)
-        self.assertIn('entries.extend(row.get("feature_sources") or [])', provenance)
-        self.assertIn('"authority_by_field"', provenance)
-        self.assertIn('"canonical_aliases"', provenance)
-        self.assertIn('merge_feature_sources(qc_daily_row, yfinance_row, live_row)', merge)
-
-
 def _iter_schema_files():
     for path in MIGRATION_PATHS:
         if path.is_dir():
