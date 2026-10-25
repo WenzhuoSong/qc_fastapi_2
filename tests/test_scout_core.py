@@ -175,6 +175,17 @@ class UniverseTests(unittest.TestCase):
         self.assertIsNone(parse_constituents(icb, "ndx")[0].sector)
 
 
+class SecretLoggingTests(unittest.TestCase):
+    def test_httpx_request_urls_are_not_logged(self):
+        """Telegram/Finnhub URLs carry tokens; httpx logs URLs at INFO."""
+        import logging
+
+        import scout.telegram  # noqa: F401
+        import tools.notify_tools  # noqa: F401
+
+        self.assertGreaterEqual(logging.getLogger("httpx").level, logging.WARNING)
+
+
 class ScoutFenceTests(unittest.TestCase):
     """Scout is a research product: it must never reach QC or execution code."""
 

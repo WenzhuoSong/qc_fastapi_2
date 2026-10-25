@@ -11,6 +11,8 @@ from scout import db, universe
 from scout.config import get_scout_settings
 
 logger = logging.getLogger("scout.telegram")
+# httpx logs full request URLs at INFO, and Telegram URLs embed the bot token.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 MAX_CHARS = 3900
 FEEDBACK_ACTIONS = {"up": "👍 有用", "down": "👎 没用", "star": "⭐ 关注", "dismiss": "🙈 忽略"}

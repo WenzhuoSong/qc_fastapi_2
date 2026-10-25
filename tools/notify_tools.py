@@ -4,6 +4,8 @@ import httpx
 from config import get_settings
 
 logger   = logging.getLogger("qc_fastapi_2.telegram")
+# httpx logs full request URLs at INFO, and Telegram URLs embed the bot token.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 settings = get_settings()
 
 TELEGRAM_MAX_MESSAGE_CHARS = 4096
