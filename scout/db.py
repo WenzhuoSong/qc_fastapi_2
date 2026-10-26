@@ -86,6 +86,15 @@ async def fetch_one(sql: str, params: dict | None = None) -> dict | None:
     return rows[0] if rows else None
 
 
+async def execute_returning(sql: str, params: dict | None = None) -> dict | None:
+    """A write with RETURNING: fetch_one would read the row and roll the insert back."""
+    async with session() as s:
+        result = await s.execute(text(sql), params or {})
+        row = result.first()
+        await s.commit()
+        return dict(row._mapping) if row else None
+
+
 async def execute(sql: str, params: dict | Sequence[dict] | None = None) -> None:
     async with session() as s:
         await s.execute(text(sql), params or {})

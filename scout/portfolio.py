@@ -64,7 +64,7 @@ def size_text(sz: dict | None) -> str | None:
 # ── Journal ──
 
 async def add_trade(t: dict) -> int:
-    row = await db.fetch_one(
+    row = await db.execute_returning(
         "INSERT INTO scout.trades (ticker, opportunity_id, opened_on, entry_price, shares, stop, target, note) "
         "VALUES (:ticker, :opp, :opened, :entry, :shares, :stop, :target, :note) RETURNING id",
         {"ticker": t["ticker"].upper().strip(), "opp": t.get("opportunity_id") or None, "opened": t["opened_on"],
