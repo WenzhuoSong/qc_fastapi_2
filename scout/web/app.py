@@ -237,9 +237,14 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
     if not inst and not bars:
         return layout(t, "", f"<p>{e(t)} 不在标的池中。可以在 Watchlist 页加入。</p>")
     latest = opps[0] if opps else None
-    levels = None
-    if latest and latest["status"] in ("new", "triggered"):
-        levels = {k: latest[k] for k in ("entry_lo", "entry_hi", "stop", "target1", "target2")}
+    # Plan to draw: the latest card if it is active or closed within ~2 months
+    # (so entry/exit markers of recent trades stay visible).
+    plan_opp = latest if latest and (latest["status"] in ("new", "triggered")
+                                     or (date.today() - latest["asof"]).days <= 60) else None
+    plan = None
+    if plan_opp:
+        plan = {k: plan_opp.get(k) for k in ("entry_lo", "entry_hi", "stop", "target1", "target2", "current_stop",
+                                             "asof", "triggered_on", "closed_on")}
     payload = (feat or {}).get("payload") or {}
     pct_keys = {"ret_1d", "ret_5d", "ret_20d", "ret_63d", "ret_252d", "atr_pct", "dist_52w_high", "gap_pct",
                 "rs_pct", "sector_rs_pct", "sector_rel_20", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d",
@@ -264,11 +269,13 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
     ) or "<li class='muted'>近 72 小时无新闻。</li>"
     name = " · ".join(x for x in ((inst or {}).get("name"), (inst or {}).get("sector")) if x)
     body = f"<h2>{e(t)} <span class='muted small'>{e(name)}</span></h2>"
-    body += views.chart_script(bars, levels)
+    struct = price_structure.compute(bars)
+    side = views.trade_plan(plan_opp, payload.get("close")) if plan_opp else views.key_levels(payload, struct)
+    body += f"<div class='chartrow'>{views.chart_script(bars, plan, struct)}{side}</div>"
     headline, lines = scout_view(
         payload, is_stock=(inst or {}).get("kind", "stock") == "stock",
         next_earnings=(nxt or {}).get("event_date"), latest_opp=latest, today=date.today(),
-        structure=price_structure.compute(bars),
+        structure=struct,
     )
     body += '<div class="grid" style="margin-top:12px">'
     body += f'<div id="scout">{views.scout_panel(t, headline, lines, ai, bool(get_scout_settings().openai_api_key))}</div>'

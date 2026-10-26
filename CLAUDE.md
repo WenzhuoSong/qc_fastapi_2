@@ -16,6 +16,7 @@ Archived, not in this tree: the QC observer (git tag `qc-observer-final`, local 
 - Nothing in this repo sends orders or commands to QuantConnect or a broker.
 - In Scout, numbers come from Python. The LLM writes prose around Python-computed evidence; `scout/thesis.py` rejects numbers that cannot be traced to the evidence.
 - Do not tune detector parameters to the replay results. `detector_base_rates` measures the rules; it is not an optimisation target.
+- Exits are part of a rule (`Detector.exit`: `fixed` or `trail_low`), and replay and live tracking share `scout/simulate.py`. Change an exit only when the replay improves in both halves of the sample and theory supports it.
 - A rule's edge is judged net of `simulate.ROUND_TRIP_COST` and against just holding the same stock (`avg_edge_vs_hold`), not against SPY alone. New rules start as candidates (`Detector(live=False)`: replayed and shown on the scoreboard, never scanned or pushed) until their replay shows an independent edge.
 - Every LLM-facing number comes with its meaning: add new features to `scout/knowledge/features.yaml` (tests enforce it). The ticker "AI 解读" is the `scout/insight.py` workflow (evidence pack → structured output → deterministic validation); edit methodology in `scout/knowledge/lenses/*.md`, and rerun `python -m scout.jobs.eval_insight` after changing prompts, lenses or models.
 - Never log secrets: httpx INFO logging is silenced because Telegram/Finnhub URLs carry tokens.
