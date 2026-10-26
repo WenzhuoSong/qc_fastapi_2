@@ -260,7 +260,7 @@ async def handle_update(update: dict) -> None:
 def friendly_error(exc: Exception) -> str:
     name = type(exc).__name__
     if name == "AuthenticationError":
-        return "⚠️ OpenAI key 无效或已过期，问答暂不可用。请在 Railway 的 main-service 更新 OPENAI_API_KEY。"
+        return "⚠️ OpenAI key 无效或已过期，问答暂不可用。请在 Railway 的 Shared Variables 更新 OPENAI_API_KEY，并重新部署 Scout 服务。"
     if name in ("RateLimitError", "InsufficientQuotaError"):
         return "⚠️ OpenAI 额度不足或请求过于频繁，请稍后再试或检查账户余额。"
     if name in ("APITimeoutError", "APIConnectionError"):

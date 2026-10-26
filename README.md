@@ -34,7 +34,8 @@ python -m unittest discover -s tests -t .
 | `scout-eod` | `python -m scout.jobs.eod` | `30 21 * * 1-5` |
 | `scout-weekly` | `python -m scout.jobs.weekly` | `0 14 * * 6` |
 | `cron-pre-fetch-news` | `python -m cron.pre_fetch_news` | `50 */2 * * *` (24/7 multi-source news) |
-| `main-service` | not deployed | holds shared secrets referenced as `${{main-service.X}}` |
 | `Postgres` | — | — |
+
+Shared secrets live in the environment's Shared Variables and are referenced as `${{shared.X}}`.
 
 Telegram webhook: `https://<scout-web domain>/telegram` with `secret_token=$SCOUT_TG_WEBHOOK_SECRET`.

@@ -35,21 +35,20 @@
 | `scout-eod` | `python -m scout.jobs.eod` | `30 21 * * 1-5`（美东收盘后；休市日自动跳过） |
 | `scout-weekly` | `python -m scout.jobs.weekly` | `0 14 * * 6`（周六） |
 | `cron-pre-fetch-news` | `python -m cron.pre_fetch_news` | `50 */2 * * *`（24/7） |
-| `main-service` | **不部署**（已断开 GitHub） | 只用来存放共享密钥 |
 | `Postgres` | — | — |
 
 ### 环境变量策略
 
-**共享密钥只存放在 `main-service` 一处**，其他服务一律用 `${{main-service.X}}` 引用。换 key 时只改 main-service，然后重新部署引用它的服务（Railway 在部署时解析引用）。
+**共享密钥只存放在环境级 Shared Variables 一处**（Railway 项目 → Settings → Shared Variables），各服务一律用 `${{shared.X}}` 引用。换 key 时只改 Shared Variables，然后重新部署引用它的服务（Railway 在部署时解析引用）。
 
 | 变量 | 存放位置 | 使用者 |
 |---|---|---|
 | `DATABASE_URL` | 引用 `${{Postgres.DATABASE_URL}}` | 全部 |
-| `OPENAI_API_KEY`、`FINNHUB_API_KEY`、`ALPHAVANTAGE_API_KEY` | main-service | 新闻 cron、Scout |
-| `TG_BOT_TOKEN`、`TG_CHAT_ID` | main-service | Scout 推送与任务告警、新闻 cron（@wenzhuo_qc_bot） |
-| `DASHBOARD_USER`、`DASHBOARD_PASSWORD` | main-service | Scout Dashboard（`SCOUT_DASHBOARD_*` 引用它们） |
+| `OPENAI_API_KEY`、`FINNHUB_API_KEY`、`ALPHAVANTAGE_API_KEY` | Shared Variables | 新闻 cron、Scout |
+| `TG_BOT_TOKEN`、`TG_CHAT_ID` | Shared Variables | Scout 推送与任务告警、新闻 cron（@wenzhuo_qc_bot） |
+| `DASHBOARD_USER`、`DASHBOARD_PASSWORD` | Shared Variables | Scout Dashboard（`SCOUT_DASHBOARD_*` 引用它们） |
 | `SCOUT_TG_WEBHOOK_SECRET` | scout-web | Telegram webhook 校验 |
-| `WEBHOOK_SECRET`、`QC_OBSERVER_*`、`FASTAPI_EXECUTION_AUTHORITY` | main-service | 已归档的 QC 观察器（保留以便恢复，当前没有程序使用） |
+| `WEBHOOK_SECRET`、`QC_OBSERVER_*`、`FASTAPI_EXECUTION_AUTHORITY` | 已从 Railway 删除 | 已归档的 QC 观察器；原值备份在 `~/Work/trading/qc_observer_archive/main-service-variables.env`（权限 600） |
 
 可选的 Scout 调参变量（不设则用默认值）：`SCOUT_LLM_MODEL`（gpt-4o-mini）、`SCOUT_TOP_N`（8）、`SCOUT_PUSH_THRESHOLD`（0.6）、
 `SCOUT_MAX_PUSH_CARDS`（3）、`SCOUT_MIN_PRICE`（5）、`SCOUT_MIN_DOLLAR_VOLUME`（2000 万）、`SCOUT_HISTORY_YEARS`（3）。
@@ -268,7 +267,7 @@ python -m scout.jobs.eod --no-push --force  # 收盘扫描（不推送；--force
 SCOUT_DASHBOARD_USER=u SCOUT_DASHBOARD_PASSWORD=p uvicorn scout.web.app:app --port 8765
 ```
 
-- **发布**：功能分支（当前是 `scout-rewrite`）→ 测试通过 → 推到 `main`，Railway 自动部署 4 个代码服务（main-service 已断开，不会被部署）。
+- **发布**：功能分支（当前是 `scout-rewrite`）→ 测试通过 → 推到 `main`，Railway 自动部署 4 个代码服务。
 - **Schema 变更**：新增 `scout/migrations/00N_xxx.sql`（必须幂等），服务启动和任务执行时会自动应用。
 - **手动对生产跑任务**：用 `DATABASE_PUBLIC_URL` 在本地执行 `python -m scout.jobs.<name>`。本地经公网连生产库延迟较高，写入一定要批量。
 
@@ -310,7 +309,6 @@ Dashboard（今日 / 机会看板 / 个股 K 线 / 记分板 / Watchlist / 问�
 | 历史基准有幸存者偏差 | 基准偏乐观 | 接入历史成分股数据 |
 | yfinance 是免费、非官方的数据源 | 偶尔会失败或延迟；收盘后才有数据 | 盘中功能上线前换成付费数据源（`MarketDataProvider` 已预留） |
 | `power_gap` 和 `sector_rotation` 的历史超额 ≤ 0 | 这些卡评分低，一般不会推送 | 积累约 8 周实盘数据后，按记分板决定降级或下线 |
-| `main-service` 这个名字已经名不副实（只存密钥） | 只是命名问题 | 以后可以改用 Railway 的环境级 Shared Variables，然后删掉它 |
 
 ---
 
@@ -343,6 +341,7 @@ Dashboard（今日 / 机会看板 / 个股 K 线 / 记分板 / Watchlist / 问�
 - 代码：观察器的 18 个代码文件、8 个测试、观察器 migration 和 3 份契约文档已从仓库删除，另有 11 个未跟踪的设计文档和运维工具移出仓库。
   完整快照保存在 git tag `qc-observer-final` 和 `~/Work/trading/qc_observer_archive/code/`。
 - Railway：`monitor`、`cron-morning-health`、`cron-post-market-report` 已删除，配置记录在归档的 `railway_services.json`。
-  `main-service` 已断开 GitHub、停止部署，只保留变量；域名保留未删。
+  `main-service` 先断开 GitHub、只保留变量；同日把仍在使用的 7 个密钥迁到环境级 Shared Variables 后整体删除（含域名），
+  删除前全部变量备份到 `qc_observer_archive/main-service-variables.env`（权限 600）。
 - 数据：17 张 `qc_*` 表保留在库里，同时备份到 `qc_observer_archive/db/qc_observer_tables_20261026.dump`（4,393 行）。
 - 恢复步骤见 `~/Work/trading/qc_observer_archive/README.md`。
