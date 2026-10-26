@@ -63,6 +63,43 @@ class SimulateTests(unittest.TestCase):
         self.assertEqual(flat.days_held, 5)
 
 
+class TrailingExitTests(unittest.TestCase):
+    TRAIL = None
+
+    def setUp(self):
+        from scout.detectors import ExitPolicy
+
+        self.trail = ExitPolicy("trail_low", lookback=3, max_hold=20)
+
+    def test_trailing_ignores_target_and_ratchets_stop(self):
+        # Fill at 100, rally through target1 (110) without exiting, then fall back.
+        prices = [(100, 101, 99.5, 100), (104, 112, 103, 111), (111, 118, 110, 117), (117, 121, 116, 120),
+                  (120, 122, 118, 119), (119, 119.5, 109, 110)]
+        res = simulate(_bars(prices), LV, horizon=5, exit_policy=self.trail)
+        self.assertEqual(res.state, "trailed")                    # exited on the raised stop, not the target
+        self.assertGreater(res.exit_price, LV.stop)
+        self.assertGreater(res.return_pct, 0.10)                  # kept more than the 2R target would have
+
+    def test_stop_ratchets_to_lowest_low_of_lookback(self):
+        # Rising lows 99.5, 101, 102, 103, 104 → stop = min of the last 3 lows = 102.
+        prices = [(100, 101, 99.5, 100), (101, 103, 101, 102), (102, 104, 102, 103),
+                  (103, 105, 103, 104), (104, 106, 104, 105)]
+        res = simulate(_bars(prices), LV, horizon=5, exit_policy=self.trail)
+        self.assertEqual(res.state, "open")
+        self.assertEqual(res.stop, 102)
+        self.assertGreater(res.stop, LV.stop)
+
+    def test_initial_stop_still_reports_stopped(self):
+        res = simulate(_bars([(100, 101, 99.5, 100), (100, 101, 94, 95)]), LV, horizon=5, exit_policy=self.trail)
+        self.assertEqual(res.state, "stopped")
+
+    def test_power_gap_uses_trailing_exit(self):
+        from scout.detectors import get
+
+        self.assertTrue(get("power_gap").exit.trailing)
+        self.assertFalse(get("pullback_in_uptrend").exit.trailing)
+
+
 class LevelsTests(unittest.TestCase):
     def test_r_targets(self):
         lv = r_targets(99, 101, 95)

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Sequence
 
-from scout.detectors import Levels
+from scout.detectors import FIXED_EXIT, ExitPolicy, Levels
 
 TRIGGER_WINDOW = 3
 # Round-trip trading cost (commission + spread + slippage) for liquid US stocks,
@@ -32,7 +32,7 @@ class Bar:
 
 @dataclass
 class SimResult:
-    state: str                         # pending | open | untriggered | hit_target | stopped | expired
+    state: str                         # pending | open | untriggered | hit_target | stopped | trailed | expired
     entry_date: date | None = None
     entry_price: float | None = None
     exit_date: date | None = None
@@ -41,11 +41,12 @@ class SimResult:
     mfe: float | None = None           # max favourable excursion vs entry
     mae: float | None = None           # max adverse excursion vs entry
     last_close: float | None = None
+    stop: float | None = None          # stop in force after the last bar (moves up under a trailing exit)
     events: list[tuple[str, date, float]] = field(default_factory=list)
 
     @property
     def closed(self) -> bool:
-        return self.state in {"untriggered", "hit_target", "stopped", "expired"}
+        return self.state in {"untriggered", "hit_target", "stopped", "trailed", "expired"}
 
     @property
     def return_pct(self) -> float | None:
@@ -60,6 +61,7 @@ def simulate(
     levels: Levels,
     horizon: int,
     trigger_window: int = TRIGGER_WINDOW,
+    exit_policy: ExitPolicy = FIXED_EXIT,
 ) -> SimResult:
     """`bars` are the sessions strictly after the signal date, ascending."""
     res = SimResult(state="pending")
@@ -80,7 +82,9 @@ def simulate(
     res.state = "open"
     entry = res.entry_price
     hi_water, lo_water = entry, entry
-    window = bars[entry_idx : entry_idx + horizon]
+    stop = levels.stop
+    limit = exit_policy.holding_limit(horizon)
+    window = bars[entry_idx : entry_idx + limit]
     for k, b in enumerate(window):
         first = k == 0
         # On the fill bar only the part of the range after the fill is knowable;
@@ -89,21 +93,25 @@ def simulate(
         lo_water = min(lo_water, b.low)
         res.days_held = k + 1
         res.last_close = b.close
-        if b.low <= levels.stop:
-            res.state = "stopped"
-            res.exit_price = levels.stop if (first or b.open > levels.stop) else b.open
+        if b.low <= stop:
+            res.state = "trailed" if stop > levels.stop else "stopped"
+            res.exit_price = stop if (first or b.open > stop) else b.open
             res.exit_date = b.date
             break
-        if b.high >= levels.target1:
+        if not exit_policy.trailing and b.high >= levels.target1:
             res.state = "hit_target"
             res.exit_price = levels.target1 if (first or b.open < levels.target1) else b.open
             res.exit_date = b.date
             break
+        # End-of-day stop update, effective from the next bar.
+        if exit_policy.trailing and k >= exit_policy.lookback - 1:
+            stop = max(stop, min(x.low for x in window[k - exit_policy.lookback + 1 : k + 1]))
     else:
-        if len(window) >= horizon:
+        if len(window) >= limit:
             res.state = "expired"
             res.exit_price = window[-1].close
             res.exit_date = window[-1].date
+    res.stop = stop
     res.mfe = hi_water / entry - 1
     res.mae = lo_water / entry - 1
     if res.closed and res.state != "untriggered":

@@ -3,7 +3,7 @@ the replay — the base-rate table measures them, it does not tune them."""
 from __future__ import annotations
 
 from scout.detectors import Condition as C
-from scout.detectors import Detector, Levels, Ref, r_targets
+from scout.detectors import TRAIL_LOW_10, Detector, Levels, Ref, r_targets
 
 MIN_STOP_ATR = 1.0   # a stop inside one ATR of the entry is inside daily noise
 
@@ -126,6 +126,9 @@ DETECTORS: tuple[Detector, ...] = (
         "power_gap", "放量跳空", "setup", 20,
         "跳空 ≥ max(4%, 2×ATR%)，量能 ≥3 倍，收盘守住跳空（多为财报/重大事件驱动）。",
         D3_POWER_GAP, _power_gap_levels,
+        # Post-earnings drift lasts weeks: let it run under a 10-day-low trailing stop
+        # (replay 2026-10-26: edge-vs-hold -0.38% fixed → +0.32%, better in both halves).
+        exit=TRAIL_LOW_10,
     ),
     Detector(
         "sector_rotation", "板块轮动龙头", "setup", 20,

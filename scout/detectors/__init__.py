@@ -39,6 +39,34 @@ class Levels:
 
 
 @dataclass(frozen=True)
+class ExitPolicy:
+    """How a position is closed. `fixed`: protective stop, all out at target 1,
+    expiry at the rule's horizon. `trail_low`: protective stop, then once the
+    trade is `lookback` sessions old the stop ratchets up to the lowest low of
+    the last `lookback` sessions (never down); no fixed target, `max_hold` cap."""
+    kind: str = "fixed"
+    lookback: int = 10
+    max_hold: int = 60
+
+    @property
+    def trailing(self) -> bool:
+        return self.kind == "trail_low"
+
+    def holding_limit(self, horizon: int) -> int:
+        return self.max_hold if self.trailing else horizon
+
+    def describe(self, horizon: int) -> str:
+        if self.trailing:
+            return (f"跟进止损：先用保护性止损；持有满 {self.lookback} 个交易日后，止损上移到近 {self.lookback} 日最低价（只升不降）；"
+                    f"不设固定止盈，最长持有 {self.max_hold} 个交易日")
+        return f"固定：跌破保护性止损离场，到目标 1 全部止盈，{horizon} 个交易日后到期离场"
+
+
+FIXED_EXIT = ExitPolicy()
+TRAIL_LOW_10 = ExitPolicy("trail_low", lookback=10, max_hold=60)
+
+
+@dataclass(frozen=True)
 class Ref:
     """Right-hand side of a condition: max(floor, mult × field), or a constant."""
     field: str | None = None
@@ -112,6 +140,7 @@ class Detector:
     live: bool = True
     # Sessions allowed for price to trade into the entry zone after the signal.
     trigger_window: int = 3
+    exit: ExitPolicy = FIXED_EXIT
 
     def mask(self, p: FeaturePanel) -> pd.DataFrame:
         m = base_mask(p)

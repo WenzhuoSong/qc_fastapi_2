@@ -1,6 +1,6 @@
 """Opportunity lifecycle tracking against stored daily bars.
 
-new ──(price trades in entry zone)──► triggered ──► hit_target | stopped | expired
+new ──(price trades in entry zone)──► triggered ──► hit_target | stopped | trailed | expired
  └──(no fill within the trigger window)──► expired_untriggered
 """
 from __future__ import annotations
@@ -24,6 +24,7 @@ _STATE_TO_STATUS = {
     "untriggered": "expired_untriggered",
     "hit_target": "hit_target",
     "stopped": "stopped",
+    "trailed": "trailed",
     "expired": "expired",
 }
 
@@ -38,13 +39,15 @@ class Transition:
     return_pct: float | None
 
 
-def _trigger_window(detector: str) -> int:
-    from scout.detectors import get
+def _rule(detector: str):
+    """(trigger window, exit policy) of a rule; defaults for retired rules."""
+    from scout.detectors import FIXED_EXIT, get
 
     try:
-        return get(detector).trigger_window
+        det = get(detector)
+        return det.trigger_window, det.exit
     except KeyError:
-        return 3
+        return 3, FIXED_EXIT
 
 
 def levels_of(row: dict) -> Levels:
@@ -76,10 +79,13 @@ async def update_all() -> list[Transition]:
     spy = frames.get(BENCHMARK)
     transitions = []
     for o in opps:
+        window, exit_policy = _rule(o["primary_detector"])
         res = simulate(_bars_after(frames.get(o["ticker"]), o["asof"]), levels_of(o), o["horizon_days"],
-                       _trigger_window(o["primary_detector"]))
+                       window, exit_policy)
         new_status = _STATE_TO_STATUS[res.state]
         await _record_events(o["id"], res)
+        if res.stop is not None and res.stop != o.get("current_stop"):
+            await db.execute("UPDATE scout.opportunities SET current_stop = :s WHERE id = :id", {"s": res.stop, "id": o["id"]})
         if new_status == o["status"]:
             continue
         await _apply(o, res, new_status, spy)

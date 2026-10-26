@@ -17,7 +17,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 MAX_CHARS = 3900
 FEEDBACK_ACTIONS = {"up": "👍 有用", "down": "👎 没用", "star": "⭐ 关注", "dismiss": "🙈 忽略"}
 STATUS_LABELS = {
-    "new": "待触发", "triggered": "已触发", "hit_target": "达到目标", "stopped": "止损",
+    "new": "待触发", "triggered": "已触发", "hit_target": "达到目标", "stopped": "止损", "trailed": "跟进止损离场",
     "expired": "到期", "expired_untriggered": "未触发过期",
 }
 CONFIDENCE_LABELS = {"low": "低", "medium": "中", "high": "高"}
@@ -81,6 +81,18 @@ def score_text(why: dict) -> str | None:
     return f"评分 {why['score']:.2f} = {text}" + (f"（调整：{adj}）" if adj else "")
 
 
+def exit_text(o: dict) -> str:
+    """One line: how this trade is exited, with the live trailing stop if any."""
+    ex = (o.get("evidence") or {}).get("exit") or {}
+    if ex.get("kind") == "trail_low":
+        text = f"跟进止损（{ex['lookback']} 日低点，只升不降）· 最长 {ex['max_hold']} 日"
+        cur = o.get("current_stop")
+        if cur and o.get("status") == "triggered" and cur > o["stop"]:
+            text += f" · 当前止损已上移至 {cur:.2f}"
+        return text
+    return f"到目标 1 止盈 · 周期 {o['horizon_days']} 日"
+
+
 def base_rate_text(br: dict) -> str:
     """Rule-level replay stats, net of costs, judged against just holding the stock."""
     head = f"规则历史 {br['n']} 次（{br.get('regime')}）"
@@ -106,9 +118,10 @@ def render_card(o: dict) -> str:
     lines = [head]
     if th.get("headline"):
         lines.append(f"<i>{esc(th['headline'])}</i>")
+    trailing = (ev.get("exit") or {}).get("kind") == "trail_low"
     lines.append(
-        f"入场 {o['entry_lo']:.2f}–{o['entry_hi']:.2f} | 止损 {o['stop']:.2f} | "
-        f"目标 {o['target1']:.2f} / {(o.get('target2') or o['target1']):.2f}"
+        f"入场 {o['entry_lo']:.2f}–{o['entry_hi']:.2f} | 保护性止损 {o['stop']:.2f} | "
+        f"{'参考目标' if trailing else '目标'} {o['target1']:.2f} / {(o.get('target2') or o['target1']):.2f}"
     )
     move = market_split_text(ev.get("price") or {})
     if move:
@@ -121,7 +134,7 @@ def render_card(o: dict) -> str:
     pos = position_text(why)
     if pos:
         lines.append(f"🧭 {esc(pos)}")
-    lines.append(f"周期 {o['horizon_days']} 日 | R:R {o.get('risk_reward') or 0:.1f} | 状态 {STATUS_LABELS.get(o.get('status'), o.get('status'))}")
+    lines.append(f"出场：{esc(exit_text(o))} | R:R {o.get('risk_reward') or 0:.1f} | 状态 {STATUS_LABELS.get(o.get('status'), o.get('status'))}")
     if br.get("n"):
         lines.append(f"📊 {base_rate_text(br)}")
     score = score_text(why)

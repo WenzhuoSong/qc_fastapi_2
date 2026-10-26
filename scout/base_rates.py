@@ -99,7 +99,7 @@ def replay_detector(p: FeaturePanel, det: Detector, drift: dict[str, float] | No
     drift = drift if drift is not None else daily_drift(p)
     samples: list[Sample] = []
     n_dates = len(p.dates)
-    span = det.trigger_window + det.horizon_days
+    span = det.trigger_window + det.exit.holding_limit(det.horizon_days)
     spy_open, spy_close = p["open"][BENCHMARK].to_numpy(), p["close"][BENCHMARK].to_numpy()
     for ticker, i in hit_positions(mask):
         if i + span >= n_dates:
@@ -108,7 +108,7 @@ def replay_detector(p: FeaturePanel, det: Detector, drift: dict[str, float] | No
         lv = det.levels(p.row(ticker, d))
         if not lv.valid():
             continue
-        res = simulate(_bars(p, ticker, i + 1, i + 1 + span), lv, det.horizon_days, det.trigger_window)
+        res = simulate(_bars(p, ticker, i + 1, i + 1 + span), lv, det.horizon_days, det.trigger_window, det.exit)
         spy_ret = None
         if res.entry_date is not None and res.exit_date is not None:
             a = p.dates.get_loc(res.entry_date)
@@ -148,6 +148,7 @@ def summarize(samples: list[Sample]) -> dict:
         "win_rate": round(float((ret > 0).mean()), 4),
         "target_rate": round(sum(s.state == "hit_target" for s in traded) / len(traded), 4),
         "stop_rate": round(sum(s.state == "stopped" for s in traded) / len(traded), 4),
+        "trail_rate": round(sum(s.state == "trailed" for s in traded) / len(traded), 4),
         "avg_return": round(float(ret.mean()), 5),
         "median_return": round(float(np.median(ret)), 5),
         "avg_excess": round(float(excess.mean()), 5) if excess.size else None,

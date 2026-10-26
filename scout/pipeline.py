@@ -222,7 +222,7 @@ def render_eod_brief(asof: date, market: dict, candidates, transitions, saved: l
         lines.append("领涨板块(20日)：" + "，".join(f"{k} {pct(v, 1, True)}" for k, v in market["sector_leaders_20d"]))
         lines.append("落后板块(20日)：" + "，".join(f"{k} {pct(v, 1, True)}" for k, v in market["sector_laggards_20d"]))
     if transitions:
-        icon = {"triggered": "▶️", "hit_target": "🎯", "stopped": "🛑", "expired": "⌛", "expired_untriggered": "⌛"}
+        icon = {"triggered": "▶️", "hit_target": "🎯", "stopped": "🛑", "trailed": "🏁", "expired": "⌛", "expired_untriggered": "⌛"}
         lines.append("\n<b>机会状态变化</b>")
         for t in transitions:
             ret = f" {pct(t.return_pct, 1, True)}" if t.return_pct is not None else ""
