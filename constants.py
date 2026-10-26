@@ -2,7 +2,7 @@
 新闻覆盖的标的池。
 
 `cron.pre_fetch_news` 每 2 小时为这些 ticker 抓取新闻：
-    默认 17 只 ETF  ∪  Scout watchlist 与活跃机会
+    默认 17 只 ETF（含 11 个行业 ETF） ∪ 每个行业成交额最大的 5 只股票 ∪ Scout watchlist 与活跃机会
 
 冷启动或数据库不可用时回落到默认 ETF。
 """
@@ -42,6 +42,12 @@ DEFAULT_ETF_UNIVERSE: list[str] = SPDR_SECTORS + BROAD_MARKET + MACRO_HEDGE
 _SCOUT_TICKERS_SQL = """
 SELECT ticker FROM scout.watchlist WHERE active
 UNION SELECT ticker FROM scout.opportunities WHERE status IN ('new', 'triggered')
+UNION SELECT ticker FROM (
+    SELECT f.ticker, row_number() OVER (
+        PARTITION BY i.sector ORDER BY (f.payload->>'dollar_vol20')::float DESC NULLS LAST) AS rn
+    FROM scout.features_daily f JOIN scout.instruments i USING (ticker)
+    WHERE f.date = (SELECT max(date) FROM scout.features_daily) AND i.kind = 'stock' AND i.sector IS NOT NULL
+) leaders WHERE rn <= 5
 """
 
 

@@ -382,3 +382,19 @@ heat:
   zh: 热度
   unit: score01
   definition: 板块之间按 20 日相对 SPY、相对强度比、相对强度动量、站上 50 日线比例、涨跌日量比、成交额热度分别排名，取百分位的平均。≥ 0.67 为热，≤ 0.33 为冷。
+news_attention:
+  zh: 新闻关注度
+  unit: ratio
+  definition: 最近 7 天该板块的新闻条数 ÷ 之前 7 天的条数（只统计两段都有覆盖的标的，去重后计）。大于 1 表示关注度上升。基线不足时不计算。
+  readings:
+    - {min: 1.5, text: 新闻关注度明显上升}
+    - {min: 0.8, text: 关注度正常}
+    - {max: 0.8, text: 关注度下降}
+tone_net:
+  zh: 新闻情绪净值
+  unit: signed
+  definition: 最近 3 天（正面条数 − 负面条数）÷ 总条数，情绪由新闻摘要模型标注。
+  readings:
+    - {min: 0.2, text: 新闻偏正面}
+    - {min: -0.2, text: 新闻中性}
+    - {max: -0.2, text: 新闻偏负面}
