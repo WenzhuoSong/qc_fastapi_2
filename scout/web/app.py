@@ -11,9 +11,10 @@ from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, stat
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from scout import db, telegram, universe
+from scout import db, premarket, telegram, universe
 from scout.config import get_scout_settings
 from scout.features import SNAPSHOT_FEATURES
+from scout.market_calendar import us_equity_market_status
 from scout.web import views
 from scout.web.views import e, layout, opp_card, signed, table, tlink
 
@@ -99,7 +100,9 @@ async def today(_: str = Depends(require_auth)) -> str:
     ev_rows = [[e(x["event_date"]), f'<a href="/ticker/{e(x["ticker"])}">{e(x["ticker"])}</a>', e(x["primary_detector"]),
                 e(telegram.STATUS_LABELS.get(x["event_type"], x["event_type"])), f"{x['price']:.2f}" if x["price"] else "—"]
                for x in events]
-    body = head + "<h2>活跃机会</h2>"
+    pre = await premarket.latest()
+    current = bool(pre) and pre["asof"] == date.fromisoformat(us_equity_market_status().market_date)
+    body = views.premarket_card(pre, current) + head + "<h2>活跃机会</h2>"
     body += f'<div class="grid">{"".join(opp_card(o) for o in active)}</div>' if active else "<p class='muted'>暂无活跃机会。</p>"
     if ev_rows:
         body += "<h2>最近状态变化</h2>" + table(["日期", "代码", "规则", "事件", "价格"], ev_rows)

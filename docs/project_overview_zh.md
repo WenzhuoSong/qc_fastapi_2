@@ -33,6 +33,7 @@
 |---|---|---|
 | `scout-web` | `uvicorn scout.web.app:app` | 常驻 · https://scout-web-production-39ab.up.railway.app |
 | `scout-eod` | `python -m scout.jobs.eod` | `30 21 * * 1-5`（美东收盘后；休市日自动跳过） |
+| `scout-premarket` | `python -m scout.jobs.premarket` | `0 13 * * 1-5`（北京时间 21:00，夏令时开盘前 30 分钟、冬令时 90 分钟；休市日跳过） |
 | `scout-weekly` | `python -m scout.jobs.weekly` | `0 14 * * 6`（周六） |
 | `cron-pre-fetch-news` | `python -m cron.pre_fetch_news` | `50 */2 * * *`（24/7） |
 | `Postgres` | — | — |
@@ -181,6 +182,22 @@ Python 确定性组装证据包 ──► 6 个视角，各带「读数 + 定义
   - 收盘简报增加板块热度、轮动和关注点主题；
   - Telegram `/sectors` 命令；周报增加本周轮动。
 
+### 3.4.4 盘前简报（`scout/premarket.py`，cron `scout-premarket`，北京时间 21:00）
+
+- **Python 整理的事实**：
+  - 隔夜：标普/纳指/罗素期货、VIX、10 年美债、美元、原油、黄金、比特币相对上一交易日收盘（Yahoo 5 分钟数据，含盘前）；
+  - 活跃机会的盘前价和"位置判断"（入场区间内 / 低于区间 / 高于上沿追高风险 / 跌破止损 / 到达目标 1）；
+  - 自选股盘前涨跌超过 2% 的；
+  - 财报：昨日盘后与今日盘前已公布的（EPS 实际 vs 预期、超预期幅度、盘前反应）、今日待公布、本周后续，
+    范围是活跃机会、自选和成交额前 150 的股票；
+  - 经济日历：Forex Factory 的免费周历（美国中高影响事件，美东/北京时间、预期、前值；没有实际值）。
+    Finnhub 的经济日历不在免费套餐内（403）；
+  - 上一交易日收盘以来的个股新闻和宏观新闻，以及昨晚的市场关注点。
+- **AI 部分**只写标题、要点、个股关注和风险。校验数字、引用、个股必须在证据包内，机会的位置只能按 Python 的判断表述。
+  未通过校验时退回规则整理。
+- **推送与查看**：Telegram 推送；`/premarket` 命令；Dashboard 首页顶部卡片（当天的展开，往日的折叠）。
+- 已生成过的交易日不重复推送，`--force` 可重跑；休市日跳过。
+
 ### 3.5 LLM 的边界（`scout/thesis.py`）
 
 - LLM 只写文字：标题、逻辑、催化剂、反方证据、风险、置信度。入场、止损、目标等数字全部由 Python 计算。
@@ -223,10 +240,11 @@ qc_fastapi_2/
 │   ├── sectors.py         240     板块轮动（RRG 近似）、宽度、资金流代理、热度
 │   ├── sector_news.py     150     板块新闻：关注度、情绪、头条、全市场综述
 │   ├── market_focus.py    260     AI 市场关注点（证据包 → 结构化输出 → 校验）
+│   ├── premarket.py       380     盘前简报（隔夜行情、机会盘前位置、财报、经济日历、新闻 → AI + 校验）
 │   ├── screens.py         170     策略筛选：规则筛选（全部命中 + 位置统计）与描述性信号筛选（新高、涨跌榜、放量、RSI、波段突破、支撑阻力、财报）
 │   ├── web/app.py         480     FastAPI：/screens 策略筛选页，/health、/telegram、Dashboard（今日含板块与主题 ETF 表、个股页含 Scout 分析 / AI 解读 / 板块成分股）
 │   ├── web/views.py       115     HTML / CSS（亮暗主题）/ K 线图（lightweight-charts）
-│   └── jobs/              ...     _run.py（日志、job_runs、失败告警）、eod、weekly、backfill
+│   └── jobs/              ...     _run.py（日志、job_runs、失败告警）、premarket、eod、weekly、backfill
 │
 ├── cron/pre_fetch_news.py  683    ── 共用新闻管线（约 60 只标的，按 Finnhub 免费层限速）
 ├── services/                      新闻客户端：finnhub、alphavantage、rss；news_summarizer；cron_audit；retry_protocol
@@ -314,7 +332,7 @@ Dashboard（今日 / 机会看板 / 个股 K 线 / 记分板 / Watchlist / 问�
 
 ## 9. 路线图（下一步候选）
 
-1. **P4 盘中与事件**：盘中监控活跃机会的触发和止损、盘前简报、财报前布局规则（D6）、SEC Form 4 内部人集中买入（D7）。需要盘中数据源。
+1. **P4 盘中与事件**：盘中监控活跃机会的触发和止损、财报前布局规则（D6）、SEC Form 4 内部人集中买入（D7）。需要盘中数据源。
 2. **反馈闭环**：每周按记分板和 👍👎 自动降级或提示规则；在 Dashboard 上展示反馈统计。
 3. **问答增强**：同行业对比工具、财报历史跳空统计、"为什么没推这只"的解释。
 4. **数据质量**：历史成分股、付费行情、期权隐含波动。

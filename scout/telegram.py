@@ -30,6 +30,7 @@ HELP_TEXT = (
     "/watch list | add NVDA [主题] | rm NVDA\n"
     "/stats — 规则记分板\n"
     "/sectors — 板块热度、轮动与市场关注点\n"
+    "/premarket — 今天的盘前简报\n"
     "直接发文字即可提问（例如：今天最强的板块是什么？）"
 )
 
@@ -304,7 +305,19 @@ async def dispatch(text: str) -> str:
         return await stats_text()
     if cmd in ("/sectors", "/market"):
         return await sectors_text()
+    if cmd in ("/premarket", "/pre"):
+        return await premarket_text()
     return HELP_TEXT
+
+
+async def premarket_text() -> str:
+    from scout import premarket
+
+    rec = await premarket.latest()
+    if rec is None:
+        return "还没有盘前简报，交易日北京时间 21:00 左右生成。"
+    note = "" if rec.get("source") == "llm" else "\n（AI 简报未通过校验，要点为规则整理）"
+    return esc(rec["content"]) + note
 
 
 async def why_text(ticker: str) -> str:

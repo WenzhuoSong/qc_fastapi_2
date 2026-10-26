@@ -5,6 +5,7 @@ import json
 from html import escape
 from typing import Any, Iterable
 
+from scout.premarket import overnight_line
 from scout.sectors import QUADRANTS, rotation_read, rotation_reads
 from scout.telegram import (CONFIDENCE_LABELS, STATUS_LABELS, base_rate_text, market_split_text, pct,
                             position_text, sector_text)
@@ -466,3 +467,47 @@ def heat_cell(value, rank: float | None, text: str) -> str:
     alpha = abs(rank - 0.5) * 0.6
     rgb = "46,160,90" if rank >= 0.5 else "200,57,59"
     return f"<td style='background:rgba({rgb},{alpha:.2f})'>{text}</td>"
+
+
+def premarket_card(rec: dict | None, current: bool) -> str:
+    """Latest pre-market brief: open when it is for today's session, folded otherwise."""
+    if not rec:
+        return ""
+    b, p = rec["brief"], rec["pack"]
+    source = f"{rec.get('model')} · 校验通过" if rec.get("source") == "llm" else "未通过校验，要点为规则整理"
+    points = "".join(f"<li>{escape(x['text'])}</li>" for x in b["points"])
+    econ = "".join(f"<tr><td>{escape(e['美东时间'])}</td><td>{escape(e['北京时间'][-5:])}</td><td>{escape(e['重要性'])}</td>"
+                   f"<td>{escape(e['事件'])}</td><td>{escape(e.get('预期') or '—')}</td><td>{escape(e.get('前值') or '—')}</td></tr>"
+                   for e in p["economic_today"])
+    econ_html = (f"<table class='small'><thead><tr><th>美东</th><th>北京</th><th>重要性</th><th>今日数据</th><th>预期</th><th>前值</th></tr></thead>"
+                 f"<tbody>{econ}</tbody></table>") if econ else "<p class='small muted'>今天没有重要经济数据。</p>"
+
+    def tl(t: str) -> str:
+        return f"<a href='/ticker/{escape(t)}'>{escape(t)}</a>"
+
+    earn = []
+    for e in p["earnings_reported"]:
+        s = f"{tl(e['代码'])} {escape(e['时间'])} EPS {escape(e['EPS 实际'])} vs {escape(e['EPS 预期'])}"
+        s += f"（{escape(e['EPS 超预期幅度'])}）" if e.get("EPS 超预期幅度") else ""
+        s += f"，盘前 {escape(e['盘前较前收'])}" if e.get("盘前较前收") else ""
+        earn.append(s)
+    lines = [f"<b>已公布</b>：{'；'.join(earn)}"] if earn else []
+    if p["earnings_today"]:
+        lines.append("<b>今日待公布</b>：" + "、".join(f"{tl(e['代码'])}（{escape(e['时间'])}）" for e in p["earnings_today"]))
+    if p["earnings_week"]:
+        lines.append("<b>本周后续</b>：" + "、".join(f"{tl(e['代码'])} {escape(e['时间'])}" for e in p["earnings_week"]))
+    opps = "".join(f"<li>{tl(o['代码'])}（{escape(o['状态'])}）{escape(o.get('盘前价', ''))} {escape(o['位置判断'])}</li>"
+                   for o in p["opportunities"])
+    notes = "".join(f"<li>{tl(n['ticker'])}：{escape(n['note'])}</li>" for n in b["tickers"])
+    moves = "、".join(f"{tl(m['代码'])} {escape(m['盘前较前收'])}" for m in p["watchlist_moves"])
+    inner = (f"<div class='headline'>{escape(b['headline'])}</div>"
+             f"<p class='small'><b>隔夜</b>：{escape(overnight_line(p))}<br>{escape(b['overnight'])}</p><ol>{points}</ol>{econ_html}"
+             + (f"<p class='small'>{'<br>'.join(lines)}</p>" if lines else "")
+             + (f"<div class='small'><b>活跃机会盘前位置</b><ul class='tight'>{opps}</ul></div>" if opps else "")
+             + (f"<p class='small'><b>自选股盘前异动</b>：{moves}</p>" if moves else "")
+             + (f"<div class='small'><b>个股关注</b><ul class='tight'>{notes}</ul></div>" if notes else "")
+             + f"<p class='small'><b>风险</b>：{escape('；'.join(b['risks']))}<br><span class='muted'>盘前价格不代表开盘价；非投资建议。</span></p>")
+    title = f"盘前简报 · {escape(p['session'])} {escape(p['weekday'])} <span class='small muted'>{escape(source)}</span>"
+    if current:
+        return f"<div class='card analysis' style='margin-bottom:12px'><h3>{title}</h3>{inner}</div>"
+    return f"<details class='card analysis' style='margin-bottom:12px'><summary>{title}（上一份）</summary>{inner}</details>"

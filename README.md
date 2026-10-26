@@ -32,6 +32,7 @@ python -m unittest discover -s tests -t .
 |---|---|---|
 | `scout-web` | `uvicorn scout.web.app:app` (Dockerfile default) | always on |
 | `scout-eod` | `python -m scout.jobs.eod` | `30 21 * * 1-5` |
+| `scout-premarket` | `python -m scout.jobs.premarket` | `0 13 * * 1-5` |
 | `scout-weekly` | `python -m scout.jobs.weekly` | `0 14 * * 6` |
 | `cron-pre-fetch-news` | `python -m cron.pre_fetch_news` | `50 */2 * * *` (24/7 multi-source news) |
 | `Postgres` | — | — |

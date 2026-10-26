@@ -78,17 +78,27 @@ def _news_item(r: dict) -> dict:
     }
 
 
+EARNINGS_WINDOW_DAYS = 2          # ~200–600 rows per day at the peak of earnings season
+FINNHUB_EARNINGS_CAP = 1500
+
+
 async def refresh_earnings(days_back: int = 10, days_ahead: int = 21) -> int:
     if not get_scout_settings().finnhub_api_key:
         return 0
     from services.finnhub_client import fetch_earnings_range
 
+    # Finnhub caps one response at 1500 rows and drops the earliest dates, so
+    # a month in one call silently loses the nearest weeks of earnings season.
     today = date.today()
-    items = await asyncio.to_thread(
-        fetch_earnings_range,
-        (today - timedelta(days=days_back)).isoformat(),
-        (today + timedelta(days=days_ahead)).isoformat(),
-    )
+    items: list[dict] = []
+    start, end = today - timedelta(days=days_back), today + timedelta(days=days_ahead)
+    while start <= end:
+        stop = min(start + timedelta(days=EARNINGS_WINDOW_DAYS - 1), end)
+        chunk = await asyncio.to_thread(fetch_earnings_range, start.isoformat(), stop.isoformat())
+        if len(chunk) >= FINNHUB_EARNINGS_CAP:
+            logger.warning("earnings %s..%s hit the %d-row cap; some dates may be missing", start, stop, FINNHUB_EARNINGS_CAP)
+        items += chunk
+        start = stop + timedelta(days=1)
     rows = []
     for it in items:
         symbol, day = it.get("symbol"), it.get("date")
@@ -105,6 +115,7 @@ async def refresh_earnings(days_back: int = 10, days_ahead: int = 21) -> int:
                 "revenue_actual": it.get("revenueActual"),
             }),
         })
+    rows = list({(r["t"], r["d"]): r for r in rows}.values())    # one row per (ticker, date) for ON CONFLICT
     if rows:
         await db.execute_many(
             """
@@ -160,3 +171,60 @@ def _surprise(actual, estimate) -> float | None:
         return round((float(actual) - float(estimate)) / abs(float(estimate)), 4)
     except (TypeError, ValueError):
         return None
+
+
+# ── Economic calendar ──
+# Finnhub's economic calendar is not in the free tier (403). Forex Factory's
+# weekly JSON is free and keyless: title, country, ET timestamp, impact,
+# forecast, previous (no actuals).
+ECON_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+ECON_ZH = {
+    "CPI m/m": "CPI 月率", "Core CPI m/m": "核心 CPI 月率", "CPI y/y": "CPI 年率", "PPI m/m": "PPI 月率",
+    "Core PPI m/m": "核心 PPI 月率", "Non-Farm Employment Change": "非农就业人数", "Unemployment Rate": "失业率",
+    "Average Hourly Earnings m/m": "平均时薪月率", "Unemployment Claims": "初请失业金人数",
+    "Federal Funds Rate": "联邦基金利率决议", "FOMC Statement": "FOMC 声明", "FOMC Press Conference": "FOMC 新闻发布会",
+    "FOMC Meeting Minutes": "FOMC 会议纪要", "Advance GDP q/q": "GDP 初值（季环比）", "Prelim GDP q/q": "GDP 修正值",
+    "Final GDP q/q": "GDP 终值", "Core PCE Price Index m/m": "核心 PCE 物价指数月率", "Retail Sales m/m": "零售销售月率",
+    "Core Retail Sales m/m": "核心零售销售月率", "ISM Manufacturing PMI": "ISM 制造业 PMI", "ISM Services PMI": "ISM 服务业 PMI",
+    "CB Consumer Confidence": "谘商会消费者信心", "Prelim UoM Consumer Sentiment": "密歇根消费者信心初值",
+    "JOLTS Job Openings": "JOLTS 职位空缺", "ADP Non-Farm Employment Change": "ADP 就业人数",
+    "Fed Chair Powell Speaks": "美联储主席讲话", "Empire State Manufacturing Index": "纽约联储制造业指数",
+    "Philly Fed Manufacturing Index": "费城联储制造业指数", "Durable Goods Orders m/m": "耐用品订单月率",
+}
+
+
+async def economic_calendar(country: str = "USD") -> list[dict]:
+    """This week's events for one country, Medium/High impact; [] on failure."""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=20, headers={"User-Agent": "Mozilla/5.0"}) as client:
+            resp = await client.get(ECON_URL)
+            resp.raise_for_status()
+            items = resp.json()
+    except Exception as exc:
+        logger.warning("economic calendar unavailable: %s", exc)
+        return []
+    return parse_economic_calendar(items, country)
+
+
+def parse_economic_calendar(items: list[dict], country: str = "USD") -> list[dict]:
+    from zoneinfo import ZoneInfo
+
+    et, bj = ZoneInfo("America/New_York"), ZoneInfo("Asia/Shanghai")
+    out = []
+    for it in items:
+        if it.get("country") != country or it.get("impact") not in ("High", "Medium"):
+            continue
+        try:
+            ts = datetime.fromisoformat(it["date"])
+        except (KeyError, ValueError):
+            continue
+        title = it.get("title") or ""
+        out.append({
+            "date": ts.astimezone(et).date().isoformat(), "time_et": ts.astimezone(et).strftime("%H:%M"),
+            "time_bj": ts.astimezone(bj).strftime("%m-%d %H:%M"), "title": title, "title_zh": ECON_ZH.get(title, title),
+            "impact": "高" if it["impact"] == "High" else "中",
+            "forecast": it.get("forecast") or None, "previous": it.get("previous") or None,
+        })
+    return sorted(out, key=lambda e: (e["date"], e["time_et"]))

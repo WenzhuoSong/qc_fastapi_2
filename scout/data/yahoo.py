@@ -74,3 +74,53 @@ def split_download(raw: pd.DataFrame, tickers: list[str]) -> dict[str, pd.DataFr
         frame.index = pd.to_datetime(frame.index).date
         out[ticker] = frame.sort_index().astype(float)
     return out
+
+
+# ── Latest quotes incl. pre-market / overnight futures (for the pre-market brief) ──
+
+def quote_from(intraday: pd.Series, daily: pd.Series, session: date) -> dict | None:
+    """Last 5-minute print vs the previous session's close.
+
+    `intraday` is indexed by tz-aware timestamps (pre/post-market included),
+    `daily` by date. A last print older than `session` is marked stale (e.g. a
+    cash index that has not traded yet today) and gets no change.
+    """
+    intraday, daily = intraday.dropna(), daily.dropna()
+    if intraday.empty:
+        return None
+    ts = pd.Timestamp(intraday.index[-1])
+    ts = ts.tz_convert("America/New_York") if ts.tzinfo else ts.tz_localize("UTC").tz_convert("America/New_York")
+    prior = daily[[pd.Timestamp(d).date() < session for d in daily.index]]
+    last = float(intraday.iloc[-1])
+    prev = float(prior.iloc[-1]) if len(prior) else None
+    stale = ts.date() < session
+    return {"last": last, "prev_close": prev, "change": None if stale or not prev else last / prev - 1,
+            "time_et": ts.strftime("%m-%d %H:%M"), "stale": stale}
+
+
+def _quotes(symbols: list[str], session: date) -> dict[str, dict]:
+    import yfinance as yf
+
+    kw = dict(group_by="ticker", auto_adjust=False, progress=False, threads=True)
+    intraday = yf.download(symbols, period="5d", interval="5m", prepost=True, **kw)
+    daily = yf.download(symbols, period="10d", interval="1d", **kw)
+    out = {}
+    for s in symbols:
+        try:
+            q = quote_from(intraday[s]["Close"], daily[s]["Close"], session)
+        except KeyError:
+            continue
+        if q:
+            out[s] = q
+    return out
+
+
+async def latest_quotes(symbols: list[str], session: date) -> dict[str, dict]:
+    """Best effort: an empty dict when Yahoo fails, never an exception."""
+    if not symbols:
+        return {}
+    try:
+        return await asyncio.to_thread(_quotes, sorted(set(symbols)) + ["SPY"], session)
+    except Exception as exc:
+        logger.warning("yahoo quotes failed: %s", exc)
+        return {}
