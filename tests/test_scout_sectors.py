@@ -53,3 +53,48 @@ class SectorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MarketFocusValidationTests(unittest.TestCase):
+    def _pack(self):
+        sec = lambda k, name, heat, flow, att: {"key": k, "name": name, "heat_label": heat, "flow_label": flow,
+                                                "attention_label": att, "metrics": [], "quadrant": {"数值": "领先", "上周": "领先"}}
+        return {"data_date": "2026-10-23", "market": {"key": "market.regime", "大盘状态": "上升趋势"},
+                "sectors": [sec("XLE", "能源", "热", "流入", "正常"), sec("XLK", "信息技术", "冷", "信号分歧", "下降"),
+                            sec("XLC", "通信服务", "冷", "信号分歧", "基线不足")],
+                "themes": [], "market_news": [{"key": "wrap_1", "headline": "x"}]}
+
+    def _focus(self, theme_text, theme_sectors, stance_xle="热"):
+        from scout.market_focus import MarketFocus, SectorView, Theme
+
+        views = [SectorView(sector="XLE", stance=stance_xle, view="领先", evidence=["XLE.quadrant"]),
+                 SectorView(sector="XLK", stance="冷", view="落后", evidence=["XLK.quadrant"]),
+                 SectorView(sector="XLC", stance="冷", view="落后", evidence=["XLC.quadrant"])]
+        themes = [Theme(title="a", summary=theme_text, sectors=theme_sectors, evidence=["wrap_1"]),
+                  Theme(title="b", summary="能源资金流入", sectors=["XLE"], evidence=["XLE.quadrant"])]
+        return MarketFocus(headline="h", regime_view="r", themes=themes, sectors=views, watch=["w"], risks=["x"],
+                           confidence="medium", confidence_reason="c")
+
+    def test_clean_passes(self):
+        from scout.market_focus import validate
+
+        self.assertEqual(validate(self._focus("科技资金流向信号分歧", ["XLK"]), self._pack()), [])
+
+    def test_flow_and_attention_misreads_are_caught_even_if_sector_not_listed(self):
+        from scout.market_focus import validate
+
+        issues = "\n".join(validate(self._focus("信息技术和通信服务资金流出，新闻关注度下降", ["XLK"]), self._pack()))
+        self.assertIn("XLK 的资金流向", issues)
+        self.assertIn("XLC 的新闻关注度", issues)       # XLC only named in the prose
+
+    def test_heat_label_must_match_rule(self):
+        from scout.market_focus import validate
+
+        self.assertTrue(any("板块热度" in i for i in validate(self._focus("x", ["XLK"], stance_xle="冷"), self._pack())))
+
+    def test_labels(self):
+        self.assertEqual(sectors.flow_label(0.10, 1.4), "流入")
+        self.assertEqual(sectors.flow_label(-0.05, 0.8), "流出")
+        self.assertEqual(sectors.flow_label(0.03, 0.88), "信号分歧")
+        self.assertEqual(sectors.attention_label(None), "基线不足")
+        self.assertEqual(sectors.attention_label(2.0), "上升")

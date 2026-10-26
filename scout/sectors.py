@@ -124,6 +124,7 @@ def compute(p: FeaturePanel, asof: date) -> list[dict]:
         rows.append(row)
     for r in rows:
         r["dollar_vol_share"] = r["dollar_vol_5d"] / total_dv5 if total_dv5 else None
+        r["flow_label"] = flow_label(r.get("cmf_20"), r.get("updown_vol_20"))
     _heat(rows)
     for etf in THEME_RRG:
         if etf in p["close"].columns and etf in rot:
@@ -141,6 +142,23 @@ def _etf_returns(p: FeaturePanel, etf: str, asof: date) -> dict:
     if out.get("ret_20d") is not None and not pd.isna(spy20):
         out["rel_20"] = out["ret_20d"] - float(spy20)
     return out
+
+
+def flow_label(cmf: float | None, updown: float | None) -> str:
+    """Money-flow direction only when both daily-bar proxies agree."""
+    if cmf is None or updown is None:
+        return "数据不足"
+    if cmf > 0.02 and updown > 1.05:
+        return "流入"
+    if cmf < -0.02 and updown < 0.95:
+        return "流出"
+    return "信号分歧"
+
+
+def attention_label(attention: float | None) -> str:
+    if attention is None:
+        return "基线不足"
+    return "上升" if attention >= 1.2 else "下降" if attention <= 0.8 else "正常"
 
 
 def _heat(rows: list[dict]) -> None:
