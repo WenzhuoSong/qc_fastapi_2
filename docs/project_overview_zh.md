@@ -100,14 +100,24 @@ Telegram webhook：@wenzhuo_qc_bot → `scout-web/telegram`，带 secret token �
 | `volume_shock` | 放量异动 | 上线（watch） | 10 日 | 180 | +1.7% | **+1.8%** | 53% |
 | `zscore_oversold` | z 分数超跌 | **候选（仅回放）** | 10 日 | 895 | — | **+0.4%** | 42% |
 
+| `breakout_retest` | 突破回踩 | **候选（仅回放）** | 20 日 | 483 | — | **−0.6%** | — |
+
 所有规则的止损距入场中点至少 1 个 ATR。`live=False` 的候选规则会参与回放并显示在记分板上，但不扫描、不推送。
 `zscore_oversold`（2026-10-26 评估）：和强势回调有 34% 重叠，不重叠的部分 +0.48%，但在上升市只有 +0.11%、止损率 50%，
 所以暂不上线，等积累更多震荡市样本后再评估。
 
+**追高与位置（2026-10-26）**：规则都写成声明式条件（`scout/detectors/__init__.py::Condition`），筛选和"为什么入选"用的是同一组条件对象，
+真实数据上逐笔核对 5184 次命中，没有一例不一致。历史基准额外按"入选时距 52 周高点"分成三档（3% 以内 / 3–10% / 10% 以上）。
+排序时优先用"同规则、同位置"的扣费后相对持有，这一档样本不足再退回按市场状态分组的基准；当这一档为负时，卡片会标注"⚠️ 追高风险"。
+总体上贴近高点的信号跑输持有 0.95%，但各条规则差别很大，比如放量异动在贴近高点时仍是 +2.3%，所以按规则逐条度量，而不是一刀切。
+
+**突破回踩（D）评估结论：不采用**。等回踩再入场（−0.59%）并不比直接追价（−0.56%）好。突破后从未回踩的 26% 才是好突破
+（追价买入扣费后 +5.05%），会回踩的 74% 往往是正在失败的突破（−2.48%），等回踩恰好会买到这一批。趋势突破的问题在规则本身，不在入场方式。
+
 ### 3.4 评分（`scout/opportunities.py::score_candidate`）
 
 ```
-score = 0.45·规则优势（扣费后相对持有，按样本量收缩） + 0.25·相对强度 + 0.15·多规则共振 + 0.15·盈亏比
+score = 0.45·规则优势（扣费后相对持有；优先取同规则同位置，按样本量收缩） + 0.25·相对强度 + 0.15·多规则共振 + 0.15·盈亏比
         × 0.9（watch 类）  − 0.15（5 天内有财报且不是事件型规则）  + 0.05（在 watchlist 中）
         × 反馈权重（0.8–1.2，来自 👍👎）
 ```
@@ -174,7 +184,8 @@ qc_fastapi_2/
 │   ├── knowledge/                 数据字典 features.yaml + 6 个分析视角 lenses/*.md（可直接编辑）
 │   ├── pipeline.py        236     run_eod / run_weekly / prepare / ensure_base_rates / 交易日判断 / 简报渲染
 │   ├── market_calendar.py 162     美股交易日与节假日（从旧系统取回）
-│   ├── web/app.py         400     FastAPI：/health、/telegram、Dashboard（今日含板块与主题 ETF 表、个股页含 Scout 分析 / AI 解读 / 板块成分股）
+│   ├── screens.py         170     策略筛选：规则筛选（全部命中 + 位置统计）与描述性信号筛选（新高、涨跌榜、放量、RSI、波段突破、支撑阻力、财报）
+│   ├── web/app.py         480     FastAPI：/screens 策略筛选页，/health、/telegram、Dashboard（今日含板块与主题 ETF 表、个股页含 Scout 分析 / AI 解读 / 板块成分股）
 │   ├── web/views.py       115     HTML / CSS（亮暗主题）/ K 线图（lightweight-charts）
 │   └── jobs/              ...     _run.py（日志、job_runs、失败告警）、eod、weekly、backfill
 │
@@ -184,7 +195,7 @@ qc_fastapi_2/
 ├── db/                            新闻表的 ORM（4 个模型）、session、2 个 SQL migration
 ├── constants.py             61    新闻覆盖的标的：17 只 ETF + Scout watchlist / 活跃机会
 ├── config.py                23    新闻管线的 Settings
-├── tests/                         unittest，62 个测试
+├── tests/                         unittest，67 个测试
 ├── docs/                          本总览、Scout 设计、旧系统复用目录
 └── Dockerfile / railway.toml      单镜像，默认启动 Scout web
 ```
@@ -198,6 +209,7 @@ qc_fastapi_2/
 | `scout` | `market_events` | context | Finnhub 财报日历 |
 | `scout` | `detector_base_rates` | base_rates | 规则 × 市场状态的历史统计 |
 | `scout` | `opportunities`、`opportunity_events`、`opportunity_outcomes` | opportunities / tracker | 机会卡与完整生命周期 |
+| `scout` | `signal_hits` | pipeline | 每天所有规则（含候选规则）的全部命中，以及每个命中的入选理由，供策略筛选页使用 |
 | `scout` | `feedback`、`chat_messages`、`briefs`、`job_runs` | telegram / agent / pipeline | 反馈、对话、简报、任务记账 |
 | `public` | `ticker_news_library`（48 小时）、`ticker_news_archive`（2023-12 起约 2.7 万条）、`macro_news_cache`、`cron_run_log` | 新闻 cron | Scout 只读；问答 `get_news(days≤90)` 会读归档 |
 | `public` | 17 张 `qc_*` 表和 1 个视图 | 无（已归档） | QC 观察器的历史数据，保留未删，另有备份 |

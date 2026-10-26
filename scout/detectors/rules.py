@@ -55,6 +55,13 @@ def _zscore_oversold_levels(r: dict) -> Levels:
     return Levels(lv.entry_lo, lv.entry_hi, lv.stop, t1, max(lv.target2, t1))
 
 
+def _breakout_retest_levels(r: dict) -> Levels:
+    """Edwards & Magee: after a breakout, prior resistance should act as support.
+    Wait for price to come back to the breakout level instead of chasing."""
+    atr, pivot = r["atr14"], r["high_55_prior"]
+    return _levels(pivot - 0.25 * atr, pivot + 0.25 * atr, pivot - 1.25 * atr, atr)
+
+
 # ── rules: declarative conditions (scan, replay and "why it was picked" share them) ──
 
 D1_BREAKOUT = (
@@ -134,5 +141,11 @@ DETECTORS: tuple[Detector, ...] = (
         "zscore_oversold", "z 分数超跌", "setup", 10,
         "相对强度前 20% 的上升趋势股，收盘低于 20 日均值 2 个标准差以上，目标回到均值。（候选规则，仅回放）",
         D6_ZSCORE, _zscore_oversold_levels, live=False,
+    ),
+    Detector(
+        "breakout_retest", "突破回踩", "setup", 20,
+        "与趋势突破相同的触发条件，但不追价：等待 10 个交易日内回踩突破位（前 55 日高点 ± 0.25 ATR）再入场，"
+        "止损放在突破位下方。（候选规则，仅回放）",
+        D1_BREAKOUT, _breakout_retest_levels, live=False, trigger_window=10,
     ),
 )
