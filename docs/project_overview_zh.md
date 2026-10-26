@@ -150,10 +150,11 @@ qc_fastapi_2/
 │   ├── thesis.py          201     LLM 文字（格式化证据 + 数字校验）+ 模板兜底
 │   ├── tracker.py         142     生命周期、结果记录、记分板
 │   ├── telegram.py        284     卡片渲染、推送、命令、反馈回调、友好报错
-│   ├── agent.py           232     问答 agent：8 个只读工具，最多 6 轮工具调用
+│   ├── agent.py           236     问答 agent：8 个只读工具，最多 6 轮工具调用（remember=False 用于一次性生成）
+│   ├── analysis.py        170     个股页「Scout 分析」：趋势 / 相对强度 / 大盘 vs 个股 / 位置 / 风险 / 量能 / 事件 / 规则距离
 │   ├── pipeline.py        236     run_eod / run_weekly / prepare / ensure_base_rates / 交易日判断 / 简报渲染
 │   ├── market_calendar.py 162     美股交易日与节假日（从旧系统取回）
-│   ├── web/app.py         292     FastAPI：/health、/telegram、Dashboard 6 个页面
+│   ├── web/app.py         400     FastAPI：/health、/telegram、Dashboard（今日含板块与主题 ETF 表、个股页含 Scout 分析 / AI 解读 / 板块成分股）
 │   ├── web/views.py       115     HTML / CSS（亮暗主题）/ K 线图（lightweight-charts）
 │   └── jobs/              ...     _run.py（日志、job_runs、失败告警）、eod、weekly、backfill
 │
@@ -163,7 +164,7 @@ qc_fastapi_2/
 ├── db/                            新闻表的 ORM（4 个模型）、session、2 个 SQL migration
 ├── constants.py             61    新闻覆盖的标的：17 只 ETF + Scout watchlist / 活跃机会
 ├── config.py                23    新闻管线的 Settings
-├── tests/                         unittest，45 个测试
+├── tests/                         unittest，50 个测试
 ├── docs/                          本总览、Scout 设计、旧系统复用目录
 └── Dockerfile / railway.toml      单镜像，默认启动 Scout web
 ```

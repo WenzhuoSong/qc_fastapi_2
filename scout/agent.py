@@ -191,7 +191,9 @@ async def call_tool(name: str, args: dict) -> str:
     return db.jsonb(_round(result))[:12000]
 
 
-async def answer(question: str, channel: str = "telegram") -> str:
+async def answer(question: str, channel: str = "telegram", remember: bool = True) -> str:
+    """Tool-using answer. `remember=False` neither reads nor writes chat history
+    (one-off generations such as the ticker page's AI interpretation)."""
     settings = get_scout_settings()
     if not settings.openai_api_key:
         return "问答功能需要配置 OPENAI_API_KEY。"
@@ -201,7 +203,7 @@ async def answer(question: str, channel: str = "telegram") -> str:
     history = await db.fetch_all(
         "SELECT role, content FROM scout.chat_messages WHERE channel = :c AND created_at > now() - interval '2 hours' "
         "ORDER BY id DESC LIMIT 6", {"c": channel},
-    )
+    ) if remember else []
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT.replace("{today}", date.today().isoformat())}]
     messages += [{"role": r["role"], "content": r["content"]} for r in reversed(history)]
     messages.append({"role": "user", "content": question})
@@ -222,10 +224,11 @@ async def answer(question: str, channel: str = "telegram") -> str:
             except json.JSONDecodeError:
                 args = {}
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": await call_tool(tc.function.name, args)})
-    await db.execute_many(
-        "INSERT INTO scout.chat_messages (channel, role, content) VALUES (:c, :r, :t)",
-        [{"c": channel, "r": "user", "t": question}, {"c": channel, "r": "assistant", "t": text}],
-    )
+    if remember:
+        await db.execute_many(
+            "INSERT INTO scout.chat_messages (channel, role, content) VALUES (:c, :r, :t)",
+            [{"c": channel, "r": "user", "t": question}, {"c": channel, "r": "assistant", "t": text}],
+        )
     if channel != "telegram":
         return text
     from scout.telegram import esc

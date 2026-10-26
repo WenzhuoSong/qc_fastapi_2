@@ -5,6 +5,7 @@ import asyncio
 import logging
 import secrets
 from contextlib import asynccontextmanager
+from datetime import date
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -14,7 +15,7 @@ from scout import db, telegram, universe
 from scout.config import get_scout_settings
 from scout.features import SNAPSHOT_FEATURES
 from scout.web import views
-from scout.web.views import e, layout, opp_card, signed, table
+from scout.web.views import e, layout, opp_card, signed, table, tlink
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger("scout.web")
@@ -86,12 +87,13 @@ async def today(_: str = Depends(require_auth)) -> str:
     regime_zh = {"uptrend": "上升趋势", "mixed": "震荡", "downtrend": "下降趋势"}
     head = ""
     if market:
-        leaders = "，".join(f"{k} {views.pct(v, 1, True)}" for k, v in market.get("sector_leaders_20d") or [])
-        laggards = "，".join(f"{k} {views.pct(v, 1, True)}" for k, v in market.get("sector_laggards_20d") or [])
+        leaders = "，".join(f"{tlink(k)} {signed(v)}" for k, v in market.get("sector_leaders_20d") or [])
+        laggards = "，".join(f"{tlink(k)} {signed(v)}" for k, v in market.get("sector_laggards_20d") or [])
         head = f"""<div class="card"><h3>收盘 {e(brief['asof'])} · 大盘 {e(regime_zh.get(market.get('regime'), market.get('regime')))}</h3>
-SPY 当日 {signed(market.get('spy_ret_1d'))} · 20 日 {signed(market.get('spy_ret_20d'))} · QQQ 20 日 {signed(market.get('qqq_ret_20d'))}
-· IWM 20 日 {signed(market.get('iwm_ret_20d'))} · SMH 20 日 {signed(market.get('smh_ret_20d'))}
-<div class="small muted">领涨板块：{e(leaders)}　落后板块：{e(laggards)}</div></div>"""
+{tlink('SPY')} 当日 {signed(market.get('spy_ret_1d'))} · 20 日 {signed(market.get('spy_ret_20d'))} · {tlink('QQQ')} 20 日 {signed(market.get('qqq_ret_20d'))}
+· {tlink('IWM')} 20 日 {signed(market.get('iwm_ret_20d'))} · {tlink('SMH')} 20 日 {signed(market.get('smh_ret_20d'))}
+<div class="small">领涨板块：{leaders}　落后板块：{laggards}</div></div>"""
+        head += await etf_tables()
     else:
         head = '<div class="card">还没有收盘扫描结果。运行 <code>python -m scout.jobs.eod</code> 后这里会出现内容。</div>'
     ev_rows = [[e(x["event_date"]), f'<a href="/ticker/{e(x["ticker"])}">{e(x["ticker"])}</a>', e(x["primary_detector"]),
@@ -135,6 +137,83 @@ async def ideas(status_: str = "all", detector: str = "", _: str = Depends(requi
     return layout("机会看板", "ideas", body)
 
 
+async def _latest_etf_features() -> list[dict]:
+    rows = await db.fetch_all(
+        "SELECT f.ticker, f.payload FROM scout.features_daily f JOIN scout.instruments i USING (ticker) "
+        "WHERE i.kind = 'etf' AND f.date = (SELECT max(date) FROM scout.features_daily)"
+    )
+    return [{"ticker": r["ticker"], **(r["payload"] or {})} for r in rows]
+
+
+async def etf_tables() -> str:
+    """Home-page sector and theme ETF tables, every row links to its detail page."""
+    rows = await _latest_etf_features()
+    if not rows:
+        return ""
+    sector_label = {etf: universe.SECTOR_ZH.get(s, s) for s, etf in universe.SECTOR_ETFS.items()}
+    sectors = sorted((r for r in rows if r["ticker"] in sector_label), key=lambda r: r.get("ret_20d") or 0, reverse=True)
+    themes = sorted((r for r in rows if r["ticker"] in universe.THEME_ETFS and r["ticker"] not in ("SPY", "QQQ", "IWM", "RSP")),
+                    key=lambda r: r.get("ret_20d") or 0, reverse=True)
+    return (
+        '<div class="grid" style="margin-top:12px">'
+        f'<div class="card"><h3>板块表现 <span class="small muted">按 20 日排序，点击查看成分股</span></h3>{views.sector_rows(sectors, sector_label)}</div>'
+        f'<div class="card"><h3>主题与资产 ETF</h3>{views.sector_rows(themes, universe.THEME_ETFS)}</div>'
+        "</div>"
+    )
+
+
+async def sector_members_card(etf: str) -> str:
+    sector = next((s for s, x in universe.SECTOR_ETFS.items() if x == etf), None)
+    if not sector:
+        return ""
+    rows = await db.fetch_all(
+        "SELECT f.ticker, i.name, f.payload FROM scout.features_daily f JOIN scout.instruments i USING (ticker) "
+        "WHERE i.kind = 'stock' AND i.sector = :s AND f.date = (SELECT max(date) FROM scout.features_daily)",
+        {"s": sector},
+    )
+    members = [{"ticker": r["ticker"], "name": r["name"], **(r["payload"] or {})} for r in rows if (r["payload"] or {}).get("ret_20d") is not None]
+    if not members:
+        return ""
+    members.sort(key=lambda m: m["ret_20d"], reverse=True)
+    above50 = [m for m in members if m.get("sma50") and m["close"] > m["sma50"]]
+
+    def tr(m: dict) -> list[str]:
+        return [tlink(m["ticker"]), e((m.get("name") or "")[:24]), signed(m.get("ret_1d")), signed(m.get("ret_20d")),
+                views.pct(m.get("rs_pct"), 0)]
+
+    head = ["代码", "名称", "1 日", "20 日", "RS 分位"]
+    return (
+        f'<div class="card"><h3>板块成分股 · {e(universe.SECTOR_ZH.get(sector, sector))}</h3>'
+        f'<div class="small muted">共 {len(members)} 只，站上 50 日线 {len(above50)} 只（{views.pct(len(above50) / len(members), 0)}）</div>'
+        f"<h4>20 日最强</h4>{table(head, [tr(m) for m in members[:10]])}"
+        f"<h4>20 日最弱</h4>{table(head, [tr(m) for m in members[-5:][::-1]])}</div>"
+    )
+
+
+AI_PROMPT = (
+    "为 {t} 写一段 Scout 分析（150–250 字，纯文本）：先判断近期走势是个股自身还是大盘带动（用 idio/market 拆分），"
+    "再说趋势与相对强度、近期新闻或财报催化、主要风险，最后给出「值得关注的条件」和「失效条件」。只用工具返回的数据，注明数据日期。"
+)
+
+
+@app.post("/ticker/{ticker}/ai")
+async def ticker_ai(ticker: str, _: str = Depends(require_auth)):
+    from scout.agent import answer
+
+    t = universe.yahoo_symbol(ticker)
+    feat = await db.fetch_one("SELECT max(date) AS d FROM scout.features_daily WHERE ticker = :t", {"t": t})
+    try:
+        text = await answer(AI_PROMPT.format(t=t), channel="dashboard", remember=False)
+    except Exception as exc:
+        logger.exception("ticker AI analysis failed")
+        return HTMLResponse(layout(t, "", f"<p>{e(telegram.friendly_error(exc))}</p><p>{tlink(t, '返回 ' + t)}</p>"), status_code=502)
+    await db.execute(
+        "INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('ticker_ai', :d, :c, CAST(:p AS JSONB))",
+        {"d": (feat or {}).get("d") or date.today(), "c": text, "p": db.jsonb({"ticker": t})},
+    )
+    return RedirectResponse(f"/ticker/{t}#scout", status_code=303)
+
+
 @app.get("/ticker")
 async def ticker_lookup(t: str = "", _: str = Depends(require_auth)):
     return RedirectResponse(f"/ticker/{universe.yahoo_symbol(t)}" if t else "/", status_code=302)
@@ -142,6 +221,7 @@ async def ticker_lookup(t: str = "", _: str = Depends(require_auth)):
 
 @app.get("/ticker/{ticker}", response_class=HTMLResponse)
 async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
+    from scout.analysis import scout_view
     from scout.context import load_news
 
     t = universe.yahoo_symbol(ticker)
@@ -156,6 +236,15 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
         "WHERE o.ticker = :t ORDER BY o.asof DESC LIMIT 20", {"t": t},
     )
     news = await load_news(t)
+    nxt = await db.fetch_one(
+        "SELECT event_date FROM scout.market_events WHERE ticker = :t AND event_type = 'earnings' AND event_date >= :d "
+        "ORDER BY event_date LIMIT 1", {"t": t, "d": date.today()},
+    )
+    ai = await db.fetch_one(
+        "SELECT content, created_at FROM scout.briefs WHERE kind = 'ticker_ai' AND payload->>'ticker' = :t "
+        "AND asof >= COALESCE((SELECT max(date) FROM scout.features_daily WHERE ticker = :t), CURRENT_DATE) "
+        "ORDER BY id DESC LIMIT 1", {"t": t},
+    )
     if not inst and not bars:
         return layout(t, "", f"<p>{e(t)} 不在标的池中。可以在 Watchlist 页加入。</p>")
     latest = opps[0] if opps else None
@@ -166,7 +255,12 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
     pct_keys = {"ret_1d", "ret_5d", "ret_20d", "ret_63d", "ret_252d", "atr_pct", "dist_52w_high", "gap_pct",
                 "rs_pct", "sector_rs_pct", "sector_rel_20", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d",
                 "bb_pct", "vol_20", "max_dd_60"}
-    feat_rows = [[e(k), signed(payload[k]) if k in pct_keys else f"{payload[k]:.2f}"] for k in SNAPSHOT_FEATURES if k in payload]
+    def fmt(k: str, v: float) -> str:
+        if k in pct_keys:
+            return signed(v)
+        return f"{v:,.0f}" if k == "dollar_vol20" else f"{v:.2f}"
+
+    feat_rows = [[e(views.FEATURE_ZH.get(k, k)), fmt(k, payload[k])] for k in SNAPSHOT_FEATURES if k in payload]
     news_html = "".join(
         f"<li><a href='{e(n.get('url'))}' target='_blank' rel='noopener'>{e(n['headline'])}</a> "
         f"<span class='small muted'>{e(n.get('source'))} {e((n.get('published') or '')[:16])}</span>"
@@ -176,11 +270,18 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
     name = " · ".join(x for x in ((inst or {}).get("name"), (inst or {}).get("sector")) if x)
     body = f"<h2>{e(t)} <span class='muted small'>{e(name)}</span></h2>"
     body += views.chart_script(bars, levels)
+    headline, lines = scout_view(
+        payload, is_stock=(inst or {}).get("kind", "stock") == "stock",
+        next_earnings=(nxt or {}).get("event_date"), latest_opp=latest, today=date.today(),
+    )
     body += '<div class="grid" style="margin-top:12px">'
-    body += f'<div class="card"><h3>特征 <span class="small muted">{e((feat or {}).get("date"))}</span></h3>{table(["特征", "值"], feat_rows)}</div>'
+    body += f'<div id="scout">{views.scout_panel(t, headline, lines, ai, bool(get_scout_settings().openai_api_key))}</div>'
     body += f'<div class="card"><h3>新闻</h3><ul class="tight">{news_html}</ul></div>'
     if latest:
         body += opp_card(latest)
+    body += await sector_members_card(t)
+    body += (f'<details class="card"><summary>全部特征 <span class="small muted">{e((feat or {}).get("date"))}</span></summary>'
+             f'{table(["特征", "值"], feat_rows)}</details>')
     body += "</div>"
     if opps:
         body += "<h2>历史机会</h2>" + table(

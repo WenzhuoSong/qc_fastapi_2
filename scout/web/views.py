@@ -18,7 +18,8 @@ header{display:flex;gap:18px;align-items:center;padding:12px 16px;border-bottom:
 background:var(--panel);position:sticky;top:0;z-index:2;flex-wrap:wrap}
 header b{font-size:16px}header a{color:var(--muted);text-decoration:none}header a.on{color:var(--ink);font-weight:600}
 main{max-width:1180px;margin:0 auto;padding:16px}
-.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(340px,1fr))}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));align-items:start}
+details.card summary{cursor:pointer;font-weight:600}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
 .card h3{margin:0 0 4px;font-size:15px}.muted{color:var(--muted)}.small{font-size:12px}
 .up{color:var(--up)}.down{color:var(--down)}.warn{color:var(--warn)}
@@ -29,6 +30,10 @@ th{font-size:12px;color:var(--muted);font-weight:500}tr:last-child td{border-bot
 .scroll{overflow-x:auto}a{color:var(--accent)}
 .levels{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:8px 0}
 .levels div{background:var(--bg);border-radius:6px;padding:4px 6px}.levels span{display:block;font-size:11px;color:var(--muted)}
+.analysis dt{font-size:12px;color:var(--muted);margin-top:8px}.analysis dd{margin:2px 0 0}
+.analysis .headline{font-weight:600;font-size:15px;margin:2px 0 6px}
+.ai{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
+.sectors td,.sectors th{padding:5px 8px}
 ul.tight{margin:4px 0;padding-left:18px}pre{white-space:pre-wrap;font:inherit;margin:0}
 input,textarea,select,button{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
 button{background:var(--accent);color:#fff;border:none;cursor:pointer}
@@ -84,6 +89,50 @@ def opp_card(o: dict) -> str:
 <div class="small warn">{('⚠️ ' + e(th['key_risk'])) if th.get('key_risk') else ''}</div>
 <div class="small muted">置信度 {e(CONFIDENCE_LABELS.get(th.get('confidence'), '—'))} · 文本来源 {e(o.get('thesis_source'))}</div>
 </div>"""
+
+
+FEATURE_ZH = {
+    "close": "收盘价", "ret_1d": "1 日涨跌", "ret_5d": "5 日涨跌", "ret_20d": "20 日涨跌", "ret_63d": "3 个月涨跌",
+    "ret_252d": "1 年涨跌", "sma20": "20 日均线", "sma50": "50 日均线", "sma200": "200 日均线", "atr14": "ATR(14)",
+    "atr_pct": "日均振幅", "vol_ratio": "量比（/50 日均量）", "dollar_vol20": "20 日均成交额 ($)",
+    "dist_52w_high": "距 52 周高点", "rsi2": "RSI(2)", "rsi14": "RSI(14)", "gap_pct": "开盘跳空", "close_loc": "收盘位置（日内 0–1）",
+    "rs_pct": "全市场相对强度分位", "sector_rs_pct": "行业内相对强度分位", "sector_rel_20": "所属行业 20 日相对 SPY",
+    "beta_60": "β（60 日）", "corr_60": "与 SPY 相关性（60 日）", "market_ret_1d": "今日大盘贡献",
+    "idio_ret_1d": "今日个股自身", "idio_ret_5d": "5 日个股自身", "idio_ret_20d": "20 日个股自身",
+    "zscore_20": "z 分数（20 日）", "bb_pct": "布林带位置 %B", "vol_20": "年化波动（20 日）", "max_dd_60": "60 日最大回撤",
+}
+
+
+def tlink(ticker: str, label: str | None = None) -> str:
+    return f'<a href="/ticker/{e(ticker)}">{e(label or ticker)}</a>'
+
+
+def scout_panel(ticker: str, headline: str, lines: list, ai: dict | None, ai_enabled: bool) -> str:
+    """'Scout 分析' card: deterministic reading + optional cached AI interpretation."""
+    tone_cls = {"up": "up", "down": "down", "warn": "warn"}
+    rows = "".join(
+        f"<dt>{e(l.label)}</dt><dd class='{tone_cls.get(l.tone, '')}'>{e(l.text)}</dd>" for l in lines
+    )
+    if ai:
+        ai_html = (f"<pre>{e(ai['content'])}</pre><div class='small muted'>AI 解读 · 生成于 {e(str(ai['created_at'])[:16])} UTC</div>"
+                   f"<form method='post' action='/ticker/{e(ticker)}/ai'><button style='margin-top:6px'>重新生成</button></form>")
+    elif ai_enabled:
+        ai_html = ("<div class='small muted'>由问答 agent 读取这只股票的行情、特征、新闻和财报后撰写，约 10–20 秒。</div>"
+                   f"<form method='post' action='/ticker/{e(ticker)}/ai'><button style='margin-top:6px'>生成 AI 解读</button></form>")
+    else:
+        ai_html = "<div class='small muted'>AI 解读需要配置 OPENAI_API_KEY。</div>"
+    return (f"<div class='card analysis'><h3>Scout 分析</h3><div class='headline'>{e(headline)}</div>"
+            f"<dl style='margin:0'>{rows}</dl><div class='ai'>{ai_html}</div></div>")
+
+
+def sector_rows(rows: list[dict], label_of: dict[str, str]) -> str:
+    body = "".join(
+        f"<tr><td>{tlink(r['ticker'])}</td><td>{e(label_of.get(r['ticker'], ''))}</td>"
+        f"<td>{signed(r.get('ret_1d'))}</td><td>{signed(r.get('ret_5d'))}</td><td>{signed(r.get('ret_20d'))}</td></tr>"
+        for r in rows
+    )
+    return (f"<div class='scroll'><table class='sectors'><thead><tr><th>ETF</th><th>板块</th><th>1 日</th><th>5 日</th>"
+            f"<th>20 日</th></tr></thead><tbody>{body}</tbody></table></div>")
 
 
 def table(headers: Iterable[str], rows: Iterable[Iterable[str]]) -> str:

@@ -51,6 +51,12 @@ SECTOR_ETFS: dict[str, str] = {
     "Communication Services": "XLC",
 }
 
+SECTOR_ZH: dict[str, str] = {
+    "Information Technology": "信息技术", "Financials": "金融", "Health Care": "医疗保健", "Energy": "能源",
+    "Industrials": "工业", "Consumer Staples": "必需消费", "Consumer Discretionary": "可选消费",
+    "Utilities": "公用事业", "Materials": "原材料", "Real Estate": "房地产", "Communication Services": "通信服务",
+}
+
 THEME_ETFS: dict[str, str] = {
     "SPY": "S&P 500", "QQQ": "Nasdaq-100", "IWM": "Russell 2000", "RSP": "等权 S&P 500",
     "SMH": "半导体", "IGV": "软件", "XBI": "生物科技", "KRE": "地区银行",
