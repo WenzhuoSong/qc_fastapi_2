@@ -5,6 +5,7 @@ import json
 from html import escape
 from typing import Any, Iterable
 
+from scout.sectors import QUADRANTS, rotation_read, rotation_reads
 from scout.telegram import (CONFIDENCE_LABELS, STATUS_LABELS, base_rate_text, market_split_text, pct,
                             position_text, sector_text)
 
@@ -44,6 +45,11 @@ button{background:var(--accent);color:#fff;border:none;cursor:pointer}
 .chartbox{position:relative;padding:8px}#chart{height:440px}
 #legend{position:absolute;top:10px;left:14px;z-index:3;background:var(--panel);padding:2px 6px;border-radius:4px;opacity:.92}
 .plan table td,.plan table th{padding:4px 6px}
+.rrg .tail{opacity:0;transition:opacity .15s}.rrg.all .tail,.rrg .s:hover .tail,.rrg .s.on .tail{opacity:1}
+.rrg.pick .s:not(.on){opacity:.18}.rrg .s.on text{font-weight:600}
+.rrgbar{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin:6px 0}
+.rrgbtn{border:1px solid var(--line);color:var(--ink);cursor:pointer;padding:1px 8px}.rrgbtn.on{background:var(--accent);color:#fff}
+ul.rrgread{list-style:none;padding:0;margin:6px 0;max-height:260px;overflow-y:auto}ul.rrgread li{padding:2px 0}
 """
 
 
@@ -351,7 +357,11 @@ QUAD_COLORS = {"leading": "var(--up)", "weakening": "var(--warn)", "lagging": "v
 
 
 def rrg_svg(rows: list[dict]) -> str:
-    """Relative Rotation Graph: RS-ratio (x) vs RS-momentum (y), weekly tails."""
+    """Relative Rotation Graph: RS-ratio (x) vs RS-momentum (y).
+
+    Each series shows its latest weekly step as an arrow; the full 8-week tail
+    (older points fainter) appears on hover, when selected, or with 显示全部轨迹.
+    """
     pts = [pt for r in rows for pt in r.get("tail") or []]
     if not pts:
         return "<p class='muted'>暂无轮动数据。</p>"
@@ -364,34 +374,85 @@ def rrg_svg(rows: list[dict]) -> str:
                 pad + (100 + span_y - py) / (2 * span_y) * (H - 2 * pad))
 
     cx, cy = xy(100, 100)
+    defs = "<defs>" + "".join(
+        f"<marker id='rrg-{q}' viewBox='0 0 10 10' refX='9' refY='5' markerWidth='7' markerHeight='7' orient='auto'>"
+        f"<path d='M0 0L10 5L0 10z' fill='{c}'/></marker>" for q, c in QUAD_COLORS.items()) + "</defs>"
     bg = (f"<rect x='{pad}' y='{pad}' width='{cx - pad}' height='{cy - pad}' fill='var(--accent)' opacity='.07'/>"
           f"<rect x='{cx}' y='{pad}' width='{W - pad - cx}' height='{cy - pad}' fill='var(--up)' opacity='.07'/>"
           f"<rect x='{cx}' y='{cy}' width='{W - pad - cx}' height='{H - pad - cy}' fill='var(--warn)' opacity='.07'/>"
           f"<rect x='{pad}' y='{cy}' width='{cx - pad}' height='{H - pad - cy}' fill='var(--down)' opacity='.07'/>"
           f"<line x1='{pad}' x2='{W - pad}' y1='{cy}' y2='{cy}' stroke='var(--line)'/>"
           f"<line x1='{cx}' x2='{cx}' y1='{pad}' y2='{H - pad}' stroke='var(--line)'/>"
-          f"<text x='{W - pad - 4}' y='{pad + 14}' text-anchor='end' font-size='12' fill='var(--up)'>领先</text>"
-          f"<text x='{W - pad - 4}' y='{H - pad - 6}' text-anchor='end' font-size='12' fill='var(--warn)'>转弱</text>"
-          f"<text x='{pad + 4}' y='{H - pad - 6}' font-size='12' fill='var(--down)'>落后</text>"
-          f"<text x='{pad + 4}' y='{pad + 14}' font-size='12' fill='var(--accent)'>改善</text>"
-          f"<text x='{W / 2}' y='{H - 6}' text-anchor='middle' font-size='11' fill='var(--muted)'>相对强度比 →</text>"
-          f"<text x='10' y='{H / 2}' font-size='11' fill='var(--muted)' transform='rotate(-90 10 {H / 2})' text-anchor='middle'>相对强度动量 →</text>")
+          f"<text x='{W - pad - 4}' y='{pad + 14}' text-anchor='end' font-size='12' fill='var(--up)'>领先 · 强且在加强</text>"
+          f"<text x='{W - pad - 4}' y='{H - pad - 6}' text-anchor='end' font-size='12' fill='var(--warn)'>转弱 · 强但在减速</text>"
+          f"<text x='{pad + 4}' y='{H - pad - 6}' font-size='12' fill='var(--down)'>落后 · 弱且在走弱</text>"
+          f"<text x='{pad + 4}' y='{pad + 14}' font-size='12' fill='var(--accent)'>改善 · 弱但在变强</text>"
+          f"<text x='{W - pad}' y='{H - 8}' text-anchor='end' font-size='11' fill='var(--muted)'>强于大盘 →</text>"
+          f"<text x='{pad}' y='{H - 8}' font-size='11' fill='var(--muted)'>← 弱于大盘</text>"
+          f"<text x='{pad}' y='{pad - 10}' font-size='11' fill='var(--muted)'>↑ 动量增强</text>")
     marks = []
     for r in rows:
         tail = r.get("tail") or []
         if not tail:
             continue
+        q = r.get("quadrant")
         coords = [xy(p[0], p[1]) for p in tail]
-        color = QUAD_COLORS.get(r.get("quadrant"), "var(--muted)")
-        path = " ".join(f"{x:.1f},{y:.1f}" for x, y in coords)
+        color = QUAD_COLORS.get(q, "var(--muted)")
+        n = len(coords)
+        older = "".join(
+            f"<line x1='{a[0]:.1f}' y1='{a[1]:.1f}' x2='{b[0]:.1f}' y2='{b[1]:.1f}' stroke='{color}' stroke-width='1.5' "
+            f"opacity='{0.15 + 0.6 * i / max(n - 2, 1):.2f}'/>" for i, (a, b) in enumerate(zip(coords[:-2], coords[1:-1])))
+        older += "".join(f"<circle cx='{px:.1f}' cy='{py:.1f}' r='2' fill='{color}' opacity='{0.2 + 0.5 * i / max(n - 1, 1):.2f}'/>"
+                         for i, (px, py) in enumerate(coords[:-1]))
         x, y = coords[-1]
-        tip = f"{r.get('name', r['key'])} {r['key']}：{r.get('quadrant')}（比 {tail[-1][0]:.1f}，动量 {tail[-1][1]:.1f}）"
-        marks.append(f"<a href='#{escape(r['key'])}'><g><title>{escape(tip)}</title>"
-                     f"<polyline points='{path}' fill='none' stroke='{color}' stroke-width='1.5' opacity='.55'/>"
-                     + "".join(f"<circle cx='{px:.1f}' cy='{py:.1f}' r='1.8' fill='{color}' opacity='.5'/>" for px, py in coords[:-1])
-                     + f"<circle cx='{x:.1f}' cy='{y:.1f}' r='5' fill='{color}'/>"
-                     f"<text x='{x + 7:.1f}' y='{y + 4:.1f}' font-size='11' fill='var(--ink)'>{escape(r['key'])}</text></g></a>")
-    return f"<svg viewBox='0 0 {W} {H}' width='100%'>{bg}{''.join(marks)}</svg>"
+        if n >= 2:
+            head = (f"<line x1='{coords[-2][0]:.1f}' y1='{coords[-2][1]:.1f}' x2='{x:.1f}' y2='{y:.1f}' stroke='{color}' "
+                    f"stroke-width='2.2' marker-end='url(#rrg-{q})'/>")
+        else:
+            head = f"<circle cx='{x:.1f}' cy='{y:.1f}' r='4' fill='{color}'/>"
+        read = rotation_read(r)
+        tip = (f"{r.get('name', r['key'])} {r['key']} · {read['text'] if read else QUADRANTS.get(q, q)}"
+               f"（比 {tail[-1][0]:.1f}，动量 {tail[-1][1]:.1f}）")
+        key = escape(r["key"])
+        marks.append(f"<g class='s' data-k='{key}'><title>{escape(tip)}</title><g class='tail'>{older}</g>{head}"
+                     f"<a href='#{key}'><text x='{x + 7:.1f}' y='{y - 5:.1f}' font-size='11' fill='var(--ink)'>{key}</text></a></g>")
+    return f"<svg id='rrg' class='rrg' viewBox='0 0 {W} {H}' width='100%'>{defs}{bg}{''.join(marks)}</svg>"
+
+
+RRG_GUIDE = """<details class='small' style='margin-top:8px'><summary><b>怎么读这张图</b></summary>
+<ol class='tight'>
+<li><b>左右看强弱</b>：横轴是相对 SPY 的强度与自身 50 日平均之比，中线右侧 = 近期跑赢大盘，左侧 = 跑输。</li>
+<li><b>上下看加减速</b>：纵轴是这种相对强度比 10 个交易日前高还是低，上方 = 在变强，下方 = 在变弱。</li>
+<li><b>四个象限</b>：领先（右上）强且在加强；转弱（右下）还强但在减速；落后（左下）弱且在走弱；改善（左上）弱但开始变强。</li>
+<li><b>看箭头方向比看位置更重要</b>：板块通常顺时针走 改善 → 领先 → 转弱 → 落后 → 改善。箭头是最近一周的移动，指向它下一步可能进入的象限。</li>
+<li><b>离中心越远趋势越明确</b>；贴近中心时象限切换意义不大。</li>
+<li><b>用法</b>：规则信号出现在「领先」或「改善→领先」的板块里，有板块顺风；出现在「落后」里多半是逆流。</li>
+</ol>
+<p class='muted'>悬停或点选板块可看 8 周完整轨迹（越淡越早）。这是 JdK RRG 的开放近似，原版公式未公开。</p></details>"""
+
+RRG_SCRIPT = """<script>(()=>{const svg=document.getElementById('rrg');if(!svg)return;
+const sync=()=>svg.classList.toggle('pick',!!svg.querySelector('.s.on'));
+document.querySelectorAll('[data-rrg]').forEach(b=>b.addEventListener('click',()=>{const k=b.dataset.rrg;
+if(k==='*'){svg.classList.toggle('all');b.classList.toggle('on');return}
+if(k==='-'){svg.querySelectorAll('.s.on').forEach(g=>g.classList.remove('on'));
+document.querySelectorAll('[data-rrg].on').forEach(x=>{if(x.dataset.rrg!=='*')x.classList.remove('on')});sync();return}
+const g=svg.querySelector(`.s[data-k="${k}"]`);if(!g)return;g.classList.toggle('on');b.classList.toggle('on');sync()}))})()</script>"""
+
+
+def rrg_panel(rows: list[dict]) -> str:
+    """RRG chart with selection chips, per-series readings and a reading guide."""
+    reads = rotation_reads(rows)
+    if not reads:
+        return rrg_svg(rows)
+    chips = "".join(f"<button type='button' class='chip rrgbtn' data-rrg='{escape(x['key'])}'>{escape(x['name'])}</button>"
+                    for x in reads)
+    controls = (f"<div class='rrgbar'><button type='button' class='chip rrgbtn' data-rrg='*'>显示全部轨迹</button>"
+                f"<button type='button' class='chip rrgbtn' data-rrg='-'>清除选择</button><span class='muted small'>点选只看：</span>{chips}</div>")
+    items = "".join(
+        f"<li><span class='chip' style='color:{QUAD_COLORS[x['quadrant']]}'>{QUADRANTS[x['quadrant']]}</span>"
+        f"<a href='#{escape(x['key'])}'>{escape(x['name'])}</a> <span class='muted'>{escape(x['key'])}</span> "
+        f"{'<b>' if x['changed'] else ''}{escape(x['text'])}{'</b>' if x['changed'] else ''}</li>" for x in reads)
+    return (f"{rrg_svg(rows)}{controls}<ul class='rrgread small'>{items}</ul>{RRG_GUIDE}{RRG_SCRIPT}")
 
 
 def heat_cell(value, rank: float | None, text: str) -> str:

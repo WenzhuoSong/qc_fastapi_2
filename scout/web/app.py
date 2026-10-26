@@ -339,9 +339,7 @@ async def market_page(view: str = "sectors", _: str = Depends(require_auth)) -> 
     tabs = " ".join(f"<a class='chip' style='{'background:var(--accent);color:#fff' if view == v else ''}' href='/market?view={v}'>{lbl}</a>"
                     for v, lbl in (("sectors", "行业板块"), ("themes", "主题 ETF")))
     rrg_rows = sector_rows if view != "themes" else theme_rows
-    rrg_html = (f"<div class='card'><h3>相对轮动图 {tabs}</h3>{views.rrg_svg(rrg_rows)}"
-                "<p class='small muted'>横轴：相对 SPY 的强度是否高于自身 50 日平均；纵轴：这种相对强度是在加速还是减速。"
-                "通常按 改善 → 领先 → 转弱 → 落后 顺时针轮动；线条是最近 8 周的轨迹，圆点是本周。（JdK RRG 的开放近似）</p></div>")
+    rrg_html = f"<div class='card'><h3>相对轮动图 {tabs}</h3>{views.rrg_panel(rrg_rows)}</div>"
 
     # ── heat table ──
     cols = [("rel_20", "相对SPY"), ("pct_above_50", "站上50日线"), ("net_new_highs", "净新高"), ("updown_vol_20", "涨跌量比"),

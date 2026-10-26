@@ -187,6 +187,49 @@ def card_context(r: dict) -> dict:
             "资金流向": r.get("flow_label"), "站上 50 日线比例": r.get("pct_above_50"), "20 日相对 SPY": r.get("rel_20")}
 
 
+QUADRANT_MEANING = {
+    "leading": "强于大盘且在加强", "weakening": "仍强于大盘但在减速",
+    "lagging": "弱于大盘且在走弱", "improving": "弱于大盘但在变强",
+}
+# Last weekly step, first match wins: (quadrant, axis, sign, reading). Axis 0 = rs_ratio, 1 = rs_momentum.
+_HINTS = (
+    ("leading", 1, -1, "动量回落，留意转入转弱"),
+    ("leading", 0, 1, "继续向右上加强"),
+    ("weakening", 1, 1, "动量回升，可能重新领先"),
+    ("weakening", 0, -1, "相对强度回落，正向落后靠近"),
+    ("lagging", 1, 1, "动量开始回升，留意转入改善"),
+    ("lagging", 0, -1, "仍在向左下走弱"),
+    ("improving", 0, 1, "相对强度回升，正向领先靠近"),
+    ("improving", 1, -1, "动量回落，可能重新落后"),
+)
+NEAR_CENTER = 1.0        # distance from (100, 100) below which the reading is weak
+QUADRANT_ORDER = ("leading", "improving", "weakening", "lagging")
+
+
+def rotation_read(r: dict) -> dict | None:
+    """Plain-language reading of one RRG point: quadrant, last weekly step, change."""
+    tail = r.get("tail") or []
+    q = r.get("quadrant")
+    if not tail or q not in QUADRANTS:
+        return None
+    step = (tail[-1][0] - tail[-2][0], tail[-1][1] - tail[-2][1]) if len(tail) >= 2 else (0.0, 0.0)
+    hint = next((text for quad, axis, sign, text in _HINTS if quad == q and step[axis] * sign > 0), "方向不明显")
+    prev = r.get("quadrant_prev")
+    changed = bool(prev and prev != q)
+    near = float(np.hypot(tail[-1][0] - 100, tail[-1][1] - 100)) < NEAR_CENTER
+    text = f"{QUADRANTS[q]}{f'（本周由{QUADRANTS[prev]}转入）' if changed else ''}：{QUADRANT_MEANING[q]}，{hint}"
+    if near:
+        text += "；贴近中心，信号偏弱"
+    return {"key": r["key"], "name": r.get("name", r["key"]), "quadrant": q, "changed": changed,
+            "near_center": near, "text": text}
+
+
+def rotation_reads(rows: list[dict]) -> list[dict]:
+    """Readings ordered: quadrant changes first, then leading → improving → weakening → lagging."""
+    reads = [x for x in (rotation_read(r) for r in rows) if x]
+    return sorted(reads, key=lambda x: (not x["changed"], QUADRANT_ORDER.index(x["quadrant"]), x["near_center"]))
+
+
 def rotation_line(rows: list[dict]) -> str | None:
     """One Telegram line: hot / cold sectors and quadrant changes since last week."""
     secs = sorted((r for r in rows if r.get("kind") == "sector"), key=lambda r: -(r.get("heat") or 0))

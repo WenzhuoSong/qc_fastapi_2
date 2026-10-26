@@ -130,3 +130,25 @@ class SectorDisplayTests(unittest.TestCase):
         self.assertTrue(svg.startswith("<svg"))
         self.assertIn(">XLE<", svg)
         self.assertIn(">XLK<", svg)
+        self.assertIn("marker-end='url(#rrg-leading)'", svg)
+        self.assertIn("class='tail'", svg)
+
+    def test_rotation_reads_explain_direction_and_changes_first(self):
+        reads = sectors.rotation_reads(self.ROWS)
+        self.assertEqual([x["key"] for x in reads], ["XLK", "XLE"])
+        self.assertEqual(reads[0]["text"], "落后（本周由转弱转入）：弱于大盘且在走弱，仍在向左下走弱")
+        self.assertEqual(reads[1]["text"], "领先：强于大盘且在加强，继续向右上加强")
+        fading = {**self.ROWS[0], "tail": [[103, 104, "a"], [102, 102.5, "b"]]}
+        self.assertIn("动量回落，留意转入转弱", sectors.rotation_read(fading)["text"])
+        near = {**self.ROWS[0], "tail": [[100.2, 100.1, "a"], [100.5, 100.3, "b"]]}
+        self.assertTrue(sectors.rotation_read(near)["near_center"])
+        self.assertIsNone(sectors.rotation_read({"key": "X", "tail": []}))
+
+    def test_rrg_panel_has_controls_reads_and_guide(self):
+        from scout.web.views import rrg_panel
+
+        html = rrg_panel(self.ROWS)
+        self.assertIn("data-rrg='XLK'", html)
+        self.assertIn("显示全部轨迹", html)
+        self.assertIn("怎么读这张图", html)
+        self.assertLess(html.index("信息技术</a>"), html.index("能源</a>"))
