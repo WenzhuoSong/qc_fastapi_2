@@ -5,7 +5,7 @@ import json
 from html import escape
 from typing import Any, Iterable
 
-from scout.telegram import CONFIDENCE_LABELS, STATUS_LABELS, pct
+from scout.telegram import CONFIDENCE_LABELS, STATUS_LABELS, base_rate_text, pct
 
 CSS = """
 :root{--bg:#f7f7f5;--panel:#fff;--ink:#1d1d1f;--muted:#6b6b70;--line:#e4e4e0;--accent:#2f6fde;
@@ -69,7 +69,7 @@ def opp_card(o: dict) -> str:
     if th.get("counter_evidence"):
         lists += "<div class='small muted'>反方</div><ul class='tight'>" + "".join(f"<li>{e(c)}</li>" for c in th["counter_evidence"]) + "</ul>"
     base = (
-        f"历史 {br['n']} 次（{e(br.get('regime'))}）· 胜率 {pct(br.get('win_rate'), 0)} · 平均超额 {signed(br.get('avg_excess'))}"
+        e(base_rate_text(br))
         if br.get("n") else "暂无历史基准"
     )
     return f"""<div class="card">

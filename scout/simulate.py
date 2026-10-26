@@ -16,6 +16,9 @@ from typing import Sequence
 from scout.detectors import Levels
 
 TRIGGER_WINDOW = 3
+# Round-trip trading cost (commission + spread + slippage) for liquid US stocks,
+# charged once per filled trade in both replay and live outcomes.
+ROUND_TRIP_COST = 0.0010
 
 
 @dataclass

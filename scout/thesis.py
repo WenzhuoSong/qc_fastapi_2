@@ -42,7 +42,9 @@ SYSTEM_PROMPT = """你是一名美股交易机会分析师，为一位有经验�
    规则条件、技术指标、量能都不是催化剂。没有新闻和财报时 catalysts 返回空列表。
 4. base_rate 是"该规则在全市场股票上的历史表现"，不是这只股票自己的历史，表述时写"该规则历史……"。
 5. 必须给出至少一条反方证据（例如大盘环境、规则历史胜率一般、距离 52 周高点、财报临近、量能不足等）。
-6. 样本少（n < 30）或平均超额 ≤ 0 时，置信度不能是 high。历史基准存在幸存者偏差，不能当成保证。
+6. 判断规则是否有优势，看 base_rate.avg_edge_vs_hold（扣除交易成本后、相对"同期一直持有这只股票"的平均超额）；
+   它 ≤ 0 说明择时没有比持有更好，必须写进反方证据。样本少（n < 30）或它 ≤ 0 时，置信度不能是 high。
+   历史基准存在幸存者偏差，不能当成保证。
 7. 中文输出，简洁、具体，不写空话；不要出现"建议买入"之类的指令，用"机会/条件/失效"的语气。"""
 
 # Evidence keys holding fractions (0.052 = 5.2%); shown to the LLM pre-formatted.
@@ -50,6 +52,7 @@ _PCT_KEYS = {
     "ret_1d", "ret_5d", "ret_20d", "ret_63d", "ret_252d", "dist_52w_high", "atr_pct", "gap_pct",
     "rs_pct", "sector_rs_pct", "sector_rel_20", "stop_distance_pct", "trigger_rate", "win_rate",
     "target_rate", "stop_rate", "avg_return", "median_return", "avg_excess", "avg_mfe", "avg_mae",
+    "win_rate_net", "avg_net_return", "avg_net_excess", "avg_hold_return", "avg_edge_vs_hold", "beat_hold_rate",
     "spy_ret_1d", "spy_ret_20d", "qqq_ret_20d", "iwm_ret_20d", "smh_ret_20d",
     "eps_surprise_pct", "revenue_surprise_pct",
 }
@@ -127,7 +130,7 @@ def _pct(x: float | None, digits: int = 1) -> str:
 def template_thesis(ev: dict) -> Thesis:
     setup, price, br, market = ev["setup"], ev["price"], ev.get("base_rate") or {}, ev.get("market") or {}
     n = br.get("n", 0)
-    excess = br.get("avg_excess")
+    excess = br.get("avg_edge_vs_hold", br.get("avg_excess"))
     lines = [
         f"{ev['ticker']} 触发「{setup['label']}」：{setup['rule']}",
         f"20 日涨幅 {_pct(price.get('ret_20d'))}，相对强度分位 {_pct(price.get('rs_pct'), 0)}，"
@@ -135,13 +138,14 @@ def template_thesis(ev: dict) -> Thesis:
     ]
     if n:
         lines.append(
-            f"该规则历史 {n} 次样本，胜率 {_pct(br.get('win_rate'), 0)}，平均超额 {_pct(excess)}（{br.get('regime')}）。"
+            f"该规则历史 {n} 次样本，扣费胜率 {_pct(br.get('win_rate_net', br.get('win_rate')), 0)}，"
+            f"扣费后相对持有 {_pct(excess)}（{br.get('regime')}）。"
         )
     counter = []
     if market.get("regime") in {"downtrend", "mixed"}:
         counter.append(f"大盘处于 {market['regime']} 状态，突破类信号可靠性下降。")
     if excess is not None and excess <= 0:
-        counter.append("该规则历史平均超额不为正，属于观察级别。")
+        counter.append("扣除成本后，该规则历史上没有跑赢直接持有这只股票，属于观察级别。")
     if (price.get("dist_52w_high") or 0) < -0.2:
         counter.append(f"距离 52 周高点仍有 {_pct(price.get('dist_52w_high'))}，上方套牢盘较多。")
     nxt = (ev.get("earnings") or {}).get("next")
@@ -159,7 +163,7 @@ def template_thesis(ev: dict) -> Thesis:
         counter_evidence=counter[:3],
         key_risk=f"跌破止损 {ev['levels']['stop']} 即信号失效。",
         confidence=conf,
-        confidence_reason=f"历史样本 {n}，平均超额 {_pct(excess)}。" if n else "暂无历史基准。",
+        confidence_reason=f"历史样本 {n}，扣费后相对持有 {_pct(excess)}。" if n else "暂无历史基准。",
     )
 
 

@@ -206,19 +206,22 @@ async def scoreboard_page(_: str = Depends(require_auth)) -> str:
         for regime in ("all", "uptrend", "mixed", "downtrend"):
             s = by.get((d.name, regime)) or {}
             cells.append(
-                f"n={s.get('n', 0)}<br>胜率 {views.pct(s.get('win_rate'), 0)}<br>超额 {signed(s.get('avg_excess'))}<br>"
+                f"n={s.get('n', 0)}<br>扣费胜率 {views.pct(s.get('win_rate_net', s.get('win_rate')), 0)}<br>"
+                f"相对持有 {signed(s.get('avg_edge_vs_hold'))}<br>跑赢持有 {views.pct(s.get('beat_hold_rate'), 0)}<br>"
+                f"<span class='small muted'>对 SPY（扣费）{views.pct(s.get('avg_net_excess'), 1, True)}</span><br>"
                 f"<span class='small muted'>达标 {views.pct(s.get('target_rate'), 0)} · 止损 {views.pct(s.get('stop_rate'), 0)}</span>"
                 if s.get("n") else "—"
             )
         cells.append(
             f"共 {lv.get('total', 0)} · 活跃 {lv.get('active', 0)} · 结束 {lv.get('closed', 0)}<br>"
-            f"胜率 {views.pct(lv.get('win_rate'), 0)} · 超额 {signed(lv.get('avg_excess'))}<br>"
+            f"扣费胜率 {views.pct(lv.get('win_rate_net'), 0)} · 扣费超额 {signed(lv.get('avg_net_excess'))}<br>"
             f"<span class='small'>👍 {lv.get('thumbs_up', 0)} 👎 {lv.get('thumbs_down', 0)}</span>"
         )
         rows.append(cells)
     body = (
         "<h2>规则记分板</h2><p class='small muted'>历史基准：当前成分股 3 年日线回放（含幸存者偏差），入场为信号后 3 日内首次触及入场区间，"
-        f"止损优先判定；计算于 {e(computed)}。</p>"
+        "止损优先判定；每笔扣除 10 个基点往返成本。<b>相对持有</b> = 扣费收益 − 同期按该股平均漂移一直持有的收益，"
+        f"≤ 0 表示择时没有比直接持有更好。计算于 {e(computed)}。</p>"
         + table(["规则", "历史·全部", "历史·上升", "历史·震荡", "历史·下降", "实盘"], rows)
         + "<h3>规则说明</h3><ul>" + "".join(f"<li><b>{e(d.label)}</b>：{e(d.description)}</li>" for d in registry()) + "</ul>"
     )

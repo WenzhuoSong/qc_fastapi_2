@@ -110,6 +110,27 @@ class PanelAndReplayTests(unittest.TestCase):
         mask = pd.DataFrame({"A": [True] * 25})
         self.assertEqual([i for _, i in base_rates.hit_positions(mask, cooldown=10)], [0, 10, 20])
 
+    def test_net_of_cost_and_hold_baseline(self):
+        from scout.base_rates import Sample, summarize
+        from scout.simulate import ROUND_TRIP_COST
+
+        def mk(ret, hold, spy=0.0):
+            return Sample("d", "AAA", date(2026, 1, 5), "uptrend", "expired", ret, spy, hold, 0.0, 0.0, 5, 0.0)
+
+        stats = summarize([mk(0.03, 0.01), mk(0.0005, 0.0), mk(-0.02, 0.01)])
+        self.assertAlmostEqual(stats["avg_net_return"], (0.03 + 0.0005 - 0.02) / 3 - ROUND_TRIP_COST, places=5)
+        # A +5bp trade is a gross win but a net loss once the round trip is paid.
+        self.assertAlmostEqual(stats["win_rate"], 2 / 3, places=3)
+        self.assertAlmostEqual(stats["win_rate_net"], 1 / 3, places=3)
+        self.assertAlmostEqual(stats["beat_hold_rate"], 1 / 3, places=3)
+        self.assertLess(stats["avg_edge_vs_hold"], stats["avg_net_return"])
+
+    def test_drift_baseline_and_edge_preference(self):
+        drift = base_rates.daily_drift(self.panel)
+        self.assertGreater(drift["AAA"], drift["BBB"])        # AAA was built with the higher drift
+        self.assertEqual(base_rates.edge_of({"avg_edge_vs_hold": -0.01, "avg_excess": 0.02}), -0.01)
+        self.assertEqual(base_rates.edge_of({"avg_excess": 0.02}), 0.02)   # rows from before costs
+
     def test_pick_falls_back_to_all_bucket(self):
         rates = {"d": {"all": {"n": 100, "avg_excess": 0.01}, "uptrend": {"n": 5, "avg_excess": 0.2}}}
         self.assertEqual(base_rates.pick(rates, "d", "uptrend")["regime"], "all")

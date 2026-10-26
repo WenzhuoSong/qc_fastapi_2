@@ -43,6 +43,17 @@ def pct(x: float | None, digits: int = 1, sign: bool = False) -> str:
     return f"{x * 100:+.{digits}f}%" if sign else f"{x * 100:.{digits}f}%"
 
 
+def base_rate_text(br: dict) -> str:
+    """Rule-level replay stats, net of costs, judged against just holding the stock."""
+    head = f"规则历史 {br['n']} 次（{br.get('regime')}）"
+    if br.get("avg_edge_vs_hold") is None:  # rows computed before costs were modelled
+        return f"{head} · 胜率 {pct(br.get('win_rate'), 0)} · 平均超额 {pct(br.get('avg_excess'), 1, True)}"
+    return (
+        f"{head} · 扣费胜率 {pct(br.get('win_rate_net'), 0)} · 相对持有 {pct(br.get('avg_edge_vs_hold'), 1, True)}"
+        f" · 跑赢持有 {pct(br.get('beat_hold_rate'), 0)}"
+    )
+
+
 def render_card(o: dict) -> str:
     ev, th, br = o.get("evidence") or {}, o.get("thesis") or {}, o.get("base_rate") or {}
     setup = ev.get("setup") or {}
@@ -63,10 +74,7 @@ def render_card(o: dict) -> str:
     )
     lines.append(f"周期 {o['horizon_days']} 日 | R:R {o.get('risk_reward') or 0:.1f} | 状态 {STATUS_LABELS.get(o.get('status'), o.get('status'))}")
     if br.get("n"):
-        lines.append(
-            f"📊 历史 {br['n']} 次（{esc(br.get('regime'))}）· 胜率 {pct(br.get('win_rate'), 0)} · "
-            f"平均超额 {pct(br.get('avg_excess'), 1, True)} · 达标率 {pct(br.get('target_rate'), 0)}"
-        )
+        lines.append(f"📊 {base_rate_text(br)}")
     if th.get("thesis"):
         lines.append(f"\n📌 {esc(th['thesis'])}")
     for c in th.get("catalysts") or []:
@@ -272,13 +280,14 @@ async def stats_text() -> str:
     rows = await scoreboard()
     if not rows:
         return "还没有机会记录。"
-    lines = ["<b>规则记分板</b>（实盘 vs 历史）"]
+    lines = ["<b>规则记分板</b>（实盘 vs 历史，均已扣除交易成本）"]
     for r in rows:
         br = r.get("base_rate") or {}
         lines.append(
             f"• {esc(r['detector'])}：共 {r['total']}，活跃 {r['active']}，已结束 {r['closed']}，"
-            f"胜率 {pct(r['win_rate'], 0)}，超额 {pct(r['avg_excess'], 1, True)} | "
-            f"历史胜率 {pct(br.get('win_rate'), 0)} 超额 {pct(br.get('avg_excess'), 1, True)} | "
+            f"扣费胜率 {pct(r['win_rate_net'], 0)}，扣费超额 {pct(r['avg_net_excess'], 1, True)} | "
+            f"历史扣费胜率 {pct(br.get('win_rate_net', br.get('win_rate')), 0)} "
+            f"相对持有 {pct(br.get('avg_edge_vs_hold'), 1, True)} | "
             f"👍{r['thumbs_up']} 👎{r['thumbs_down']}"
         )
     return "\n".join(lines)

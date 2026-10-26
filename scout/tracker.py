@@ -12,7 +12,7 @@ from datetime import date
 from scout import bars as bar_store
 from scout import db
 from scout.detectors import Levels
-from scout.simulate import Bar, SimResult, simulate
+from scout.simulate import ROUND_TRIP_COST, Bar, SimResult, simulate
 from scout.universe import BENCHMARK
 
 logger = logging.getLogger("scout.tracker")
@@ -128,6 +128,10 @@ async def scoreboard() -> list[dict]:
                    FILTER (WHERE oc.outcome <> 'expired_untriggered') AS win_rate,
                avg(oc.return_pct) FILTER (WHERE oc.outcome <> 'expired_untriggered') AS avg_return,
                avg(oc.excess_pct) FILTER (WHERE oc.outcome <> 'expired_untriggered') AS avg_excess,
+               avg(CASE WHEN oc.return_pct > :cost THEN 1.0 ELSE 0.0 END)
+                   FILTER (WHERE oc.outcome <> 'expired_untriggered') AS win_rate_net,
+               avg(oc.return_pct - :cost) FILTER (WHERE oc.outcome <> 'expired_untriggered') AS avg_net_return,
+               avg(oc.excess_pct - :cost) FILTER (WHERE oc.outcome <> 'expired_untriggered') AS avg_net_excess,
                (SELECT stats FROM scout.detector_base_rates b
                  WHERE b.detector = o.primary_detector AND b.regime = 'all') AS base_rate,
                (SELECT count(*) FROM scout.feedback f JOIN scout.opportunities o2 ON o2.id = f.opportunity_id
@@ -138,5 +142,6 @@ async def scoreboard() -> list[dict]:
         LEFT JOIN scout.opportunity_outcomes oc ON oc.opportunity_id = o.id
         GROUP BY o.primary_detector
         ORDER BY o.primary_detector
-        """
+        """,
+        {"cost": ROUND_TRIP_COST},
     )
