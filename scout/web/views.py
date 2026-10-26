@@ -49,7 +49,7 @@ button{background:var(--accent);color:#fff;border:none;cursor:pointer}
 .rrg.pick .s:not(.on){opacity:.18}.rrg .s.on text{font-weight:600}
 .rrgbar{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin:6px 0}
 .rrgbtn{border:1px solid var(--line);color:var(--ink);cursor:pointer;padding:1px 8px}.rrgbtn.on{background:var(--accent);color:#fff}
-ul.rrgread{list-style:none;padding:0;margin:6px 0;max-height:260px;overflow-y:auto}ul.rrgread li{padding:2px 0}
+ul.rrgread{list-style:none;padding:0;margin:6px 0}ul.rrgread li{padding:2px 0}
 """
 
 
@@ -390,7 +390,7 @@ def rrg_svg(rows: list[dict]) -> str:
           f"<text x='{W - pad}' y='{H - 8}' text-anchor='end' font-size='11' fill='var(--muted)'>强于大盘 →</text>"
           f"<text x='{pad}' y='{H - 8}' font-size='11' fill='var(--muted)'>← 弱于大盘</text>"
           f"<text x='{pad}' y='{pad - 10}' font-size='11' fill='var(--muted)'>↑ 动量增强</text>")
-    marks = []
+    marks, placed = [], []
     for r in rows:
         tail = r.get("tail") or []
         if not tail:
@@ -414,8 +414,12 @@ def rrg_svg(rows: list[dict]) -> str:
         tip = (f"{r.get('name', r['key'])} {r['key']} · {read['text'] if read else QUADRANTS.get(q, q)}"
                f"（比 {tail[-1][0]:.1f}，动量 {tail[-1][1]:.1f}）")
         key = escape(r["key"])
+        lx, ly = x + 7, y - 5
+        while any(abs(lx - px) < 34 and abs(ly - py) < 12 for px, py in placed):   # crude label de-collision
+            ly += 12
+        placed.append((lx, ly))
         marks.append(f"<g class='s' data-k='{key}'><title>{escape(tip)}</title><g class='tail'>{older}</g>{head}"
-                     f"<a href='#{key}'><text x='{x + 7:.1f}' y='{y - 5:.1f}' font-size='11' fill='var(--ink)'>{key}</text></a></g>")
+                     f"<a href='#{key}'><text x='{lx:.1f}' y='{ly:.1f}' font-size='11' fill='var(--ink)'>{key}</text></a></g>")
     return f"<svg id='rrg' class='rrg' viewBox='0 0 {W} {H}' width='100%'>{defs}{bg}{''.join(marks)}</svg>"
 
 
@@ -451,7 +455,7 @@ def rrg_panel(rows: list[dict]) -> str:
     items = "".join(
         f"<li><span class='chip' style='color:{QUAD_COLORS[x['quadrant']]}'>{QUADRANTS[x['quadrant']]}</span>"
         f"<a href='#{escape(x['key'])}'>{escape(x['name'])}</a> <span class='muted'>{escape(x['key'])}</span> "
-        f"{'<b>' if x['changed'] else ''}{escape(x['text'])}{'</b>' if x['changed'] else ''}</li>" for x in reads)
+        f"{'<b>' if x['changed'] else ''}{escape(x['detail'])}{'</b>' if x['changed'] else ''}</li>" for x in reads)
     return (f"{rrg_svg(rows)}{controls}<ul class='rrgread small'>{items}</ul>{RRG_GUIDE}{RRG_SCRIPT}")
 
 

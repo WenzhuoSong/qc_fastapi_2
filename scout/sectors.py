@@ -213,15 +213,18 @@ def rotation_read(r: dict) -> dict | None:
     if not tail or q not in QUADRANTS:
         return None
     step = (tail[-1][0] - tail[-2][0], tail[-1][1] - tail[-2][1]) if len(tail) >= 2 else (0.0, 0.0)
-    hint = next((text for quad, axis, sign, text in _HINTS if quad == q and step[axis] * sign > 0), "方向不明显")
+    hint = next((text for quad, axis, sign, text in _HINTS if quad == q and step[axis] * sign > 0), None)
+    if hint is None:
+        hint = (f"相对强度{'回升' if step[0] > 0 else '回落'}、动量{'增强' if step[1] > 0 else '减弱'}"
+                if any(step) else "本周几乎没动")
     prev = r.get("quadrant_prev")
     changed = bool(prev and prev != q)
     near = float(np.hypot(tail[-1][0] - 100, tail[-1][1] - 100)) < NEAR_CENTER
-    text = f"{QUADRANTS[q]}{f'（本周由{QUADRANTS[prev]}转入）' if changed else ''}：{QUADRANT_MEANING[q]}，{hint}"
+    detail = f"{f'本周由{QUADRANTS[prev]}转入。' if changed else ''}{QUADRANT_MEANING[q]}，{hint}"
     if near:
-        text += "；贴近中心，信号偏弱"
+        detail += "；贴近中心，信号偏弱"
     return {"key": r["key"], "name": r.get("name", r["key"]), "quadrant": q, "changed": changed,
-            "near_center": near, "text": text}
+            "near_center": near, "detail": detail, "text": f"{QUADRANTS[q]}：{detail}"}
 
 
 def rotation_reads(rows: list[dict]) -> list[dict]:
