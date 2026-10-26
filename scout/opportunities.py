@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 import numpy as np
+import pandas as pd
 
 from scout import base_rates, db, knowledge
 from scout.detectors import Detector, Levels, registry
@@ -137,6 +138,39 @@ def scan(
     return out
 
 
+REGIME_ZH = {"uptrend": "长期上升", "mixed": "长期震荡", "downtrend": "长期下降", "unknown": "长期趋势未知"}
+
+
+def state_label(long: str, short: str, breadth: float | None, growth_gap: float | None) -> dict:
+    """Market state for display. `regime` (SPY vs its 200/50-day lines) stays the
+    base-rate bucket; this adds the short-term trend, breadth and growth vs SPY
+    so a pullback inside a long uptrend is not reported as just 'uptrend'."""
+    parts = [REGIME_ZH.get(long, long), short]
+    if breadth is not None:
+        parts.append(f"宽度{'广泛' if breadth >= 0.6 else '一般' if breadth >= 0.4 else '偏弱'}"
+                     f"（{breadth * 100:.0f}% 站上 50 日线）")
+    if growth_gap is not None and abs(growth_gap) >= 0.03:
+        parts.append(f"科技成长{'明显领先' if growth_gap > 0 else '明显落后'}大盘（QQQ 相对 SPY 20 日 {growth_gap * 100:+.1f}%）")
+    return {"label": "，".join(parts[:2]), "detail": " · ".join(parts), "long": long, "short": short,
+            "breadth": breadth, "growth_gap": growth_gap}
+
+
+def state_text(market: dict, detail: bool = False) -> str:
+    """Market state for display; briefs stored before the state existed fall back to the regime."""
+    st = market.get("state") or {}
+    if st:
+        return st["detail" if detail else "label"]
+    return REGIME_ZH.get(market.get("regime"), market.get("regime") or "—")
+
+
+def short_trend(close: float, sma20: float, sma50: float, ret20: float) -> str:
+    if close < sma50 and ret20 < -0.03:
+        return "短期走弱"
+    if close > sma20 and ret20 > 0:
+        return "短期向上"
+    return "短期回调"
+
+
 def market_context(p: FeaturePanel, asof: date) -> dict:
     c = p["close"]
     def ret(t: str, n: int) -> float | None:
@@ -150,9 +184,21 @@ def market_context(p: FeaturePanel, asof: date) -> dict:
         etf: ret(etf, 20) for etf in SECTOR_ETFS.values() if etf in c.columns
     }
     ranked = sorted(((k, v) for k, v in sectors.items() if v is not None), key=lambda kv: kv[1], reverse=True)
+    spy = {k: p[k].at[asof, BENCHMARK] for k in ("close", "sma20", "sma50", "ret_20d")}
+    liquid = p["liquid"].loc[asof].reindex(p.stocks).fillna(False).astype(bool)
+    above = (p["close"].loc[asof] > p["sma50"].loc[asof]).reindex(p.stocks)[liquid]
+    qqq20, spy20 = ret("QQQ", 20), ret(BENCHMARK, 20)
+    state = state_label(
+        str(p.regime.loc[asof]),
+        short_trend(*(float(spy[k]) for k in ("close", "sma20", "sma50", "ret_20d"))) if not any(pd.isna(v) for v in spy.values())
+        else "短期趋势未知",
+        round(float(above.mean()), 3) if len(above) else None,
+        round(qqq20 - spy20, 4) if qqq20 is not None and spy20 is not None else None,
+    )
     return {
         "date": asof.isoformat(),
         "regime": str(p.regime.loc[asof]),
+        "state": state,
         "spy_ret_1d": ret(BENCHMARK, 1),
         "spy_ret_20d": ret(BENCHMARK, 20),
         "qqq_ret_20d": ret("QQQ", 20),

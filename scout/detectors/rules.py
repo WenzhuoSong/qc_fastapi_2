@@ -114,8 +114,10 @@ D6_ZSCORE = (
 DETECTORS: tuple[Detector, ...] = (
     Detector(
         "trend_breakout", "趋势突破", "setup", 20,
-        "收盘突破 55 日高点，量能 ≥1.8 倍均量，50/200 日均线多头排列，相对强度前 20%。",
-        D1_BREAKOUT, _breakout_levels,
+        "收盘突破 55 日高点，量能 ≥1.8 倍均量，50/200 日均线多头排列，相对强度前 20%。"
+        "（2026-10-26 降为候选：回放扣费后跑输持有该股 0.6%）",
+        # Demoted: full-sample edge vs hold ≤ 0 (−0.6%, n=627). Live rules must beat holding.
+        D1_BREAKOUT, _breakout_levels, live=False,
     ),
     Detector(
         "pullback_in_uptrend", "强势回调", "setup", 10,
@@ -132,8 +134,10 @@ DETECTORS: tuple[Detector, ...] = (
     ),
     Detector(
         "sector_rotation", "板块轮动龙头", "setup", 20,
-        "行业 ETF 20 日相对 SPY 由负转正，选取行业内相对强度前 15% 的个股。",
-        D4_SECTOR_ROTATION, _sector_rotation_levels,
+        "行业 ETF 20 日相对 SPY 由负转正，选取行业内相对强度前 15% 的个股。"
+        "（2026-10-26 降为候选：回放扣费后跑输持有该股 1.1%）",
+        # Demoted: full-sample edge vs hold ≤ 0 (−1.1%, n=1708).
+        D4_SECTOR_ROTATION, _sector_rotation_levels, live=False,
     ),
     Detector(
         "volume_shock", "放量异动", "watch", 10,

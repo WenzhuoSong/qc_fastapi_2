@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, stat
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from scout import db, premarket, telegram, universe
+from scout import db, opportunities, premarket, telegram, universe
 from scout.config import get_scout_settings
 from scout.features import SNAPSHOT_FEATURES
 from scout.market_calendar import us_equity_market_status
@@ -85,12 +85,12 @@ async def today(_: str = Depends(require_auth)) -> str:
         "JOIN scout.opportunities o ON o.id = ev.opportunity_id ORDER BY ev.event_date DESC, ev.id DESC LIMIT 12"
     )
     market = ((brief or {}).get("payload") or {}).get("market") or {}
-    regime_zh = {"uptrend": "上升趋势", "mixed": "震荡", "downtrend": "下降趋势"}
     head = ""
     if market:
         leaders = "，".join(f"{tlink(k)} {signed(v)}" for k, v in market.get("sector_leaders_20d") or [])
         laggards = "，".join(f"{tlink(k)} {signed(v)}" for k, v in market.get("sector_laggards_20d") or [])
-        head = f"""<div class="card"><h3>收盘 {e(brief['asof'])} · 大盘 {e(regime_zh.get(market.get('regime'), market.get('regime')))}</h3>
+        head = f"""<div class="card"><h3>收盘 {e(brief['asof'])} · 大盘 {e(opportunities.state_text(market))}</h3>
+<div class="small muted">{e(opportunities.state_text(market, detail=True))}</div>
 {tlink('SPY')} 当日 {signed(market.get('spy_ret_1d'))} · 20 日 {signed(market.get('spy_ret_20d'))} · {tlink('QQQ')} 20 日 {signed(market.get('qqq_ret_20d'))}
 · {tlink('IWM')} 20 日 {signed(market.get('iwm_ret_20d'))} · {tlink('SMH')} 20 日 {signed(market.get('smh_ret_20d'))}
 <div class="small">领涨板块：{leaders}　落后板块：{laggards}</div></div>"""
@@ -432,8 +432,9 @@ async def screens_page(s: str = "", _: str = Depends(require_auth)) -> str:
         "SELECT detector, count(*) AS n FROM scout.signal_hits WHERE asof = :d GROUP BY detector", {"d": asof})}
     sig_counts = sc.counts(rows)
     earn = await db.fetch_one(
-        "SELECT count(*) AS n FROM scout.market_events WHERE event_type = 'earnings' AND event_date BETWEEN :a AND :b",
-        {"a": asof, "b": asof + timedelta(days=7)})
+        "SELECT count(DISTINCT ticker) AS n FROM scout.market_events WHERE event_type = 'earnings' "
+        "AND event_date BETWEEN :a AND :b AND ticker = ANY(:t)",
+        {"a": asof, "b": asof + timedelta(days=7), "t": [r["ticker"] for r in rows]})
     screens = sc.all_screens()
 
     def count_of(x) -> int:

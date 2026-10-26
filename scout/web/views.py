@@ -5,6 +5,7 @@ import json
 from html import escape
 from typing import Any, Iterable
 
+from scout import knowledge
 from scout.premarket import overnight_line
 from scout.sectors import QUADRANTS, rotation_read, rotation_reads
 from scout.telegram import (CONFIDENCE_LABELS, STATUS_LABELS, base_rate_text, market_split_text, pct,
@@ -103,11 +104,22 @@ def why_html(why: dict) -> str:
             f"{'<div>调整：' + e(adj) + '</div>' if adj else ''}</details>")
 
 
+DEMOTED_NOTE = ("<div class='small warn'>该规则已降为候选（回放扣费后跑输持有），"
+                "这条机会只继续跟踪到结束、计入实盘记录，不建议据此新开仓。</div>")
+
+
+def is_live(detector: str) -> bool:
+    from scout.detectors import registry
+
+    return any(d.name == detector and d.live for d in registry(include_candidates=True))
+
+
 def opp_card(o: dict) -> str:
-    ev, th, br = o.get("evidence") or {}, o.get("thesis") or {}, o.get("base_rate") or {}
+    ev, th, br = o.get("evidence") or {}, knowledge.humanize_obj(o.get("thesis") or {}), o.get("base_rate") or {}
     label = (ev.get("setup") or {}).get("label", o["primary_detector"])
     chips = "".join(f'<span class="chip">{e(d)}</span>' for d in o.get("detectors") or [])
     theme = f'<span class="chip">#{e(ev["theme"])}</span>' if ev.get("theme") else ""
+    demoted = DEMOTED_NOTE if not is_live(o["primary_detector"]) and o.get("status") in ("new", "triggered") else ""
     lists = ""
     if th.get("catalysts"):
         lists += "<div class='small muted'>催化</div><ul class='tight'>" + "".join(f"<li>{e(c)}</li>" for c in th["catalysts"]) + "</ul>"
@@ -120,10 +132,10 @@ def opp_card(o: dict) -> str:
     return f"""<div class="card">
 <h3><a href="/ticker/{e(o['ticker'])}">{e(o['ticker'])}</a> · {e(label)} <span class="muted small">评分 {o['score']:.2f}</span></h3>
 <div class="small muted">{e(o['asof'])} · {e(STATUS_LABELS.get(o['status'], o['status']))} · {o['horizon_days']} 日 · R:R {(o.get('risk_reward') or 0):.1f}</div>
-<div>{chips}{theme}</div>
+<div>{chips}{theme}</div>{demoted}
 <p><b>{e(th.get('headline'))}</b><br>{e(th.get('thesis'))}</p>
 <div class="levels"><div><span>入场</span>{o['entry_lo']:.2f}–{o['entry_hi']:.2f}</div><div><span>止损</span>{o['stop']:.2f}</div>
-<div><span>目标 1</span>{o['target1']:.2f}</div><div><span>目标 2</span>{(o.get('target2') or o['target1']):.2f}</div></div>
+<div><span>目标 1</span>{o['target1']:.2f}</div><div><span>目标 2</span>{f"{o['target2']:.2f}" if (o.get('target2') or 0) > o['target1'] else "—"}</div></div>
 <div class="small">{e(market_split_text(ev.get("price") or {}) or "")}</div>
 <div class="small">{e(sector_text(ev.get("sector_context")) or "")}</div>
 {why_html(ev.get("why") or {})}
@@ -164,7 +176,7 @@ def insight_card(rec: dict) -> str:
     """Structured multi-lens AI interpretation with evidence chips and audit details."""
     from scout.insight import LENS_TITLES
 
-    ins, pack = rec["insight"], rec["pack"]
+    ins, pack = knowledge.humanize_obj(rec["insight"]), rec["pack"]
     ev_index = {i["字段"]: i for b in pack["lenses"] for i in b["evidence"]}
 
     def chip(key: str) -> str:
@@ -317,10 +329,11 @@ def trade_plan(o: dict, close: float | None) -> str:
     risk = mid - o["stop"]
     close = close or mid
     cur = o.get("current_stop") if (o.get("current_stop") or 0) > o["stop"] else None
-    t2 = o.get("target2") or o["target1"]
     tgt = "参考目标" if trailing else "目标"
-    rows = [(f"{tgt} 2", t2, "--up"), (f"{tgt} 1", o["target1"], "--up"), ("入场上沿", o["entry_hi"], "--accent"),
+    rows = [(f"{tgt} 1", o["target1"], "--up"), ("入场上沿", o["entry_hi"], "--accent"),
             ("入场下沿", o["entry_lo"], "--accent"), ("保护性止损", o["stop"], "--down")]
+    if (o.get("target2") or 0) > o["target1"]:        # equal when the swing high already lies past 2.5R
+        rows.insert(0, (f"{tgt} 2", o["target2"], "--up"))
     if cur:
         rows.append(("跟进止损", cur, "--warn"))
     table_rows = "".join(
@@ -333,7 +346,7 @@ def trade_plan(o: dict, close: float | None) -> str:
     exit_rule = ex.get("rule") or f"固定：到目标 1 止盈，{o['horizon_days']} 个交易日到期"
     return f"""<div class="card plan"><h3>交易计划 <span class="chip">{escape(label)}</span> <span class="chip">{escape(str(status))}</span></h3>
 <div class="small muted">信号 {escape(str(o['asof']))}{' · 入场 ' + escape(str(o['triggered_on'])) if o.get('triggered_on') else ''} · 1R = {risk:.2f}（{risk / mid * 100:.1f}%）· R:R {(o.get('risk_reward') or 0):.1f}</div>
-{_ladder_svg([(r[0], r[1], r[2]) for r in rows], close, o['entry_lo'], o['entry_hi'], o['stop'], t2)}
+{_ladder_svg([(r[0], r[1], r[2]) for r in rows], close, o['entry_lo'], o['entry_hi'], o['stop'], max(o.get('target2') or 0, o['target1']))}
 <table><thead><tr><th></th><th>价格</th><th>距现价</th><th>R</th></tr></thead><tbody>{table_rows}</tbody></table>
 <p class="small"><b>出场规则</b>：{escape(exit_rule)}</p>
 <p class="small muted">入场区间由信号日 ATR 决定，3 个交易日内（突破回踩类 10 日）进入区间才算成交；保护性止损放在结构位下方且至少距入场中点 1 个 ATR。</p></div>"""

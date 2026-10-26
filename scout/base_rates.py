@@ -240,3 +240,26 @@ def shrunk_edge(stats: dict) -> float:
     if edge is None or n == 0:
         return 0.0
     return edge * n / (n + SHRINK_K)
+
+
+HEALTH_MIN_N = 100
+
+
+def rule_health(rates: dict[str, dict[str, dict]]) -> list[str]:
+    """Weekly review lines: live rules that no longer beat holding, candidates that do.
+
+    Only a prompt for a human decision; promotion also needs the replay to hold
+    in both halves of the sample (see CLAUDE.md), which this does not check.
+    """
+    lines = []
+    for det in registry(include_candidates=True):
+        stats = (rates.get(det.name) or {}).get("all") or {}
+        edge = stats.get("avg_edge_vs_hold")
+        if edge is None or stats.get("n", 0) < HEALTH_MIN_N:
+            continue
+        if det.live and edge <= 0:
+            lines.append(f"⚠️ {det.label}：扣费后跑输持有 {edge * 100:.1f}%（{stats['n']} 次），建议降为候选")
+        elif not det.live and edge > 0:
+            lines.append(f"💡 {det.label}（候选）：扣费后跑赢持有 +{edge * 100:.1f}%（{stats['n']} 次），"
+                         "可评估转正（需前后两段样本都成立）")
+    return lines

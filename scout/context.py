@@ -91,12 +91,15 @@ async def refresh_earnings(days_back: int = 10, days_ahead: int = 21) -> int:
     # a month in one call silently loses the nearest weeks of earnings season.
     today = date.today()
     items: list[dict] = []
+    complete: list[tuple[date, date]] = []    # windows fetched in full: stale dates in them can go
     start, end = today - timedelta(days=days_back), today + timedelta(days=days_ahead)
     while start <= end:
         stop = min(start + timedelta(days=EARNINGS_WINDOW_DAYS - 1), end)
         chunk = await asyncio.to_thread(fetch_earnings_range, start.isoformat(), stop.isoformat())
         if len(chunk) >= FINNHUB_EARNINGS_CAP:
             logger.warning("earnings %s..%s hit the %d-row cap; some dates may be missing", start, stop, FINNHUB_EARNINGS_CAP)
+        elif chunk:                           # empty may be an API failure: keep what we have
+            complete.append((start, stop))
         items += chunk
         start = stop + timedelta(days=1)
     rows = []
@@ -125,7 +128,24 @@ async def refresh_earnings(days_back: int = 10, days_ahead: int = 21) -> int:
             """,
             rows,
         )
+        await _drop_moved_earnings(rows, complete)
     return len(rows)
+
+
+async def _drop_moved_earnings(rows: list[dict], windows: list[tuple[date, date]]) -> int:
+    """A rescheduled report leaves its old date behind; remove dates Finnhub no
+    longer lists inside windows it returned in full."""
+    fresh = {(r["t"], r["d"]) for r in rows}
+    stale = []
+    for a, b in windows:
+        existing = await db.fetch_all(
+            "SELECT id, ticker, event_date FROM scout.market_events "
+            "WHERE event_type = 'earnings' AND source = 'finnhub' AND event_date BETWEEN :a AND :b", {"a": a, "b": b})
+        stale += [{"id": r["id"]} for r in existing if (r["ticker"], r["event_date"]) not in fresh]
+    if stale:
+        await db.execute_many("DELETE FROM scout.market_events WHERE id = :id", stale)
+        logger.info("removed %d moved earnings dates", len(stale))
+    return len(stale)
 
 
 async def earnings_map(asof: date, days_back: int = 10, days_ahead: int = 21) -> dict[str, list[dict]]:

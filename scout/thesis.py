@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from scout import knowledge
 from scout.config import get_scout_settings
 
 logger = logging.getLogger("scout.thesis")
@@ -203,7 +204,7 @@ async def write_thesis(ev: dict) -> tuple[Thesis, str]:
         if not bad:
             if parsed.confidence == "high" and ((ev.get("base_rate") or {}).get("n", 0) < 30):
                 parsed.confidence = "medium"
-            return parsed, "llm"
+            return Thesis(**knowledge.humanize_obj(parsed.model_dump())), "llm"
         logger.info("thesis for %s had unsupported numbers %s (attempt %d)", ev.get("ticker"), bad, attempt + 1)
         messages += [
             {"role": "assistant", "content": parsed.model_dump_json()},

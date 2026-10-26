@@ -226,10 +226,9 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
 def render_eod_brief(asof: date, market: dict, candidates, transitions, saved: list[str],
                      sector_rows: list[dict] | None = None, focus: dict | None = None) -> str:
     pct = telegram.pct
-    regime_zh = {"uptrend": "上升趋势", "mixed": "震荡", "downtrend": "下降趋势", "unknown": "未知"}
     lines = [
         f"🌇 <b>Scout 收盘扫描 {asof}</b>",
-        f"大盘：{regime_zh.get(market['regime'], market['regime'])} | SPY 当日 {pct(market.get('spy_ret_1d'), 1, True)}，"
+        f"大盘：{telegram.esc(opportunities.state_text(market, detail=True))}\nSPY 当日 {pct(market.get('spy_ret_1d'), 1, True)}，"
         f"20 日 {pct(market.get('spy_ret_20d'), 1, True)} | QQQ 20 日 {pct(market.get('qqq_ret_20d'), 1, True)} | "
         f"SMH 20 日 {pct(market.get('smh_ret_20d'), 1, True)}",
     ]
@@ -297,6 +296,9 @@ async def render_weekly_report() -> str:
     rotation = sectors.rotation_line(sector_rows)
     if rotation:
         lines.append(f"\n本周{rotation}")
+    health = base_rates.rule_health(await base_rates.load())
+    if health:
+        lines.append("\n<b>规则体检</b>\n" + "\n".join(telegram.esc(x) for x in health))
     lines.append("")
     lines.append(await telegram.stats_text())
     return "\n".join(lines)

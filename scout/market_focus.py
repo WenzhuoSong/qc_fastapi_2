@@ -15,7 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from scout import db, knowledge, sector_news, sectors
+from scout import db, knowledge, opportunities, sector_news, sectors
 from scout.config import get_scout_settings
 from scout.thesis import allowed_numbers, unsupported_numbers
 
@@ -91,7 +91,6 @@ async def build_pack() -> dict | None:
     hits_by_sector = {r["sector"]: r["n"] for r in hits}
     brief = await db.fetch_one("SELECT payload FROM scout.briefs WHERE kind = 'eod' ORDER BY asof DESC, id DESC LIMIT 1")
     market = ((brief or {}).get("payload") or {}).get("market") or {}
-    regime_zh = {"uptrend": "上升趋势", "mixed": "震荡", "downtrend": "下降趋势"}
 
     sector_blocks = []
     for r in sorted((x for x in rows if x["kind"] == "sector"), key=lambda x: -(x.get("heat") or 0)):
@@ -126,7 +125,7 @@ async def build_pack() -> dict | None:
     macro = await sector_news.macro_headlines(8)
     return {
         "data_date": str(asof),
-        "market": {"key": "market.regime", "大盘状态": regime_zh.get(market.get("regime"), market.get("regime")),
+        "market": {"key": "market.regime", "大盘状态": opportunities.state_text(market, detail=True),
                    "SPY 当日": knowledge.fmt("ret_1d", market.get("spy_ret_1d")),
                    "SPY 20 日": knowledge.fmt("ret_20d", market.get("spy_ret_20d")),
                    "QQQ 20 日": knowledge.fmt("ret_20d", market.get("qqq_ret_20d")),

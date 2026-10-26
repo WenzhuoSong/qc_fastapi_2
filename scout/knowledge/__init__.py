@@ -118,3 +118,46 @@ def lens(lens_id: str) -> Lens:
         if item.id == lens_id:
             return item
     raise KeyError(lens_id)
+
+
+# ── Field names never reach the user ──
+# The LLM sees feature keys in the evidence pack and sometimes echoes them
+# ("(swing_trend)", "avg_edge_vs_hold 为 -1.4%"). Citations live in their own
+# fields; prose gets the Chinese names.
+STAT_ZH = {
+    "avg_edge_vs_hold": "扣费后相对持有", "beat_hold_rate": "跑赢持有比例", "win_rate_net": "扣费胜率",
+    "win_rate": "胜率", "avg_excess": "相对 SPY 超额", "avg_net_excess": "扣费后相对 SPY", "avg_return": "平均收益",
+    "median_return": "收益中位数", "target_rate": "达标率", "stop_rate": "止损率", "avg_hold_return": "持有收益",
+}
+
+
+def _field_names() -> dict[str, str]:
+    names = {k: (v or {}).get("zh", k) for k, v in features().items()}
+    return {**names, **STAT_ZH}
+
+
+_KEY = r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+|[a-z]+\d+"      # snake_case or rsi14-style
+
+
+def humanize(text: str) -> str:
+    if not text:
+        return text
+    names = _field_names()
+
+    def drop_group(m: re.Match) -> str:
+        keys = [k.strip() for k in re.split(r"[,，、/]", m.group(1))]
+        return "" if keys and all(k in names for k in keys) else m.group(0)
+
+    text = re.sub(rf"\s*[（(]\s*((?:{_KEY})(?:\s*[,，、/]\s*(?:{_KEY}))*)\s*[)）]", drop_group, text)
+    return re.sub(rf"(?<![A-Za-z0-9_])({_KEY})(?![A-Za-z0-9_])", lambda m: names.get(m.group(1), m.group(1)), text)
+
+
+def humanize_obj(value):
+    """humanize every string in a dict / list (an LLM output dump)."""
+    if isinstance(value, str):
+        return humanize(value)
+    if isinstance(value, list):
+        return [humanize_obj(v) for v in value]
+    if isinstance(value, dict):
+        return {k: (v if k in ("evidence", "cites", "keys") else humanize_obj(v)) for k, v in value.items()}
+    return value

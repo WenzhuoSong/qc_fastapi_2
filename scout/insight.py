@@ -17,7 +17,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from scout import context, db, knowledge, sectors, structure, universe
+from scout import context, db, knowledge, opportunities, sectors, structure, universe
 from scout.analysis import attribution, scout_view
 from scout.config import get_scout_settings
 from scout.thesis import allowed_numbers, unsupported_numbers
@@ -179,9 +179,8 @@ def _next_earnings(facts: dict) -> date | None:
 def _market_block(m: dict) -> dict:
     if not m:
         return {}
-    regime_zh = {"uptrend": "上升趋势", "mixed": "震荡", "downtrend": "下降趋势"}
     return {
-        "大盘状态": regime_zh.get(m.get("regime"), m.get("regime")),
+        "大盘状态": opportunities.state_text(m, detail=True),
         "SPY 当日": knowledge.fmt("ret_1d", m.get("spy_ret_1d")),
         "SPY 20 日": knowledge.fmt("ret_20d", m.get("spy_ret_20d")),
         "QQQ 20 日": knowledge.fmt("ret_20d", m.get("qqq_ret_20d")),
@@ -292,7 +291,7 @@ async def generate(ticker: str) -> dict | None:
             issues = validate(parsed, pack, tone)
             history.append({"attempt": attempts, "issues": issues})
             if not issues:
-                insight, source = parsed, "llm"
+                insight, source = Insight(**knowledge.humanize_obj(parsed.model_dump())), "llm"
                 break
             logger.info("insight for %s failed validation (attempt %d): %s", ticker, attempts, issues)
             messages += [{"role": "assistant", "content": parsed.model_dump_json()},

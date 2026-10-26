@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from scout import db, universe
+from scout import db, knowledge, universe
 from scout.config import get_scout_settings
 
 logger = logging.getLogger("scout.telegram")
@@ -116,7 +116,7 @@ def base_rate_text(br: dict) -> str:
 
 
 def render_card(o: dict) -> str:
-    ev, th, br = o.get("evidence") or {}, o.get("thesis") or {}, o.get("base_rate") or {}
+    ev, th, br = o.get("evidence") or {}, knowledge.humanize_obj(o.get("thesis") or {}), o.get("base_rate") or {}
     setup = ev.get("setup") or {}
     labels = setup.get("label") or o["primary_detector"]
     extra = [d for d in (o.get("detectors") or []) if d != o["primary_detector"]]
@@ -127,12 +127,17 @@ def render_card(o: dict) -> str:
     if ev.get("theme"):
         head += f"　#{esc(ev['theme'])}"
     lines = [head]
+    from scout.detectors import registry
+
+    if o.get("status") in ("new", "triggered") and not any(d.name == o["primary_detector"] and d.live for d in registry()):
+        lines.append("⚠️ 该规则已降为候选（回放跑输持有），只跟踪到结束，不建议据此新开仓。")
     if th.get("headline"):
         lines.append(f"<i>{esc(th['headline'])}</i>")
     trailing = (ev.get("exit") or {}).get("kind") == "trail_low"
     lines.append(
         f"入场 {o['entry_lo']:.2f}–{o['entry_hi']:.2f} | 保护性止损 {o['stop']:.2f} | "
-        f"{'参考目标' if trailing else '目标'} {o['target1']:.2f} / {(o.get('target2') or o['target1']):.2f}"
+        f"{'参考目标' if trailing else '目标'} {o['target1']:.2f}"
+        + (f" / {o['target2']:.2f}" if (o.get("target2") or 0) > o["target1"] else "")
     )
     move = market_split_text(ev.get("price") or {})
     if move:
