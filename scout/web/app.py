@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import secrets
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
@@ -202,7 +203,7 @@ async def sector_members_card(etf: str) -> str:
         return [tlink(m["ticker"]), e((m.get("name") or "")[:24]), signed(m.get("ret_1d")), signed(m.get("ret_20d")),
                 views.pct(m.get("rs_pct"), 0)]
 
-    head = ["代码", "名称", "1 日", "20 日", "RS 分位"]
+    head = ["代码", "名称", "1 日", "20 日", "相对强度分位（3–12 月）"]
     return (
         f'<div class="card"><h3>板块成分股 · {e(universe.SECTOR_ZH.get(sector, sector))}</h3>'
         f'<div class="small muted">共 {len(members)} 只，站上 50 日线 {len(above50)} 只（{views.pct(len(above50) / len(members), 0)}）</div>'
@@ -302,8 +303,6 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
     )
     body += '<div class="grid" style="margin-top:12px">'
     body += f'<div id="scout">{views.scout_panel(t, headline, lines, ai, bool(get_scout_settings().openai_api_key))}</div>'
-    if ai:
-        body += views.insight_card(ai)
     body += f'<div class="card"><h3>新闻</h3><ul class="tight">{news_html}</ul></div>'
     if latest:
         body += opp_card(latest)
@@ -312,6 +311,8 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
              f'<p class="small muted">鼠标悬停指标名可查看定义（数据字典 scout/knowledge/features.yaml）</p>'
              f'{table(["指标", "值", "读数"], feat_rows)}</details>')
     body += "</div>"
+    if ai:      # full width below the grid, so the Scout panel does not sit alone in a row
+        body += f"<div style='margin-top:12px'>{views.insight_card(ai)}</div>"
     if opps:
         body += "<h2>历史机会</h2>" + table(
             ["日期", "规则", "状态", "评分", "收益"],
@@ -575,7 +576,7 @@ async def watchlist_page(_: str = Depends(require_auth)) -> str:
             '<input name="ticker" placeholder="代码" required size="8"><input name="theme" placeholder="主题（可选）">'
             '<button>加入</button></form>')
     body = "<h2>Watchlist</h2>" + form + table(
-        ["代码", "主题", "收盘", "1 日", "5 日", "20 日", "RS 分位", "距 52 周高点", ""], trs
+        ["代码", "主题", "收盘", "1 日", "5 日", "20 日", "相对强度分位（3–12 月）", "距 52 周高点", ""], trs
     )
     return layout("Watchlist", "watchlist", body)
 
@@ -592,6 +593,11 @@ async def watchlist_remove(ticker: str = Form(...), _: str = Depends(require_aut
     return RedirectResponse("/watchlist", status_code=303)
 
 
+def _bold(escaped: str) -> str:
+    """Render the **bold** the model sometimes emits (input is already HTML-escaped)."""
+    return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
+
+
 @app.get("/chat", response_class=HTMLResponse)
 async def chat_page(_: str = Depends(require_auth)) -> str:
     rows = await db.fetch_all(
@@ -600,7 +606,7 @@ async def chat_page(_: str = Depends(require_auth)) -> str:
     msgs = "".join(
         f'<div class="card" style="margin-bottom:8px;{"border-color:var(--accent)" if r["role"] == "user" else ""}">'
         f'<div class="small muted">{"你" if r["role"] == "user" else "Scout"} · {e(r["channel"])} · {e(str(r["created_at"])[:16])}</div>'
-        f'<pre>{e(r["content"])}</pre></div>'
+        f'<pre>{_bold(e(r["content"]))}</pre></div>'
         for r in reversed(rows)
     )
     form = ('<form method="post" action="/chat" class="card" style="display:flex;gap:8px">'

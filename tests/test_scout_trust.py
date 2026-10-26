@@ -46,6 +46,11 @@ class HumanizeTests(unittest.TestCase):
         self.assertEqual(knowledge.humanize("符合上升趋势（swing_trend）。"), "符合上升趋势。")
         self.assertEqual(knowledge.humanize("多头排列（sma50, sma200）。"), "多头排列。")
 
+    def test_evidence_citations_in_brackets_are_dropped(self):
+        self.assertEqual(knowledge.humanize("观点分歧（news_1, news_2）。"), "观点分歧。")
+        self.assertEqual(knowledge.humanize("能源（XLE.rel_20）走强"), "能源走强")
+        self.assertEqual(knowledge.humanize("参见 (EPS, PE) 与 S&P 500（SPY）"), "参见 (EPS, PE) 与 S&P 500（SPY）")
+
     def test_bare_keys_get_chinese_names(self):
         self.assertIn("扣费后相对持有", knowledge.humanize("avg_edge_vs_hold 为 -1.4%"))
         self.assertIn(knowledge.zh("rsi14"), knowledge.humanize("rsi14 偏低"))

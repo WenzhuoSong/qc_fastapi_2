@@ -137,6 +137,8 @@ def _field_names() -> dict[str, str]:
 
 
 _KEY = r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+|[a-z]+\d+"      # snake_case or rsi14-style
+# Evidence citations (news_4, wrap_1, earnings.next.date, XLE.rel_20, q.ES=F) belong in the evidence list.
+_CITE = re.compile(r"(?:news|macro|wrap|econw?|focus)(?:_\d+)?|[A-Za-z][\w^=-]*\.[\w.]+")
 
 
 def humanize(text: str) -> str:
@@ -146,9 +148,10 @@ def humanize(text: str) -> str:
 
     def drop_group(m: re.Match) -> str:
         keys = [k.strip() for k in re.split(r"[,，、/]", m.group(1))]
-        return "" if keys and all(k in names for k in keys) else m.group(0)
+        return "" if keys and all(k in names or _CITE.fullmatch(k) for k in keys) else m.group(0)
 
-    text = re.sub(rf"\s*[（(]\s*((?:{_KEY})(?:\s*[,，、/]\s*(?:{_KEY}))*)\s*[)）]", drop_group, text)
+    tok = r"[A-Za-z][\w.=^-]*"
+    text = re.sub(rf"\s*[（(]\s*({tok}(?:\s*[,，、/]\s*{tok})*)\s*[)）]", drop_group, text)
     return re.sub(rf"(?<![A-Za-z0-9_])({_KEY})(?![A-Za-z0-9_])", lambda m: names.get(m.group(1), m.group(1)), text)
 
 

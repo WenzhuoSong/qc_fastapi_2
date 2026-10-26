@@ -7,7 +7,7 @@ import re
 from datetime import date
 from typing import Any, Awaitable, Callable
 
-from scout import context, db, universe
+from scout import context, db, knowledge, universe
 from scout.config import get_scout_settings
 from scout.features import SNAPSHOT_FEATURES
 
@@ -21,12 +21,12 @@ SYSTEM_PROMPT = f"""你是 Scout，一个美股机会观察助手，服务于一
 规则：
 - 回答中的数字必须来自工具结果；不知道就说不知道，不要编造价格、新闻或财报数据。
 - get_snapshot 返回的每个指标都带有 名称、数值（已格式化）、含义 和 读数（数据字典的标准解读），解读时以读数为准；
-  screen 的原始字段中收益率和比例是小数（0.05 = 5%），rs_pct 是全市场相对强度分位（0–1）。
+  screen 返回的数值已按中文名称格式化（百分比、倍数），原样引用即可。
 - 解释涨跌时先回答"是个股自身还是大盘"：market_ret_1d = 前一日 60 日 beta × SPY 当日涨跌，
   idio_ret_1d / idio_ret_5d / idio_ret_20d 是扣掉大盘贡献后的个股自身部分；beta_60、corr_60 衡量它跟大盘绑得多紧。
 - 行情是日线收盘数据（免费数据源），不是实时报价，回答时注明数据日期。
 - 用中文，结构清晰，简洁具体；可以给出"机会条件 / 失效条件"，不要下达买卖指令。
-- 纯文本输出（不要 Markdown 表格），适合 Telegram 阅读。
+- 纯文本输出（不要 Markdown 表格、标题或 ** 加粗），适合 Telegram 阅读；不要出现英文字段名，用中文说法。
 screen 可排序的字段：{", ".join(SNAPSHOT_FEATURES)}。"""
 
 TOOLS = [
@@ -165,10 +165,11 @@ async def screen(sort_by: str, descending: bool = True, sector: str | None = Non
         f"SELECT f.ticker, i.name, i.sector, f.payload FROM scout.features_daily f JOIN scout.instruments i USING (ticker) "
         f"WHERE {' AND '.join(where)} ORDER BY (f.payload->>'{sort_by}')::float {order} LIMIT :n", params,
     )
-    keep = ("close", "ret_1d", "ret_5d", "ret_20d", "ret_63d", "rs_pct", "vol_ratio", "dist_52w_high", sort_by)
+    keep = dict.fromkeys(("close", "ret_1d", "ret_5d", "ret_20d", "ret_63d", "rs_pct", "vol_ratio", "dist_52w_high", sort_by))
+    # Pre-formatted with Chinese names, as get_snapshot does: the model quotes "99%", not 0.9924.
     return {"date": d, "rows": [
-        {"ticker": r["ticker"], "name": r["name"], "sector": r["sector"],
-         **{k: r["payload"].get(k) for k in keep}} for r in rows
+        {"代码": r["ticker"], "名称": r["name"], "行业": r["sector"],
+         **{knowledge.zh(k): knowledge.fmt(k, r["payload"].get(k)) for k in keep}} for r in rows
     ]}
 
 

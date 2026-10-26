@@ -55,7 +55,7 @@ def market_split_text(price: dict) -> str | None:
         f"｜个股自身 {pct(price['idio_ret_1d'], 1, True)}）"
     )
     if price.get("idio_ret_20d") is not None:
-        text += f" · 20 日个股自身 {pct(price['idio_ret_20d'], 1, True)}"
+        text += f" · 20 日扣除大盘后 {pct(price['idio_ret_20d'], 1, True)}"
     if price.get("beta_60") is not None:
         text += f" · β {price['beta_60']:.2f}"
     return text

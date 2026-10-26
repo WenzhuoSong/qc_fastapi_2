@@ -45,7 +45,8 @@ def attribution(f: dict) -> tuple[str, str] | None:
         mkt = f["ret_20d"] - idio          # snapshots written before market_ret_20d existed
     if mkt is None:
         return None
-    text = f"20 日：个股自身 {knowledge.fmt('idio_ret_20d', idio)}，大盘贡献 {knowledge.fmt('market_ret_20d', mkt)}"
+    total = f"涨跌 {knowledge.fmt('ret_20d', f['ret_20d'])} ≈ " if f.get("ret_20d") is not None else ""
+    text = f"20 日{total}个股自身 {knowledge.fmt('idio_ret_20d', idio)} + 大盘贡献 {knowledge.fmt('market_ret_20d', mkt)}"
     if abs(idio) >= 0.10 or (abs(idio) >= 0.03 and abs(idio) >= 2 * abs(mkt)):
         return DRIVER_STOCK, text + " → 个股自身主导"
     if abs(mkt) >= 0.03 and abs(mkt) >= 2 * abs(idio):

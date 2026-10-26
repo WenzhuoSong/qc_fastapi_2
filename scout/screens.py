@@ -52,19 +52,25 @@ SIGNAL_SCREENS: tuple[Screen, ...] = (
     Screen("rsi_overbought", "RSI(14) 超买", "技术信号", ("RSI(14) ≥ 70",),
            keep=lambda r: _v(r, "rsi14", 50) >= 70, sort_key="rsi14",
            note="强趋势里 RSI 可以长期停留在 70 以上，超买本身不是卖出理由。"),
-    Screen("swing_breakout", "突破最近波段高点", "技术信号",
-           ("收盘突破最近一个已确认的波段高点（道氏理论：结构转强）",),
-           keep=lambda r: "转强" in (r.get("swing_break") or ""), sort_key="vol_ratio"),
-    Screen("swing_breakdown", "跌破最近波段低点", "技术信号",
-           ("收盘跌破最近一个已确认的波段低点（道氏理论：结构转弱）",),
-           keep=lambda r: "转弱" in (r.get("swing_break") or ""), sort_key="ret_20d", descending=False),
+    # Plain swing breaks fire for hundreds of names a day; volume confirmation
+    # (Edwards & Magee: a valid break comes on rising volume) keeps the useful ones.
+    Screen("swing_breakout", "放量突破波段高点", "技术信号",
+           ("收盘突破最近一个已确认的波段高点（道氏理论：结构转强）", "量能 ≥ 1.5 倍均量", "收盘在 50 日线上方"),
+           keep=lambda r: "转强" in (r.get("swing_break") or "") and _v(r, "vol_ratio", 0) >= 1.5
+           and _v(r, "close", 0) > _v(r, "sma50", 1e18), sort_key="vol_ratio"),
+    Screen("swing_breakdown", "放量跌破波段低点", "技术信号",
+           ("收盘跌破最近一个已确认的波段低点（道氏理论：结构转弱）", "量能 ≥ 1.5 倍均量"),
+           keep=lambda r: "转弱" in (r.get("swing_break") or "") and _v(r, "vol_ratio", 0) >= 1.5,
+           sort_key="ret_20d", descending=False),
     Screen("support_in_uptrend", "上升格局中回踩支撑", "技术信号",
            ("收盘在 200 日线上方", "距最近主要支撑位 2% 以内"),
            keep=lambda r: _v(r, "dist_support", -1) >= -0.02 and _v(r, "close", 0) > _v(r, "sma200", 1e18),
            sort_key="rs_pct",
            note="《股市趋势技术分析》：上升趋势中回踩前期支撑且缩量企稳是较好的观察位置；有效跌破则支撑失效。"),
-    Screen("near_resistance", "逼近阻力位", "技术信号", ("距最近主要阻力位 2% 以内",),
-           keep=lambda r: _v(r, "dist_resistance", 1) <= 0.02, sort_key="vol_ratio",
+    Screen("near_resistance", "上升格局中逼近阻力", "技术信号",
+           ("距最近主要阻力位 2% 以内", "收盘在 50 日线上方", "相对强度前 30%"),
+           keep=lambda r: _v(r, "dist_resistance", 1) <= 0.02 and _v(r, "close", 0) > _v(r, "sma50", 1e18)
+           and _v(r, "rs_pct", 0) >= 0.70, sort_key="vol_ratio",
            note="放量收盘站上阻力才算有效突破；缩量冲击阻力容易失败。"),
 )
 
