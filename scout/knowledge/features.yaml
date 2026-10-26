@@ -279,3 +279,37 @@ updown_vol_20:
     - {max: 1.2, text: 涨跌日量能均衡}
     - {min: 1.2, text: 上涨日成交更活跃（吸筹迹象）}
   caveat: 对应《股市趋势技术分析》里"成交量跟随趋势"的原则。
+
+# ── 规则条件里用到的辅助字段（不进每日快照，只在扫描时计算）──
+open:
+  zh: 开盘价
+  unit: price
+  definition: 当日开盘价（复权）。
+low:
+  zh: 最低价
+  unit: price
+  definition: 当日最低价（复权）。
+high_55_prior:
+  zh: 前 55 日最高价
+  unit: price
+  definition: 不含当日的前 55 个交易日最高价；收盘高于它即为 55 日新高突破（海龟交易法的经典通道）。
+high_20:
+  zh: 20 日最高价
+  unit: price
+  definition: 近 20 日最高价，强势回调的第一目标位。
+low_5:
+  zh: 5 日最低价
+  unit: price
+  definition: 近 5 日最低价，回调类规则的止损参照。
+atr_pct_prev:
+  zh: 前日 ATR%
+  unit: pct_mag
+  definition: 前一交易日的 ATR(14) / 收盘价，用于判断今日跳空或涨幅相对正常波动有多大。
+sector_rel_20_prev5:
+  zh: 5 天前的行业 20 日相对 SPY
+  unit: pct
+  definition: 5 个交易日前，所属行业 ETF 20 日涨跌 − SPY 20 日涨跌；与今天对比可看出行业是否刚刚由弱转强。
+sector_rel_63:
+  zh: 行业 3 个月相对 SPY
+  unit: pct
+  definition: 所属行业 ETF 63 日涨跌 − SPY 63 日涨跌。

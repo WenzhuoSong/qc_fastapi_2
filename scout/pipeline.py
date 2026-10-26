@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta
 
-from scout import bars, base_rates, context, db, opportunities, telegram, thesis, tracker, universe
+from scout import bars, base_rates, context, db, opportunities, structure, telegram, thesis, tracker, universe
 from scout.config import get_scout_settings
 from scout.data.provider import get_provider
 from scout.features import SNAPSHOT_FEATURES, FeaturePanel, build_panel
@@ -42,12 +42,30 @@ async def load_panel(lookback_days: int | None = PANEL_LOOKBACK_DAYS) -> Feature
     return build_panel(frames, instruments, settings.scout_min_price, settings.scout_min_dollar_volume)
 
 
+STRUCTURE_FIELDS = ("swing_trend", "swing_break", "support", "dist_support", "resistance", "dist_resistance", "updown_vol_20")
+
+
+def panel_bars(p: FeaturePanel, ticker: str, asof: date, n: int = structure.LOOKBACK) -> list[dict]:
+    """One ticker's last `n` sessions up to `asof`, as bar dicts (for scout.structure)."""
+    end = p.dates.get_loc(asof) + 1
+    cols = {k: p[k][ticker].to_numpy()[max(0, end - n):end] for k in ("open", "high", "low", "close", "volume")}
+    dates = p.dates[max(0, end - n):end]
+    return [
+        {"date": d, **{k: float(cols[k][i]) for k in cols}}
+        for i, d in enumerate(dates) if cols["close"][i] == cols["close"][i]   # skip NaN
+    ]
+
+
 async def store_features(p: FeaturePanel, asof: date) -> int:
+    """Daily snapshot: SNAPSHOT_FEATURES plus price structure (support/resistance, swings)."""
     def rows():
         for ticker in p["close"].columns:
-            payload = p.row(ticker, asof, SNAPSHOT_FEATURES)
-            if "close" in payload:
-                yield {"t": ticker, "d": asof, "p": db.jsonb({k: round(v, 6) for k, v in payload.items()})}
+            payload = {k: round(v, 6) for k, v in p.row(ticker, asof, SNAPSHOT_FEATURES).items()}
+            if "close" not in payload:
+                continue
+            s = structure.compute(panel_bars(p, ticker, asof))
+            payload.update({k: (round(s[k], 6) if isinstance(s[k], float) else s[k]) for k in STRUCTURE_FIELDS if k in s})
+            yield {"t": ticker, "d": asof, "p": db.jsonb(payload)}
 
     return await db.execute_many(
         "INSERT INTO scout.features_daily (ticker, date, payload) VALUES (:t, :d, CAST(:p AS JSONB)) "
@@ -65,6 +83,27 @@ async def ensure_base_rates(force: bool = False) -> dict:
     rates = base_rates.compute(full)
     await base_rates.store(rates)
     return rates
+
+
+async def store_signal_hits(p: FeaturePanel, rates: dict, asof: date) -> int:
+    """Every hit of every rule today (live and candidate), with its explanation —
+    the strategy screener shows these; the opportunity board keeps the Top N."""
+    from scout.detectors import registry
+
+    rows = []
+    for det in registry(include_candidates=True):
+        for cand in opportunities.scan(p, rates, asof, detectors=[det]):
+            rows.append({"d": asof, "det": det.name, "t": cand.ticker, "s": cand.score, "p": db.jsonb({
+                "why": opportunities.why_block(cand),
+                "levels": {"entry_lo": cand.levels.entry_lo, "entry_hi": cand.levels.entry_hi, "stop": cand.levels.stop,
+                           "target1": cand.levels.target1},
+                "live": det.live,
+            })})
+    await db.execute("DELETE FROM scout.signal_hits WHERE asof = :d", {"d": asof})
+    return await db.execute_many(
+        "INSERT INTO scout.signal_hits (asof, detector, ticker, score, payload) VALUES (:d, :det, :t, :s, CAST(:p AS JSONB))",
+        rows,
+    )
 
 
 def select_top(candidates: list, n: int, per_detector: int = MAX_PER_DETECTOR) -> list:
@@ -139,6 +178,7 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         days_to_earnings=days_to_next_earnings(earnings, asof),
     )
     summary["candidates"] = len(candidates)
+    summary["signal_hits"] = await store_signal_hits(p, rates, asof)
     market = opportunities.market_context(p, asof)
     saved = []
     for c in select_top(candidates, settings.scout_top_n):

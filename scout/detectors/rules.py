@@ -2,11 +2,8 @@
 the replay — the base-rate table measures them, it does not tune them."""
 from __future__ import annotations
 
-import numpy as np
-import pandas as pd
-
-from scout.detectors import Detector, Levels, base_mask, r_targets
-from scout.features import FeaturePanel
+from scout.detectors import Condition as C
+from scout.detectors import Detector, Levels, Ref, r_targets
 
 MIN_STOP_ATR = 1.0   # a stop inside one ATR of the entry is inside daily noise
 
@@ -16,39 +13,12 @@ def _levels(lo: float, hi: float, stop: float, atr: float, r1: float = 2.0, r2: 
     return r_targets(lo, hi, stop, r1, r2)
 
 
-# D1 ─ Breakout from a 55-day range on expanding volume, in an established uptrend.
-def _breakout_mask(p: FeaturePanel) -> pd.DataFrame:
-    return (
-        base_mask(p)
-        & (p["close"] > p["high_55_prior"])
-        & (p["vol_ratio"] >= 1.8)
-        & (p["close"] > p["sma50"])
-        & (p["sma50"] > p["sma200"])
-        & (p["rs_pct"] >= 0.80)
-        & (p["close_loc"] >= 0.60)
-        & (p["gap_pct"] < 0.04)
-    )
-
+# ── entry / stop / target levels ──────────────────────────────────────
 
 def _breakout_levels(r: dict) -> Levels:
     atr, close = r["atr14"], r["close"]
     lo, hi = close - 0.25 * atr, close + 0.5 * atr
     return _levels(lo, hi, r["high_55_prior"] - atr, atr)
-
-
-# D2 ─ Short-term oversold dip inside a strong uptrend, on light volume.
-def _pullback_mask(p: FeaturePanel) -> pd.DataFrame:
-    return (
-        base_mask(p)
-        & (p["rs_pct"] >= 0.80)
-        & (p["close"] > p["sma200"])
-        & (p["sma50"] > p["sma200"])
-        & (p["ret_63d"] > 0.10)
-        & (p["rsi2"] <= 10)
-        & (p["close"] >= 0.97 * p["sma50"])
-        & (p["close"] <= p["sma20"])
-        & (p["vol_ratio"] <= 1.2)
-    )
 
 
 def _pullback_levels(r: dict) -> Levels:
@@ -61,34 +31,9 @@ def _pullback_levels(r: dict) -> Levels:
     return Levels(lv.entry_lo, lv.entry_hi, lv.stop, t1, max(lv.target2, t1))
 
 
-# D3 ─ Large gap up on heavy volume that holds into the close (typically earnings).
-def _power_gap_mask(p: FeaturePanel) -> pd.DataFrame:
-    gap_floor = np.maximum(0.04, 2.0 * p["atr_pct_prev"])
-    return (
-        base_mask(p)
-        & (p["gap_pct"] >= gap_floor)
-        & (p["vol_ratio"] >= 3.0)
-        & (p["close_loc"] >= 0.50)
-        & (p["close"] >= p["open"])
-    )
-
-
 def _power_gap_levels(r: dict) -> Levels:
     atr, close = r["atr14"], r["close"]
     return _levels(close - 0.5 * atr, close + 0.5 * atr, r["low"] - 0.25 * atr, atr)
-
-
-# D4 ─ Sector turns from lagging to leading SPY; take the sector's strongest names.
-def _sector_rotation_mask(p: FeaturePanel) -> pd.DataFrame:
-    return (
-        base_mask(p)
-        & (p["sector_rel_20"] > 0)
-        & (p["sector_rel_20_prev5"] <= 0)
-        & (p["sector_rel_63"] > -0.05)
-        & (p["sector_rs_pct"] >= 0.85)
-        & (p["rs_pct"] >= 0.60)
-        & (p["close"] > p["sma50"])
-    )
 
 
 def _sector_rotation_levels(r: dict) -> Levels:
@@ -96,32 +41,9 @@ def _sector_rotation_levels(r: dict) -> Levels:
     return _levels(close - 0.5 * atr, close + 0.25 * atr, close - 2.0 * atr, atr)
 
 
-# D5 ─ Heavy accumulation day without a gap: price strength built intraday.
-def _volume_shock_mask(p: FeaturePanel) -> pd.DataFrame:
-    move_floor = np.maximum(0.03, 1.5 * p["atr_pct_prev"])
-    return (
-        base_mask(p)
-        & (p["vol_ratio"] >= 3.0)
-        & (p["ret_1d"] >= move_floor)
-        & (p["gap_pct"] < 0.02)
-        & (p["close_loc"] >= 0.70)
-    )
-
-
 def _volume_shock_levels(r: dict) -> Levels:
     atr, close = r["atr14"], r["close"]
     return _levels(close - 0.5 * atr, close + 0.25 * atr, r["low"] - 0.25 * atr, atr)
-
-
-# D6 (candidate) ─ Strong stock stretched 2σ below its 20-day mean; exit on reversion to the mean.
-def _zscore_oversold_mask(p: FeaturePanel) -> pd.DataFrame:
-    return (
-        base_mask(p)
-        & (p["rs_pct"] >= 0.80)
-        & (p["close"] > p["sma200"])
-        & (p["sma50"] > p["sma200"])
-        & (p["zscore_20"] <= -2.0)
-    )
 
 
 def _zscore_oversold_levels(r: dict) -> Levels:
@@ -133,35 +55,84 @@ def _zscore_oversold_levels(r: dict) -> Levels:
     return Levels(lv.entry_lo, lv.entry_hi, lv.stop, t1, max(lv.target2, t1))
 
 
+# ── rules: declarative conditions (scan, replay and "why it was picked" share them) ──
+
+D1_BREAKOUT = (
+    C("收盘突破 55 日高点", "close", ">", "high_55_prior"),
+    C("量能 ≥ 1.8 倍均量", "vol_ratio", ">=", 1.8),
+    C("收盘在 50 日线上方", "close", ">", "sma50"),
+    C("50 日线在 200 日线上方", "sma50", ">", "sma200"),
+    C("相对强度前 20%", "rs_pct", ">=", 0.80),
+    C("收在日内高位", "close_loc", ">=", 0.60),
+    C("不是跳空（跳空 < 4%）", "gap_pct", "<", 0.04),
+)
+D2_PULLBACK = (
+    C("相对强度前 20%", "rs_pct", ">=", 0.80),
+    C("收盘在 200 日线上方", "close", ">", "sma200"),
+    C("50 日线在 200 日线上方", "sma50", ">", "sma200"),
+    C("3 个月涨幅 > 10%", "ret_63d", ">", 0.10),
+    C("RSI(2) ≤ 10（极度超卖）", "rsi2", "<=", 10),
+    C("守住 50 日线（不低于 97%）", "close", ">=", Ref("sma50", 0.97)),
+    C("回落到 20 日线下方", "close", "<=", "sma20"),
+    C("缩量回调（量比 ≤ 1.2）", "vol_ratio", "<=", 1.2),
+)
+D3_POWER_GAP = (
+    C("跳空 ≥ max(4%, 2×前日 ATR%)", "gap_pct", ">=", Ref("atr_pct_prev", 2.0, floor=0.04)),
+    C("量能 ≥ 3 倍均量", "vol_ratio", ">=", 3.0),
+    C("收在日内中上部", "close_loc", ">=", 0.50),
+    C("收盘不低于开盘（守住跳空）", "close", ">=", "open"),
+)
+D4_SECTOR_ROTATION = (
+    C("所属行业 20 日跑赢 SPY", "sector_rel_20", ">", 0.0),
+    C("5 天前行业还在跑输（刚转强）", "sector_rel_20_prev5", "<=", 0.0),
+    C("行业 3 个月未明显跑输（> -5%）", "sector_rel_63", ">", -0.05),
+    C("行业内相对强度前 15%", "sector_rs_pct", ">=", 0.85),
+    C("全市场相对强度前 40%", "rs_pct", ">=", 0.60),
+    C("收盘在 50 日线上方", "close", ">", "sma50"),
+)
+D5_VOLUME_SHOCK = (
+    C("量能 ≥ 3 倍均量", "vol_ratio", ">=", 3.0),
+    C("涨幅 ≥ max(3%, 1.5×前日 ATR%)", "ret_1d", ">=", Ref("atr_pct_prev", 1.5, floor=0.03)),
+    C("不是跳空（跳空 < 2%）", "gap_pct", "<", 0.02),
+    C("收在日内高位", "close_loc", ">=", 0.70),
+)
+D6_ZSCORE = (
+    C("相对强度前 20%", "rs_pct", ">=", 0.80),
+    C("收盘在 200 日线上方", "close", ">", "sma200"),
+    C("50 日线在 200 日线上方", "sma50", ">", "sma200"),
+    C("低于 20 日均值 2σ 以上", "zscore_20", "<=", -2.0),
+)
+
+
 DETECTORS: tuple[Detector, ...] = (
     Detector(
         "trend_breakout", "趋势突破", "setup", 20,
         "收盘突破 55 日高点，量能 ≥1.8 倍均量，50/200 日均线多头排列，相对强度前 20%。",
-        _breakout_mask, _breakout_levels,
+        D1_BREAKOUT, _breakout_levels,
     ),
     Detector(
         "pullback_in_uptrend", "强势回调", "setup", 10,
         "相对强度前 20% 的上升趋势股，RSI(2) ≤ 10 的缩量回调，仍守在 50 日线附近。",
-        _pullback_mask, _pullback_levels,
+        D2_PULLBACK, _pullback_levels,
     ),
     Detector(
         "power_gap", "放量跳空", "setup", 20,
         "跳空 ≥ max(4%, 2×ATR%)，量能 ≥3 倍，收盘守住跳空（多为财报/重大事件驱动）。",
-        _power_gap_mask, _power_gap_levels,
+        D3_POWER_GAP, _power_gap_levels,
     ),
     Detector(
         "sector_rotation", "板块轮动龙头", "setup", 20,
         "行业 ETF 20 日相对 SPY 由负转正，选取行业内相对强度前 15% 的个股。",
-        _sector_rotation_mask, _sector_rotation_levels,
+        D4_SECTOR_ROTATION, _sector_rotation_levels,
     ),
     Detector(
         "volume_shock", "放量异动", "watch", 10,
         "无跳空的情况下当日放量 ≥3 倍并大涨，收在日内高位（盘中资金吸筹）。",
-        _volume_shock_mask, _volume_shock_levels,
+        D5_VOLUME_SHOCK, _volume_shock_levels,
     ),
     Detector(
         "zscore_oversold", "z 分数超跌", "setup", 10,
         "相对强度前 20% 的上升趋势股，收盘低于 20 日均值 2 个标准差以上，目标回到均值。（候选规则，仅回放）",
-        _zscore_oversold_mask, _zscore_oversold_levels, live=False,
+        D6_ZSCORE, _zscore_oversold_levels, live=False,
     ),
 )

@@ -58,6 +58,29 @@ def market_split_text(price: dict) -> str | None:
     return text
 
 
+def position_text(why: dict) -> str | None:
+    pos = (why or {}).get("position") or {}
+    if not pos.get("bucket"):
+        return None
+    text = f"位置：{pos['label']}（距高点 {pct(pos.get('dist_52w_high'), 1, True)}）"
+    if pos.get("edge_vs_hold") is not None:
+        text += f" · 同规则同位置历史相对持有 {pct(pos['edge_vs_hold'], 1, True)}（{pos['n']} 次）"
+    if why.get("chase_risk"):
+        text += " · ⚠️追高风险"
+    return text
+
+
+def score_text(why: dict) -> str | None:
+    parts = (why or {}).get("score_parts") or []
+    if not parts:
+        return None
+    text = " + ".join(f"{p['label']} {p['value']:.2f}×{p['weight']:.2f}" for p in parts)
+    adj = "；".join(f"{a['label']} {a['value']:+.2f}" if a["key"] != "feedback_weight" and a["key"] != "watch"
+                   else a["label"] if a["key"] == "watch" else f"{a['label']} ×{a['value']:.2f}"
+                   for a in why.get("adjustments") or [])
+    return f"评分 {why['score']:.2f} = {text}" + (f"（调整：{adj}）" if adj else "")
+
+
 def base_rate_text(br: dict) -> str:
     """Rule-level replay stats, net of costs, judged against just holding the stock."""
     head = f"规则历史 {br['n']} 次（{br.get('regime')}）"
@@ -90,9 +113,20 @@ def render_card(o: dict) -> str:
     move = market_split_text(ev.get("price") or {})
     if move:
         lines.append(f"📈 {move}")
+    why = ev.get("why") or {}
+    if why.get("conditions"):
+        met = sum(c["ok"] for c in why["conditions"])
+        lines.append(f"✅ 入选理由：{esc(why['rule'])}（{met}/{len(why['conditions'])} 条件满足）")
+        lines += [f"　· {esc(c['label'])}：{esc(c['actual'])} {esc(c['op'])} {esc(c['threshold'])}" for c in why["conditions"]]
+    pos = position_text(why)
+    if pos:
+        lines.append(f"🧭 {esc(pos)}")
     lines.append(f"周期 {o['horizon_days']} 日 | R:R {o.get('risk_reward') or 0:.1f} | 状态 {STATUS_LABELS.get(o.get('status'), o.get('status'))}")
     if br.get("n"):
         lines.append(f"📊 {base_rate_text(br)}")
+    score = score_text(why)
+    if score:
+        lines.append(f"🧮 {esc(score)}")
     if th.get("thesis"):
         lines.append(f"\n📌 {esc(th['thesis'])}")
     for c in th.get("catalysts") or []:

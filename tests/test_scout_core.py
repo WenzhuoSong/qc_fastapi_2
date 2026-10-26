@@ -143,6 +143,41 @@ class PanelAndReplayTests(unittest.TestCase):
         cands = scan(self.panel, rates={}, detectors=None)
         self.assertTrue(all(c.primary.live for c in cands))
 
+    def test_explanations_match_the_mask(self):
+        """Every hit's 'why it was picked' must show all conditions met, and any
+        non-hit with complete data must show at least one failed condition."""
+        from scout.detectors import registry
+
+        p = self.panel
+        checked = 0
+        for det in registry():
+            mask = det.mask(p)
+            for d in p.dates[-120:]:
+                for t in p.stocks:
+                    row = p.row(t, d)
+                    if not bool(mask.at[d, t]):
+                        continue
+                    self.assertTrue(all(c["ok"] for c in det.explain(row)), (det.name, t, d))
+                    checked += 1
+        # The synthetic panel is small; at least prove the explain path runs.
+        row = p.row("AAA", p.dates[-1])
+        for det in registry():
+            exp = det.explain(row)
+            self.assertEqual(len(exp), len(det.conditions))
+            self.assertTrue(all({"label", "ok", "actual", "op", "threshold"} <= set(c) for c in exp))
+            if not bool(det.mask(p).at[p.dates[-1], "AAA"]) and all(row.get(c.left) is not None for c in det.conditions):
+                self.assertFalse(all(c["ok"] for c in exp), det.name)
+
+    def test_position_buckets(self):
+        self.assertEqual(base_rates.position_bucket(-0.01)[0], "near_high")
+        self.assertEqual(base_rates.position_bucket(0.0)[0], "near_high")
+        self.assertEqual(base_rates.position_bucket(-0.05)[0], "mid")
+        self.assertEqual(base_rates.position_bucket(-0.25)[0], "deep")
+        self.assertIsNone(base_rates.position_bucket(None))
+        rates = {"d": {"pos_near_high": {"n": 100, "avg_edge_vs_hold": -0.01}, "pos_mid": {"n": 3}}}
+        self.assertEqual(base_rates.pick_position(rates, "d", -0.01)["position"], "near_high")
+        self.assertIsNone(base_rates.pick_position(rates, "d", -0.05))   # too few samples
+
     def test_cooldown_dedups_consecutive_hits(self):
         mask = pd.DataFrame({"A": [True] * 25})
         self.assertEqual([i for _, i in base_rates.hit_positions(mask, cooldown=10)], [0, 10, 20])
@@ -152,7 +187,7 @@ class PanelAndReplayTests(unittest.TestCase):
         from scout.simulate import ROUND_TRIP_COST
 
         def mk(ret, hold, spy=0.0):
-            return Sample("d", "AAA", date(2026, 1, 5), "uptrend", "expired", ret, spy, hold, 0.0, 0.0, 5, 0.0)
+            return Sample("d", "AAA", date(2026, 1, 5), "uptrend", "expired", ret, spy, hold, "mid", 0.0, 0.0, 5, 0.0)
 
         stats = summarize([mk(0.03, 0.01), mk(0.0005, 0.0), mk(-0.02, 0.01)])
         self.assertAlmostEqual(stats["avg_net_return"], (0.03 + 0.0005 - 0.02) / 3 - ROUND_TRIP_COST, places=5)

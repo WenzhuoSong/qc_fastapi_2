@@ -24,6 +24,24 @@ COOLDOWN_SESSIONS = 10   # one sample per ticker × detector per 10 sessions
 MIN_SAMPLES = 20         # below this, a regime bucket falls back to "all"
 SHRINK_K = 50            # edge shrinkage: edge * n / (n + K)
 
+# Where the stock sat relative to its 52-week high when the rule fired. Replay
+# shows this matters as much as the rule itself (buying right at the high
+# lagged just holding), so every rule is also measured per position bucket.
+POSITION_BUCKETS: tuple[tuple[str, str, float, float], ...] = (
+    ("near_high", "贴近 52 周高点（3% 以内）", -0.03, float("inf")),
+    ("mid", "距 52 周高点 3%–10%", -0.10, -0.03),
+    ("deep", "距 52 周高点 10% 以上", float("-inf"), -0.10),
+)
+
+
+def position_bucket(dist_52w_high: float | None) -> tuple[str, str] | None:
+    if dist_52w_high is None or not np.isfinite(dist_52w_high):
+        return None
+    for key, label, lo, hi in POSITION_BUCKETS:
+        if lo <= dist_52w_high < hi or (hi == float("inf") and dist_52w_high >= lo):
+            return key, label
+    return None
+
 
 @dataclass
 class Sample:
@@ -35,6 +53,7 @@ class Sample:
     ret: float | None          # gross trade return
     spy_ret: float | None      # SPY over the same entry→exit window
     hold_ret: float | None     # holding this stock for the same number of days at its average drift
+    position: str | None       # position bucket at the signal (near_high / mid / deep)
     mfe: float | None
     mae: float | None
     days: int
@@ -80,7 +99,7 @@ def replay_detector(p: FeaturePanel, det: Detector, drift: dict[str, float] | No
     drift = drift if drift is not None else daily_drift(p)
     samples: list[Sample] = []
     n_dates = len(p.dates)
-    span = 3 + det.horizon_days            # trigger window + holding horizon
+    span = det.trigger_window + det.horizon_days
     spy_open, spy_close = p["open"][BENCHMARK].to_numpy(), p["close"][BENCHMARK].to_numpy()
     for ticker, i in hit_positions(mask):
         if i + span >= n_dates:
@@ -89,7 +108,7 @@ def replay_detector(p: FeaturePanel, det: Detector, drift: dict[str, float] | No
         lv = det.levels(p.row(ticker, d))
         if not lv.valid():
             continue
-        res = simulate(_bars(p, ticker, i + 1, i + 1 + span), lv, det.horizon_days)
+        res = simulate(_bars(p, ticker, i + 1, i + 1 + span), lv, det.horizon_days, det.trigger_window)
         spy_ret = None
         if res.entry_date is not None and res.exit_date is not None:
             a = p.dates.get_loc(res.entry_date)
@@ -102,7 +121,9 @@ def replay_detector(p: FeaturePanel, det: Detector, drift: dict[str, float] | No
             hold_ret = float(np.exp(drift[ticker] * max(res.days_held, 1)) - 1)
         samples.append(Sample(
             detector=det.name, ticker=ticker, signal_date=d, regime=str(p.regime.iloc[i]),
-            state=res.state, ret=ret, spy_ret=spy_ret, hold_ret=hold_ret, mfe=res.mfe, mae=res.mae,
+            state=res.state, ret=ret, spy_ret=spy_ret, hold_ret=hold_ret,
+            position=(position_bucket(p.row(ticker, d, ("dist_52w_high",)).get("dist_52w_high")) or (None,))[0],
+            mfe=res.mfe, mae=res.mae,
             days=res.days_held,
             r_multiple=(ret * res.entry_price / risk) if (ret is not None and risk > 0) else None,
         ))
@@ -154,6 +175,8 @@ def compute(p: FeaturePanel, detectors: list[Detector] | None = None) -> dict[st
         buckets = {"all": summarize(samples)}
         for regime in ("uptrend", "mixed", "downtrend"):
             buckets[regime] = summarize([s for s in samples if s.regime == regime])
+        for key, _, _, _ in POSITION_BUCKETS:
+            buckets[f"pos_{key}"] = summarize([s for s in samples if s.position == key])
         out[det.name] = buckets
         logger.info("base rate %s: %s", det.name, buckets["all"])
     return out
@@ -191,6 +214,17 @@ def pick(rates: dict[str, dict[str, dict]], detector: str, regime: str) -> dict:
     if chosen.get("n", 0) >= MIN_SAMPLES:
         return {**chosen, "regime": regime}
     return {**(buckets.get("all") or {}), "regime": "all"}
+
+
+def pick_position(rates: dict[str, dict[str, dict]], detector: str, dist_52w_high: float | None) -> dict | None:
+    """Same rule, same position bucket — None when the bucket is too thin."""
+    bucket = position_bucket(dist_52w_high)
+    if bucket is None:
+        return None
+    stats = (rates.get(detector) or {}).get(f"pos_{bucket[0]}") or {}
+    if stats.get("n", 0) < MIN_SAMPLES:
+        return None
+    return {**stats, "position": bucket[0], "position_label": bucket[1]}
 
 
 def edge_of(stats: dict) -> float | None:

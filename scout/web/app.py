@@ -5,7 +5,7 @@ import asyncio
 import logging
 import secrets
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, timedelta
 
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -289,6 +289,78 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
               f"{o['score']:.2f}", signed(o.get("return_pct"))] for o in opps],
         )
     return layout(t, "", body, head=views.CHART_HEAD)
+
+
+@app.get("/screens", response_class=HTMLResponse)
+async def screens_page(s: str = "", _: str = Depends(require_auth)) -> str:
+    from scout import base_rates as br_mod
+    from scout import screens as sc
+
+    asof, rows = await sc.snapshot()
+    if asof is None:
+        return layout("策略筛选", "screens", "<p class='muted'>还没有每日快照。</p>")
+    hit_counts = {r["detector"]: r["n"] for r in await db.fetch_all(
+        "SELECT detector, count(*) AS n FROM scout.signal_hits WHERE asof = :d GROUP BY detector", {"d": asof})}
+    sig_counts = sc.counts(rows)
+    earn = await db.fetch_one(
+        "SELECT count(*) AS n FROM scout.market_events WHERE event_type = 'earnings' AND event_date BETWEEN :a AND :b",
+        {"a": asof, "b": asof + timedelta(days=7)})
+    screens = sc.all_screens()
+
+    def count_of(x) -> int:
+        if x.detector is not None:
+            return hit_counts.get(x.detector.name, 0)
+        return (earn or {}).get("n", 0) if x.id == "earnings_week" else sig_counts.get(x.id, 0)
+
+    current = next((x for x in screens if x.id == s), None) or next(
+        (x for x in screens if x.detector is not None and x.detector.live and count_of(x)), screens[0])
+    nav = ""
+    for group in ("规则", "技术信号", "事件"):
+        chips = "".join(
+            f"<a class='chip' style='{'background:var(--accent);color:#fff' if x.id == current.id else ''}' "
+            f"href='/screens?s={e(x.id)}'>{e(x.title)} {count_of(x)}</a>"
+            for x in screens if x.group == group)
+        nav += f"<div style='margin:4px 0'><span class='small muted'>{group}：</span>{chips}</div>"
+    found = await sc.run(current, asof, rows)
+
+    crit = "".join(f"<li>{e(c)}</li>" for c in current.criteria)
+    stats_html = ""
+    if current.detector is not None:
+        st = sc.rule_stats(await br_mod.load(), current.detector.name)
+        a = st["all"]
+        pos = " · ".join(f"{e(lbl)}：相对持有 {signed(x.get('avg_edge_vs_hold'))}（{x.get('n', 0)} 次）"
+                         for lbl, x in st["positions"] if x.get("n"))
+        stats_html = (f"<p class='small'>历史回放（扣除成本，对比一直持有）：共 {a.get('n', 0)} 次，扣费胜率 {views.pct(a.get('win_rate_net'), 0)}，"
+                      f"相对持有 {signed(a.get('avg_edge_vs_hold'))}<br>按位置：{pos or '—'}</p>"
+                      + ("" if current.detector.live else "<p class='small warn'>候选规则：只做回放统计，不进入机会看板和推送。</p>"))
+    else:
+        stats_html = "<p class='small muted'>描述性筛选：只说明「现在符合什么条件」，没有历史优势统计。</p>"
+    note = f"<p class='small'>{e(current.note)}</p>" if current.note else ""
+
+    def pos_chip(r: dict) -> str:
+        why = r.get("why") or {}
+        if why.get("chase_risk"):
+            return "<span class='chip' style='background:var(--down);color:#fff'>追高风险</span>"
+        b = br_mod.position_bucket(r.get("dist_52w_high"))
+        return f"<span class='chip'>{e(b[1].split('（')[0].replace('距 52 周高点 ', '距高点 '))}</span>" if b else ""
+
+    head = ["代码", "名称", "行业", "收盘", "1 日", "20 日", "距高点", "RS", "量比", "位置"]
+    extra_head = ["评分"] if current.detector is not None else (["财报日"] if current.id == "earnings_week" else [])
+    table_rows = []
+    for r in found:
+        cells = [tlink(r["ticker"]), e((r.get("name") or "")[:22]), e(universe.SECTOR_ZH.get(r.get("sector") or "", r.get("sector") or "")),
+                 f"{r['close']:.2f}" if r.get("close") else "—", signed(r.get("ret_1d")), signed(r.get("ret_20d")),
+                 signed(r.get("dist_52w_high")), views.pct(r.get("rs_pct"), 0),
+                 f"{r['vol_ratio']:.1f}" if r.get("vol_ratio") is not None else "—", pos_chip(r)]
+        if current.detector is not None:
+            cells.append(f"{r.get('score', 0):.2f}")
+        elif current.id == "earnings_week":
+            cells.append(f"{e(r.get('earnings_date'))} {e(r.get('earnings_hour') or '')}")
+        table_rows.append(cells)
+    body = (f"<h2>策略筛选 <span class='small muted'>数据日期 {e(asof)} · 只含日均成交额 ≥ $20M 的个股</span></h2>{nav}"
+            f"<div class='card' style='margin-top:12px'><h3>{e(current.title)}</h3><ul class='tight'>{crit}</ul>{stats_html}{note}</div>"
+            + (table(head + extra_head, table_rows) if table_rows else "<p class='muted'>今天没有符合条件的股票。</p>"))
+    return layout("策略筛选", "screens", body)
 
 
 @app.get("/scoreboard", response_class=HTMLResponse)

@@ -1,8 +1,9 @@
 """Opportunity detectors.
 
-A detector is a deterministic rule over the FeaturePanel. `mask(panel)` returns
-a wide boolean frame (date × ticker) and `levels(row)` turns the feature row at
-a hit into entry / stop / target prices. Live scanning reads the last date of
+A detector is a deterministic rule over the FeaturePanel, written as declarative
+`Condition`s. `mask(panel)` ANDs them into a wide boolean frame (date × ticker),
+`explain(row)` evaluates the same conditions for one stock ("why it was picked"),
+and `levels(row)` turns the feature row at a hit into entry / stop / target prices. Live scanning reads the last date of
 the mask; base-rate replay reads every date. Same code, same inputs.
 """
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+import numpy as np
 import pandas as pd
 
 from scout.features import FeaturePanel
@@ -37,17 +39,88 @@ class Levels:
 
 
 @dataclass(frozen=True)
+class Ref:
+    """Right-hand side of a condition: max(floor, mult × field), or a constant."""
+    field: str | None = None
+    mult: float = 1.0
+    floor: float | None = None
+
+    def series(self, p: FeaturePanel):
+        v = p[self.field] * self.mult
+        return np.maximum(self.floor, v) if self.floor is not None else v
+
+    def value(self, row: dict) -> float | None:
+        x = row.get(self.field)
+        if x is None:
+            return None
+        v = x * self.mult
+        return max(self.floor, v) if self.floor is not None else v
+
+
+_OPS = {">": np.greater, ">=": np.greater_equal, "<": np.less, "<=": np.less_equal}
+
+
+@dataclass(frozen=True)
+class Condition:
+    """One declarative rule condition. The same object filters the panel
+    (vectorised) and explains a hit ("why it was picked"), so the shown
+    reasons can never drift from the logic that selected the stock."""
+    label: str
+    left: str
+    op: str
+    right: float | str | Ref
+
+    def series(self, p: FeaturePanel) -> pd.DataFrame:
+        rhs = self.right
+        if isinstance(rhs, str):
+            rhs = p[rhs]
+        elif isinstance(rhs, Ref):
+            rhs = rhs.series(p)
+        return _OPS[self.op](p[self.left], rhs)
+
+    def check(self, row: dict) -> dict:
+        from scout import knowledge
+
+        left = row.get(self.left)
+        if isinstance(self.right, str):
+            right = row.get(self.right)
+        elif isinstance(self.right, Ref):
+            right = self.right.value(row)
+        else:
+            right = self.right
+        ok = left is not None and right is not None and bool(_OPS[self.op](left, right))
+        return {
+            "label": self.label,
+            "ok": ok,
+            "actual": knowledge.fmt(self.left, left),
+            "op": self.op.replace(">=", "≥").replace("<=", "≤"),
+            "threshold": knowledge.fmt(self.left, right),
+        }
+
+
+@dataclass(frozen=True)
 class Detector:
     name: str
     label: str
     kind: str                 # setup: actionable long idea | watch: anomaly worth a look
     horizon_days: int
     description: str
-    mask: Callable[[FeaturePanel], pd.DataFrame]
+    conditions: tuple[Condition, ...]
     levels: Callable[[dict], Levels]
     # False = research candidate: replayed into base rates and the scoreboard,
     # but never scanned or pushed until its replay shows an independent edge.
     live: bool = True
+    # Sessions allowed for price to trade into the entry zone after the signal.
+    trigger_window: int = 3
+
+    def mask(self, p: FeaturePanel) -> pd.DataFrame:
+        m = base_mask(p)
+        for cond in self.conditions:
+            m = m & cond.series(p)
+        return m
+
+    def explain(self, row: dict) -> list[dict]:
+        return [c.check(row) for c in self.conditions]
 
 
 def r_targets(entry_lo: float, entry_hi: float, stop: float, r1: float = 2.0, r2: float = 3.0) -> Levels:

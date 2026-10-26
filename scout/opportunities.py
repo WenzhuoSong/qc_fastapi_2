@@ -38,6 +38,8 @@ class Candidate:
     score: float
     score_parts: dict[str, float]
     sector: str | None = None
+    why: list[dict] = field(default_factory=list)          # primary rule's conditions with actual values
+    position_rate: dict | None = None                      # same rule, same distance-from-high bucket
     theme: str | None = None
     context: dict = field(default_factory=dict)
 
@@ -105,17 +107,22 @@ def scan(
 
     out: list[Candidate] = []
     for ticker, dets in hits.items():
-        stats_by_det = {d.name: base_rates.pick(rates, d.name, regime) for d in dets}
-        # Primary = actionable setup with the best measured edge.
-        primary = max(dets, key=lambda d: (d.kind == "setup", base_rates.shrunk_edge(stats_by_det[d.name])))
         full_row = p.row(ticker, asof)
+        dist = full_row.get("dist_52w_high")
+        stats_by_det = {d.name: base_rates.pick(rates, d.name, regime) for d in dets}
+        pos_by_det = {d.name: base_rates.pick_position(rates, d.name, dist) for d in dets}
+        # The edge used for ranking: same rule at the same distance from the high
+        # when that bucket has enough history, else the rule in this market regime.
+        edge_by_det = {n: pos_by_det[n] or stats_by_det[n] for n in stats_by_det}
+        # Primary = actionable setup with the best measured edge.
+        primary = max(dets, key=lambda d: (d.kind == "setup", base_rates.shrunk_edge(edge_by_det[d.name])))
         levels = primary.levels(full_row)
         if not levels.valid():
             continue
         feat = {k: full_row[k] for k in SNAPSHOT_FEATURES if k in full_row}
         names = [d.name for d in dets]
         score, parts = score_candidate(
-            primary, names, levels, feat, stats_by_det[primary.name],
+            primary, names, levels, feat, edge_by_det[primary.name],
             feedback_weight=feedback_weights.get(primary.name, 1.0),
             in_watchlist=ticker in watchlist,
             days_to_earnings=days_to_earnings.get(ticker),
@@ -124,6 +131,7 @@ def scan(
             ticker=ticker, asof=asof, regime=regime, primary=primary, detectors=names,
             levels=levels, features=feat, base_rate=stats_by_det[primary.name],
             score=score, score_parts=parts, sector=p.sectors.get(ticker), theme=watchlist.get(ticker),
+            why=primary.explain(full_row), position_rate=pos_by_det[primary.name],
         ))
     out.sort(key=lambda c: c.score, reverse=True)
     return out
@@ -176,8 +184,53 @@ def evidence(c: Candidate, market: dict) -> dict:
         ) if k in f},
         "readings": {knowledge.zh(k): r for k in f if (r := knowledge.reading(k, f[k]))},
         "base_rate": c.base_rate,
+        "why": why_block(c),
         "market": market,
         **c.context,
+    }
+
+
+SCORE_WEIGHTS = {"edge": 0.45, "rs": 0.25, "confluence": 0.15, "risk_reward": 0.15}
+SCORE_LABELS = {"edge": "规则历史优势", "rs": "相对强度", "confluence": "多规则共振", "risk_reward": "盈亏比",
+                "earnings_penalty": "财报临近", "watchlist_bonus": "在 watchlist 中", "feedback_weight": "反馈权重"}
+
+
+def why_block(c: Candidate) -> dict:
+    """Everything needed to explain the pick: conditions, score breakdown, position."""
+    parts = []
+    for key, weight in SCORE_WEIGHTS.items():
+        v = c.score_parts.get(key)
+        if v is not None:
+            parts.append({"key": key, "label": SCORE_LABELS[key], "value": round(v, 3), "weight": weight,
+                          "contribution": round(v * weight, 3)})
+    adjustments = [{"key": k, "label": SCORE_LABELS[k], "value": c.score_parts[k]}
+                   for k in ("earnings_penalty", "watchlist_bonus") if k in c.score_parts]
+    fw = c.score_parts.get("feedback_weight", 1.0)
+    if fw != 1.0:
+        adjustments.append({"key": "feedback_weight", "label": SCORE_LABELS["feedback_weight"], "value": fw})
+    if c.primary.kind == "watch":
+        adjustments.append({"key": "watch", "label": "观察类规则 ×0.9", "value": 0.9})
+    dist = c.features.get("dist_52w_high")
+    bucket = base_rates.position_bucket(dist)
+    pos = c.position_rate or {}
+    edge = base_rates.edge_of(pos) if pos else None
+    return {
+        "rule": c.primary.label,
+        "conditions": c.why,
+        "other_rules": [d for d in c.detectors if d != c.primary.name],
+        "score": c.score,
+        "score_parts": parts,
+        "adjustments": adjustments,
+        "edge_basis": "同规则、同位置" if pos else f"同规则、{c.base_rate.get('regime', 'all')} 市场状态",
+        "position": {
+            "bucket": bucket[0] if bucket else None,
+            "label": bucket[1] if bucket else "未知",
+            "dist_52w_high": dist,
+            "n": pos.get("n"),
+            "edge_vs_hold": edge,
+            "win_rate_net": pos.get("win_rate_net"),
+        },
+        "chase_risk": bool(bucket and bucket[0] == "near_high" and edge is not None and edge < 0),
     }
 
 

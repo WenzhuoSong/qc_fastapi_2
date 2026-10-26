@@ -5,7 +5,8 @@ import json
 from html import escape
 from typing import Any, Iterable
 
-from scout.telegram import CONFIDENCE_LABELS, STATUS_LABELS, base_rate_text, market_split_text, pct
+from scout.telegram import (CONFIDENCE_LABELS, STATUS_LABELS, base_rate_text, market_split_text, pct,
+                            position_text)
 
 CSS = """
 :root{--bg:#f7f7f5;--panel:#fff;--ink:#1d1d1f;--muted:#6b6b70;--line:#e4e4e0;--accent:#2f6fde;
@@ -42,7 +43,7 @@ button{background:var(--accent);color:#fff;border:none;cursor:pointer}
 
 
 def layout(title: str, active: str, body: str, head: str = "") -> str:
-    nav = [("/", "today", "今日"), ("/ideas", "ideas", "机会看板"), ("/scoreboard", "scoreboard", "记分板"),
+    nav = [("/", "today", "今日"), ("/ideas", "ideas", "机会看板"), ("/screens", "screens", "策略筛选"), ("/scoreboard", "scoreboard", "记分板"),
            ("/watchlist", "watchlist", "Watchlist"), ("/chat", "chat", "问答")]
     links = "".join(f'<a href="{h}" class="{"on" if k == active else ""}">{t}</a>' for h, k, t in nav)
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
@@ -61,6 +62,33 @@ def signed(x: float | None, digits: int = 1) -> str:
         return "—"
     cls = "up" if x > 0 else "down" if x < 0 else ""
     return f'<span class="{cls}">{pct(x, digits, True)}</span>'
+
+
+def why_html(why: dict) -> str:
+    """'为什么入选': chase-risk badge + position always visible, details collapsible."""
+    if not why.get("conditions"):
+        return ""
+    pos = position_text(why) or ""
+    badge = "<span class='chip' style='background:var(--down);color:#fff'>⚠️ 追高风险</span> " if why.get("chase_risk") else ""
+    met = sum(c["ok"] for c in why["conditions"])
+    rows = "".join(
+        f"<tr><td>{'✓' if c['ok'] else '✗'}</td><td>{e(c['label'])}</td><td>{e(c['actual'])}</td>"
+        f"<td>{e(c['op'])} {e(c['threshold'])}</td></tr>" for c in why["conditions"]
+    )
+    parts = "".join(
+        f"<tr><td>{e(p['label'])}</td><td>{p['value']:.2f}</td><td>×{p['weight']:.2f}</td><td>{p['contribution']:.3f}</td></tr>"
+        for p in why.get("score_parts") or []
+    )
+    adj = "；".join(a["label"] + (f" {a['value']:+.2f}" if a["key"] in ("earnings_penalty", "watchlist_bonus") else "")
+                   for a in why.get("adjustments") or [])
+    others = "、".join(why.get("other_rules") or [])
+    return (f"<div class='small'>{badge}{e(pos.replace(' · ⚠️追高风险', ''))}</div>"
+            f"<details class='small'><summary>为什么入选：{e(why['rule'])}（{met}/{len(why['conditions'])} 条件满足）"
+            f"{'，同时触发 ' + e(others) if others else ''}</summary>"
+            f"<table><tbody>{rows}</tbody></table>"
+            f"<div style='margin-top:6px'>评分 {why['score']:.2f}（优势依据：{e(why.get('edge_basis', ''))}）</div>"
+            f"<table><thead><tr><th>分项</th><th>得分</th><th>权重</th><th>贡献</th></tr></thead><tbody>{parts}</tbody></table>"
+            f"{'<div>调整：' + e(adj) + '</div>' if adj else ''}</details>")
 
 
 def opp_card(o: dict) -> str:
@@ -85,6 +113,7 @@ def opp_card(o: dict) -> str:
 <div class="levels"><div><span>入场</span>{o['entry_lo']:.2f}–{o['entry_hi']:.2f}</div><div><span>止损</span>{o['stop']:.2f}</div>
 <div><span>目标 1</span>{o['target1']:.2f}</div><div><span>目标 2</span>{(o.get('target2') or o['target1']):.2f}</div></div>
 <div class="small">{e(market_split_text(ev.get("price") or {}) or "")}</div>
+{why_html(ev.get("why") or {})}
 <div class="small">{base}</div>{lists}
 <div class="small warn">{('⚠️ ' + e(th['key_risk'])) if th.get('key_risk') else ''}</div>
 <div class="small muted">置信度 {e(CONFIDENCE_LABELS.get(th.get('confidence'), '—'))} · 文本来源 {e(o.get('thesis_source'))}</div>

@@ -38,6 +38,15 @@ class Transition:
     return_pct: float | None
 
 
+def _trigger_window(detector: str) -> int:
+    from scout.detectors import get
+
+    try:
+        return get(detector).trigger_window
+    except KeyError:
+        return 3
+
+
 def levels_of(row: dict) -> Levels:
     return Levels(row["entry_lo"], row["entry_hi"], row["stop"], row["target1"], row["target2"] or row["target1"])
 
@@ -67,7 +76,8 @@ async def update_all() -> list[Transition]:
     spy = frames.get(BENCHMARK)
     transitions = []
     for o in opps:
-        res = simulate(_bars_after(frames.get(o["ticker"]), o["asof"]), levels_of(o), o["horizon_days"])
+        res = simulate(_bars_after(frames.get(o["ticker"]), o["asof"]), levels_of(o), o["horizon_days"],
+                       _trigger_window(o["primary_detector"]))
         new_status = _STATE_TO_STATUS[res.state]
         await _record_events(o["id"], res)
         if new_status == o["status"]:
