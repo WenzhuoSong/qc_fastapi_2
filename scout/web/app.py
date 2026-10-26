@@ -164,7 +164,7 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
         levels = {k: latest[k] for k in ("entry_lo", "entry_hi", "stop", "target1", "target2")}
     payload = (feat or {}).get("payload") or {}
     pct_keys = {"ret_1d", "ret_5d", "ret_20d", "ret_63d", "ret_252d", "atr_pct", "dist_52w_high", "gap_pct",
-                "rs_pct", "sector_rs_pct", "sector_rel_20"}
+                "rs_pct", "sector_rs_pct", "sector_rel_20", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d"}
     feat_rows = [[e(k), signed(payload[k]) if k in pct_keys else f"{payload[k]:.2f}"] for k in SNAPSHOT_FEATURES if k in payload]
     news_html = "".join(
         f"<li><a href='{e(n.get('url'))}' target='_blank' rel='noopener'>{e(n['headline'])}</a> "

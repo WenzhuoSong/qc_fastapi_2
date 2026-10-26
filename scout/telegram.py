@@ -43,6 +43,21 @@ def pct(x: float | None, digits: int = 1, sign: bool = False) -> str:
     return f"{x * 100:+.{digits}f}%" if sign else f"{x * 100:.{digits}f}%"
 
 
+def market_split_text(price: dict) -> str | None:
+    """'Is it the stock or the market?' — today's move split by 60-day beta."""
+    if price.get("idio_ret_1d") is None or price.get("market_ret_1d") is None:
+        return None
+    text = (
+        f"今日 {pct(price.get('ret_1d'), 1, True)}（大盘贡献 {pct(price['market_ret_1d'], 1, True)}"
+        f"｜个股自身 {pct(price['idio_ret_1d'], 1, True)}）"
+    )
+    if price.get("idio_ret_20d") is not None:
+        text += f" · 20 日个股自身 {pct(price['idio_ret_20d'], 1, True)}"
+    if price.get("beta_60") is not None:
+        text += f" · β {price['beta_60']:.2f}"
+    return text
+
+
 def base_rate_text(br: dict) -> str:
     """Rule-level replay stats, net of costs, judged against just holding the stock."""
     head = f"规则历史 {br['n']} 次（{br.get('regime')}）"
@@ -72,6 +87,9 @@ def render_card(o: dict) -> str:
         f"入场 {o['entry_lo']:.2f}–{o['entry_hi']:.2f} | 止损 {o['stop']:.2f} | "
         f"目标 {o['target1']:.2f} / {(o.get('target2') or o['target1']):.2f}"
     )
+    move = market_split_text(ev.get("price") or {})
+    if move:
+        lines.append(f"📈 {move}")
     lines.append(f"周期 {o['horizon_days']} 日 | R:R {o.get('risk_reward') or 0:.1f} | 状态 {STATUS_LABELS.get(o.get('status'), o.get('status'))}")
     if br.get("n"):
         lines.append(f"📊 {base_rate_text(br)}")
@@ -221,7 +239,11 @@ async def dispatch(text: str) -> str:
     if cmd == "/why" and args:
         from scout.agent import answer
 
-        return await answer(f"解释 {args[0].upper()} 最近的走势：发生了什么、可能的原因、接下来要关注什么。", channel="telegram")
+        return await answer(
+            f"解释 {args[0].upper()} 最近的走势：先说是个股自身还是大盘带动（用 idio/market 拆分），"
+            f"再说发生了什么、可能的原因、接下来要关注什么。",
+            channel="telegram",
+        )
     if cmd == "/watch":
         return await watch_cmd(args)
     if cmd == "/stats":

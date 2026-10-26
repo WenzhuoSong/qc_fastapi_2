@@ -5,7 +5,7 @@ import json
 from html import escape
 from typing import Any, Iterable
 
-from scout.telegram import CONFIDENCE_LABELS, STATUS_LABELS, base_rate_text, pct
+from scout.telegram import CONFIDENCE_LABELS, STATUS_LABELS, base_rate_text, market_split_text, pct
 
 CSS = """
 :root{--bg:#f7f7f5;--panel:#fff;--ink:#1d1d1f;--muted:#6b6b70;--line:#e4e4e0;--accent:#2f6fde;
@@ -79,6 +79,7 @@ def opp_card(o: dict) -> str:
 <p><b>{e(th.get('headline'))}</b><br>{e(th.get('thesis'))}</p>
 <div class="levels"><div><span>入场</span>{o['entry_lo']:.2f}–{o['entry_hi']:.2f}</div><div><span>止损</span>{o['stop']:.2f}</div>
 <div><span>目标 1</span>{o['target1']:.2f}</div><div><span>目标 2</span>{(o.get('target2') or o['target1']):.2f}</div></div>
+<div class="small">{e(market_split_text(ev.get("price") or {}) or "")}</div>
 <div class="small">{base}</div>{lists}
 <div class="small warn">{('⚠️ ' + e(th['key_risk'])) if th.get('key_risk') else ''}</div>
 <div class="small muted">置信度 {e(CONFIDENCE_LABELS.get(th.get('confidence'), '—'))} · 文本来源 {e(o.get('thesis_source'))}</div>

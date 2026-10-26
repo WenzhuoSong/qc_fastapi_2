@@ -101,6 +101,24 @@ class PanelAndReplayTests(unittest.TestCase):
         self.assertGreater(p["rs_pct"].at[last, "AAA"], p["rs_pct"].at[last, "BBB"])
         self.assertIn(p.regime.iloc[-1], {"uptrend", "mixed", "downtrend"})
 
+    def test_market_split_adds_up_and_spy_is_all_market(self):
+        p, d = self.panel, self.panel.dates[-1]
+        r = p.row("AAA", d)
+        self.assertAlmostEqual(r["market_ret_1d"] + r["idio_ret_1d"], r["ret_1d"], places=10)
+        spy = p.row("SPY", d)
+        self.assertAlmostEqual(spy["beta_60"], 1.0, places=6)
+        self.assertAlmostEqual(spy["corr_60"], 1.0, places=6)
+        self.assertAlmostEqual(spy["idio_ret_1d"], 0.0, places=6)
+
+    def test_market_split_text(self):
+        from scout.telegram import market_split_text
+
+        txt = market_split_text({"ret_1d": 0.042, "market_ret_1d": 0.008, "idio_ret_1d": 0.034,
+                                 "idio_ret_20d": 0.12, "beta_60": 1.31})
+        self.assertIn("大盘贡献 +0.8%", txt)
+        self.assertIn("个股自身 +3.4%", txt)
+        self.assertIsNone(market_split_text({"ret_1d": 0.01}))
+
     def test_detector_masks_never_fire_on_etfs(self):
         for det in registry():
             mask = det.mask(self.panel)

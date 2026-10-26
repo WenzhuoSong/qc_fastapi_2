@@ -171,6 +171,7 @@ def evidence(c: Candidate, market: dict) -> dict:
         "price": {k: round(f[k], 4) for k in (
             "close", "ret_1d", "ret_5d", "ret_20d", "ret_63d", "ret_252d", "dist_52w_high",
             "vol_ratio", "atr_pct", "rsi14", "rsi2", "gap_pct", "rs_pct", "sector_rs_pct", "sector_rel_20",
+            "beta_60", "corr_60", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d",
         ) if k in f},
         "base_rate": c.base_rate,
         "market": market,

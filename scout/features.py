@@ -15,6 +15,7 @@ SNAPSHOT_FEATURES = (
     "close", "ret_1d", "ret_5d", "ret_20d", "ret_63d", "ret_252d", "sma20", "sma50", "sma200",
     "atr14", "atr_pct", "vol_ratio", "dollar_vol20", "dist_52w_high", "rsi2", "rsi14",
     "gap_pct", "close_loc", "rs_pct", "sector_rs_pct", "sector_rel_20",
+    "beta_60", "corr_60", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d",
 )
 
 
@@ -109,6 +110,20 @@ def build_panel(
     f["dist_52w_high"] = c / f["high_252"] - 1
     f["rsi2"] = rsi(c, 2)
     f["rsi14"] = rsi(c, 14)
+
+    # Is it the stock or the market? 60-day beta/correlation to SPY; the move is
+    # split into the market part (yesterday's beta × SPY return) and the rest.
+    r, spy_r = f["ret_1d"], f["ret_1d"][BENCHMARK]
+    roll = {"window": 60, "min_periods": 40}
+    mean_r, mean_s = r.rolling(**roll).mean(), spy_r.rolling(**roll).mean()
+    cov = r.mul(spy_r, axis=0).rolling(**roll).mean() - mean_r.mul(mean_s, axis=0)
+    var_s = spy_r.rolling(**roll).var(ddof=0)
+    f["beta_60"] = cov.div(var_s, axis=0)
+    f["corr_60"] = cov.div(r.rolling(**roll).std(ddof=0).mul(np.sqrt(var_s), axis=0))
+    f["market_ret_1d"] = f["beta_60"].shift(1).mul(spy_r, axis=0)
+    f["idio_ret_1d"] = r - f["market_ret_1d"]
+    f["idio_ret_5d"] = f["idio_ret_1d"].rolling(5, min_periods=5).sum()
+    f["idio_ret_20d"] = f["idio_ret_1d"].rolling(20, min_periods=20).sum()
     f["gap_pct"] = o / prev_c - 1
     rng = (h - l).replace(0, np.nan)
     f["close_loc"] = ((c - l) / rng).fillna(0.5)

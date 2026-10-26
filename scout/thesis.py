@@ -45,7 +45,9 @@ SYSTEM_PROMPT = """你是一名美股交易机会分析师，为一位有经验�
 6. 判断规则是否有优势，看 base_rate.avg_edge_vs_hold（扣除交易成本后、相对"同期一直持有这只股票"的平均超额）；
    它 ≤ 0 说明择时没有比持有更好，必须写进反方证据。样本少（n < 30）或它 ≤ 0 时，置信度不能是 high。
    历史基准存在幸存者偏差，不能当成保证。
-7. 中文输出，简洁、具体，不写空话；不要出现"建议买入"之类的指令，用"机会/条件/失效"的语气。"""
+7. 用 price 里的拆分说明这波走势是"个股自身"还是"跟随大盘"：idio_ret_*（个股自身）、market_ret_1d（大盘贡献 = beta_60 × SPY）。
+   个股自身走强比随大盘上涨更有信息量；beta_60 高意味着大盘回撤时跌得更多，可作为风险。
+8. 中文输出，简洁、具体，不写空话；不要出现"建议买入"之类的指令，用"机会/条件/失效"的语气。"""
 
 # Evidence keys holding fractions (0.052 = 5.2%); shown to the LLM pre-formatted.
 _PCT_KEYS = {
@@ -53,6 +55,7 @@ _PCT_KEYS = {
     "rs_pct", "sector_rs_pct", "sector_rel_20", "stop_distance_pct", "trigger_rate", "win_rate",
     "target_rate", "stop_rate", "avg_return", "median_return", "avg_excess", "avg_mfe", "avg_mae",
     "win_rate_net", "avg_net_return", "avg_net_excess", "avg_hold_return", "avg_edge_vs_hold", "beat_hold_rate",
+    "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d",
     "spy_ret_1d", "spy_ret_20d", "qqq_ret_20d", "iwm_ret_20d", "smh_ret_20d",
     "eps_surprise_pct", "revenue_surprise_pct",
 }
