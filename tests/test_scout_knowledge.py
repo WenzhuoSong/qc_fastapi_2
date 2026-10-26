@@ -73,7 +73,7 @@ class StructureTests(unittest.TestCase):
             level += 6
         closes += [closes[-1] - 2 * i for i in range(1, 15)]     # collapse through the last low
         s = structure.compute(_bars(closes))
-        self.assertIn("跌破最近波段低点", s["swing_trend"])
+        self.assertIn("跌破最近波段低点", s["swing_break"])
 
     def test_short_history(self):
         self.assertEqual(structure.compute(_bars([100.0] * 10)), {})
@@ -118,6 +118,16 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("必须且只能覆盖", issues)
         self.assertIn("驱动力", issues)
         self.assertIn("趋势方向相反", issues)
+
+    def test_swing_shape_misread_is_caught(self):
+        from scout.insight import structure_conflicts
+
+        pack = _pack()
+        pack["lenses"][0]["evidence"].append(knowledge.evidence("swing_trend", "下降：高点降低、低点降低").as_dict())
+        wrong = _insight(lenses=[LensView(lens=l.id, verdict="中性", points=["高点和低点均抬高"], evidence=["rsi14"])
+                                 for l in knowledge.lenses()])
+        self.assertTrue(structure_conflicts(wrong, pack))
+        self.assertEqual(structure_conflicts(_insight(), pack), [])
 
     def test_fallback_covers_every_lens(self):
         fb = fallback(_pack())

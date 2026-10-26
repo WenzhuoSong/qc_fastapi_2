@@ -61,14 +61,14 @@ def compute(bars: list[dict]) -> dict:
     close = closes[-1]
     hs, ls = pivots(highs, lows, dates)
 
-    trend = swing_trend(hs, ls)
+    out: dict = {"swing_trend": swing_trend(hs, ls)}
     # The leg in progress has no confirmed pivot yet; a close beyond the last
-    # confirmed swing is the Dow-theory signal that the structure changed.
+    # confirmed swing is the Dow-theory signal that the structure is changing.
+    # Kept as its own field so the swing shape and the break can't be conflated.
     if ls and close < ls[-1].price:
-        trend += f"；收盘已跌破最近波段低点 {ls[-1].price:.2f}（{ls[-1].date}），结构转弱"
+        out["swing_break"] = f"收盘跌破最近波段低点 {ls[-1].price:.2f}（{ls[-1].date}）：结构转弱"
     elif hs and close > hs[-1].price:
-        trend += f"；收盘已突破最近波段高点 {hs[-1].price:.2f}（{hs[-1].date}），结构转强"
-    out: dict = {"swing_trend": trend}
+        out["swing_break"] = f"收盘突破最近波段高点 {hs[-1].price:.2f}（{hs[-1].date}）：结构转强"
     major_h, major_l = pivots(highs, lows, dates, MAJOR_K)
     above = [p for p in major_h if p.price > close]
     below = [p for p in major_l if p.price < close]

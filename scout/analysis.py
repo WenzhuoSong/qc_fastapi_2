@@ -82,15 +82,16 @@ def _position(f: dict) -> Line | None:
 def _structure(s: dict) -> Line | None:
     if not s or not s.get("swing_trend"):
         return None
-    parts = [s["swing_trend"]]
+    parts = [s["swing_trend"]] + ([s["swing_break"]] if s.get("swing_break") else [])
     if s.get("resistance"):
         parts.append(f"阻力 {s['resistance']:.2f}（{knowledge.fmt('dist_resistance', s['dist_resistance'])}）")
     if s.get("support"):
         parts.append(f"支撑 {s['support']:.2f}（{knowledge.fmt('dist_support', s['dist_support'])}）")
     if s.get("updown_vol_20") is not None:
         parts.append(_read("updown_vol_20", s))
-    trend = s["swing_trend"]
-    tone = "down" if "转弱" in trend or trend.startswith("下降") else "up" if trend.startswith("上升") else ""
+    trend, brk = s["swing_trend"], s.get("swing_break") or ""
+    tone = "down" if "转弱" in brk or (trend.startswith("下降") and "转强" not in brk) else (
+        "up" if "转强" in brk or (trend.startswith("上升") and "转弱" not in brk) else "")
     return Line("价格结构", "；".join(parts), tone)
 
 

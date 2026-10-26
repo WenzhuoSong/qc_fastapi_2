@@ -67,6 +67,7 @@ SYSTEM_PROMPT = """你是一名资深美股技术分析师，按"多视角工作
 - 读数是标准口径；如果要表达不同看法，必须说明依据。
 - Scout 规则分析里的趋势结论是确定性计算，不能与之相反地描述趋势方向。
 - 不编造新闻、财报或任何证据包里没有的事实；没有新闻就说没有。
+- 标的是 ETF 时，用"ETF 自身"而不是"个股自身"来表述归因。
 - 中文、专业、简洁；可以写"关注条件 / 失效条件"，不要下达买卖指令；不是投资建议。"""
 
 
@@ -214,7 +215,27 @@ def validate(ins: Insight, pack: dict, python_trend_tone: str) -> list[str]:
     for lv in ins.lenses:
         if lv.verdict != "不适用" and not lv.evidence:
             issues.append(f"视角 {lv.lens} 没有引用任何证据")
+    issues += structure_conflicts(ins, pack)
     return issues
+
+
+# Phrases that assert a swing shape; checked against the rule-computed swing_trend.
+_SWING_CLAIMS = {
+    "上升": ("高点降低", "低点降低", "高点和低点均降低", "高点和低点同时降低"),
+    "下降": ("高点抬高", "低点抬高", "高点和低点均抬高", "高点和低点同时抬高", "高点和低点都抬高"),
+}
+
+
+def structure_conflicts(ins: Insight, pack: dict) -> list[str]:
+    """Qualitative misreads the number check cannot see: the swing shape."""
+    swing = next((i["数值"] for b in pack["lenses"] for i in b["evidence"] if i["字段"] == "swing_trend"), "")
+    shape = swing.split("：")[0]
+    contradicting = _SWING_CLAIMS.get(shape, ())
+    texts = [ins.headline, ins.attribution, *[p for lv in ins.lenses for p in lv.points]]
+    hits = sorted({c for c in contradicting for t in texts if c in t})
+    if hits:
+        return [f"波段结构是「{swing}」，但文中写成了「{'、'.join(hits)}」；swing_trend 是已确认的形态，swing_break 才是正在发生的突破或跌破"]
+    return []
 
 
 def fallback(pack: dict) -> Insight:

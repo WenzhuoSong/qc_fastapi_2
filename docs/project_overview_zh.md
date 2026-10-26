@@ -130,9 +130,10 @@ Python 确定性组装证据包 ──► 6 个视角，各带「读数 + 定义
 - **6 个视角** `scout/knowledge/lenses/*.md`：道氏趋势、支撑阻力与形态（以《股市趋势技术分析》为主）、动量与相对强度（Jegadeesh-Titman、O'Neil、Minervini）、
   均值回归与波动（Lehmann、Connors、Bollinger）、大盘与板块、催化与事件（PEAD）。每个视角写明看什么、检查清单、确认和矛盾信号、常见陷阱、出处。可以直接编辑。
 - **校验**：数字必须出自证据包（52 周、50 日线、RSI(14) 这类指标名不算数字）；引用的证据 key 必须存在；6 个视角各出现一次；
-  驱动力（个股自身 / 大盘与板块 / 混合）必须与规则判定一致；趋势结论不能与 Python 判定相反。不通过就重试一次，仍不通过则退回规则读数。
+  驱动力（个股自身 / 大盘与板块 / 混合）必须与规则判定一致；趋势结论不能与 Python 判定相反；描述的波段形态不能与 swing_trend 相反。不通过就重试一次，仍不通过则退回规则读数。
 - 默认模型 `SCOUT_INSIGHT_MODEL=gpt-4o`；Dashboard 的"生成 AI 解读"和 Telegram 的 `/why` 共用这套流程，按数据日期缓存。
 - **评测**：`python -m scout.jobs.eval_insight` 在 20 只固定标的上统计首次通过率、回退率和失败类型，结果写入 `scout.briefs`（kind = `insight_eval`）。
+  2026-10-26 基线：首次通过率 95%，最终 100% 由 LLM 生成、没有回退，平均 12.6 秒。人工抽查发现并修复了 KO 的波段形态误读（已加入定性校验）。
 
 ### 3.5 LLM 的边界（`scout/thesis.py`）
 
@@ -183,7 +184,7 @@ qc_fastapi_2/
 ├── db/                            新闻表的 ORM（4 个模型）、session、2 个 SQL migration
 ├── constants.py             61    新闻覆盖的标的：17 只 ETF + Scout watchlist / 活跃机会
 ├── config.py                23    新闻管线的 Settings
-├── tests/                         unittest，61 个测试
+├── tests/                         unittest，62 个测试
 ├── docs/                          本总览、Scout 设计、旧系统复用目录
 └── Dockerfile / railway.toml      单镜像，默认启动 Scout web
 ```
