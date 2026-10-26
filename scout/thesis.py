@@ -55,7 +55,7 @@ _PCT_KEYS = {
     "rs_pct", "sector_rs_pct", "sector_rel_20", "stop_distance_pct", "trigger_rate", "win_rate",
     "target_rate", "stop_rate", "avg_return", "median_return", "avg_excess", "avg_mfe", "avg_mae",
     "win_rate_net", "avg_net_return", "avg_net_excess", "avg_hold_return", "avg_edge_vs_hold", "beat_hold_rate",
-    "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d",
+    "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d", "vol_20", "max_dd_60", "bb_pct",
     "spy_ret_1d", "spy_ret_20d", "qqq_ret_20d", "iwm_ret_20d", "smh_ret_20d",
     "eps_surprise_pct", "revenue_surprise_pct",
 }

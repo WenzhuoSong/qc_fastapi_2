@@ -124,6 +124,25 @@ class PanelAndReplayTests(unittest.TestCase):
             mask = det.mask(self.panel)
             self.assertFalse(mask[["SPY", "XLK"]].to_numpy().any(), det.name)
 
+    def test_risk_features_are_sane(self):
+        p, d = self.panel, self.panel.dates[-1]
+        r = p.row("AAA", d)
+        self.assertLessEqual(r["max_dd_60"], 0.0)
+        self.assertGreater(r["vol_20"], 0.0)
+        # %B and z-score describe the same distance from the 20-day mean.
+        self.assertAlmostEqual(r["bb_pct"], 0.5 + r["zscore_20"] / 4, places=6)
+
+    def test_candidate_detectors_are_replayed_but_not_scanned(self):
+        from scout.detectors import registry
+        from scout.opportunities import scan
+
+        names = {d.name for d in registry()}
+        live = {d.name for d in registry(include_candidates=False)}
+        self.assertIn("zscore_oversold", names)
+        self.assertNotIn("zscore_oversold", live)
+        cands = scan(self.panel, rates={}, detectors=None)
+        self.assertTrue(all(c.primary.live for c in cands))
+
     def test_cooldown_dedups_consecutive_hits(self):
         mask = pd.DataFrame({"A": [True] * 25})
         self.assertEqual([i for _, i in base_rates.hit_positions(mask, cooldown=10)], [0, 10, 20])

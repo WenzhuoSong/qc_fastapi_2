@@ -97,7 +97,7 @@ def scan(
     days_to_earnings = days_to_earnings or {}
 
     hits: dict[str, list[Detector]] = {}
-    for det in detectors or registry():
+    for det in detectors or registry(include_candidates=False):
         row = det.mask(p).loc[asof]
         for ticker in row.index[row.fillna(False).to_numpy(dtype=bool)]:
             if (ticker, det.name) not in recent:
@@ -172,6 +172,7 @@ def evidence(c: Candidate, market: dict) -> dict:
             "close", "ret_1d", "ret_5d", "ret_20d", "ret_63d", "ret_252d", "dist_52w_high",
             "vol_ratio", "atr_pct", "rsi14", "rsi2", "gap_pct", "rs_pct", "sector_rs_pct", "sector_rel_20",
             "beta_60", "corr_60", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d",
+            "zscore_20", "bb_pct", "vol_20", "max_dd_60",
         ) if k in f},
         "base_rate": c.base_rate,
         "market": market,
@@ -223,7 +224,10 @@ async def save(c: Candidate, ev: dict, thesis: dict | None, thesis_source: str) 
             :elo, :ehi, :stop, :t1, :t2, :h, :rr, :regime,
             CAST(:br AS JSONB), CAST(:ev AS JSONB), CAST(:th AS JSONB), :ts)
         ON CONFLICT (id) DO UPDATE SET
-            score = EXCLUDED.score, evidence = EXCLUDED.evidence, thesis = EXCLUDED.thesis,
+            score = EXCLUDED.score, detectors = EXCLUDED.detectors, regime = EXCLUDED.regime,
+            entry_lo = EXCLUDED.entry_lo, entry_hi = EXCLUDED.entry_hi, stop = EXCLUDED.stop,
+            target1 = EXCLUDED.target1, target2 = EXCLUDED.target2, risk_reward = EXCLUDED.risk_reward,
+            base_rate = EXCLUDED.base_rate, evidence = EXCLUDED.evidence, thesis = EXCLUDED.thesis,
             thesis_source = EXCLUDED.thesis_source, updated_at = now()
         """,
         {

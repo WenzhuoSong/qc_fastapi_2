@@ -16,6 +16,7 @@ SNAPSHOT_FEATURES = (
     "atr14", "atr_pct", "vol_ratio", "dollar_vol20", "dist_52w_high", "rsi2", "rsi14",
     "gap_pct", "close_loc", "rs_pct", "sector_rs_pct", "sector_rel_20",
     "beta_60", "corr_60", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d",
+    "zscore_20", "bb_pct", "vol_20", "max_dd_60",
 )
 
 
@@ -108,6 +109,16 @@ def build_panel(
     f["low_5"] = l.rolling(5, min_periods=5).min()
     f["high_252"] = h.rolling(252, min_periods=200).max()
     f["dist_52w_high"] = c / f["high_252"] - 1
+
+    # Risk profile: distance from the 20-day mean in standard deviations,
+    # Bollinger %B (0 = lower band, 1 = upper band), annualised realised vol,
+    # and the worst peak-to-trough drop over the last 60 sessions.
+    std20 = c.rolling(20, min_periods=20).std()
+    f["zscore_20"] = (c - f["sma20"]) / std20.replace(0, np.nan)
+    f["bb_pct"] = (c - (f["sma20"] - 2 * std20)) / (4 * std20).replace(0, np.nan)
+    f["vol_20"] = f["ret_1d"].rolling(20, min_periods=20).std() * np.sqrt(252)
+    drawdown = c / c.rolling(60, min_periods=20).max() - 1
+    f["max_dd_60"] = drawdown.rolling(60, min_periods=20).min()
     f["rsi2"] = rsi(c, 2)
     f["rsi14"] = rsi(c, 14)
 

@@ -113,6 +113,26 @@ def _volume_shock_levels(r: dict) -> Levels:
     return _levels(close - 0.5 * atr, close + 0.25 * atr, r["low"] - 0.25 * atr, atr)
 
 
+# D6 (candidate) ─ Strong stock stretched 2σ below its 20-day mean; exit on reversion to the mean.
+def _zscore_oversold_mask(p: FeaturePanel) -> pd.DataFrame:
+    return (
+        base_mask(p)
+        & (p["rs_pct"] >= 0.80)
+        & (p["close"] > p["sma200"])
+        & (p["sma50"] > p["sma200"])
+        & (p["zscore_20"] <= -2.0)
+    )
+
+
+def _zscore_oversold_levels(r: dict) -> Levels:
+    atr, close = r["atr14"], r["close"]
+    lo, hi = close - 0.5 * atr, close + 0.25 * atr
+    lv = _levels(lo, hi, r["low_5"] - 0.5 * atr, atr, r1=1.5, r2=2.5)
+    # "Back to 0": the 20-day mean is the natural first target when it is further out.
+    t1 = max(lv.target1, round(r["sma20"], 2))
+    return Levels(lv.entry_lo, lv.entry_hi, lv.stop, t1, max(lv.target2, t1))
+
+
 DETECTORS: tuple[Detector, ...] = (
     Detector(
         "trend_breakout", "趋势突破", "setup", 20,
@@ -138,5 +158,10 @@ DETECTORS: tuple[Detector, ...] = (
         "volume_shock", "放量异动", "watch", 10,
         "无跳空的情况下当日放量 ≥3 倍并大涨，收在日内高位（盘中资金吸筹）。",
         _volume_shock_mask, _volume_shock_levels,
+    ),
+    Detector(
+        "zscore_oversold", "z 分数超跌", "setup", 10,
+        "相对强度前 20% 的上升趋势股，收盘低于 20 日均值 2 个标准差以上，目标回到均值。（候选规则，仅回放）",
+        _zscore_oversold_mask, _zscore_oversold_levels, live=False,
     ),
 )

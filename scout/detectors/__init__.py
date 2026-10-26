@@ -45,6 +45,9 @@ class Detector:
     description: str
     mask: Callable[[FeaturePanel], pd.DataFrame]
     levels: Callable[[dict], Levels]
+    # False = research candidate: replayed into base rates and the scoreboard,
+    # but never scanned or pushed until its replay shows an independent edge.
+    live: bool = True
 
 
 def r_targets(entry_lo: float, entry_hi: float, stop: float, r1: float = 2.0, r2: float = 3.0) -> Levels:
@@ -68,10 +71,10 @@ def base_mask(p: FeaturePanel) -> pd.DataFrame:
     return m
 
 
-def registry() -> list[Detector]:
+def registry(include_candidates: bool = True) -> list[Detector]:
     from scout.detectors import rules
 
-    return list(rules.DETECTORS)
+    return [d for d in rules.DETECTORS if include_candidates or d.live]
 
 
 def get(name: str) -> Detector:

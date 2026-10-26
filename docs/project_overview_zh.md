@@ -86,25 +86,37 @@ Telegram webhook：@wenzhuo_qc_bot → `scout-web/telegram`，带 secret token �
 7. 每张卡：拉新闻和财报 → 组装证据包 → LLM 写文字（带数字校验，失败退回模板）→ 存库。
 8. 推送：一条收盘简报，加最多 3 张评分 ≥ 0.6 的卡（带 👍👎⭐🙈 按钮）。
 
-### 3.3 规则（`scout/detectors/rules.py`）与首轮历史基准
+### 3.3 规则（`scout/detectors/rules.py`）与历史基准
 
-| 规则 | 中文名 | 类型 | 周期 | 历史样本 | 平均超额（vs SPY） |
-|---|---|---|---|---|---|
-| `trend_breakout` | 趋势突破 | setup | 20 日 | 627 | +0.3% |
-| `pullback_in_uptrend` | 强势回调 | setup | 10 日 | 1161 | +1.0% |
-| `power_gap` | 放量跳空 | setup | 20 日 | 317 | ≈ 0 |
-| `sector_rotation` | 板块轮动龙头 | setup | 20 日 | 1708 | −0.6% |
-| `volume_shock` | 放量异动 | watch | 10 日 | 180 | +1.7% |
+基准口径：每笔扣除 **10 个基点往返成本**（`simulate.ROUND_TRIP_COST`），并和"**同期一直持有这只股票**"比较
+（按该股平均日漂移计算同样天数的持有收益）。"相对持有 ≤ 0"表示择时并没有比直接持有更好；这个口径还能部分抵消幸存者偏差。
 
-所有规则的止损距入场中点至少 1 个 ATR。历史基准用当前成分股回放，存在幸存者偏差，卡片上有标注。
+| 规则 | 中文名 | 状态 | 周期 | 样本 | 对 SPY（未扣费） | **扣费后相对持有** | 跑赢持有 |
+|---|---|---|---|---|---|---|---|
+| `trend_breakout` | 趋势突破 | 上线 | 20 日 | 627 | +0.3% | **−0.6%** | 36% |
+| `pullback_in_uptrend` | 强势回调 | 上线 | 10 日 | 1161 | +1.0% | **+0.4%** | 46% |
+| `power_gap` | 放量跳空 | 上线 | 20 日 | 317 | ≈ 0 | **−0.5%** | 40% |
+| `sector_rotation` | 板块轮动龙头 | 上线 | 20 日 | 1708 | −0.6% | **−1.1%** | 37% |
+| `volume_shock` | 放量异动 | 上线（watch） | 10 日 | 180 | +1.7% | **+1.8%** | 53% |
+| `zscore_oversold` | z 分数超跌 | **候选（仅回放）** | 10 日 | 895 | — | **+0.4%** | 42% |
+
+所有规则的止损距入场中点至少 1 个 ATR。`live=False` 的候选规则会参与回放并显示在记分板上，但不扫描、不推送。
+`zscore_oversold`（2026-10-26 评估）：和强势回调有 34% 重叠，不重叠的部分 +0.48%，但在上升市只有 +0.11%、止损率 50%，
+所以暂不上线，等积累更多震荡市样本后再评估。
 
 ### 3.4 评分（`scout/opportunities.py::score_candidate`）
 
 ```
-score = 0.45·历史超额（按样本量收缩） + 0.25·相对强度 + 0.15·多规则共振 + 0.15·盈亏比
+score = 0.45·规则优势（扣费后相对持有，按样本量收缩） + 0.25·相对强度 + 0.15·多规则共振 + 0.15·盈亏比
         × 0.9（watch 类）  − 0.15（5 天内有财报且不是事件型规则）  + 0.05（在 watchlist 中）
         × 反馈权重（0.8–1.2，来自 👍👎）
 ```
+
+### 3.4.1 卡片上的"大盘 vs 个股"
+
+每只股票都计算 60 日 beta 和相关性（相对 SPY），当日涨跌拆成**大盘贡献**（前一日 beta × SPY 当日涨跌）和**个股自身**两部分，
+同时给出 5 日和 20 日的个股自身累计涨跌。卡片、个股页、LLM 证据和问答（`/why`）都会用到。另外，风险画像特征也写入了每日快照：
+20 日 z 分数、布林带位置、20 日年化波动率、60 日最大回撤。
 
 ### 3.5 LLM 的边界（`scout/thesis.py`）
 
@@ -127,12 +139,12 @@ qc_fastapi_2/
 │   │   ├── provider.py     29     MarketDataProvider 协议（上层代码不出现数据供应商的名字）
 │   │   └── yahoo.py        76     yfinance 实现（每批 150 只，失败重试一次）
 │   ├── bars.py            117     日线存储：回填、增量、复权检测、读取（整批写入）
-│   ├── features.py        155     FeaturePanel：收益、均线、ATR、量比、RSI、相对强度分位、行业相对强弱、市场状态
+│   ├── features.py        185     FeaturePanel：收益、均线、ATR、量比、RSI、相对强度、行业相对强弱、beta 拆分、风险画像、市场状态
 │   ├── detectors/
 │   │   ├── __init__.py     81     Detector / Levels 契约，base_mask，r_targets
-│   │   └── rules.py       142     5 条规则：mask(panel) 和 levels(row)，止损至少 1 ATR
+│   │   └── rules.py       165     5 条上线规则 + 1 条候选：mask(panel) 和 levels(row)，止损至少 1 ATR
 │   ├── simulate.py        108     括号单模拟器（回放和实盘追踪共用）
-│   ├── base_rates.py      173     历史回放 → 按市场状态分桶的统计
+│   ├── base_rates.py      200     历史回放（扣费、对比一直持有）→ 按市场状态分桶的统计
 │   ├── opportunities.py   235     扫描、评分、证据包、冷却期、反馈权重、存库
 │   ├── context.py         162     新闻（新闻库 + 归档 + Finnhub 按需拉取）、财报日历
 │   ├── thesis.py          201     LLM 文字（格式化证据 + 数字校验）+ 模板兜底
@@ -151,7 +163,7 @@ qc_fastapi_2/
 ├── db/                            新闻表的 ORM（4 个模型）、session、2 个 SQL migration
 ├── constants.py             61    新闻覆盖的标的：17 只 ETF + Scout watchlist / 活跃机会
 ├── config.py                23    新闻管线的 Settings
-├── tests/                         unittest，39 个测试
+├── tests/                         unittest，45 个测试
 ├── docs/                          本总览、Scout 设计、旧系统复用目录
 └── Dockerfile / railway.toml      单镜像，默认启动 Scout web
 ```
