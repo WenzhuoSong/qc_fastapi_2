@@ -313,3 +313,72 @@ sector_rel_63:
   zh: 行业 3 个月相对 SPY
   unit: pct
   definition: 所属行业 ETF 63 日涨跌 − SPY 63 日涨跌。
+
+# ── 板块指标（scout/sectors.py，按板块成分股或板块 ETF 计算）──
+rel_20:
+  zh: 20 日相对 SPY
+  unit: pct
+  definition: 板块 ETF 20 日涨跌 − SPY 20 日涨跌。
+  readings:
+    - {min: 0.05, text: 明显跑赢大盘}
+    - {min: 0.0, text: 略强于大盘}
+    - {min: -0.05, text: 略弱于大盘}
+    - {max: -0.05, text: 明显跑输大盘}
+rs_ratio:
+  zh: 相对强度比
+  unit: score100
+  definition: （板块 ETF / SPY）÷ 其 50 日均值 × 100。大于 100 表示跑赢自身的相对趋势（RRG 横轴，开放近似）。
+rs_momentum:
+  zh: 相对强度动量
+  unit: score100
+  definition: 相对强度比 ÷ 10 日前的相对强度比 × 100。大于 100 表示相对强度在加速（RRG 纵轴，开放近似）。
+quadrant:
+  zh: 轮动象限
+  unit: label
+  definition: 领先（比 ≥100、动量 ≥100）→ 转弱（比 ≥100、动量 <100）→ 落后（都 <100）→ 改善（比 <100、动量 ≥100），通常按顺时针轮动。
+pct_above_50:
+  zh: 站上 50 日线比例
+  unit: score01
+  definition: 板块内流动性足够的成分股中，收盘在 50 日均线上方的比例（市场宽度）。
+  readings:
+    - {min: 0.7, text: 普涨，宽度强}
+    - {min: 0.5, text: 多数个股健康}
+    - {min: 0.3, text: 分化，少数个股支撑}
+    - {max: 0.3, text: 普跌，宽度弱}
+pct_above_200:
+  zh: 站上 200 日线比例
+  unit: score01
+  definition: 板块内成分股收盘在 200 日均线上方的比例，衡量长期健康度。
+net_new_highs:
+  zh: 20 日净新高比例
+  unit: pct
+  definition: （创 20 日新高的成分股数 − 创 20 日新低的成分股数）/ 成分股数。
+  readings:
+    - {min: 0.15, text: 新高显著多于新低}
+    - {min: -0.15, text: 新高新低大致均衡}
+    - {max: -0.15, text: 新低显著多于新高}
+cmf_20:
+  zh: 资金流 CMF（20 日）
+  unit: signed
+  definition: Chaikin Money Flow：按收盘在日内区间的位置给成交量加权（收在高位记为流入），板块成分股取平均。−1 到 1。这是基于日线的代理指标，不是真实的买卖单。
+  readings:
+    - {min: 0.10, text: 资金明显流入（吸筹）}
+    - {min: 0.0, text: 略偏流入}
+    - {min: -0.10, text: 略偏流出}
+    - {max: -0.10, text: 资金明显流出（派发）}
+rel_dollar_vol:
+  zh: 成交额热度
+  unit: ratio
+  definition: 板块近 5 日日均成交额 / 近 60 日日均成交额。大于 1 表示关注度在上升。
+  readings:
+    - {min: 1.2, text: 成交明显放大，关注度上升}
+    - {min: 0.9, text: 成交正常}
+    - {max: 0.9, text: 成交萎缩，关注度下降}
+dollar_vol_share:
+  zh: 成交额占比
+  unit: score01
+  definition: 近 5 日该板块成交额占全部板块成交额的比例。
+heat:
+  zh: 热度
+  unit: score01
+  definition: 板块之间按 20 日相对 SPY、相对强度比、相对强度动量、站上 50 日线比例、涨跌日量比、成交额热度分别排名，取百分位的平均。≥ 0.67 为热，≤ 0.33 为冷。

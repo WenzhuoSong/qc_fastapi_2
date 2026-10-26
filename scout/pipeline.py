@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta
 
-from scout import bars, base_rates, context, db, opportunities, structure, telegram, thesis, tracker, universe
+from scout import bars, base_rates, context, db, opportunities, sectors, structure, telegram, thesis, tracker, universe
 from scout.config import get_scout_settings
 from scout.data.provider import get_provider
 from scout.features import SNAPSHOT_FEATURES, FeaturePanel, build_panel
@@ -155,6 +155,7 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     if asof < session:
         raise RuntimeError(f"bar for {session} not available yet (latest {asof}); data source may be lagging")
     summary["features"] = await store_features(p, asof)
+    summary["sectors"] = await sectors.store(asof, sectors.compute(p, asof))
 
     transitions = await tracker.update_all()
     summary["transitions"] = [t.__dict__ for t in transitions]

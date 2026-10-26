@@ -52,6 +52,10 @@ def fmt(key: str, value) -> str:
         return f"{value * 100:.0f}%"
     if unit == "ratio":
         return f"{value:.1f} 倍"
+    if unit == "score100":
+        return f"{value:.1f}"
+    if unit == "signed":
+        return f"{value:+.2f}"
     if unit == "sigma":
         return f"{value:+.1f}σ"
     if unit == "rsi":
