@@ -118,6 +118,22 @@ score = 0.45·规则优势（扣费后相对持有，按样本量收缩） + 0.2
 同时给出 5 日和 20 日的个股自身累计涨跌。卡片、个股页、LLM 证据和问答（`/why`）都会用到。另外，风险画像特征也写入了每日快照：
 20 日 z 分数、布林带位置、20 日年化波动率、60 日最大回撤。
 
+### 3.4.2 AI 解读：多视角工作流（`scout/insight.py` + `scout/knowledge/`）
+
+```
+Python 确定性组装证据包 ──► 6 个视角，各带「读数 + 定义」与方法论检查清单 ──► LLM 一次结构化输出 ──► 程序校验 ──► 缓存（附证据包和校验记录）
+```
+
+- **数据字典** `scout/knowledge/features.yaml`：每个特征的中文名、单位、定义、解读区间、注意事项。
+  它同时驱动 Dashboard 的字段名和说明、Scout 分析的阈值、交给 LLM 的"数值 + 读数"。新特征没有字典条目时测试会失败。
+- **价格结构** `scout/structure.py`：道氏理论波段（高低点抬高或降低、跌破或突破最近波段）、主要支撑和阻力、上涨日与下跌日成交量比。
+- **6 个视角** `scout/knowledge/lenses/*.md`：道氏趋势、支撑阻力与形态（以《股市趋势技术分析》为主）、动量与相对强度（Jegadeesh-Titman、O'Neil、Minervini）、
+  均值回归与波动（Lehmann、Connors、Bollinger）、大盘与板块、催化与事件（PEAD）。每个视角写明看什么、检查清单、确认和矛盾信号、常见陷阱、出处。可以直接编辑。
+- **校验**：数字必须出自证据包（52 周、50 日线、RSI(14) 这类指标名不算数字）；引用的证据 key 必须存在；6 个视角各出现一次；
+  驱动力（个股自身 / 大盘与板块 / 混合）必须与规则判定一致；趋势结论不能与 Python 判定相反。不通过就重试一次，仍不通过则退回规则读数。
+- 默认模型 `SCOUT_INSIGHT_MODEL=gpt-4o`；Dashboard 的"生成 AI 解读"和 Telegram 的 `/why` 共用这套流程，按数据日期缓存。
+- **评测**：`python -m scout.jobs.eval_insight` 在 20 只固定标的上统计首次通过率、回退率和失败类型，结果写入 `scout.briefs`（kind = `insight_eval`）。
+
 ### 3.5 LLM 的边界（`scout/thesis.py`）
 
 - LLM 只写文字：标题、逻辑、催化剂、反方证据、风险、置信度。入场、止损、目标等数字全部由 Python 计算。
@@ -151,7 +167,10 @@ qc_fastapi_2/
 │   ├── tracker.py         142     生命周期、结果记录、记分板
 │   ├── telegram.py        284     卡片渲染、推送、命令、反馈回调、友好报错
 │   ├── agent.py           236     问答 agent：8 个只读工具，最多 6 轮工具调用（remember=False 用于一次性生成）
-│   ├── analysis.py        170     个股页「Scout 分析」：趋势 / 相对强度 / 大盘 vs 个股 / 位置 / 风险 / 量能 / 事件 / 规则距离
+│   ├── analysis.py        200     个股页「Scout 分析」：趋势 / 价格结构 / 归因 / 相对强度 / 位置 / 风险 / 量能 / 事件 / 规则距离
+│   ├── structure.py        90     道氏波段结构、支撑阻力、涨跌日量比
+│   ├── insight.py         300     AI 解读多视角工作流：证据包 → 结构化输出 → 校验 → 缓存
+│   ├── knowledge/                 数据字典 features.yaml + 6 个分析视角 lenses/*.md（可直接编辑）
 │   ├── pipeline.py        236     run_eod / run_weekly / prepare / ensure_base_rates / 交易日判断 / 简报渲染
 │   ├── market_calendar.py 162     美股交易日与节假日（从旧系统取回）
 │   ├── web/app.py         400     FastAPI：/health、/telegram、Dashboard（今日含板块与主题 ETF 表、个股页含 Scout 分析 / AI 解读 / 板块成分股）
@@ -164,7 +183,7 @@ qc_fastapi_2/
 ├── db/                            新闻表的 ORM（4 个模型）、session、2 个 SQL migration
 ├── constants.py             61    新闻覆盖的标的：17 只 ETF + Scout watchlist / 活跃机会
 ├── config.py                23    新闻管线的 Settings
-├── tests/                         unittest，50 个测试
+├── tests/                         unittest，61 个测试
 ├── docs/                          本总览、Scout 设计、旧系统复用目录
 └── Dockerfile / railway.toml      单镜像，默认启动 Scout web
 ```

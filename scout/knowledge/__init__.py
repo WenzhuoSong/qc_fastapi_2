@@ -1,0 +1,116 @@
+"""Scout knowledge base: the feature dictionary and the analysis lenses.
+
+`features.yaml` is the single definition of every feature (meaning, unit,
+interpretation bands). `lenses/*.md` are the methodology checklists the AI
+interpretation follows. Both are plain files meant to be edited by hand.
+"""
+from __future__ import annotations
+
+import math
+import re
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+
+import yaml
+
+ROOT = Path(__file__).parent
+
+
+@lru_cache()
+def features() -> dict[str, dict]:
+    return yaml.safe_load((ROOT / "features.yaml").read_text(encoding="utf-8"))
+
+
+def zh(key: str) -> str:
+    return (features().get(key) or {}).get("zh", key)
+
+
+def reading(key: str, value) -> str | None:
+    """First interpretation band that contains `value`."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+        return None
+    for band in (features().get(key) or {}).get("readings") or []:
+        lo, hi = band.get("min"), band.get("max")
+        if (lo is None or value >= lo) and (hi is None or value <= hi):
+            return band["text"]
+    return None
+
+
+def fmt(key: str, value) -> str:
+    """Human formatting by unit — the exact strings the LLM sees and must quote."""
+    if value is None:
+        return "—"
+    if isinstance(value, str):
+        return value
+    unit = (features().get(key) or {}).get("unit")
+    if unit == "pct":
+        return f"{value * 100:+.1f}%"
+    if unit == "pct_mag":
+        return f"{value * 100:.1f}%"
+    if unit == "score01":
+        return f"{value * 100:.0f}%"
+    if unit == "ratio":
+        return f"{value:.1f} 倍"
+    if unit == "sigma":
+        return f"{value:+.1f}σ"
+    if unit == "rsi":
+        return f"{value:.0f}"
+    if unit in ("beta", "corr"):
+        return f"{value:.2f}"
+    if unit == "usd":
+        return f"${value / 1e9:.1f}B" if value >= 1e9 else f"${value / 1e6:.0f}M"
+    return f"{value:.2f}"
+
+
+@dataclass
+class Evidence:
+    key: str
+    name: str
+    value: str
+    reading: str | None
+    definition: str
+
+    def as_dict(self) -> dict:
+        out = {"字段": self.key, "名称": self.name, "数值": self.value, "含义": self.definition}
+        if self.reading:
+            out["读数"] = self.reading
+        return out
+
+
+def evidence(key: str, value) -> Evidence:
+    spec = features().get(key) or {}
+    return Evidence(key, spec.get("zh", key), fmt(key, value), reading(key, value), spec.get("definition", ""))
+
+
+# ── lenses ──────────────────────────────────────────────────────────────
+
+@dataclass
+class Lens:
+    id: str
+    title: str
+    fields: list[str]
+    body: str              # methodology checklist (markdown)
+    sources: list[str]
+
+
+_FRONT = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.S)
+
+
+@lru_cache()
+def lenses() -> list[Lens]:
+    out = []
+    for path in sorted((ROOT / "lenses").glob("*.md")):
+        m = _FRONT.match(path.read_text(encoding="utf-8"))
+        if not m:
+            raise ValueError(f"{path.name}: missing front matter")
+        meta = yaml.safe_load(m.group(1))
+        out.append(Lens(meta["id"], meta["title"], meta.get("fields", []), m.group(2).strip(), meta.get("sources", [])))
+    return out
+
+
+def lens(lens_id: str) -> Lens:
+    for item in lenses():
+        if item.id == lens_id:
+            return item
+    raise KeyError(lens_id)

@@ -190,28 +190,19 @@ async def sector_members_card(etf: str) -> str:
     )
 
 
-AI_PROMPT = (
-    "为 {t} 写一段 Scout 分析（150–250 字，纯文本）：先判断近期走势是个股自身还是大盘带动（用 idio/market 拆分），"
-    "再说趋势与相对强度、近期新闻或财报催化、主要风险，最后给出「值得关注的条件」和「失效条件」。只用工具返回的数据，注明数据日期。"
-)
-
-
 @app.post("/ticker/{ticker}/ai")
 async def ticker_ai(ticker: str, _: str = Depends(require_auth)):
-    from scout.agent import answer
+    from scout import insight
 
     t = universe.yahoo_symbol(ticker)
-    feat = await db.fetch_one("SELECT max(date) AS d FROM scout.features_daily WHERE ticker = :t", {"t": t})
     try:
-        text = await answer(AI_PROMPT.format(t=t), channel="dashboard", remember=False)
+        rec = await insight.generate(t)
     except Exception as exc:
         logger.exception("ticker AI analysis failed")
         return HTMLResponse(layout(t, "", f"<p>{e(telegram.friendly_error(exc))}</p><p>{tlink(t, '返回 ' + t)}</p>"), status_code=502)
-    await db.execute(
-        "INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('ticker_ai', :d, :c, CAST(:p AS JSONB))",
-        {"d": (feat or {}).get("d") or date.today(), "c": text, "p": db.jsonb({"ticker": t})},
-    )
-    return RedirectResponse(f"/ticker/{t}#scout", status_code=303)
+    if rec is None:
+        return HTMLResponse(layout(t, "", f"<p>{e(t)} 还没有特征数据。</p>"), status_code=404)
+    return RedirectResponse(f"/ticker/{t}#insight", status_code=303)
 
 
 @app.get("/ticker")
@@ -240,11 +231,9 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
         "SELECT event_date FROM scout.market_events WHERE ticker = :t AND event_type = 'earnings' AND event_date >= :d "
         "ORDER BY event_date LIMIT 1", {"t": t, "d": date.today()},
     )
-    ai = await db.fetch_one(
-        "SELECT content, created_at FROM scout.briefs WHERE kind = 'ticker_ai' AND payload->>'ticker' = :t "
-        "AND asof >= COALESCE((SELECT max(date) FROM scout.features_daily WHERE ticker = :t), CURRENT_DATE) "
-        "ORDER BY id DESC LIMIT 1", {"t": t},
-    )
+    from scout import insight, structure as price_structure
+
+    ai = await insight.latest(t)
     if not inst and not bars:
         return layout(t, "", f"<p>{e(t)} 不在标的池中。可以在 Watchlist 页加入。</p>")
     latest = opps[0] if opps else None
@@ -260,7 +249,13 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
             return signed(v)
         return f"{v:,.0f}" if k == "dollar_vol20" else f"{v:.2f}"
 
-    feat_rows = [[e(views.FEATURE_ZH.get(k, k)), fmt(k, payload[k])] for k in SNAPSHOT_FEATURES if k in payload]
+    from scout import knowledge
+
+    feat_rows = [
+        [f"<span title='{e((knowledge.features().get(k) or {}).get('definition', ''))}'>{e(knowledge.zh(k))}</span>",
+         fmt(k, payload[k]), e(knowledge.reading(k, payload[k]) or "")]
+        for k in SNAPSHOT_FEATURES if k in payload
+    ]
     news_html = "".join(
         f"<li><a href='{e(n.get('url'))}' target='_blank' rel='noopener'>{e(n['headline'])}</a> "
         f"<span class='small muted'>{e(n.get('source'))} {e((n.get('published') or '')[:16])}</span>"
@@ -273,15 +268,19 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
     headline, lines = scout_view(
         payload, is_stock=(inst or {}).get("kind", "stock") == "stock",
         next_earnings=(nxt or {}).get("event_date"), latest_opp=latest, today=date.today(),
+        structure=price_structure.compute(bars),
     )
     body += '<div class="grid" style="margin-top:12px">'
     body += f'<div id="scout">{views.scout_panel(t, headline, lines, ai, bool(get_scout_settings().openai_api_key))}</div>'
+    if ai:
+        body += views.insight_card(ai)
     body += f'<div class="card"><h3>新闻</h3><ul class="tight">{news_html}</ul></div>'
     if latest:
         body += opp_card(latest)
     body += await sector_members_card(t)
     body += (f'<details class="card"><summary>全部特征 <span class="small muted">{e((feat or {}).get("date"))}</span></summary>'
-             f'{table(["特征", "值"], feat_rows)}</details>')
+             f'<p class="small muted">鼠标悬停指标名可查看定义（数据字典 scout/knowledge/features.yaml）</p>'
+             f'{table(["指标", "值", "读数"], feat_rows)}</details>')
     body += "</div>"
     if opps:
         body += "<h2>历史机会</h2>" + table(

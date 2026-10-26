@@ -20,13 +20,14 @@ SYSTEM_PROMPT = f"""你是 Scout，一个美股机会观察助手，服务于一
 
 规则：
 - 回答中的数字必须来自工具结果；不知道就说不知道，不要编造价格、新闻或财报数据。
-- 特征字段中的收益率和比例是小数（0.05 = 5%）。rs_pct 是全市场相对强度分位（0–1）。
+- get_snapshot 返回的每个指标都带有 名称、数值（已格式化）、含义 和 读数（数据字典的标准解读），解读时以读数为准；
+  screen 的原始字段中收益率和比例是小数（0.05 = 5%），rs_pct 是全市场相对强度分位（0–1）。
 - 解释涨跌时先回答"是个股自身还是大盘"：market_ret_1d = 前一日 60 日 beta × SPY 当日涨跌，
   idio_ret_1d / idio_ret_5d / idio_ret_20d 是扣掉大盘贡献后的个股自身部分；beta_60、corr_60 衡量它跟大盘绑得多紧。
 - 行情是日线收盘数据（免费数据源），不是实时报价，回答时注明数据日期。
 - 用中文，结构清晰，简洁具体；可以给出"机会条件 / 失效条件"，不要下达买卖指令。
 - 纯文本输出（不要 Markdown 表格），适合 Telegram 阅读。
-可用特征：{", ".join(SNAPSHOT_FEATURES)}。"""
+screen 可排序的字段：{", ".join(SNAPSHOT_FEATURES)}。"""
 
 TOOLS = [
     {"name": "get_snapshot", "description": "某只股票/ETF 最新一日的特征快照、所属行业、是否在 watchlist、最近的机会卡",
@@ -74,8 +75,17 @@ async def get_snapshot(ticker: str) -> dict:
     )
     if not feat and not inst:
         return {"error": f"{t} 不在 Scout 的标的池中，可用 /watch add {t} 加入"}
+    from scout import knowledge, structure
+
+    bars = await db.fetch_all(
+        "SELECT * FROM (SELECT date, open, high, low, close, volume FROM scout.bars_daily WHERE ticker = :t "
+        "ORDER BY date DESC LIMIT 260) x ORDER BY date", {"t": t},
+    )
+    values = {**((feat or {}).get("payload") or {}), **structure.compute(bars)}
+    readings = [knowledge.evidence(k, v).as_dict() for k, v in values.items()
+                if k in knowledge.features() and v is not None]
     return {"ticker": t, "instrument": inst, "watchlist_theme": (watch or {}).get("theme"),
-            "features_date": feat and feat["date"], "features": feat and feat["payload"], "latest_opportunity": opp}
+            "features_date": feat and feat["date"], "indicators": readings, "latest_opportunity": opp}
 
 
 async def get_price_history(ticker: str, days: int = 30) -> dict:

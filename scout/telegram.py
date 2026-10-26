@@ -26,7 +26,7 @@ HELP_TEXT = (
     "<b>Scout 美股机会观察器</b>\n"
     "/ideas — 活跃机会\n"
     "/idea NVDA — 某只股票的最新机会卡\n"
-    "/why NVDA — 解释近期走势\n"
+    "/why NVDA — 多视角解读（趋势、形态、动量、波动、大盘、催化）\n"
     "/watch list | add NVDA [主题] | rm NVDA\n"
     "/stats — 规则记分板\n"
     "直接发文字即可提问（例如：今天最强的板块是什么？）"
@@ -237,18 +237,26 @@ async def dispatch(text: str) -> str:
     if cmd == "/idea" and args:
         return await idea_text(args[0])
     if cmd == "/why" and args:
-        from scout.agent import answer
-
-        return await answer(
-            f"解释 {args[0].upper()} 最近的走势：先说是个股自身还是大盘带动（用 idio/market 拆分），"
-            f"再说发生了什么、可能的原因、接下来要关注什么。",
-            channel="telegram",
-        )
+        return await why_text(args[0])
     if cmd == "/watch":
         return await watch_cmd(args)
     if cmd == "/stats":
         return await stats_text()
     return HELP_TEXT
+
+
+async def why_text(ticker: str) -> str:
+    """Multi-lens interpretation (same workflow as the dashboard), cached per data date."""
+    from scout import insight
+
+    rec = await insight.latest(ticker)
+    if rec is None:
+        rec = await insight.generate(ticker)
+        if rec is None:
+            return f"{esc(ticker.upper())} 不在 Scout 的标的池中，可用 /watch add {esc(ticker.upper())} 加入。"
+        rec["content"] = insight.render_text(insight.Insight(**rec["insight"]), rec["pack"])
+    note = "" if rec.get("source") == "llm" else "\n（AI 解读未通过校验，以上为规则读数）"
+    return esc(rec["content"]) + note
 
 
 async def ideas_text() -> str:

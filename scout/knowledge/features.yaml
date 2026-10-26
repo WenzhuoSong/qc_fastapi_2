@@ -1,0 +1,277 @@
+# Scout 特征数据字典（唯一口径）
+#
+# 每个特征：zh 中文名 · unit 单位 · definition 定义/公式 · readings 解读区间 · caveat 注意事项
+# unit: pct（小数，0.05 = 5%，带正负号）| pct_mag（幅度类百分比，不带正负号）| ratio | price | sigma | score01（0–1 分位/位置）| rsi | beta | corr | usd
+# readings 按顺序匹配，第一个命中生效：{max: x} 表示 值 ≤ x，{min: x} 表示 值 ≥ x，两者都写表示区间。
+# 同一份字典驱动：Dashboard 字段名与说明、Scout 分析的判断阈值、交给 LLM 的"数值 + 读数"证据。
+
+close:
+  zh: 收盘价
+  unit: price
+  definition: 最近一个交易日的复权收盘价（yfinance，已按拆股和分红调整）。
+
+ret_1d:
+  zh: 1 日涨跌
+  unit: pct
+  definition: 今日收盘 / 昨日收盘 − 1。
+ret_5d:
+  zh: 5 日涨跌
+  unit: pct
+  definition: 近 5 个交易日（约一周）的累计涨跌。
+ret_20d:
+  zh: 20 日涨跌
+  unit: pct
+  definition: 近 20 个交易日（约一个月）的累计涨跌。
+ret_63d:
+  zh: 3 个月涨跌
+  unit: pct
+  definition: 近 63 个交易日的累计涨跌，中期动量的主要窗口。
+ret_252d:
+  zh: 1 年涨跌
+  unit: pct
+  definition: 近 252 个交易日的累计涨跌，长期动量窗口。
+
+sma20:
+  zh: 20 日均线
+  unit: price
+  definition: 近 20 日收盘价的简单平均，短期趋势参照。
+sma50:
+  zh: 50 日均线
+  unit: price
+  definition: 近 50 日收盘价的简单平均，中期趋势参照；机构常用的回调支撑位。
+sma200:
+  zh: 200 日均线
+  unit: price
+  definition: 近 200 日收盘价的简单平均，长期趋势分水岭。价格在其上方视为长期多头格局。
+
+atr14:
+  zh: ATR(14)
+  unit: price
+  definition: 14 日平均真实波幅（含跳空），用于设置止损距离。Scout 的止损至少距入场中点 1 个 ATR。
+atr_pct:
+  zh: 日均振幅
+  unit: pct_mag
+  definition: ATR(14) / 收盘价，衡量单日正常波动幅度。
+  readings:
+    - {max: 0.015, text: 低波动（日振幅 ≤ 1.5%）}
+    - {max: 0.035, text: 正常波动}
+    - {min: 0.035, text: 高波动（日振幅 ≥ 3.5%），止损需更宽、仓位需更小}
+
+vol_ratio:
+  zh: 量比
+  unit: ratio
+  definition: 今日成交量 / 此前 50 日平均成交量。
+  readings:
+    - {max: 0.7, text: 明显缩量}
+    - {max: 1.3, text: 量能正常}
+    - {max: 1.8, text: 温和放量}
+    - {max: 3.0, text: 明显放量（≥ 1.8 倍），价格变动的可信度更高}
+    - {min: 3.0, text: 异常放量（≥ 3 倍），通常有事件驱动}
+  caveat: 《股市趋势技术分析》强调成交量应随趋势方向放大；上涨放量、回调缩量是健康的趋势。
+
+dollar_vol20:
+  zh: 20 日均成交额
+  unit: usd
+  definition: 近 20 日（收盘价 × 成交量）的平均，衡量流动性。Scout 只扫描 ≥ 2000 万美元的标的。
+
+dist_52w_high:
+  zh: 距 52 周高点
+  unit: pct
+  definition: 收盘价 / 近 252 日最高价 − 1，恒 ≤ 0。
+  readings:
+    - {min: -0.03, text: 贴近 52 周高点（3% 以内），上方几乎没有套牢盘}
+    - {min: -0.15, text: 距高点不远（15% 以内）}
+    - {min: -0.30, text: 明显低于高点，上方存在套牢盘阻力}
+    - {max: -0.30, text: 远离高点（跌幅 > 30%），处于深度回撤}
+
+rsi2:
+  zh: RSI(2)
+  unit: rsi
+  definition: 2 日相对强弱指数（Wilder 平滑），对极短期超买超卖非常敏感，用于捕捉强势股的短暂回调。
+  readings:
+    - {max: 10, text: 极度超卖（≤ 10）}
+    - {max: 30, text: 偏超卖}
+    - {max: 70, text: 中性}
+    - {max: 90, text: 偏超买}
+    - {min: 90, text: 极度超买（≥ 90）}
+rsi14:
+  zh: RSI(14)
+  unit: rsi
+  definition: 14 日相对强弱指数，经典动量振荡指标。
+  readings:
+    - {max: 30, text: 超卖区（≤ 30）}
+    - {max: 45, text: 偏弱}
+    - {max: 55, text: 中性}
+    - {max: 70, text: 偏强}
+    - {min: 70, text: 超买区（≥ 70）；强趋势中可以长时间停留在这里}
+
+gap_pct:
+  zh: 开盘跳空
+  unit: pct
+  definition: 今日开盘价 / 昨日收盘价 − 1。
+  readings:
+    - {max: -0.03, text: 向下跳空（≥ 3%）}
+    - {max: 0.03, text: 无明显跳空}
+    - {min: 0.03, text: 向上跳空（≥ 3%）}
+  caveat: 《股市趋势技术分析》把缺口分为普通、突破、持续、衰竭四类；放量突破缺口通常不会很快回补。
+close_loc:
+  zh: 收盘位置
+  unit: score01
+  definition: （收盘 − 最低）/（最高 − 最低），收盘在当日区间中的位置。1 = 收在最高点。
+  readings:
+    - {max: 0.3, text: 收在日内低位（卖压占优）}
+    - {max: 0.7, text: 收在日内中部}
+    - {min: 0.7, text: 收在日内高位（买盘占优）}
+
+rs_pct:
+  zh: 全市场相对强度分位
+  unit: score01
+  definition: 0.4×3个月 + 0.3×6个月 + 0.3×12个月收益的综合值，在全部扫描股票中的百分位（仿 IBD/O'Neil 相对强度）。0.9 = 强于 90% 的股票。
+  readings:
+    - {min: 0.9, text: 全市场领涨股（前 10%）}
+    - {min: 0.8, text: 强势股（前 20%）}
+    - {min: 0.5, text: 中上}
+    - {min: 0.2, text: 中下}
+    - {max: 0.2, text: 弱势股（后 20%）}
+  caveat: 只对个股计算，ETF 没有此值。
+sector_rs_pct:
+  zh: 行业内相对强度分位
+  unit: score01
+  definition: 同一 GICS 行业内的相对强度百分位。
+  readings:
+    - {min: 0.85, text: 行业龙头（前 15%）}
+    - {min: 0.5, text: 行业中上}
+    - {max: 0.5, text: 行业中下}
+sector_rel_20:
+  zh: 所属行业 20 日相对 SPY
+  unit: pct
+  definition: 所属行业 ETF 20 日涨跌 − SPY 20 日涨跌。正值表示资金在流入该行业。
+  readings:
+    - {min: 0.03, text: 行业明显跑赢大盘}
+    - {min: 0.0, text: 行业略强于大盘}
+    - {min: -0.03, text: 行业略弱于大盘}
+    - {max: -0.03, text: 行业明显跑输大盘}
+
+beta_60:
+  zh: β（60 日）
+  unit: beta
+  definition: 近 60 日个股日收益对 SPY 日收益的回归斜率。β = 1.5 表示大盘涨跌 1% 时它平均涨跌 1.5%。
+  readings:
+    - {max: 0.0, text: 与大盘负相关（避险或独立行情）}
+    - {max: 0.8, text: 低弹性}
+    - {max: 1.3, text: 与大盘同步}
+    - {min: 1.3, text: 高弹性：大盘回撤时跌得更多}
+corr_60:
+  zh: 与 SPY 相关性
+  unit: corr
+  definition: 近 60 日个股与 SPY 日收益的相关系数（−1 到 1）。
+  readings:
+    - {max: 0.3, text: 走势基本独立于大盘}
+    - {max: 0.6, text: 与大盘中度相关}
+    - {min: 0.6, text: 高度跟随大盘}
+market_ret_1d:
+  zh: 今日大盘贡献
+  unit: pct
+  definition: 前一日的 β（60 日）× SPY 今日涨跌，即"如果它只跟着大盘走，今天应该涨跌多少"。
+market_ret_20d:
+  zh: 20 日大盘贡献
+  unit: pct
+  definition: 近 20 日每日"大盘贡献"（β × SPY 涨跌）的累计；与"20 日个股自身"相加约等于这 20 日的涨跌（按日累加口径）。
+idio_ret_1d:
+  zh: 今日个股自身
+  unit: pct
+  definition: 今日涨跌 − 今日大盘贡献，扣掉大盘之后个股自己的走势。
+  readings:
+    - {max: -0.03, text: 个股自身明显走弱（−3% 以上）}
+    - {max: 0.03, text: 个股自身变化不大}
+    - {min: 0.03, text: 个股自身明显走强（+3% 以上）}
+idio_ret_5d:
+  zh: 5 日个股自身
+  unit: pct
+  definition: 近 5 日每日"个股自身"部分的累计。
+idio_ret_20d:
+  zh: 20 日个股自身
+  unit: pct
+  definition: 近 20 日每日"个股自身"部分的累计，衡量这一个月里有多少涨跌来自公司本身而不是大盘。
+  readings:
+    - {max: -0.10, text: 一个月内个股自身大幅跑输（−10% 以上）}
+    - {max: 0.10, text: 一个月内大致跟随大盘}
+    - {min: 0.10, text: 一个月内个股自身大幅跑赢（+10% 以上）}
+
+zscore_20:
+  zh: z 分数（20 日）
+  unit: sigma
+  definition: （收盘 − 20 日均线）/ 20 日收盘标准差，偏离均值多少个标准差。
+  readings:
+    - {max: -2.0, text: 低于均值 2σ 以上，短期超跌}
+    - {max: -1.0, text: 偏低}
+    - {max: 1.0, text: 围绕均值}
+    - {max: 2.0, text: 偏高}
+    - {min: 2.0, text: 高于均值 2σ 以上，短期过热}
+bb_pct:
+  zh: 布林带位置 %B
+  unit: score01
+  definition: 收盘价在布林带（20 日均线 ± 2σ）中的位置。0 = 下轨，0.5 = 中轨，1 = 上轨；可以超出 0–1。
+  readings:
+    - {max: 0.0, text: 跌破布林下轨}
+    - {max: 0.2, text: 贴近下轨}
+    - {max: 0.8, text: 带内中部}
+    - {max: 1.0, text: 贴近上轨}
+    - {min: 1.0, text: 突破布林上轨}
+vol_20:
+  zh: 年化波动（20 日）
+  unit: pct_mag
+  definition: 近 20 日日收益标准差 × √252。
+  readings:
+    - {max: 0.20, text: 低波动（年化 ≤ 20%）}
+    - {max: 0.40, text: 中等波动}
+    - {max: 0.60, text: 高波动}
+    - {min: 0.60, text: 极高波动（年化 ≥ 60%）}
+max_dd_60:
+  zh: 60 日最大回撤
+  unit: pct
+  definition: 近 60 日内从阶段高点到低点的最大跌幅，恒 ≤ 0。
+  readings:
+    - {min: -0.08, text: 回撤很小（8% 以内）}
+    - {min: -0.15, text: 正常回撤}
+    - {min: -0.25, text: 较大回撤}
+    - {max: -0.25, text: 深度回撤（> 25%）}
+
+# ── 价格结构（scout/structure.py，按单只股票的日线现算）──
+swing_trend:
+  zh: 波段结构
+  unit: label
+  definition: 用 5 日枢轴识别最近两个波段高点和低点。高点抬高且低点抬高 = 上升（道氏理论的趋势定义）；高点降低且低点降低 = 下降；其余 = 震荡或转换中。
+resistance:
+  zh: 最近阻力位
+  unit: price
+  definition: 收盘价上方最近的一个波段高点（近一年内）。
+dist_resistance:
+  zh: 距阻力位
+  unit: pct
+  definition: 最近阻力位 / 收盘价 − 1。
+  readings:
+    - {max: 0.02, text: 紧贴阻力位（2% 以内），突破或受阻都在近处}
+    - {max: 0.08, text: 距阻力位不远}
+    - {min: 0.08, text: 上方空间较大}
+support:
+  zh: 最近支撑位
+  unit: price
+  definition: 收盘价下方最近的一个波段低点（近一年内）。
+dist_support:
+  zh: 距支撑位
+  unit: pct
+  definition: 最近支撑位 / 收盘价 − 1（负数）。
+  readings:
+    - {min: -0.02, text: 紧贴支撑位（2% 以内）}
+    - {min: -0.08, text: 距支撑位不远}
+    - {max: -0.08, text: 下方支撑较远，回撤空间较大}
+updown_vol_20:
+  zh: 上涨日 / 下跌日成交量比（20 日）
+  unit: ratio
+  definition: 近 20 日上涨日成交量之和 / 下跌日成交量之和。
+  readings:
+    - {max: 0.8, text: 下跌日成交更活跃（派发迹象）}
+    - {max: 1.2, text: 涨跌日量能均衡}
+    - {min: 1.2, text: 上涨日成交更活跃（吸筹迹象）}
+  caveat: 对应《股市趋势技术分析》里"成交量跟随趋势"的原则。

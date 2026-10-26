@@ -15,7 +15,7 @@ SNAPSHOT_FEATURES = (
     "close", "ret_1d", "ret_5d", "ret_20d", "ret_63d", "ret_252d", "sma20", "sma50", "sma200",
     "atr14", "atr_pct", "vol_ratio", "dollar_vol20", "dist_52w_high", "rsi2", "rsi14",
     "gap_pct", "close_loc", "rs_pct", "sector_rs_pct", "sector_rel_20",
-    "beta_60", "corr_60", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d",
+    "beta_60", "corr_60", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d", "market_ret_20d",
     "zscore_20", "bb_pct", "vol_20", "max_dd_60",
 )
 
@@ -135,6 +135,7 @@ def build_panel(
     f["idio_ret_1d"] = r - f["market_ret_1d"]
     f["idio_ret_5d"] = f["idio_ret_1d"].rolling(5, min_periods=5).sum()
     f["idio_ret_20d"] = f["idio_ret_1d"].rolling(20, min_periods=20).sum()
+    f["market_ret_20d"] = f["market_ret_1d"].rolling(20, min_periods=20).sum()
     f["gap_pct"] = o / prev_c - 1
     rng = (h - l).replace(0, np.nan)
     f["close_loc"] = ((c - l) / rng).fillna(0.5)

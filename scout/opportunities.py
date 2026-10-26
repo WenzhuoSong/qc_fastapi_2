@@ -11,7 +11,7 @@ from datetime import date, timedelta
 
 import numpy as np
 
-from scout import base_rates, db
+from scout import base_rates, db, knowledge
 from scout.detectors import Detector, Levels, registry
 from scout.features import SNAPSHOT_FEATURES, FeaturePanel
 from scout.universe import BENCHMARK, SECTOR_ETFS
@@ -174,6 +174,7 @@ def evidence(c: Candidate, market: dict) -> dict:
             "beta_60", "corr_60", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d",
             "zscore_20", "bb_pct", "vol_20", "max_dd_60",
         ) if k in f},
+        "readings": {knowledge.zh(k): r for k in f if (r := knowledge.reading(k, f[k]))},
         "base_rate": c.base_rate,
         "market": market,
         **c.context,

@@ -15,6 +15,8 @@ class ScoutSettings(BaseSettings):
     openai_api_key: str = ""
     scout_llm_model: str = "gpt-4o-mini"
     scout_llm_timeout_s: float = 45.0
+    # The ticker "AI 解读" runs a few times a day: use a stronger model than the cards/Q&A.
+    scout_insight_model: str = "gpt-4o"
 
     # Optional enrichment. Empty key → skipped.
     finnhub_api_key: str = ""

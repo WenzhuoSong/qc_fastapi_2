@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
+from scout import knowledge
 from scout.telegram import market_split_text, pct
 
 
@@ -32,6 +33,26 @@ def trend_state(f: dict) -> tuple[str, str]:
     return "长期偏弱（在 200 日线下方）", "warn"
 
 
+DRIVER_STOCK, DRIVER_MARKET, DRIVER_MIXED = "个股自身", "大盘/板块", "混合"
+
+
+def attribution(f: dict) -> tuple[str, str] | None:
+    """Who drove the last 20 sessions: the stock itself, the market, or both."""
+    idio, mkt = f.get("idio_ret_20d"), f.get("market_ret_20d")
+    if idio is None:
+        return None
+    if mkt is None and f.get("ret_20d") is not None:
+        mkt = f["ret_20d"] - idio          # snapshots written before market_ret_20d existed
+    if mkt is None:
+        return None
+    text = f"20 日：个股自身 {knowledge.fmt('idio_ret_20d', idio)}，大盘贡献 {knowledge.fmt('market_ret_20d', mkt)}"
+    if abs(idio) >= 0.10 or (abs(idio) >= 0.03 and abs(idio) >= 2 * abs(mkt)):
+        return DRIVER_STOCK, text + " → 个股自身主导"
+    if abs(mkt) >= 0.03 and abs(mkt) >= 2 * abs(idio):
+        return DRIVER_MARKET, text + " → 主要跟随大盘"
+    return DRIVER_MIXED, text + " → 个股与大盘共同作用"
+
+
 def _rs_text(f: dict) -> Line | None:
     rs = f.get("rs_pct")
     if rs is None:
@@ -43,21 +64,34 @@ def _rs_text(f: dict) -> Line | None:
     return Line("相对强度", text, tone)
 
 
+def _read(key: str, f: dict) -> str | None:
+    """'名称 数值（读数）' straight from the feature dictionary."""
+    if f.get(key) is None:
+        return None
+    r = knowledge.reading(key, f[key])
+    return f"{knowledge.zh(key)} {knowledge.fmt(key, f[key])}" + (f"（{r}）" if r else "")
+
+
 def _position(f: dict) -> Line | None:
+    parts = [p for p in (_read("zscore_20", f), _read("dist_52w_high", f)) if p]
     z = f.get("zscore_20")
-    parts, tone = [], ""
-    if z is not None:
-        if z >= 2:
-            parts.append(f"高于 20 日均值 {z:.1f} 个标准差，短期过热")
-            tone = "warn"
-        elif z <= -2:
-            parts.append(f"低于 20 日均值 {abs(z):.1f} 个标准差，短期超跌")
-            tone = "warn"
-        else:
-            parts.append(f"距 20 日均值 {z:+.1f} 个标准差")
-    if f.get("dist_52w_high") is not None:
-        parts.append(f"距 52 周高点 {pct(f['dist_52w_high'], 1, True)}")
-    return Line("位置", "，".join(parts), tone) if parts else None
+    tone = "warn" if z is not None and abs(z) >= 2 else ""
+    return Line("位置", "；".join(parts), tone) if parts else None
+
+
+def _structure(s: dict) -> Line | None:
+    if not s or not s.get("swing_trend"):
+        return None
+    parts = [s["swing_trend"]]
+    if s.get("resistance"):
+        parts.append(f"阻力 {s['resistance']:.2f}（{knowledge.fmt('dist_resistance', s['dist_resistance'])}）")
+    if s.get("support"):
+        parts.append(f"支撑 {s['support']:.2f}（{knowledge.fmt('dist_support', s['dist_support'])}）")
+    if s.get("updown_vol_20") is not None:
+        parts.append(_read("updown_vol_20", s))
+    trend = s["swing_trend"]
+    tone = "down" if "转弱" in trend or trend.startswith("下降") else "up" if trend.startswith("上升") else ""
+    return Line("价格结构", "；".join(parts), tone)
 
 
 def _risk(f: dict) -> Line | None:
@@ -75,14 +109,10 @@ def _risk(f: dict) -> Line | None:
 
 
 def _volume(f: dict) -> Line | None:
-    vr = f.get("vol_ratio")
-    if vr is None:
+    text = _read("vol_ratio", f)
+    if text is None:
         return None
-    if vr >= 1.8:
-        return Line("量能", f"今日成交量是 50 日均量的 {vr:.1f} 倍，明显放量", "warn")
-    if vr <= 0.7:
-        return Line("量能", f"今日成交量只有 50 日均量的 {vr:.1f} 倍，缩量")
-    return Line("量能", f"成交量为 50 日均量的 {vr:.1f} 倍，正常")
+    return Line("量能", text, "warn" if f["vol_ratio"] >= 1.8 else "")
 
 
 def _near_rules(f: dict) -> list[str]:
@@ -102,6 +132,7 @@ def scout_view(
     *,
     is_stock: bool,
     next_earnings: date | None,
+    structure: dict | None = None,
     latest_opp: dict | None,
     today: date,
 ) -> tuple[str, list[Line]]:
@@ -116,6 +147,12 @@ def scout_view(
     split = market_split_text(f)
     if split:
         lines.insert(1, Line("大盘 vs 个股", split))
+    struct_line = _structure(structure or {})
+    if struct_line:
+        lines.insert(1, struct_line)
+    attr = attribution(f)
+    if attr:
+        lines.insert(1, Line("归因", attr[1]))
     if next_earnings:
         days = (next_earnings - today).days
         lines.append(Line("事件", f"下次财报 {next_earnings}（{days} 天后）", "warn" if 0 <= days <= 7 else ""))

@@ -33,6 +33,7 @@ SYSTEM_PROMPT = """你是一名美股交易机会分析师，为一位有经验�
 
 输入是 Python 已经计算好的 evidence（JSON）：规则触发、价格特征、入场/止损/目标、该规则的历史基准、
 市场背景、近期新闻和财报信息。入场区间、止损和目标已经确定，你不需要也不能修改。
+readings 是各项指标在 Scout 数据字典里的标准解读（例如 RSI(2) → 极度超卖），描述指标含义时以它为准。
 百分比已经格式化好（例如 "-2.7%"），倍数保留一位小数（例如 4.4），请原样引用。
 
 写作规则：
@@ -60,8 +61,11 @@ _PCT_KEYS = {
     "eps_surprise_pct", "revenue_surprise_pct",
 }
 _SECTOR_LIST_KEYS = {"sector_leaders_20d", "sector_laggards_20d"}
-# Conventional terms whose digits are names, not data ("52 周高点").
-_TERM_RE = re.compile(r"52\s*周")
+# Indicator names whose digits are not data: "52 周高点", "50 日线", "RSI(14)", "3 个月涨跌"...
+_TERM_RE = re.compile(
+    r"52\s*周|(?<![\d.])(?:2|5|10|14|20|50|60|63|150|200|252)\s*(?:日|天|个交易日)"
+    r"|(?<![\d.])(?:3|6|12)\s*个月|(?<![\d.])1\s*年|(?:RSI|ATR|SMA|MA)\s*[\(（]?\s*\d+\s*[\)）]?"
+)
 
 
 def _fmt_pct(x: float) -> str:

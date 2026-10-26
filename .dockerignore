@@ -49,8 +49,9 @@ tests/
 htmlcov/
 .tox/
 
-# Documentation
+# Documentation (the knowledge-base lenses are runtime content, keep them)
 *.md
+!scout/knowledge/lenses/*.md
 docs/
 
 # Research-only material is never shipped.

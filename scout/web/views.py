@@ -91,38 +91,73 @@ def opp_card(o: dict) -> str:
 </div>"""
 
 
-FEATURE_ZH = {
-    "close": "收盘价", "ret_1d": "1 日涨跌", "ret_5d": "5 日涨跌", "ret_20d": "20 日涨跌", "ret_63d": "3 个月涨跌",
-    "ret_252d": "1 年涨跌", "sma20": "20 日均线", "sma50": "50 日均线", "sma200": "200 日均线", "atr14": "ATR(14)",
-    "atr_pct": "日均振幅", "vol_ratio": "量比（/50 日均量）", "dollar_vol20": "20 日均成交额 ($)",
-    "dist_52w_high": "距 52 周高点", "rsi2": "RSI(2)", "rsi14": "RSI(14)", "gap_pct": "开盘跳空", "close_loc": "收盘位置（日内 0–1）",
-    "rs_pct": "全市场相对强度分位", "sector_rs_pct": "行业内相对强度分位", "sector_rel_20": "所属行业 20 日相对 SPY",
-    "beta_60": "β（60 日）", "corr_60": "与 SPY 相关性（60 日）", "market_ret_1d": "今日大盘贡献",
-    "idio_ret_1d": "今日个股自身", "idio_ret_5d": "5 日个股自身", "idio_ret_20d": "20 日个股自身",
-    "zscore_20": "z 分数（20 日）", "bb_pct": "布林带位置 %B", "vol_20": "年化波动（20 日）", "max_dd_60": "60 日最大回撤",
-}
-
-
 def tlink(ticker: str, label: str | None = None) -> str:
     return f'<a href="/ticker/{e(ticker)}">{e(label or ticker)}</a>'
 
 
 def scout_panel(ticker: str, headline: str, lines: list, ai: dict | None, ai_enabled: bool) -> str:
-    """'Scout 分析' card: deterministic reading + optional cached AI interpretation."""
+    """'Scout 分析' card: deterministic reading + entry point to the AI interpretation."""
     tone_cls = {"up": "up", "down": "down", "warn": "warn"}
     rows = "".join(
         f"<dt>{e(l.label)}</dt><dd class='{tone_cls.get(l.tone, '')}'>{e(l.text)}</dd>" for l in lines
     )
     if ai:
-        ai_html = (f"<pre>{e(ai['content'])}</pre><div class='small muted'>AI 解读 · 生成于 {e(str(ai['created_at'])[:16])} UTC</div>"
+        ai_html = (f"<a href='#insight'>查看多视角 AI 解读 ↓</a> <span class='small muted'>生成于 {e(str(ai['created_at'])[:16])} UTC</span>"
                    f"<form method='post' action='/ticker/{e(ticker)}/ai'><button style='margin-top:6px'>重新生成</button></form>")
     elif ai_enabled:
-        ai_html = ("<div class='small muted'>由问答 agent 读取这只股票的行情、特征、新闻和财报后撰写，约 10–20 秒。</div>"
+        ai_html = ("<div class='small muted'>按 6 个分析视角（道氏趋势、支撑阻力与形态、动量与相对强度、均值回归与波动、大盘与板块、催化与事件）"
+                   "对照知识库检查清单撰写，每条结论引用证据并经程序校验，约 10–20 秒。</div>"
                    f"<form method='post' action='/ticker/{e(ticker)}/ai'><button style='margin-top:6px'>生成 AI 解读</button></form>")
     else:
         ai_html = "<div class='small muted'>AI 解读需要配置 OPENAI_API_KEY。</div>"
     return (f"<div class='card analysis'><h3>Scout 分析</h3><div class='headline'>{e(headline)}</div>"
             f"<dl style='margin:0'>{rows}</dl><div class='ai'>{ai_html}</div></div>")
+
+
+VERDICT_CLS = {"偏多": "up", "偏空": "down", "中性": "", "不适用": "muted"}
+CONF_ZH = {"low": "低", "medium": "中", "high": "高"}
+
+
+def insight_card(rec: dict) -> str:
+    """Structured multi-lens AI interpretation with evidence chips and audit details."""
+    from scout.insight import LENS_TITLES
+
+    ins, pack = rec["insight"], rec["pack"]
+    ev_index = {i["字段"]: i for b in pack["lenses"] for i in b["evidence"]}
+
+    def chip(key: str) -> str:
+        item = ev_index.get(key)
+        tip = f"{item['名称']} {item['数值']}" + (f"｜{item['读数']}" if item.get("读数") else "") if item else key
+        return f"<span class='chip' title='{e(tip)}'>{e(item['名称'] if item else key)}</span>"
+
+    lens_html = "".join(
+        f"<div class='card' style='padding:10px'><b>{e(LENS_TITLES.get(lv['lens'], lv['lens']))}</b> "
+        f"<span class='{VERDICT_CLS.get(lv['verdict'], '')}'>· {e(lv['verdict'])}</span>"
+        f"<ul class='tight'>{''.join(f'<li>{e(p)}</li>' for p in lv['points'])}</ul>"
+        f"<div>{''.join(chip(k) for k in lv['evidence'])}</div></div>"
+        for lv in ins["lenses"]
+    )
+    val = rec.get("validation") or {}
+    hist = "；".join(f"第 {h['attempt']} 次：{'通过' if not h['issues'] else '，'.join(h['issues'])}" for h in val.get("history", []))
+    source = f"{rec.get('model')} · 校验通过" if rec.get("source") == "llm" else "未通过校验，显示规则读数"
+    evidence_rows = "".join(
+        f"<tr><td>{e(b['title'])}</td><td>{e(i['名称'])}</td><td>{e(i['数值'])}</td><td>{e(i.get('读数') or '')}</td></tr>"
+        for b in pack["lenses"] for i in b["evidence"]
+    )
+    import json as _json
+    return f"""<div class='card' id='insight' style='grid-column:1/-1'>
+<h3>AI 解读 · 多视角 <span class='small muted'>数据日期 {e(pack['data_date'])} · {e(source)}</span></h3>
+<div class='headline'>{e(ins['headline'])}</div>
+<p><span class='chip'>驱动力：{e(ins.get('driver', '—'))}</span> {e(ins['attribution'])}</p>
+<div class='grid'>{lens_html}</div>
+<p><b>关注条件</b>：{e('；'.join(ins['watch']))}<br><b>失效条件</b>：{e('；'.join(ins['invalidation']))}<br>
+<b>主要风险</b>：{e(ins['key_risk'])}<br><b>置信度</b>：{e(CONF_ZH.get(ins['confidence'], ins['confidence']))} — {e(ins['confidence_reason'])}</p>
+<details><summary class='small'>查看依据的数据与校验记录</summary>
+<p class='small muted'>校验：{e(hist or '—')}</p>
+<div class='scroll'><table><thead><tr><th>视角</th><th>指标</th><th>数值</th><th>读数</th></tr></thead><tbody>{evidence_rows}</tbody></table></div>
+<pre class='small'>{e(_json.dumps(pack['context'], ensure_ascii=False, indent=1, default=str))}</pre>
+</details>
+<p class='small muted'>由 LLM 依据上述证据与知识库检查清单撰写，数字与引用经程序核对；非投资建议。</p></div>"""
 
 
 def sector_rows(rows: list[dict], label_of: dict[str, str]) -> str:
