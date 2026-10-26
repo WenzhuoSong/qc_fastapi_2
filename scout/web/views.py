@@ -5,10 +5,10 @@ import json
 from html import escape
 from typing import Any, Iterable
 
-from scout import knowledge
+from scout import knowledge, portfolio
 from scout.premarket import overnight_line
 from scout.sectors import QUADRANTS, rotation_read, rotation_reads
-from scout.telegram import (CONFIDENCE_LABELS, STATUS_LABELS, base_rate_text, market_split_text, pct,
+from scout.telegram import (CONFIDENCE_LABELS, STATUS_LABELS, base_rate_text, market_split_text, outcome_text, pct,
                             position_text, sector_text)
 
 CSS = """
@@ -57,7 +57,7 @@ ul.rrgread{list-style:none;padding:0;margin:6px 0}ul.rrgread li{padding:2px 0}
 
 def layout(title: str, active: str, body: str, head: str = "") -> str:
     nav = [("/", "today", "今日"), ("/market", "market", "市场全景"), ("/ideas", "ideas", "机会看板"), ("/screens", "screens", "策略筛选"), ("/scoreboard", "scoreboard", "记分板"),
-           ("/watchlist", "watchlist", "Watchlist"), ("/chat", "chat", "问答")]
+           ("/watchlist", "watchlist", "Watchlist"), ("/trades", "trades", "我的交易"), ("/chat", "chat", "问答")]
     links = "".join(f'<a href="{h}" class="{"on" if k == active else ""}">{t}</a>' for h, k, t in nav)
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title)} · Scout</title>
@@ -114,7 +114,15 @@ def is_live(detector: str) -> bool:
     return any(d.name == detector and d.live for d in registry(include_candidates=True))
 
 
-def opp_card(o: dict) -> str:
+def event_html(ev: dict) -> str:
+    flags = ev.get("event_flags") or []
+    if not flags:
+        return ""
+    return ("<div class='small warn'>⚡ 事件驱动：" + "；".join(f"{escape(f['type'])}（{escape(f['headline'])}）" for f in flags)
+            + "。技术规则的历史统计对这类走势参考价值有限。</div>")
+
+
+def opp_card(o: dict, settings: dict | None = None) -> str:
     ev, th, br = o.get("evidence") or {}, knowledge.humanize_obj(o.get("thesis") or {}), o.get("base_rate") or {}
     label = (ev.get("setup") or {}).get("label", o["primary_detector"])
     chips = "".join(f'<span class="chip">{e(d)}</span>' for d in o.get("detectors") or [])
@@ -129,6 +137,13 @@ def opp_card(o: dict) -> str:
         e(base_rate_text(br))
         if br.get("n") else "暂无历史基准"
     )
+    outcome = outcome_text(br)
+    if outcome:
+        base += f"<br>{e(outcome)}"
+    sizing = ""
+    if settings is not None and o.get("status") in ("new", "triggered"):
+        sz = portfolio.size_text(portfolio.size((o["entry_lo"] + o["entry_hi"]) / 2, o.get("current_stop") or o["stop"], settings))
+        sizing = (f"<div class='small'>📐 {e(sz)} · <a href='/trades?opp={e(o['id'])}'>记录入场</a></div>" if sz else "")
     return f"""<div class="card">
 <h3><a href="/ticker/{e(o['ticker'])}">{e(o['ticker'])}</a> · {e(label)} <span class="muted small">评分 {o['score']:.2f}</span></h3>
 <div class="small muted">{e(o['asof'])} · {e(STATUS_LABELS.get(o['status'], o['status']))} · {o['horizon_days']} 日 · R:R {(o.get('risk_reward') or 0):.1f}</div>
@@ -136,6 +151,7 @@ def opp_card(o: dict) -> str:
 <p><b>{e(th.get('headline'))}</b><br>{e(th.get('thesis'))}</p>
 <div class="levels"><div><span>入场</span>{o['entry_lo']:.2f}–{o['entry_hi']:.2f}</div><div><span>止损</span>{o['stop']:.2f}</div>
 <div><span>目标 1</span>{o['target1']:.2f}</div><div><span>目标 2</span>{f"{o['target2']:.2f}" if (o.get('target2') or 0) > o['target1'] else "—"}</div></div>
+{sizing}{event_html(ev)}
 <div class="small">{e(market_split_text(ev.get("price") or {}) or "")}</div>
 <div class="small">{e(sector_text(ev.get("sector_context")) or "")}</div>
 {why_html(ev.get("why") or {})}
@@ -320,7 +336,7 @@ def _ladder_svg(rows: list[tuple[str, float, str]], close: float, entry_lo: floa
     return f"<svg viewBox='0 0 230 {H + 2 * top}' width='100%' style='max-height:330px'>{''.join(parts)}</svg>"
 
 
-def trade_plan(o: dict, close: float | None) -> str:
+def trade_plan(o: dict, close: float | None, settings: dict | None = None) -> str:
     """Order-ticket style panel next to the chart for the active (or latest) plan."""
     ev = o.get("evidence") or {}
     ex = ev.get("exit") or {}
@@ -344,11 +360,21 @@ def trade_plan(o: dict, close: float | None) -> str:
     status = STATUS_LABELS.get(o.get("status"), o.get("status"))
     label = (ev.get("setup") or {}).get("label", o["primary_detector"])
     exit_rule = ex.get("rule") or f"固定：到目标 1 止盈，{o['horizon_days']} 个交易日到期"
+    extra = ""
+    outcome = outcome_text(o.get("base_rate") or {})
+    if outcome:
+        extra += f"<p class='small'><b>历史上</b>：{escape(outcome.removeprefix('历史结局：'))}。目标是最好情况，不是预期结果。</p>"
+    if settings is not None and o.get("status") in ("new", "triggered"):
+        sz = portfolio.size_text(portfolio.size(mid, o.get("current_stop") or o["stop"], settings))
+        if sz:
+            extra += f"<p class='small'><b>仓位</b>：{escape(sz)} · <a href='/trades?opp={escape(o['id'])}'>记录入场</a></p>"
+    extra += event_html(o.get("evidence") or {})
     return f"""<div class="card plan"><h3>交易计划 <span class="chip">{escape(label)}</span> <span class="chip">{escape(str(status))}</span></h3>
 <div class="small muted">信号 {escape(str(o['asof']))}{' · 入场 ' + escape(str(o['triggered_on'])) if o.get('triggered_on') else ''} · 1R = {risk:.2f}（{risk / mid * 100:.1f}%）· R:R {(o.get('risk_reward') or 0):.1f}</div>
 {_ladder_svg([(r[0], r[1], r[2]) for r in rows], close, o['entry_lo'], o['entry_hi'], o['stop'], max(o.get('target2') or 0, o['target1']))}
 <table><thead><tr><th></th><th>价格</th><th>距现价</th><th>R</th></tr></thead><tbody>{table_rows}</tbody></table>
 <p class="small"><b>出场规则</b>：{escape(exit_rule)}</p>
+{extra}
 <p class="small muted">入场区间由信号日 ATR 决定，3 个交易日内（突破回踩类 10 日）进入区间才算成交；保护性止损放在结构位下方且至少距入场中点 1 个 ATR。</p></div>"""
 
 
@@ -509,6 +535,7 @@ def premarket_card(rec: dict | None, current: bool) -> str:
         lines.append("<b>今日待公布</b>：" + "、".join(f"{tl(e['代码'])}（{escape(e['时间'])}）" for e in p["earnings_today"]))
     if p["earnings_week"]:
         lines.append("<b>本周后续</b>：" + "、".join(f"{tl(e['代码'])} {escape(e['时间'])}" for e in p["earnings_week"]))
+    held = "".join(f"<li>{tl(o['代码'])} {escape(o.get('盘前价', ''))} {escape(o['位置判断'])}</li>" for o in p.get("positions", []))
     opps = "".join(f"<li>{tl(o['代码'])}（{escape(o['状态'])}）{escape(o.get('盘前价', ''))} {escape(o['位置判断'])}</li>"
                    for o in p["opportunities"])
     notes = "".join(f"<li>{tl(n['ticker'])}：{escape(n['note'])}</li>" for n in b["tickers"])
@@ -516,6 +543,7 @@ def premarket_card(rec: dict | None, current: bool) -> str:
     inner = (f"<div class='headline'>{escape(b['headline'])}</div>"
              f"<p class='small'><b>隔夜</b>：{escape(overnight_line(p))}<br>{escape(b['overnight'])}</p><ol>{points}</ol>{econ_html}"
              + (f"<p class='small'>{'<br>'.join(lines)}</p>" if lines else "")
+             + (f"<div class='small'><b>你的持仓</b><ul class='tight'>{held}</ul></div>" if held else "")
              + (f"<div class='small'><b>活跃机会盘前位置</b><ul class='tight'>{opps}</ul></div>" if opps else "")
              + (f"<p class='small'><b>自选股盘前异动</b>：{moves}</p>" if moves else "")
              + (f"<div class='small'><b>个股关注</b><ul class='tight'>{notes}</ul></div>" if notes else "")
@@ -524,3 +552,38 @@ def premarket_card(rec: dict | None, current: bool) -> str:
     if current:
         return f"<div class='card analysis' style='margin-bottom:12px'><h3>{title}</h3>{inner}</div>"
     return f"<details class='card analysis' style='margin-bottom:12px'><summary>{title}（上一份）</summary>{inner}</details>"
+
+
+def trades_table(rows: list[dict], closable: bool = True) -> str:
+    """Open or closed trades with P&L at the last close (open) or the exit (closed)."""
+    if not rows:
+        return "<p class='muted small'>没有记录。</p>"
+    head = ["代码", "开仓", "股数", "入场", "现价" if not rows[0].get("closed_on") else "出场", "盈亏", "R", "止损", "距止损", "备注"]
+    body = []
+    for t in rows:
+        m = portfolio.metrics(t)
+        pnl = (f"<span class='{'up' if m['pnl'] >= 0 else 'down'}'>{m['pnl']:+,.0f}（{signed(m['pnl_pct'])}）</span>"
+               if "pnl" in m else "<span class='muted'>无行情</span>")
+        price = f"{m['price']:.2f}" if m.get("price") is not None else "—"
+        if t.get("closed_on"):
+            price += f"<div class='small muted'>{escape(str(t['closed_on']))}</div>"
+        elif t.get("last_date"):
+            price += f"<div class='small muted'>收盘 {escape(str(t['last_date']))}</div>"
+        cells = [f"<a href='/ticker/{escape(t['ticker'])}'>{escape(t['ticker'])}</a>", escape(str(t["opened_on"])),
+                 f"{t['shares']:g}", f"{t['entry_price']:.2f}", price, pnl,
+                 f"{m['r']:+.1f}R" if "r" in m else "—", f"{t['stop']:.2f}" if t.get("stop") else "—",
+                 signed(m["to_stop"]) if "to_stop" in m and not t.get("closed_on") else "—", escape(t.get("note") or "")]
+        if closable and not t.get("closed_on"):
+            cells.append(
+                f"<form method='post' action='/trades/{t['id']}/close' style='display:flex;gap:4px'>"
+                f"<input name='exit_price' placeholder='出场价' size='7' required><input name='closed_on' type='date' required>"
+                f"<button>平仓</button></form>"
+                f"<form method='post' action='/trades/{t['id']}/stop' style='display:flex;gap:4px;margin-top:4px'>"
+                f"<input name='stop' placeholder='新止损' size='7' required><button>改止损</button></form>")
+        elif closable:
+            cells.append(f"<form method='post' action='/trades/{t['id']}/delete' onsubmit=\"return confirm('删除这条记录？')\">"
+                         f"<button style='background:var(--muted)'>删除</button></form>")
+        body.append(cells)
+    if closable:
+        head = head + ["操作"]
+    return table(head, body)

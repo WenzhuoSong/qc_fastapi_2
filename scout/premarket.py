@@ -62,6 +62,17 @@ def position_label(price: float, o: dict) -> str:
     return f"距止损 {(price / stop - 1) * 100:.1f}%，距目标 1 {(t1 / price - 1) * 100:.1f}%"
 
 
+def holding_label(price: float, t: dict) -> str:
+    """Where a pre-market price sits against the user's own trade."""
+    pnl = price / t["entry_price"] - 1
+    text = f"较你的成本 {pnl * 100:+.1f}%"
+    if t.get("stop"):
+        text += f"，盘前已跌破止损（你的止损 {t['stop']:.2f}）" if price <= t["stop"] else f"，距你的止损 {(price / t['stop'] - 1) * 100:.1f}%"
+    if t.get("target") and price >= t["target"]:
+        text += f"，已到目标 1 附近（你的目标 {t['target']:.2f}）"
+    return text
+
+
 def _pct(x: float | None, digits: int = 1) -> str:
     return "—" if x is None else f"{x * 100:+.{digits}f}%"
 
@@ -148,7 +159,8 @@ async def build_pack(session: date) -> dict:
         "SELECT ticker, event_date, payload FROM scout.market_events WHERE event_type = 'earnings' "
         "AND event_date BETWEEN :a AND :b", {"a": prev, "b": session + timedelta(days=6)},
     )
-    focus = set(watch) | {o["ticker"] for o in opps}
+    held = await db.fetch_all("SELECT ticker, entry_price, shares, stop, target, opened_on FROM scout.trades WHERE closed_on IS NULL")
+    focus = set(watch) | {o["ticker"] for o in opps} | {t["ticker"] for t in held}
 
     def relevant(t: str) -> bool:
         return t in focus or t in major
@@ -179,7 +191,8 @@ async def build_pack(session: date) -> dict:
         "SELECT ticker, name FROM scout.instruments WHERE ticker = ANY(:t)", {"t": sorted(shown | {e['ticker'] for e in week})})}
 
     def ident(t: str) -> str:
-        tags = [lbl for cond, lbl in ((t in {o["ticker"] for o in opps}, "活跃机会"), (t in watch, "自选")) if cond]
+        tags = [lbl for cond, lbl in ((t in {h["ticker"] for h in held}, "持仓"), (t in {o["ticker"] for o in opps}, "活跃机会"),
+                                      (t in watch, "自选")) if cond]
         return "、".join(tags) or "大市值"
 
     def pm(t: str) -> dict:
@@ -213,6 +226,16 @@ async def build_pack(session: date) -> dict:
             row["位置判断"] = "盘前暂无成交"
         opp_rows.append(row)
 
+    holdings = []
+    for t in held:
+        q = quotes.get(t["ticker"])
+        row = {"key": f"pos.{t['ticker']}", "代码": t["ticker"], "成本": f"{t['entry_price']:.2f}", "股数": f"{t['shares']:g}",
+               **({"止损": f"{t['stop']:.2f}"} if t.get("stop") else {})}
+        if q and not q["stale"]:
+            row.update({"盘前价": f"{q['last']:.2f}", "盘前较前收": _pct(q["change"]), "位置判断": holding_label(q["last"], t)})
+        else:
+            row["位置判断"] = "盘前暂无成交"
+        holdings.append(row)
     moves = sorted(((t, quotes[t]) for t in watch if t in quotes and not quotes[t]["stale"]
                     and abs(quotes[t]["change"] or 0) >= MOVE_THRESHOLD), key=lambda x: -abs(x[1]["change"]))
     econ = await context.economic_calendar()
@@ -231,6 +254,7 @@ async def build_pack(session: date) -> dict:
     return {
         "session": session.isoformat(), "weekday": f"周{WEEKDAYS[session.weekday()]}", "prev_session": prev.isoformat(),
         "overnight": [quote_row(s, n, quotes.get(s)) for s, n in OVERNIGHT],
+        "positions": holdings,
         "opportunities": opp_rows,
         "watchlist_moves": [{"key": f"pm.{t}", "代码": t, "名称": names.get(t), "主题": watch.get(t),
                              "盘前价": f"{q['last']:.2f}", "盘前较前收": _pct(q["change"])} for t, q in moves],
@@ -252,15 +276,15 @@ async def build_pack(session: date) -> dict:
 
 def evidence_keys(pack: dict) -> set[str]:
     keys = {"focus"} if pack.get("last_focus") else set()
-    for part in ("overnight", "opportunities", "watchlist_moves", "earnings_reported", "earnings_today", "earnings_week",
+    for part in ("overnight", "positions", "opportunities", "watchlist_moves", "earnings_reported", "earnings_today", "earnings_week",
                  "economic_today", "economic_week", "news", "macro_news"):
-        keys |= {row["key"] for row in pack[part]}
+        keys |= {row["key"] for row in pack.get(part, [])}
     return keys
 
 
 def pack_tickers(pack: dict) -> set[str]:
-    return {row["代码"] for part in ("opportunities", "watchlist_moves", "earnings_reported", "earnings_today", "earnings_week")
-            for row in pack[part]} | {t for n in pack["news"] for t in n["相关股票"]}
+    return {row["代码"] for part in ("positions", "opportunities", "watchlist_moves", "earnings_reported", "earnings_today", "earnings_week")
+            for row in pack.get(part, [])} | {t for n in pack["news"] for t in n["相关股票"]}
 
 
 # ── LLM brief ──
@@ -288,6 +312,7 @@ SYSTEM_PROMPT = """你是一名美股交易日开盘前的策略助理，基于 
 
 证据包：
 - overnight：股指期货、VIX、10 年美债收益率、美元、原油、黄金、比特币相对上一交易日收盘的变化（"说明"表示今天尚未交易）。
+- positions：用户自己记录的持仓（成本、止损、盘前价和"位置判断"），最重要，跌破止损的必须提到。
 - opportunities：Scout 正在跟踪的机会，含入场区间、止损、目标和"位置判断"（Python 根据盘前价计算）。
 - watchlist_moves：自选股中盘前涨跌幅较大的。
 - earnings_reported / earnings_today / earnings_week：昨日盘后与今日盘前已公布、今日待公布、本周后续的重要财报。
@@ -325,7 +350,7 @@ def validate(b: PremarketBrief, pack: dict) -> list[str]:
     stray = sorted({n.ticker for n in b.tickers} - pack_tickers(pack))
     if stray:
         issues.append(f"个股关注只能来自证据包里的股票：{', '.join(stray)} 不在其中")
-    labels = {o["代码"]: o["位置判断"] for o in pack["opportunities"]}
+    labels = {o["代码"]: o["位置判断"] for o in pack["opportunities"] + pack.get("positions", [])}
     for n in b.tickers:
         if n.ticker in labels:
             wrong = [c for c in _POSITION_CLAIMS if c in n.note and c not in labels[n.ticker]]
@@ -425,6 +450,9 @@ def render_text(b: PremarketBrief, pack: dict) -> str:
         lines.append("今日待公布：" + "、".join(f"{e['代码']}（{e['时间']}）" for e in pack["earnings_today"]))
     if pack["earnings_week"]:
         lines.append("本周后续财报：" + "、".join(f"{e['代码']} {e['时间']}" for e in pack["earnings_week"]))
+    if pack.get("positions"):
+        lines += ["", "你的持仓："]
+        lines += [f"· {o['代码']} {o.get('盘前价', '')} {o['位置判断']}".replace("  ", " ") for o in pack["positions"]]
     if pack["opportunities"]:
         lines += ["", "活跃机会盘前位置："]
         lines += [f"· {o['代码']}（{o['状态']}）{o.get('盘前价', '')} {o['位置判断']}".replace("  ", " ") for o in pack["opportunities"]]

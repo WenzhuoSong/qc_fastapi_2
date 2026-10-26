@@ -248,3 +248,29 @@ def parse_economic_calendar(items: list[dict], country: str = "USD") -> list[dic
             "forecast": it.get("forecast") or None, "previous": it.get("previous") or None,
         })
     return sorted(out, key=lambda e: (e["date"], e["time_et"]))
+
+
+# ── Event-driven moves ──
+# A technical rule's replay says nothing about a stock that moves on a deal,
+# a drug decision or a share sale; flag them from the headlines.
+EVENT_PATTERNS: dict[str, tuple[str, ...]] = {
+    "并购/出售": ("acquire", "acquisition", "merger", "buyout", "takeover", "to be bought", "selling itself",
+                "explore a sale", "exploring a sale", "explores sale", "strategic alternatives", "deal to buy",
+                "agreed to buy", "go-private", "take-private", "tender offer", "收购", "并购"),
+    "药监/临床": ("fda approv", "fda decision", "pdufa", "complete response letter", "phase 3 data", "fda panel"),
+    "增发/融资": ("public offering", "secondary offering", "share offering", "stock offering", "convertible notes",
+                "at-the-market offering", "增发"),
+    "监管/诉讼": ("sec investigation", "doj ", "antitrust", "subpoena", "class action", "indicted", "probe into"),
+}
+
+
+def event_flags(news: list[dict]) -> list[dict]:
+    """One flag per event type, with the headline that triggered it."""
+    out = []
+    for kind, words in EVENT_PATTERNS.items():
+        for n in news:
+            text = f"{n.get('headline') or ''} {n.get('summary') or ''}".lower()
+            if any(w in text for w in words):
+                out.append({"type": kind, "headline": (n.get("headline") or "")[:160], "published": n.get("published")})
+                break
+    return out

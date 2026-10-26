@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, stat
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from scout import db, opportunities, premarket, telegram, universe
+from scout import db, opportunities, portfolio, premarket, telegram, universe
 from scout.config import get_scout_settings
 from scout.features import SNAPSHOT_FEATURES
 from scout.market_calendar import us_equity_market_status
@@ -78,7 +78,8 @@ async def telegram_webhook(
 async def today(_: str = Depends(require_auth)) -> str:
     brief = await db.fetch_one("SELECT asof, content, payload FROM scout.briefs WHERE kind = 'eod' ORDER BY asof DESC, id DESC LIMIT 1")
     active = await db.fetch_all(
-        "SELECT * FROM scout.opportunities WHERE status IN ('new', 'triggered') ORDER BY asof DESC, score DESC LIMIT 24"
+        "SELECT o.*, i.sector, i.industry FROM scout.opportunities o LEFT JOIN scout.instruments i USING (ticker) "
+        "WHERE o.status IN ('new', 'triggered') ORDER BY o.asof DESC, o.score DESC LIMIT 24"
     )
     events = await db.fetch_all(
         "SELECT ev.event_type, ev.event_date, ev.price, o.ticker, o.primary_detector FROM scout.opportunity_events ev "
@@ -102,8 +103,25 @@ async def today(_: str = Depends(require_auth)) -> str:
                for x in events]
     pre = await premarket.latest()
     current = bool(pre) and pre["asof"] == date.fromisoformat(us_equity_market_status().market_date)
-    body = views.premarket_card(pre, current) + head + "<h2>活跃机会</h2>"
-    body += f'<div class="grid">{"".join(opp_card(o) for o in active)}</div>' if active else "<p class='muted'>暂无活跃机会。</p>"
+    settings = await portfolio.get_settings()
+    live = [o for o in active if views.is_live(o["primary_detector"])]
+    demoted = [o for o in active if not views.is_live(o["primary_detector"])]
+    held = await portfolio.trades(open_only=True)
+    body = views.premarket_card(pre, current) + head
+    if held:
+        body += "<h2>我的持仓</h2>" + views.trades_table(held, closable=False)
+    warn = portfolio.concentration(
+        [{"ticker": o["ticker"], "sector": universe.SECTOR_ZH.get(o.get("sector"), o.get("sector")), "industry": o.get("industry")}
+         for o in live + held])
+    if warn:
+        body += "<div class='card small warn' style='margin:12px 0'>⚠️ 集中度：" + "<br>".join(e(w) for w in warn) + "</div>"
+    body += "<h2>活跃机会</h2>"
+    body += (f'<div class="grid">{"".join(opp_card(o, settings) for o in live)}</div>' if live
+             else "<p class='muted'>暂无活跃机会。</p>")
+    if demoted:
+        body += (f"<details style='margin-top:12px'><summary class='muted'>降为候选的规则仍在跟踪的机会（{len(demoted)}）"
+                 f"——只为积累实盘记录，不建议据此开仓</summary><div class='grid' style='margin-top:8px'>"
+                 f"{''.join(opp_card(o) for o in demoted)}</div></details>")
     if ev_rows:
         body += "<h2>最近状态变化</h2>" + table(["日期", "代码", "规则", "事件", "价格"], ev_rows)
     return layout("今日", "today", body)
@@ -273,7 +291,7 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
     name = " · ".join(x for x in ((inst or {}).get("name"), (inst or {}).get("sector")) if x)
     body = f"<h2>{e(t)} <span class='muted small'>{e(name)}</span></h2>"
     struct = price_structure.compute(bars)
-    side = views.trade_plan(plan_opp, payload.get("close")) if plan_opp else views.key_levels(payload, struct)
+    side = views.trade_plan(plan_opp, payload.get("close"), await portfolio.get_settings()) if plan_opp else views.key_levels(payload, struct)
     body += f"<div class='chartrow'>{views.chart_script(bars, plan, struct)}{side}</div>"
     from scout import sectors as sector_mod
 
@@ -597,3 +615,110 @@ async def chat_ask(q: str = Form(...), _: str = Depends(require_auth)):
 
     await answer(q, channel="dashboard")
     return RedirectResponse("/chat", status_code=303)
+
+
+# ── My trades ──
+
+def _num(x: str | None) -> float | None:
+    try:
+        return float(str(x).replace(",", "").replace("$", "").strip()) if x not in (None, "") else None
+    except ValueError:
+        return None
+
+
+@app.get("/trades", response_class=HTMLResponse)
+async def trades_page(opp: str | None = None, _: str = Depends(require_auth)) -> str:
+    settings = await portfolio.get_settings()
+    open_rows, closed_rows = await portfolio.trades(open_only=True), await portfolio.trades(open_only=False)
+    pre = {}
+    if opp:
+        o = await db.fetch_one("SELECT * FROM scout.opportunities WHERE id = :id", {"id": opp})
+        if o:
+            stop = o.get("current_stop") or o["stop"]
+            mid = (o["entry_lo"] + o["entry_hi"]) / 2
+            sz = portfolio.size(mid, stop, settings) or {}
+            pre = {"ticker": o["ticker"], "opp": o["id"], "entry": f"{mid:.2f}", "stop": f"{stop:.2f}",
+                   "target": f"{o['target1']:.2f}", "shares": str(sz.get("shares") or "")}
+    acct = settings.get("account_size")
+    settings_html = f"""<details class="card" {'' if acct else 'open'}><summary>账户与风险设置
+<span class="small muted">{'账户 $' + format(acct, ',.0f') + f" · 单笔风险 {settings['risk_pct'] * 100:.1f}% · 单只上限 {settings['max_position_pct'] * 100:.0f}%" if acct else '未设置：卡片只显示每 $1,000 风险对应的股数'}</span></summary>
+<form method="post" action="/trades/settings" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:end">
+<label class="small">账户规模（美元）<br><input name="account_size" value="{e(acct or '')}" placeholder="如 100000" size="12"></label>
+<label class="small">单笔风险 %<br><input name="risk_pct" value="{settings['risk_pct'] * 100:g}" size="5"></label>
+<label class="small">单只仓位上限 %<br><input name="max_position_pct" value="{settings['max_position_pct'] * 100:g}" size="5"></label>
+<button>保存</button></form>
+<p class="small muted">仓位 = 账户 × 单笔风险 ÷（入场 − 止损），再按单只仓位上限截断。只用于计算，Scout 不会下单。</p></details>"""
+    add_html = f"""<div class="card" style="margin-top:12px"><h3>记录一笔入场</h3>
+<form method="post" action="/trades/add" style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
+<input type="hidden" name="opportunity_id" value="{e(pre.get('opp', ''))}">
+<label class="small">代码<br><input name="ticker" value="{e(pre.get('ticker', ''))}" size="7" required></label>
+<label class="small">日期<br><input name="opened_on" type="date" value="{date.today()}" required></label>
+<label class="small">成交价<br><input name="entry_price" value="{e(pre.get('entry', ''))}" size="8" required></label>
+<label class="small">股数<br><input name="shares" value="{e(pre.get('shares', ''))}" size="6" required></label>
+<label class="small">止损<br><input name="stop" value="{e(pre.get('stop', ''))}" size="8"></label>
+<label class="small">目标<br><input name="target" value="{e(pre.get('target', ''))}" size="8"></label>
+<label class="small">备注<br><input name="note" size="20"></label><button>记录</button></form>
+{'<p class="small muted">已按机会卡预填入场中点、止损和建议股数，请改成你的实际成交。</p>' if pre else ''}</div>"""
+    risk = sum(portfolio.metrics(t).get("open_risk") or 0 for t in open_rows)
+    risk_line = (f"<p class='small'>持仓 {len(open_rows)} 笔 · 全部触发止损的潜在亏损约 ${risk:,.0f}"
+                 + (f"（账户的 {risk / acct * 100:.1f}%）" if acct else "") + "</p>") if open_rows else ""
+    warn = portfolio.concentration([{"ticker": t["ticker"], "sector": universe.SECTOR_ZH.get(t.get("sector"), t.get("sector")),
+                                     "industry": t.get("industry")} for t in open_rows])
+    warn_html = ("<p class='small warn'>⚠️ " + "<br>".join(e(w) for w in warn) + "</p>") if warn else ""
+    summ = portfolio.journal_summary(closed_rows)
+    summ_html = (f"<p class='small'>已平仓 {summ['n']} 笔 · 胜率 {summ['win_rate'] * 100:.0f}% · 累计盈亏 ${summ['total_pnl']:+,.0f}"
+                 + (f" · 平均 {summ['avg_r']:+.2f}R" if summ.get("avg_r") is not None else "") + "</p>") if summ["n"] else ""
+    body = (f"<h2>我的交易</h2>{settings_html}{add_html}<h2>持仓</h2>{risk_line}{warn_html}{views.trades_table(open_rows)}"
+            f"<h2>已平仓</h2>{summ_html}{views.trades_table(closed_rows)}"
+            "<p class='small muted'>现价为最近一次收盘价（Scout 标的池之外的代码没有行情）。这里记录的是你实际做了什么，"
+            "与规则记分板对照，可以看出执行是否偏离规则。</p>")
+    return layout("我的交易", "trades", body)
+
+
+@app.post("/trades/settings")
+async def trades_settings(account_size: str = Form(""), risk_pct: str = Form("1"), max_position_pct: str = Form("20"),
+                          _: str = Depends(require_auth)):
+    risk, cap = _num(risk_pct), _num(max_position_pct)
+    await portfolio.save_settings({
+        "account_size": _num(account_size),
+        "risk_pct": min(max((risk or 1) / 100, 0.001), 0.05),          # 0.1%–5% per trade
+        "max_position_pct": min(max((cap or 20) / 100, 0.01), 1.0),
+    })
+    return RedirectResponse("/trades", status_code=303)
+
+
+@app.post("/trades/add")
+async def trades_add(ticker: str = Form(...), opened_on: str = Form(...), entry_price: str = Form(...), shares: str = Form(...),
+                     stop: str = Form(""), target: str = Form(""), note: str = Form(""), opportunity_id: str = Form(""),
+                     _: str = Depends(require_auth)):
+    entry, qty = _num(entry_price), _num(shares)
+    if not entry or not qty or entry <= 0 or qty <= 0:
+        raise HTTPException(status_code=400, detail="成交价和股数必须是正数")
+    await portfolio.add_trade({"ticker": ticker, "opened_on": date.fromisoformat(opened_on), "entry_price": entry,
+                               "shares": qty, "stop": _num(stop), "target": _num(target), "note": note,
+                               "opportunity_id": opportunity_id or None})
+    return RedirectResponse("/trades", status_code=303)
+
+
+@app.post("/trades/{trade_id}/close")
+async def trades_close(trade_id: int, exit_price: str = Form(...), closed_on: str = Form(...), _: str = Depends(require_auth)):
+    price = _num(exit_price)
+    if not price or price <= 0:
+        raise HTTPException(status_code=400, detail="出场价必须是正数")
+    await portfolio.close_trade(trade_id, price, date.fromisoformat(closed_on))
+    return RedirectResponse("/trades", status_code=303)
+
+
+@app.post("/trades/{trade_id}/stop")
+async def trades_stop(trade_id: int, stop: str = Form(...), _: str = Depends(require_auth)):
+    value = _num(stop)
+    if not value or value <= 0:
+        raise HTTPException(status_code=400, detail="止损必须是正数")
+    await portfolio.update_stop(trade_id, value)
+    return RedirectResponse("/trades", status_code=303)
+
+
+@app.post("/trades/{trade_id}/delete")
+async def trades_delete(trade_id: int, _: str = Depends(require_auth)):
+    await portfolio.delete_trade(trade_id)
+    return RedirectResponse("/trades", status_code=303)

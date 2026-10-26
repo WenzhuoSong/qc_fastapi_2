@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from scout import db, knowledge, universe
+from scout import db, knowledge, portfolio, universe
 from scout.config import get_scout_settings
 
 logger = logging.getLogger("scout.telegram")
@@ -31,6 +31,7 @@ HELP_TEXT = (
     "/stats — 规则记分板\n"
     "/sectors — 板块热度、轮动与市场关注点\n"
     "/premarket — 今天的盘前简报\n"
+    "/trades — 我的持仓与盈亏（在 Dashboard「我的交易」记录）\n"
     "直接发文字即可提问（例如：今天最强的板块是什么？）"
 )
 
@@ -115,7 +116,25 @@ def base_rate_text(br: dict) -> str:
     )
 
 
-def render_card(o: dict) -> str:
+def outcome_text(br: dict) -> str | None:
+    """How replayed trades of this rule actually ended: the target is the best
+    case, not the expected one."""
+    if not br.get("n") or br.get("target_rate") is None:
+        return None
+    tgt, stop, trail = br["target_rate"], br.get("stop_rate") or 0, br.get("trail_rate") or 0
+    parts = [f"达标 {pct(tgt, 0)}", f"止损 {pct(stop, 0)}"]
+    if trail:
+        parts.append(f"跟踪止损离场 {pct(trail, 0)}")
+    parts.append(f"到期离场 {pct(max(0.0, 1 - tgt - stop - trail), 0)}")
+    text = "历史结局：" + " · ".join(parts)
+    if br.get("median_return") is not None:
+        text += f" · 扣费收益中位数 {pct(br['median_return'] - (br.get('cost_bps') or 0) / 1e4, 1, True)}"
+    if br.get("avg_days"):
+        text += f" · 平均持有 {br['avg_days']:.0f} 天"
+    return text
+
+
+def render_card(o: dict, settings: dict | None = None) -> str:
     ev, th, br = o.get("evidence") or {}, knowledge.humanize_obj(o.get("thesis") or {}), o.get("base_rate") or {}
     setup = ev.get("setup") or {}
     labels = setup.get("label") or o["primary_detector"]
@@ -156,6 +175,15 @@ def render_card(o: dict) -> str:
     lines.append(f"出场：{esc(exit_text(o))} | R:R {o.get('risk_reward') or 0:.1f} | 状态 {STATUS_LABELS.get(o.get('status'), o.get('status'))}")
     if br.get("n"):
         lines.append(f"📊 {base_rate_text(br)}")
+        outcome = outcome_text(br)
+        if outcome:
+            lines.append(f"🎯 {esc(outcome)}")
+    for flag in ev.get("event_flags") or []:
+        lines.append(f"⚡ 事件驱动·{esc(flag['type'])}：{esc(flag['headline'])}（技术规则统计参考价值有限）")
+    if settings is not None and o.get("status") in ("new", "triggered"):
+        sz = portfolio.size_text(portfolio.size((o["entry_lo"] + o["entry_hi"]) / 2, o.get("current_stop") or o["stop"], settings))
+        if sz:
+            lines.append(f"📐 {esc(sz)}")
     score = score_text(why)
     if score:
         lines.append(f"🧮 {esc(score)}")
@@ -223,7 +251,7 @@ async def send(text: str, *, reply_markup: dict | None = None, chat_id: str | No
 
 
 async def push_card(o: dict) -> int | None:
-    message_id = await send(render_card(o), reply_markup=feedback_keyboard(o["id"]))
+    message_id = await send(render_card(o, await portfolio.get_settings()), reply_markup=feedback_keyboard(o["id"]))
     if message_id:
         await db.execute(
             "UPDATE scout.opportunities SET pushed_at = now(), tg_message_id = :m WHERE id = :id",
@@ -312,7 +340,29 @@ async def dispatch(text: str) -> str:
         return await sectors_text()
     if cmd in ("/premarket", "/pre"):
         return await premarket_text()
+    if cmd in ("/trades", "/positions"):
+        return await trades_text()
     return HELP_TEXT
+
+
+async def trades_text() -> str:
+    held = await portfolio.trades(open_only=True)
+    if not held:
+        return "没有记录的持仓。在 Dashboard「我的交易」页记录入场后，这里和盘前简报会跟踪它们。"
+    lines = ["<b>我的持仓</b>（按最近收盘价）"]
+    total = 0.0
+    for t in held:
+        m = portfolio.metrics(t)
+        if "pnl" not in m:
+            lines.append(f"• <b>{esc(t['ticker'])}</b> {t['shares']:g} 股 @ {t['entry_price']:.2f} · 无行情")
+            continue
+        total += m["pnl"]
+        stop = f" · 距止损 {pct(m['to_stop'], 1, True)}" if "to_stop" in m else ""
+        r = f" · {m['r']:+.1f}R" if "r" in m else ""
+        lines.append(f"• <b>{esc(t['ticker'])}</b> {t['shares']:g} 股 @ {t['entry_price']:.2f} → {m['price']:.2f} "
+                     f"{m['pnl']:+,.0f}（{pct(m['pnl_pct'], 1, True)}）{r}{stop}")
+    lines.append(f"合计浮动盈亏 {total:+,.0f}")
+    return "\n".join(lines)
 
 
 async def premarket_text() -> str:
@@ -384,7 +434,7 @@ async def idea_text(ticker: str) -> str:
         "SELECT * FROM scout.opportunities WHERE ticker = :t ORDER BY asof DESC, score DESC LIMIT 1", {"t": t}
     )
     if o:
-        return render_card(o)
+        return render_card(o, await portfolio.get_settings())
     from scout.agent import answer
 
     return await answer(f"{t} 目前没有规则触发的机会卡。请基于数据评估它当前的形态、相对强度和风险，并说明需要什么条件才会成为机会。", channel="telegram")

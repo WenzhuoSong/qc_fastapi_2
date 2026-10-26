@@ -185,8 +185,10 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     market = opportunities.market_context(p, asof)
     saved = []
     for c in select_top(candidates, settings.scout_top_n):
+        news = await context.load_news(c.ticker)
         c.context = {
-            "news": await context.load_news(c.ticker),
+            "news": news,
+            "event_flags": context.event_flags(news),
             "earnings": context.earnings_summary(earnings.get(c.ticker, []), asof),
             "sector_context": sector_ctx.get(c.sector),
         }
