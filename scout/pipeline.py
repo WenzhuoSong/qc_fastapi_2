@@ -155,7 +155,9 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     if asof < session:
         raise RuntimeError(f"bar for {session} not available yet (latest {asof}); data source may be lagging")
     summary["features"] = await store_features(p, asof)
-    summary["sectors"] = await sectors.store(asof, sectors.compute(p, asof))
+    sector_rows = sectors.compute(p, asof)
+    summary["sectors"] = await sectors.store(asof, sector_rows)
+    sector_ctx = {r["sector"]: sectors.card_context(r) for r in sector_rows if r["kind"] == "sector"}
 
     transitions = await tracker.update_all()
     summary["transitions"] = [t.__dict__ for t in transitions]
@@ -186,6 +188,7 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         c.context = {
             "news": await context.load_news(c.ticker),
             "earnings": context.earnings_summary(earnings.get(c.ticker, []), asof),
+            "sector_context": sector_ctx.get(c.sector),
         }
         ev = opportunities.evidence(c, market)
         th, source = await thesis.write_thesis(ev)
@@ -193,7 +196,17 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         saved.append(c.id)
     summary["saved"] = saved
 
-    brief = render_eod_brief(asof, market, candidates, transitions, saved)
+    focus = None
+    try:                               # an LLM hiccup must not fail the scan
+        from scout import market_focus
+
+        focus = await market_focus.generate()
+        summary["market_focus"] = focus["source"] if focus else None
+    except Exception as exc:
+        logger.warning("market focus failed: %s", exc)
+        summary["market_focus"] = f"failed: {type(exc).__name__}"
+
+    brief = render_eod_brief(asof, market, candidates, transitions, saved, sector_rows, focus)
     await db.execute(
         "INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('eod', :d, :c, CAST(:p AS JSONB))",
         {"d": asof, "c": brief, "p": db.jsonb({"market": market, "saved": saved, "candidates": len(candidates)})},
@@ -210,7 +223,8 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     return summary
 
 
-def render_eod_brief(asof: date, market: dict, candidates, transitions, saved: list[str]) -> str:
+def render_eod_brief(asof: date, market: dict, candidates, transitions, saved: list[str],
+                     sector_rows: list[dict] | None = None, focus: dict | None = None) -> str:
     pct = telegram.pct
     regime_zh = {"uptrend": "上升趋势", "mixed": "震荡", "downtrend": "下降趋势", "unknown": "未知"}
     lines = [
@@ -219,9 +233,17 @@ def render_eod_brief(asof: date, market: dict, candidates, transitions, saved: l
         f"20 日 {pct(market.get('spy_ret_20d'), 1, True)} | QQQ 20 日 {pct(market.get('qqq_ret_20d'), 1, True)} | "
         f"SMH 20 日 {pct(market.get('smh_ret_20d'), 1, True)}",
     ]
-    if market.get("sector_leaders_20d"):
+    rotation = sectors.rotation_line(sector_rows or [])
+    if rotation:
+        lines.append(rotation)
+    elif market.get("sector_leaders_20d"):
         lines.append("领涨板块(20日)：" + "，".join(f"{k} {pct(v, 1, True)}" for k, v in market["sector_leaders_20d"]))
         lines.append("落后板块(20日)：" + "，".join(f"{k} {pct(v, 1, True)}" for k, v in market["sector_laggards_20d"]))
+    if focus and focus.get("focus"):
+        f = focus["focus"]
+        lines.append(f"\n🧭 <b>市场关注点</b>：{telegram.esc(f['headline'])}")
+        lines += [f"{i}. {telegram.esc(t['title'])}" for i, t in enumerate(f.get("themes", []), 1)]
+        lines.append("（/sectors 查看板块详情）")
     if transitions:
         icon = {"triggered": "▶️", "hit_target": "🎯", "stopped": "🛑", "trailed": "🏁", "expired": "⌛", "expired_untriggered": "⌛"}
         lines.append("\n<b>机会状态变化</b>")
@@ -271,6 +293,10 @@ async def render_weekly_report() -> str:
             f"• {r['ticker']} {r['primary_detector']} → {telegram.STATUS_LABELS.get(r['outcome'], r['outcome'])} "
             f"{pct(r['return_pct'], 1, True)}（超额 {pct(r['excess_pct'], 1, True)}）"
         )
+    _, sector_rows = await sectors.latest("sector")
+    rotation = sectors.rotation_line(sector_rows)
+    if rotation:
+        lines.append(f"\n本周{rotation}")
     lines.append("")
     lines.append(await telegram.stats_text())
     return "\n".join(lines)

@@ -134,6 +134,7 @@ def scout_view(
     is_stock: bool,
     next_earnings: date | None,
     structure: dict | None = None,
+    sector_ctx: dict | None = None,
     latest_opp: dict | None,
     today: date,
 ) -> tuple[str, list[Line]]:
@@ -154,6 +155,12 @@ def scout_view(
     attr = attribution(f)
     if attr:
         lines.insert(1, Line("归因", attr[1]))
+    if sector_ctx:
+        from scout.telegram import sector_text
+
+        heat = sector_ctx.get("热度")
+        lines.append(Line("板块环境", sector_text(sector_ctx).removeprefix("板块："),
+                          "up" if heat == "热" else "down" if heat == "冷" else ""))
     if next_earnings:
         days = (next_earnings - today).days
         lines.append(Line("事件", f"下次财报 {next_earnings}（{days} 天后）", "warn" if 0 <= days <= 7 else ""))

@@ -163,6 +163,25 @@ Python 确定性组装证据包 ──► 6 个视角，各带「读数 + 定义
 - **评测**：`python -m scout.jobs.eval_insight` 在 20 只固定标的上统计首次通过率、回退率和失败类型，结果写入 `scout.briefs`（kind = `insight_eval`）。
   2026-10-26 基线：首次通过率 95%，最终 100% 由 LLM 生成、没有回退，平均 12.6 秒。人工抽查发现并修复了 KO 的波段形态误读（已加入定性校验）。
 
+### 3.4.3 市场全景（`scout/sectors.py`、`scout/sector_news.py`、`scout/market_focus.py`，页面 `/market`）
+
+- **轮动**：JdK 相对轮动图（RRG）的开放近似。相对强度比 = （板块 ETF / SPY）÷ 其 50 日均值；动量 = 相对强度比 ÷ 10 日前的值。
+  据此分为 领先 / 转弱 / 落后 / 改善 四个象限，并画出最近 8 周的轨迹。
+- **宽度与参与度**（按板块内流动性足够的成分股计算）：站上 50/200 日线比例、20 日净新高、涨跌日成交量比、CMF、成交额热度和占比。
+  **资金流向类指标都是日线代理**，不是真实的买卖单；只有 CMF 和涨跌量比方向一致时才写成"流入"或"流出"，否则写"信号分歧"。
+- **热度**：六项指标在板块之间排名后取平均，≥ 0.67 为热，≤ 0.33 为冷。每个分项都会展示。
+- **新闻**：新闻覆盖扩展到每个板块成交额最大的 5 只股票（约 100 只标的）。
+  - 关注度 = 最近 7 天 ÷ 之前 7 天，只统计两段都有覆盖的标的；
+  - 排除被标为不相关的新闻，以及挂在板块 ETF 上的 RSS 关键词匹配；
+  - 同一篇文章出现在 3 个以上板块时，归为全市场新闻。
+- **AI 市场关注点**：每天收盘后生成一次。程序会校验：数字能追溯到证据、引用存在、11 个板块全部覆盖、冷热标签和规则判定一致，
+  并且资金流向和关注度的描述与规则标签一致（正文里点名的板块也要检查）。
+- **用在哪里**：
+  - 每张机会卡增加"板块环境"一行；
+  - 个股页的 Scout 分析和 AI 解读都带上板块背景；
+  - 收盘简报增加板块热度、轮动和关注点主题；
+  - Telegram `/sectors` 命令；周报增加本周轮动。
+
 ### 3.5 LLM 的边界（`scout/thesis.py`）
 
 - LLM 只写文字：标题、逻辑、催化剂、反方证据、风险、置信度。入场、止损、目标等数字全部由 Python 计算。
@@ -202,6 +221,9 @@ qc_fastapi_2/
 │   ├── knowledge/                 数据字典 features.yaml + 6 个分析视角 lenses/*.md（可直接编辑）
 │   ├── pipeline.py        236     run_eod / run_weekly / prepare / ensure_base_rates / 交易日判断 / 简报渲染
 │   ├── market_calendar.py 162     美股交易日与节假日（从旧系统取回）
+│   ├── sectors.py         240     板块轮动（RRG 近似）、宽度、资金流代理、热度
+│   ├── sector_news.py     150     板块新闻：关注度、情绪、头条、全市场综述
+│   ├── market_focus.py    260     AI 市场关注点（证据包 → 结构化输出 → 校验）
 │   ├── screens.py         170     策略筛选：规则筛选（全部命中 + 位置统计）与描述性信号筛选（新高、涨跌榜、放量、RSI、波段突破、支撑阻力、财报）
 │   ├── web/app.py         480     FastAPI：/screens 策略筛选页，/health、/telegram、Dashboard（今日含板块与主题 ETF 表、个股页含 Scout 分析 / AI 解读 / 板块成分股）
 │   ├── web/views.py       115     HTML / CSS（亮暗主题）/ K 线图（lightweight-charts）
@@ -213,7 +235,7 @@ qc_fastapi_2/
 ├── db/                            新闻表的 ORM（4 个模型）、session、2 个 SQL migration
 ├── constants.py             61    新闻覆盖的标的：17 只 ETF + Scout watchlist / 活跃机会
 ├── config.py                23    新闻管线的 Settings
-├── tests/                         unittest，71 个测试
+├── tests/                         unittest，81 个测试
 ├── docs/                          本总览、Scout 设计、旧系统复用目录
 └── Dockerfile / railway.toml      单镜像，默认启动 Scout web
 ```
@@ -227,6 +249,7 @@ qc_fastapi_2/
 | `scout` | `market_events` | context | Finnhub 财报日历 |
 | `scout` | `detector_base_rates` | base_rates | 规则 × 市场状态的历史统计 |
 | `scout` | `opportunities`、`opportunity_events`、`opportunity_outcomes` | opportunities / tracker | 机会卡与完整生命周期 |
+| `scout` | `sector_daily` | pipeline | 每天每个板块 / 主题 ETF 的轮动、宽度、资金流和热度 |
 | `scout` | `signal_hits` | pipeline | 每天所有规则（含候选规则）的全部命中，以及每个命中的入选理由，供策略筛选页使用 |
 | `scout` | `feedback`、`chat_messages`、`briefs`、`job_runs` | telegram / agent / pipeline | 反馈、对话、简报、任务记账 |
 | `public` | `ticker_news_library`（48 小时）、`ticker_news_archive`（2023-12 起约 2.7 万条）、`macro_news_cache`、`cron_run_log` | 新闻 cron | Scout 只读；问答 `get_news(days≤90)` 会读归档 |

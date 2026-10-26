@@ -176,6 +176,32 @@ def _heat(rows: list[dict]) -> None:
         r["heat_label"] = next(lbl for lbl, floor in HEAT_LABELS if (r["heat"] or 0) >= floor)
 
 
+HEAT_ICON = {"热": "🔥", "温": "🌤", "冷": "🧊"}
+
+
+def card_context(r: dict) -> dict:
+    """Sector state attached to a stock's card / thesis evidence."""
+    return {"板块": r["name"], "ETF": r["key"], "热度": r.get("heat_label"),
+            "轮动象限": QUADRANTS.get(r.get("quadrant"), r.get("quadrant")),
+            "上周象限": QUADRANTS.get(r.get("quadrant_prev"), r.get("quadrant_prev")),
+            "资金流向": r.get("flow_label"), "站上 50 日线比例": r.get("pct_above_50"), "20 日相对 SPY": r.get("rel_20")}
+
+
+def rotation_line(rows: list[dict]) -> str | None:
+    """One Telegram line: hot / cold sectors and quadrant changes since last week."""
+    secs = sorted((r for r in rows if r.get("kind") == "sector"), key=lambda r: -(r.get("heat") or 0))
+    if not secs:
+        return None
+    hot = "、".join(r["name"] for r in secs if r.get("heat_label") == "热")
+    cold = "、".join(r["name"] for r in secs if r.get("heat_label") == "冷")
+    moves = [f"{r['name']} {QUADRANTS.get(r['quadrant_prev'])}→{QUADRANTS.get(r['quadrant'])}"
+             for r in secs if r.get("quadrant_prev") and r["quadrant_prev"] != r.get("quadrant")]
+    text = f"板块：🔥{hot or '—'} · 🧊{cold or '—'}"
+    if moves:
+        text += f" · 轮动：{'；'.join(moves)}"
+    return text
+
+
 async def store(asof: date, rows: list[dict]) -> int:
     await db.execute("DELETE FROM scout.sector_daily WHERE asof = :d", {"d": asof})
     return await db.execute_many(
@@ -203,8 +229,4 @@ async def context_for(ticker_sector: str | None) -> dict | None:
         return None
     _, rows = await latest("sector")
     r = next((x for x in rows if x.get("sector") == ticker_sector), None)
-    if not r:
-        return None
-    return {"sector": r["name"], "etf": r["key"], "heat": r.get("heat_label"),
-            "quadrant": QUADRANTS.get(r.get("quadrant"), r.get("quadrant")),
-            "pct_above_50": r.get("pct_above_50"), "rel_20": r.get("rel_20")}
+    return card_context(r) if r else None

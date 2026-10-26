@@ -17,7 +17,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from scout import context, db, knowledge, structure, universe
+from scout import context, db, knowledge, sectors, structure, universe
 from scout.analysis import attribution, scout_view
 from scout.config import get_scout_settings
 from scout.thesis import allowed_numbers, unsupported_numbers
@@ -109,6 +109,7 @@ async def gather(ticker: str) -> dict | None:
         "market": ((brief or {}).get("payload") or {}).get("market") or {},
         "sector": {"etf": sector_etf, "name": universe.SECTOR_ZH.get(inst.get("sector") or "", inst.get("sector")),
                    "features": (sector_feat or {}).get("payload") or {}},
+        "sector_rotation": await sectors.context_for(inst.get("sector")),
     }
 
 
@@ -124,6 +125,7 @@ def build_pack(facts: dict) -> dict:
     headline, lines = scout_view(
         facts["features"], is_stock=is_stock, structure=facts["structure"],
         next_earnings=_next_earnings(facts), latest_opp=facts["opportunity"], today=facts["asof"],
+        sector_ctx=facts.get("sector_rotation"),
     )
     ctx: dict = {
         "scout_view": {"结论": headline, "要点": {l.label: l.text for l in lines}},
@@ -137,6 +139,11 @@ def build_pack(facts: dict) -> dict:
         ctx["sector"] = {"行业": sec["name"], "ETF": sec["etf"],
                          "20 日涨跌": knowledge.fmt("ret_20d", sec["features"].get("ret_20d")),
                          "5 日涨跌": knowledge.fmt("ret_5d", sec["features"].get("ret_5d"))}
+        rot = facts.get("sector_rotation")
+        if rot:
+            ctx["sector"].update({"轮动象限": rot["轮动象限"], "上周象限": rot["上周象限"], "热度": rot["热度"],
+                                  "资金流向（规则）": rot["资金流向"],
+                                  "板块站上 50 日线比例": knowledge.fmt("pct_above_50", rot["站上 50 日线比例"])})
     ctx["news"] = [
         {"key": f"news_{i + 1}", "时间": (n.get("published") or "")[:10], "来源": n.get("source"),
          "标题": n["headline"], **({"摘要": n["summary"]} if n.get("summary") else {})}

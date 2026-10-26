@@ -6,7 +6,7 @@ from html import escape
 from typing import Any, Iterable
 
 from scout.telegram import (CONFIDENCE_LABELS, STATUS_LABELS, base_rate_text, market_split_text, pct,
-                            position_text)
+                            position_text, sector_text)
 
 CSS = """
 :root{--bg:#f7f7f5;--panel:#fff;--ink:#1d1d1f;--muted:#6b6b70;--line:#e4e4e0;--accent:#2f6fde;
@@ -39,7 +39,8 @@ ul.tight{margin:4px 0;padding-left:18px}pre{white-space:pre-wrap;font:inherit;ma
 input,textarea,select,button{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
 button{background:var(--accent);color:#fff;border:none;cursor:pointer}
 .chartrow{display:grid;grid-template-columns:minmax(0,2.2fr) minmax(260px,1fr);gap:12px;align-items:start}
-@media (max-width:900px){.chartrow{grid-template-columns:1fr}}
+.duo{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:12px;align-items:start;margin-bottom:12px}
+@media (max-width:900px){.chartrow,.duo{grid-template-columns:1fr}}
 .chartbox{position:relative;padding:8px}#chart{height:440px}
 #legend{position:absolute;top:10px;left:14px;z-index:3;background:var(--panel);padding:2px 6px;border-radius:4px;opacity:.92}
 .plan table td,.plan table th{padding:4px 6px}
@@ -47,7 +48,7 @@ button{background:var(--accent);color:#fff;border:none;cursor:pointer}
 
 
 def layout(title: str, active: str, body: str, head: str = "") -> str:
-    nav = [("/", "today", "今日"), ("/ideas", "ideas", "机会看板"), ("/screens", "screens", "策略筛选"), ("/scoreboard", "scoreboard", "记分板"),
+    nav = [("/", "today", "今日"), ("/market", "market", "市场全景"), ("/ideas", "ideas", "机会看板"), ("/screens", "screens", "策略筛选"), ("/scoreboard", "scoreboard", "记分板"),
            ("/watchlist", "watchlist", "Watchlist"), ("/chat", "chat", "问答")]
     links = "".join(f'<a href="{h}" class="{"on" if k == active else ""}">{t}</a>' for h, k, t in nav)
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
@@ -117,6 +118,7 @@ def opp_card(o: dict) -> str:
 <div class="levels"><div><span>入场</span>{o['entry_lo']:.2f}–{o['entry_hi']:.2f}</div><div><span>止损</span>{o['stop']:.2f}</div>
 <div><span>目标 1</span>{o['target1']:.2f}</div><div><span>目标 2</span>{(o.get('target2') or o['target1']):.2f}</div></div>
 <div class="small">{e(market_split_text(ev.get("price") or {}) or "")}</div>
+<div class="small">{e(sector_text(ev.get("sector_context")) or "")}</div>
 {why_html(ev.get("why") or {})}
 <div class="small">{base}</div>{lists}
 <div class="small warn">{('⚠️ ' + e(th['key_risk'])) if th.get('key_risk') else ''}</div>
@@ -343,3 +345,59 @@ def key_levels(f: dict, s: dict) -> str:
                    for n, v in sorted((i for i in items if i[1]), key=lambda i: -i[1]))
     return (f"<div class='card plan'><h3>关键价位</h3><div class='small muted'>当前没有规则给出的交易计划。图上灰色虚线为最近的主要支撑和阻力。</div>"
             f"<table><thead><tr><th></th><th>价格</th><th>距现价 {close:.2f}</th></tr></thead><tbody>{rows}</tbody></table></div>")
+
+
+QUAD_COLORS = {"leading": "var(--up)", "weakening": "var(--warn)", "lagging": "var(--down)", "improving": "var(--accent)"}
+
+
+def rrg_svg(rows: list[dict]) -> str:
+    """Relative Rotation Graph: RS-ratio (x) vs RS-momentum (y), weekly tails."""
+    pts = [pt for r in rows for pt in r.get("tail") or []]
+    if not pts:
+        return "<p class='muted'>暂无轮动数据。</p>"
+    span_x = max(abs(p[0] - 100) for p in pts) * 1.15 or 1
+    span_y = max(abs(p[1] - 100) for p in pts) * 1.15 or 1
+    W, H, pad = 560, 420, 30
+
+    def xy(px: float, py: float) -> tuple[float, float]:
+        return (pad + (px - 100 + span_x) / (2 * span_x) * (W - 2 * pad),
+                pad + (100 + span_y - py) / (2 * span_y) * (H - 2 * pad))
+
+    cx, cy = xy(100, 100)
+    bg = (f"<rect x='{pad}' y='{pad}' width='{cx - pad}' height='{cy - pad}' fill='var(--accent)' opacity='.07'/>"
+          f"<rect x='{cx}' y='{pad}' width='{W - pad - cx}' height='{cy - pad}' fill='var(--up)' opacity='.07'/>"
+          f"<rect x='{cx}' y='{cy}' width='{W - pad - cx}' height='{H - pad - cy}' fill='var(--warn)' opacity='.07'/>"
+          f"<rect x='{pad}' y='{cy}' width='{cx - pad}' height='{H - pad - cy}' fill='var(--down)' opacity='.07'/>"
+          f"<line x1='{pad}' x2='{W - pad}' y1='{cy}' y2='{cy}' stroke='var(--line)'/>"
+          f"<line x1='{cx}' x2='{cx}' y1='{pad}' y2='{H - pad}' stroke='var(--line)'/>"
+          f"<text x='{W - pad - 4}' y='{pad + 14}' text-anchor='end' font-size='12' fill='var(--up)'>领先</text>"
+          f"<text x='{W - pad - 4}' y='{H - pad - 6}' text-anchor='end' font-size='12' fill='var(--warn)'>转弱</text>"
+          f"<text x='{pad + 4}' y='{H - pad - 6}' font-size='12' fill='var(--down)'>落后</text>"
+          f"<text x='{pad + 4}' y='{pad + 14}' font-size='12' fill='var(--accent)'>改善</text>"
+          f"<text x='{W / 2}' y='{H - 6}' text-anchor='middle' font-size='11' fill='var(--muted)'>相对强度比 →</text>"
+          f"<text x='10' y='{H / 2}' font-size='11' fill='var(--muted)' transform='rotate(-90 10 {H / 2})' text-anchor='middle'>相对强度动量 →</text>")
+    marks = []
+    for r in rows:
+        tail = r.get("tail") or []
+        if not tail:
+            continue
+        coords = [xy(p[0], p[1]) for p in tail]
+        color = QUAD_COLORS.get(r.get("quadrant"), "var(--muted)")
+        path = " ".join(f"{x:.1f},{y:.1f}" for x, y in coords)
+        x, y = coords[-1]
+        tip = f"{r.get('name', r['key'])} {r['key']}：{r.get('quadrant')}（比 {tail[-1][0]:.1f}，动量 {tail[-1][1]:.1f}）"
+        marks.append(f"<a href='#{escape(r['key'])}'><g><title>{escape(tip)}</title>"
+                     f"<polyline points='{path}' fill='none' stroke='{color}' stroke-width='1.5' opacity='.55'/>"
+                     + "".join(f"<circle cx='{px:.1f}' cy='{py:.1f}' r='1.8' fill='{color}' opacity='.5'/>" for px, py in coords[:-1])
+                     + f"<circle cx='{x:.1f}' cy='{y:.1f}' r='5' fill='{color}'/>"
+                     f"<text x='{x + 7:.1f}' y='{y + 4:.1f}' font-size='11' fill='var(--ink)'>{escape(r['key'])}</text></g></a>")
+    return f"<svg viewBox='0 0 {W} {H}' width='100%'>{bg}{''.join(marks)}</svg>"
+
+
+def heat_cell(value, rank: float | None, text: str) -> str:
+    """Table cell shaded by its rank among sectors (green high, red low)."""
+    if value is None or rank is None:
+        return "<td class='muted'>—</td>"
+    alpha = abs(rank - 0.5) * 0.6
+    rgb = "46,160,90" if rank >= 0.5 else "200,57,59"
+    return f"<td style='background:rgba({rgb},{alpha:.2f})'>{text}</td>"

@@ -272,10 +272,12 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
     struct = price_structure.compute(bars)
     side = views.trade_plan(plan_opp, payload.get("close")) if plan_opp else views.key_levels(payload, struct)
     body += f"<div class='chartrow'>{views.chart_script(bars, plan, struct)}{side}</div>"
+    from scout import sectors as sector_mod
+
     headline, lines = scout_view(
         payload, is_stock=(inst or {}).get("kind", "stock") == "stock",
         next_earnings=(nxt or {}).get("event_date"), latest_opp=latest, today=date.today(),
-        structure=struct,
+        structure=struct, sector_ctx=await sector_mod.context_for((inst or {}).get("sector")),
     )
     body += '<div class="grid" style="margin-top:12px">'
     body += f'<div id="scout">{views.scout_panel(t, headline, lines, ai, bool(get_scout_settings().openai_api_key))}</div>'
@@ -296,6 +298,125 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
               f"{o['score']:.2f}", signed(o.get("return_pct"))] for o in opps],
         )
     return layout(t, "", body, head=views.CHART_HEAD)
+
+
+@app.get("/market", response_class=HTMLResponse)
+async def market_page(view: str = "sectors", _: str = Depends(require_auth)) -> str:
+    import pandas as pd
+
+    from scout import knowledge, market_focus, sector_news
+    from scout import sectors as sec
+
+    asof, rows = await sec.latest()
+    if asof is None:
+        return layout("市场全景", "market", "<p class='muted'>还没有板块数据，收盘扫描后会生成。</p>")
+    sector_rows = sorted((r for r in rows if r["kind"] == "sector"), key=lambda r: -(r.get("heat") or 0))
+    theme_rows = [r for r in rows if r["kind"] == "theme"]
+    news = await sector_news.by_sector()
+    focus = await market_focus.latest()
+    hit_rows = await db.fetch_all(
+        "SELECT h.ticker, h.detector, h.score, i.sector FROM scout.signal_hits h JOIN scout.instruments i USING (ticker) "
+        "WHERE h.asof = (SELECT max(asof) FROM scout.signal_hits) AND (h.payload->>'live')::boolean ORDER BY h.score DESC")
+
+    # ── AI focus ──
+    if focus:
+        f = focus["focus"]
+        names = {r["key"]: r["name"] for r in rows}
+        themes = "".join(
+            f"<li><b>{e(t['title'])}</b>：{e(t['summary'])} "
+            + "".join(f"<a class='chip' href='#{e(k)}'>{e(names.get(k, k))}</a>" for k in t["sectors"]) + "</li>"
+            for t in f["themes"])
+        source = f"{focus.get('model')} · 校验通过" if focus["source"] == "llm" else "未通过校验，显示规则读数"
+        focus_html = (f"<div class='card'><h3>市场关注点 <span class='small muted'>{e(focus['asof'])} · {e(source)}</span></h3>"
+                      f"<div class='headline'>{e(f['headline'])}</div><p class='small'>{e(f['regime_view'])}</p><ol>{themes}</ol>"
+                      f"<p class='small'><b>关注</b>：{e('；'.join(f['watch']))}<br><b>风险</b>：{e('；'.join(f['risks']))}</p>"
+                      f"<form method='post' action='/market/focus'><button>重新生成</button></form></div>")
+    else:
+        focus_html = ("<div class='card'><h3>市场关注点</h3><p class='muted small'>还没有生成。</p>"
+                      "<form method='post' action='/market/focus'><button>生成</button></form></div>")
+
+    # ── rotation graph ──
+    tabs = " ".join(f"<a class='chip' style='{'background:var(--accent);color:#fff' if view == v else ''}' href='/market?view={v}'>{lbl}</a>"
+                    for v, lbl in (("sectors", "行业板块"), ("themes", "主题 ETF")))
+    rrg_rows = sector_rows if view != "themes" else theme_rows
+    rrg_html = (f"<div class='card'><h3>相对轮动图 {tabs}</h3>{views.rrg_svg(rrg_rows)}"
+                "<p class='small muted'>横轴：相对 SPY 的强度是否高于自身 50 日平均；纵轴：这种相对强度是在加速还是减速。"
+                "通常按 改善 → 领先 → 转弱 → 落后 顺时针轮动；线条是最近 8 周的轨迹，圆点是本周。（JdK RRG 的开放近似）</p></div>")
+
+    # ── heat table ──
+    cols = [("rel_20", "相对SPY"), ("pct_above_50", "站上50日线"), ("net_new_highs", "净新高"), ("updown_vol_20", "涨跌量比"),
+            ("cmf_20", "CMF"), ("rel_dollar_vol", "成交额热度"), ("dollar_vol_share", "成交占比")]
+    ranks = {k: pd.Series([r.get(k) for r in sector_rows], dtype="float64").rank(pct=True).tolist() for k, _ in cols}
+    body_rows = []
+    for i, r in enumerate(sector_rows):
+        n = news.get(r["key"], {})
+        att = sec.attention_label(n.get("news_attention"))
+        move = f"{sec.QUADRANTS.get(r.get('quadrant_prev'))}→" if r.get("quadrant_prev") and r["quadrant_prev"] != r.get("quadrant") else ""
+        cells = [f"<td><a href='#{e(r['key'])}'>{e(r['name'])}</a> <span class='small muted'>{e(r['key'])}</span></td>",
+                 f"<td>{sec.HEAT_ICON.get(r.get('heat_label'), '')} {e(r.get('heat_label'))} <span class='small muted'>{(r.get('heat') or 0):.2f}</span></td>",
+                 f"<td style='color:{QUAD.get(r.get('quadrant'), '')}'>{e(move)}{e(sec.QUADRANTS.get(r.get('quadrant')))}</td>"]
+        cells += [views.heat_cell(r.get(k), ranks[k][i], knowledge.fmt(k, r.get(k))) for k, _ in cols]
+        cells += [f"<td>{e(r.get('flow_label'))}</td>",
+                  f"<td>{e(att)}{' ' + knowledge.fmt('news_attention', n.get('news_attention')) if n.get('news_attention') else ''}</td>",
+                  f"<td>{knowledge.fmt('tone_net', n.get('tone_net')) if n.get('tone_net') is not None else '—'}</td>",
+                  f"<td>{sum(1 for h in hit_rows if h['sector'] == r.get('sector'))}</td>"]
+        body_rows.append("<tr>" + "".join(cells) + "</tr>")
+    head = "".join(f"<th>{h}</th>" for h in ["板块", "热度", "轮动", *[c[1] for c in cols], "资金流向", "新闻关注度", "新闻情绪", "规则命中"])
+    table_html = (f"<div class='card'><h3>板块热力表 <span class='small muted'>数据日期 {e(asof)}</span></h3>"
+                  f"<div class='scroll'><table><thead><tr>{head}</tr></thead><tbody>{''.join(body_rows)}</tbody></table></div>"
+                  "<p class='small muted'>颜色是板块之间的相对高低。涨跌量比、CMF 和资金流向都是根据日线成交量推算的代理指标，不是真实的买卖单；"
+                  "资金流向只有在 CMF 和涨跌量比方向一致时才写成流入或流出。热度 = 相对 SPY、相对强度比、动量、宽度、涨跌量比、成交额热度六项排名的平均。</p></div>")
+
+    # ── sector detail cards ──
+    members = await db.fetch_all(
+        "SELECT f.ticker, i.name, i.sector, f.payload FROM scout.features_daily f JOIN scout.instruments i USING (ticker) "
+        "WHERE f.date = (SELECT max(date) FROM scout.features_daily) AND i.kind = 'stock' "
+        "AND (f.payload->>'dollar_vol20')::float >= 20000000")
+    cards = []
+    for r in sector_rows:
+        k = r["key"]
+        n = news.get(k, {})
+        top = sorted((m for m in members if m["sector"] == r.get("sector") and m["payload"].get("rs_pct") is not None),
+                     key=lambda m: -m["payload"]["rs_pct"])[:5]
+        top_html = "".join(f"<li>{tlink(m['ticker'])} <span class='small muted'>{e((m['name'] or '')[:20])}</span> "
+                           f"20 日 {signed(m['payload'].get('ret_20d'))} · RS {views.pct(m['payload'].get('rs_pct'), 0)}</li>" for m in top)
+        hits = [h for h in hit_rows if h["sector"] == r.get("sector")][:5]
+        hits_html = "".join(f"<a class='chip' href='/ticker/{e(h['ticker'])}'>{e(h['ticker'])} · {e(h['detector'])}</a>" for h in hits) or "<span class='muted small'>今日无</span>"
+        news_html = "".join(f"<li><a href='{e(h['url'])}' target='_blank' rel='noopener'>{e(h['headline'])}</a> "
+                            f"<span class='small muted'>{e(h['source'])} {e(h['published'])} · {e(', '.join(h['tickers']))}</span></li>"
+                            for h in n.get("headlines", [])[:3]) or "<li class='muted'>近 3 天没有可用新闻</li>"
+        cards.append(
+            f"<div class='card' id='{e(k)}'><h3>{sec.HEAT_ICON.get(r.get('heat_label'), '')} {e(r['name'])} {tlink(k)} "
+            f"<span class='small muted'>{e(sec.QUADRANTS.get(r.get('quadrant')))} · 20 日 {signed(r.get('ret_20d'))}</span></h3>"
+            f"<div class='small'>站上 50 日线 {views.pct(r.get('pct_above_50'), 0)} · 资金 {e(r.get('flow_label'))} · "
+            f"成交额热度 {knowledge.fmt('rel_dollar_vol', r.get('rel_dollar_vol'))} · 新闻 {n.get('news_7d', 0)} 条/7 日</div>"
+            f"<div class='small muted' style='margin-top:6px'>头条</div><ul class='tight'>{news_html}</ul>"
+            f"<div class='small muted'>最强成分股</div><ul class='tight'>{top_html}</ul>"
+            f"<div class='small muted'>今日规则命中</div><div>{hits_html}</div></div>")
+
+    wraps = await sector_news.market_wraps()
+    macro = await sector_news.macro_headlines(8)
+    mnews = "".join(f"<li><a href='{e(x['url'])}' target='_blank' rel='noopener'>{e(x['headline'])}</a> "
+                    f"<span class='small muted'>{e(x.get('source'))} {e(x.get('published'))}</span></li>" for x in wraps + macro)
+    body = (f"<h2>市场全景</h2><div class='duo'>{focus_html}{rrg_html}</div>{table_html}"
+            f"<h2>板块详情</h2><div class='grid'>{''.join(cards)}</div>"
+            f"<h2>全市场新闻</h2><div class='card'><ul class='tight'>{mnews or '<li class=muted>暂无</li>'}</ul></div>")
+    return layout("市场全景", "market", body)
+
+
+QUAD = {"leading": "var(--up)", "weakening": "var(--warn)", "lagging": "var(--down)", "improving": "var(--accent)"}
+
+
+@app.post("/market/focus")
+async def market_focus_regenerate(_: str = Depends(require_auth)):
+    from scout import market_focus
+
+    try:
+        await market_focus.generate()
+    except Exception as exc:
+        logger.exception("market focus failed")
+        return HTMLResponse(layout("市场全景", "market", f"<p>{e(telegram.friendly_error(exc))}</p>"), status_code=502)
+    return RedirectResponse("/market", status_code=303)
 
 
 @app.get("/screens", response_class=HTMLResponse)

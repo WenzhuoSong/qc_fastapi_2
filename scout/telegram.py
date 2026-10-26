@@ -29,6 +29,7 @@ HELP_TEXT = (
     "/why NVDA — 多视角解读（趋势、形态、动量、波动、大盘、催化）\n"
     "/watch list | add NVDA [主题] | rm NVDA\n"
     "/stats — 规则记分板\n"
+    "/sectors — 板块热度、轮动与市场关注点\n"
     "直接发文字即可提问（例如：今天最强的板块是什么？）"
 )
 
@@ -56,6 +57,15 @@ def market_split_text(price: dict) -> str | None:
     if price.get("beta_60") is not None:
         text += f" · β {price['beta_60']:.2f}"
     return text
+
+
+def sector_text(ctx: dict | None) -> str | None:
+    if not ctx:
+        return None
+    icon = {"热": "🔥", "温": "🌤", "冷": "🧊"}.get(ctx.get("热度"), "")
+    move = f"{ctx['上周象限']}→" if ctx.get("上周象限") and ctx["上周象限"] != ctx.get("轮动象限") else ""
+    return (f"板块：{ctx['板块']}（{move}{ctx.get('轮动象限')} · {icon}{ctx.get('热度')} · 资金{ctx.get('资金流向')}"
+            f" · 站上 50 日线 {pct(ctx.get('站上 50 日线比例'), 0)}）")
 
 
 def position_text(why: dict) -> str | None:
@@ -134,6 +144,9 @@ def render_card(o: dict) -> str:
     pos = position_text(why)
     if pos:
         lines.append(f"🧭 {esc(pos)}")
+    sec = sector_text(ev.get("sector_context"))
+    if sec:
+        lines.append(f"🗺 {esc(sec)}")
     lines.append(f"出场：{esc(exit_text(o))} | R:R {o.get('risk_reward') or 0:.1f} | 状态 {STATUS_LABELS.get(o.get('status'), o.get('status'))}")
     if br.get("n"):
         lines.append(f"📊 {base_rate_text(br)}")
@@ -289,6 +302,8 @@ async def dispatch(text: str) -> str:
         return await watch_cmd(args)
     if cmd == "/stats":
         return await stats_text()
+    if cmd in ("/sectors", "/market"):
+        return await sectors_text()
     return HELP_TEXT
 
 
@@ -304,6 +319,28 @@ async def why_text(ticker: str) -> str:
         rec["content"] = insight.render_text(insight.Insight(**rec["insight"]), rec["pack"])
     note = "" if rec.get("source") == "llm" else "\n（AI 解读未通过校验，以上为规则读数）"
     return esc(rec["content"]) + note
+
+
+async def sectors_text() -> str:
+    from scout import market_focus, sectors
+
+    asof, rows = await sectors.latest("sector")
+    if not rows:
+        return "还没有板块数据，收盘扫描后会生成。"
+    rows.sort(key=lambda r: -(r.get("heat") or 0))
+    lines = [f"<b>板块概览</b>（{asof}，按热度排序）"]
+    for r in rows:
+        move = f"{sectors.QUADRANTS.get(r.get('quadrant_prev'))}→" if r.get("quadrant_prev") and r["quadrant_prev"] != r.get("quadrant") else ""
+        lines.append(
+            f"{sectors.HEAT_ICON.get(r.get('heat_label'), '')} <b>{esc(r['name'])}</b> {r['key']} · {move}{sectors.QUADRANTS.get(r.get('quadrant'))}"
+            f" · 相对 SPY {pct(r.get('rel_20'), 1, True)} · 站上50日线 {pct(r.get('pct_above_50'), 0)} · 资金{esc(r.get('flow_label') or '')}"
+        )
+    focus = await market_focus.latest()
+    if focus:
+        lines.append("")
+        lines.append(esc(focus["content"]))
+    lines.append("\n完整视图见 Dashboard「市场全景」")
+    return "\n".join(lines)
 
 
 async def ideas_text() -> str:

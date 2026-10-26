@@ -98,3 +98,35 @@ class MarketFocusValidationTests(unittest.TestCase):
         self.assertEqual(sectors.flow_label(0.03, 0.88), "信号分歧")
         self.assertEqual(sectors.attention_label(None), "基线不足")
         self.assertEqual(sectors.attention_label(2.0), "上升")
+
+
+class SectorDisplayTests(unittest.TestCase):
+    ROWS = [
+        {"kind": "sector", "key": "XLE", "name": "能源", "heat": 0.82, "heat_label": "热", "quadrant": "leading",
+         "quadrant_prev": "leading", "tail": [[103, 104, "2026-10-16"], [109, 106, "2026-10-23"]],
+         "flow_label": "流入", "pct_above_50": 0.79, "rel_20": 0.13},
+        {"kind": "sector", "key": "XLK", "name": "信息技术", "heat": 0.21, "heat_label": "冷", "quadrant": "lagging",
+         "quadrant_prev": "weakening", "tail": [[101, 99, "2026-10-16"], [97, 94, "2026-10-23"]],
+         "flow_label": "信号分歧", "pct_above_50": 0.46, "rel_20": -0.05},
+    ]
+
+    def test_rotation_line_names_hot_cold_and_moves(self):
+        line = sectors.rotation_line(self.ROWS)
+        self.assertIn("🔥能源", line)
+        self.assertIn("🧊信息技术", line)
+        self.assertIn("信息技术 转弱→落后", line)
+
+    def test_card_context_and_text(self):
+        from scout.telegram import sector_text
+
+        ctx = sectors.card_context(self.ROWS[1])
+        self.assertEqual((ctx["热度"], ctx["轮动象限"], ctx["资金流向"]), ("冷", "落后", "信号分歧"))
+        self.assertIn("转弱→落后", sector_text(ctx))
+
+    def test_rrg_svg_renders_every_sector(self):
+        from scout.web.views import rrg_svg
+
+        svg = rrg_svg(self.ROWS)
+        self.assertTrue(svg.startswith("<svg"))
+        self.assertIn(">XLE<", svg)
+        self.assertIn(">XLK<", svg)
