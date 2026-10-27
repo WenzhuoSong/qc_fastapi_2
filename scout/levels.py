@@ -72,6 +72,53 @@ def reference_plans(f: dict, s: dict, price: float | None = None) -> dict:
     return out
 
 
+STOP_BUFFER_ATR = 0.25    # a stop sits a little below the level it protects
+MIN_STOP_ATR = 1.0        # closer than one ATR is inside normal daily noise
+MAX_STOP_ATR = 3.5        # further than this the position gets too small to matter
+FALLBACK_STOP_ATR = 2.0
+
+
+def buy_now(f: dict, s: dict, price: float | None = None) -> dict:
+    """If you bought at `price` now: structural stop, targets, R:R and a plain verdict."""
+    atr = f.get("atr14")
+    price = price or f.get("close")
+    if not atr or not price:
+        return {}
+    swing_low = (s.get("last_swing_low") or {}).get("price")
+    levels = [(n, v) for n, v in (("支撑位", s.get("support")), ("最近波段低点", swing_low), ("20 日线", f.get("sma20")),
+                                  ("50 日线", f.get("sma50"))) if v and v < price]
+    valid = [(n, v - STOP_BUFFER_ATR * atr) for n, v in levels
+             if MIN_STOP_ATR * atr <= price - (v - STOP_BUFFER_ATR * atr) <= MAX_STOP_ATR * atr]
+    if valid:
+        basis, stop = max(valid, key=lambda x: x[1])            # the tightest stop that is still outside the noise
+        basis = f"{basis}下方"
+    else:
+        basis, stop = f"{FALLBACK_STOP_ATR:g} 倍 ATR（附近没有合适的结构位）", price - FALLBACK_STOP_ATR * atr
+    risk = price - stop
+    resistance = s.get("resistance")
+    if resistance and price < resistance < price + 2 * risk:
+        t1, t1_basis = resistance, "阻力位"
+    else:
+        t1, t1_basis = price + 2 * risk, "2R"
+    t2 = max(price + 3 * risk, t1)
+    rr = (t1 - price) / risk
+    trend = trend_of(f)
+    stop_pct = stop / price - 1
+    if trend == "down":
+        verdict, level = "价格处于下降趋势，现价买入属于逆势，不建议。", "bad"
+    elif rr < 1.0:
+        verdict, level = f"上方阻力位 {t1:.2f} 太近，到阻力只有 {rr:.1f}R，现价买入回报不足；等回调或放量突破后再看。", "bad"
+    elif rr < 1.5:
+        verdict, level = f"风险回报一般（R:R {rr:.1f}），可以等更好的位置。", "warn"
+    else:
+        verdict, level = f"现价买入的风险回报合理（R:R {rr:.1f}）。", "ok"
+    if stop_pct < -0.10:
+        verdict += f"止损距离 {stop_pct * 100:.1f}%，较远，仓位要相应减小。"
+    return {"entry": round(price, 2), "stop": round(stop, 2), "stop_basis": basis, "target1": round(t1, 2),
+            "target1_basis": t1_basis, "target2": round(t2, 2), "rr": round(rr, 2), "stop_pct": round(stop_pct, 4),
+            "verdict": verdict, "level": level, "trend": trend}
+
+
 def trailing_stops(f: dict, closes: list[float], lows: list[float]) -> list[dict]:
     """Ways to raise a stop under a holding, each with what it protects."""
     atr = f.get("atr14")

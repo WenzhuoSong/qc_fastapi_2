@@ -259,15 +259,15 @@ async def _side_panel(t: str, opp: dict | None, f: dict, struct: dict, bars: lis
     except Exception:                       # the page must render on the last close when Yahoo is slow
         live = None
     today = date.fromisoformat(us_equity_market_status().market_date)
-    if opp and opp["status"] in ("new", "triggered"):
+    settings = await portfolio.get_settings()
+    active = opp if opp and opp["status"] in ("new", "triggered") else None
+    tracking = ""
+    if active:
         trig = await db.fetch_one("SELECT price FROM scout.opportunity_events WHERE opportunity_id = :i AND event_type = 'triggered'",
-                                  {"i": opp["id"]})
-        out = await db.fetch_one("SELECT * FROM scout.opportunity_outcomes WHERE opportunity_id = :i", {"i": opp["id"]})
-        panel = views.trade_plan(opp, f.get("close"), await portfolio.get_settings(), live=live, today=today,
-                                 outcome=out, entry_price=(trig or {}).get("price"))
-    else:
-        price = (live or {}).get("last")
-        panel = views.reference_card(levels.reference_plans(f, struct, price), f, struct, live)
+                                  {"i": active["id"]})
+        tracking = views.trade_plan(active, f.get("close"), None, live=live, today=today,
+                                    entry_price=(trig or {}).get("price"))
+    panel = views.price_panel(f, struct, live, settings, opp=active, today=today, tracking_html=tracking)
     held = [x for x in await portfolio.trades(open_only=True) if x["ticker"] == t]
     if held:
         stops = levels.trailing_stops(f, [b["close"] for b in bars], [b["low"] for b in bars])

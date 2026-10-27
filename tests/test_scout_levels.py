@@ -56,8 +56,8 @@ class PlanPanelTests(unittest.TestCase):
 
         live = {"last": 430.0, "change": 0.01, "time_et": "10-27 10:15", "session": "盘中"}
         html = trade_plan(self.OPP, 426.76, live=live, today=date(2026, 10, 27), entry_price=419.28)
-        self.assertIn("已入场", html)
-        self.assertIn("模拟成交 419.28", html)
+        self.assertIn("规则已入场", html)
+        self.assertIn("假设成交 419.28", html)
         self.assertIn("持有第 1 / 10 个交易日", html)
         self.assertIn("盘中 10:15 美东", html)
         self.assertIn("不随股价调整", html)
@@ -70,13 +70,50 @@ class PlanPanelTests(unittest.TestCase):
         self.assertIn("入场窗口还剩 2 个交易日", html)
         self.assertIn("最近收盘", html)
 
-    def test_reference_card_labels_itself(self):
-        from scout.web.views import reference_card
+    def test_price_panel_leads_with_buying_now(self):
+        from scout.web.views import price_panel
 
-        ref = levels.reference_plans(F_UP, {"support": 96.0, "resistance": 104.0})
-        html = reference_card(ref, F_UP, {"support": 96.0, "resistance": 104.0}, None)
-        self.assertIn("回调买入", html)
-        self.assertIn("这不是规则信号，没有历史回放统计", html)
+        s_ = {"support": 96.0, "resistance": 112.0}
+        html = price_panel(F_UP, s_, None, None)
+        self.assertLess(html.index("如果现在买入"), html.index("回调买入"))
+        self.assertIn("不是经过回放检验的规则信号", html)
+        self.assertNotIn("系统跟踪", html)
+
+    def test_price_panel_with_a_rule_signal_above_its_zone(self):
+        from scout.web.views import price_panel
+
+        opp = {**self.OPP, "entry_lo": 73.81, "entry_hi": 77.35, "stop": 70.85, "target1": 92.46,
+               "primary_detector": "pullback_in_uptrend"}
+        f = {"close": 80.55, "atr14": 2.9, "sma20": 79.0, "sma50": 76.0, "sma200": 65.0}
+        html = price_panel(f, {"support": 75.65, "resistance": 82.78}, None, None, opp=opp, today=date(2026, 10, 27),
+                           tracking_html="<p>tracking</p>")
+        self.assertIn("现价高于原区间上沿 4.1%，此时买入已不属于规则入场", html)
+        self.assertIn("系统跟踪", html)
+
+
+class BuyNowTests(unittest.TestCase):
+    def test_structural_stop_outside_the_noise(self):
+        now = levels.buy_now(F_UP, {"support": 96.0, "resistance": 112.0, "last_swing_low": {"price": 95.0}})
+        self.assertEqual(now["entry"], 100.0)
+        self.assertEqual(now["stop"], 96.5)                      # 20-day line 97 − 0.25 ATR: tightest valid level
+        self.assertEqual(now["stop_basis"], "20 日线下方")
+        self.assertEqual(now["target1"], 107.0)                  # resistance beyond 2R → 2R
+        self.assertEqual(now["level"], "ok")
+
+    def test_close_resistance_makes_buying_now_poor(self):
+        now = levels.buy_now(F_UP, {"support": 96.0, "resistance": 101.5})
+        self.assertEqual((now["target1"], now["target1_basis"], now["level"]), (101.5, "阻力位", "bad"))
+        self.assertIn("太近", now["verdict"])
+
+    def test_no_structure_falls_back_to_two_atr(self):
+        f = {"close": 100.0, "atr14": 2.0, "sma200": 80.0, "sma50": 90.0}
+        now = levels.buy_now(f, {})
+        self.assertEqual(now["stop"], 96.0)
+        self.assertIn("ATR", now["stop_basis"])
+
+    def test_downtrend_is_flagged(self):
+        f = {"close": 50.0, "atr14": 1.5, "sma20": 52.0, "sma50": 55.0, "sma200": 60.0}
+        self.assertEqual(levels.buy_now(f, {"support": 47.0})["level"], "bad")
 
 
 if __name__ == "__main__":
