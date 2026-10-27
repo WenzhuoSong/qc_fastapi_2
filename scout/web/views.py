@@ -439,8 +439,8 @@ def reference_card(ref: dict, f: dict, s: dict, live: dict | None) -> str:
     trend_zh = {"up": "上升趋势", "down": "下降趋势", "mixed": "震荡", "unknown": "趋势不明"}.get(ref.get("trend"), "")
     scen = ""
     for sc in ref.get("scenarios") or []:
-        state = "价格已在区间内" if sc["in_zone"] else f"区间中点距现价 {signed(sc['distance'])}"
-        scen += (f"<div style='margin-top:8px'><b>{escape(sc['name'])}</b> <span class='small muted'>{escape(state)}</span>"
+        state = "价格已在区间内" if sc["in_zone"] else f"区间中点距现价 {signed(sc['distance'])}"   # signed() is HTML
+        scen += (f"<div style='margin-top:8px'><b>{escape(sc['name'])}</b> <span class='small muted'>{state}</span>"
                  f"<div class='levels'><div><span>入场</span>{sc['entry_lo']:.2f}–{sc['entry_hi']:.2f}</div>"
                  f"<div><span>保护性止损</span>{sc['stop']:.2f}</div><div><span>目标 1</span>{sc['target1']:.2f}</div>"
                  f"<div><span>目标 2</span>{sc['target2']:.2f}</div></div>"
