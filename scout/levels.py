@@ -33,8 +33,8 @@ def _scenario(name: str, lo: float, hi: float, stop: float, ceiling: float | Non
     mid = (lo + hi) / 2
     risk = mid - stop
     t1 = mid + 2 * risk
-    if ceiling and ceiling > mid + risk:          # the next resistance is a natural first target when it is past 1R
-        t1 = min(t1, ceiling)
+    if ceiling and mid < ceiling < t1:            # a resistance in the way is the first target (as in buy_now)
+        t1 = ceiling
     t2 = max(mid + 3 * risk, t1)
     return {"name": name, "entry_lo": round(lo, 2), "entry_hi": round(hi, 2), "stop": round(stop, 2),
             "target1": round(t1, 2), "target2": round(t2, 2), "rr": round((t1 - mid) / risk, 2),
