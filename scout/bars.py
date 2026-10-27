@@ -44,10 +44,12 @@ async def store(frames: dict[str, pd.DataFrame], replace: bool = False) -> int:
     )
 
 
-async def backfill(provider: MarketDataProvider, tickers: list[str], years: int) -> dict:
+async def backfill(provider: MarketDataProvider, tickers: list[str], years: int, replace: bool = True) -> dict:
+    """Full history. `replace` first deletes the stored series (a re-adjusted vendor series must not
+    keep stale dates); without it every returned date is upserted, so pages never see a gap."""
     start = date.today() - timedelta(days=int(365.25 * years) + 10)
     frames = await provider.daily_bars(tickers, start)
-    written = await store(frames, replace=True)
+    written = await store(frames, replace=replace)
     return {"requested": len(tickers), "received": len(frames), "rows": written}
 
 

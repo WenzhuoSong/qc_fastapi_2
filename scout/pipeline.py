@@ -17,7 +17,7 @@ PANEL_LOOKBACK_DAYS = 420          # ≥ 252 sessions + 200-day SMA warm-up head
 MAX_PER_DETECTOR = 3               # keep one rule (e.g. a whole sector turning) from flooding the cards
 
 
-async def prepare(full_backfill: bool = False) -> dict:
+async def prepare(full_backfill: bool = False, replace: bool = True) -> dict:
     """Migrations, universe and bars. Idempotent."""
     settings = get_scout_settings()
     out: dict = {"migrations": await db.apply_migrations()}
@@ -29,7 +29,7 @@ async def prepare(full_backfill: bool = False) -> dict:
     tickers = [r["ticker"] for r in await universe.load_scan_instruments()]
     provider = get_provider()
     if full_backfill:
-        out["bars"] = await bars.backfill(provider, tickers, settings.scout_history_years)
+        out["bars"] = await bars.backfill(provider, tickers, settings.scout_history_years, replace=replace)
     else:
         out["bars"] = await bars.refresh(provider, tickers, settings.scout_history_years)
     return out

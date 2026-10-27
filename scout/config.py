@@ -38,7 +38,7 @@ class ScoutSettings(BaseSettings):
     scout_max_push_cards: int = 3
     scout_min_price: float = 5.0
     scout_min_dollar_volume: float = 20_000_000.0
-    scout_history_years: int = 3
+    scout_history_years: int = 12      # covers the 2015–16, 2018, 2020 and 2022 drawdowns, so replays are not bull-market only
     # Size of the Railway Postgres volume; the daily research job warns at 80 %.
     scout_db_volume_gb: float = 4.9
 
