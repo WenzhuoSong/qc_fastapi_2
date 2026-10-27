@@ -223,3 +223,27 @@ async def load_scan_instruments() -> list[dict]:
     return await db.fetch_all(
         "SELECT ticker, name, sector, industry, kind FROM scout.instruments WHERE in_scan ORDER BY ticker"
     )
+
+
+# ── Research pool (v2): the ~150 names that get deep data (filings, estimates,
+# options, documents, memos). The full scan universe only gets light data. ──
+RESEARCH_TOP_LIQUID = 100
+OPTIONS_MARKET_ETFS = ("SPY", "QQQ", "IWM")
+
+
+async def research_pool() -> list[str]:
+    """Holdings ∪ open opportunities ∪ watchlist ∪ the most traded stocks (stocks only)."""
+    rows = await db.fetch_all(
+        """
+        SELECT ticker FROM scout.trades WHERE closed_on IS NULL
+        UNION SELECT ticker FROM scout.opportunities WHERE status IN ('new', 'triggered')
+        UNION SELECT ticker FROM scout.watchlist WHERE active
+        UNION SELECT ticker FROM (
+            SELECT f.ticker FROM scout.features_daily f JOIN scout.instruments i USING (ticker)
+            WHERE f.date = (SELECT max(date) FROM scout.features_daily) AND i.kind = 'stock'
+            ORDER BY (f.payload->>'dollar_vol20')::float DESC NULLS LAST LIMIT :n
+        ) top
+        """, {"n": RESEARCH_TOP_LIQUID})
+    etfs = await db.fetch_all("SELECT ticker FROM scout.instruments WHERE kind = 'etf'")
+    etf_set = {r["ticker"] for r in etfs}
+    return sorted({r["ticker"] for r in rows} - etf_set)

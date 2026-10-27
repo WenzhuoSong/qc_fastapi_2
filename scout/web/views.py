@@ -57,7 +57,7 @@ ul.rrgread{list-style:none;padding:0;margin:6px 0}ul.rrgread li{padding:2px 0}
 
 def layout(title: str, active: str, body: str, head: str = "") -> str:
     nav = [("/", "today", "今日"), ("/market", "market", "市场全景"), ("/ideas", "ideas", "机会看板"), ("/screens", "screens", "策略筛选"), ("/scoreboard", "scoreboard", "记分板"),
-           ("/watchlist", "watchlist", "Watchlist"), ("/trades", "trades", "我的交易"), ("/chat", "chat", "问答")]
+           ("/watchlist", "watchlist", "Watchlist"), ("/trades", "trades", "我的交易"), ("/chat", "chat", "问答"), ("/data", "data", "数据")]
     links = "".join(f'<a href="{h}" class="{"on" if k == active else ""}">{t}</a>' for h, k, t in nav)
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title)} · Scout</title>

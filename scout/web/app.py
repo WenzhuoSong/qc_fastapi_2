@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import secrets
@@ -752,3 +753,29 @@ async def trades_stop(trade_id: int, stop: str = Form(...), _: str = Depends(req
 async def trades_delete(trade_id: int, _: str = Depends(require_auth)):
     await portfolio.delete_trade(trade_id)
     return RedirectResponse("/trades", status_code=303)
+
+
+@app.get("/data", response_class=HTMLResponse)
+async def data_page(_: str = Depends(require_auth)) -> str:
+    """Health of the research data: coverage, freshness, quality findings, storage."""
+    from scout import research_data
+
+    st = await research_data.status()
+    used, cap = st["storage"]["used_gb"], st["storage"]["volume_gb"]
+    kinds = {"estimates": "预期与目标价（Yahoo）", "ownership": "持仓与做空（Yahoo）", "options": "期权快照（Yahoo，盘中 15:30–16:00）"}
+    rows = [[e(kinds.get(r["kind"], r["kind"])), e(r["last"]), str(r["tickers"]), f"{r['rows']:,}"] for r in st["snapshots"]]
+    for label, r in (("季度财务（SEC EDGAR）", st["financials"]), ("SEC 文件索引", st["filings"]), ("评级变动（Yahoo）", st["actions"])):
+        rows.append([e(label), e(str(r["last"])[:16] if r["last"] else "—"), str(r["tickers"]), f"{r['rows']:,}"])
+    macro = " · ".join(f"{e(m['series'])} {e(m['last'])}" for m in st["macro"]) or "—"
+    issue_rows = [[e(i["asof"]), e(i["check_name"]), str(i["n"]), e(", ".join((i["tickers"] or [])[:12]))] for i in st["issues"]]
+    run_rows = [[e(r["job"]), e(r["status"]), e(str(r["started_at"])[:16]),
+                 e(json.dumps(r["summary"], ensure_ascii=False, default=str)[:180])] for r in st["runs"]]
+    body = (f"<h2>数据状态</h2><p class='small muted'>研究池 {st['pool']} 只（持仓 ∪ 活跃机会 ∪ 自选 ∪ 成交额前 100）。"
+            f"所有快照按日期追加保存，不覆盖历史。</p>"
+            f"<p class='small'>数据库已用 <b>{used:.2f} GB</b> / {cap:g} GB（{used / cap:.0%}），超过 80% 会推送扩容提醒。</p>"
+            + table(["数据", "最近", "覆盖股票", "累计行数"], rows)
+            + f"<p class='small'>宏观（FRED）最新日期：{macro}</p>"
+            + "<h2>数据质量（近 14 天）</h2>" + (table(["日期", "检查", "次数", "涉及"], issue_rows) if issue_rows
+                                                else "<p class='muted small'>没有发现问题。</p>")
+            + "<h2>最近任务</h2>" + table(["任务", "状态", "开始（UTC）", "摘要"], run_rows))
+    return layout("数据状态", "data", body)

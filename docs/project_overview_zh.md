@@ -35,6 +35,8 @@
 | `scout-eod` | `python -m scout.jobs.eod` | `0 22 * * 1-5`（北京时间 06:00，美东 18:00 夏令时 / 17:00 冬令时；休市日自动跳过） |
 | `scout-intraday` | `python -m scout.jobs.intraday` | `*/15 13-21 * * 1-5`（只在开盘时段执行：持仓与机会的价位提醒、重要新闻） |
 | `scout-premarket` | `python -m scout.jobs.premarket` | `0 13 * * 1-5`（北京时间 21:00，夏令时开盘前 30 分钟、冬令时 90 分钟；休市日跳过） |
+| `scout-options` | `python -m scout.jobs.options` | `35,50 19,20 * * 1-5`（只在美东 15:30–16:00 开盘时执行一次：研究池期权快照） |
+| `scout-research` | `python -m scout.jobs.research` | `30 23 * * 1-5`（收盘扫描之后：SEC 财报与文件、预期与评级、持仓与做空、FRED、价格交叉校验、存储检查） |
 | `scout-weekly` | `python -m scout.jobs.weekly` | `0 14 * * 6`（周六） |
 | `cron-pre-fetch-news` | `python -m cron.pre_fetch_news` | `*/30 * * * *`：工作日美东 04:00–20:00 每 30 分钟抓核心约 100 只；05:30、16:30 抓全量约 900 只；其余时间每 2 小时 |
 | `Postgres` | — | — |

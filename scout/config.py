@@ -39,6 +39,8 @@ class ScoutSettings(BaseSettings):
     scout_min_price: float = 5.0
     scout_min_dollar_volume: float = 20_000_000.0
     scout_history_years: int = 3
+    # Size of the Railway Postgres volume; the daily research job warns at 80 %.
+    scout_db_volume_gb: float = 4.9
 
     @property
     def bot_token(self) -> str:
