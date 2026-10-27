@@ -941,7 +941,7 @@ def price_panel(pm: dict, live: dict | None, settings: dict | None, opp: dict | 
             out.append(f"<details><summary class='small muted'>系统跟踪（规则原计划与假设成交，用于给规则记分，不是你的交易）</summary>{tracking_html}</details>")
     out.append(f"<p class='small muted'>价位按 {escape(str(pm.get('asof', '')))} 收盘计算并保存，盘中不变，实时价格只更新状态。"
                f"支撑 / 阻力取近一年的主要波段高低点；买入区间为买点到其上方 min(0.5 ATR, 5%)（ATR {pm['atr']:.2f}）；"
-               f"止损在结构位下方且至少 1 个 ATR。记录买入后，止损和止盈由系统按你的成交管理并每天更新。这些是价位参考，不是经过回放检验的规则信号。</p>")
+               f"止损放在判断失效的结构位下方，至少 1 个 ATR、最多 10%。记录买入后，止损和止盈由系统按你的成交管理并每天更新。这些是价位参考，不是经过回放检验的规则信号。</p>")
     return f"<div class='card plan'>{''.join(out)}</div>"
 
 

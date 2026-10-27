@@ -77,7 +77,7 @@ class StatusTests(unittest.TestCase):
         self.assertEqual((plan["from"], plan["stop"], plan["target1"], plan["in_zone"]), ("回调买点", 95.5, 101.5, True))
         off = levels.locked_plan(self.PM, 101.0, date(2026, 10, 27))       # bought outside any zone
         self.assertEqual((off["from"], off["in_zone"]), ("按成交价", False))
-        self.assertEqual((off["stop"], off["stop_basis"]), (99.0, "成交价下方 1 个 ATR"))   # tightest stop ≥ 1 ATR away
+        self.assertEqual((off["stop"], off["stop_basis"]), (95.5, "支撑 1 下方"))   # structure first: under the support
         self.assertEqual((off["target1"], off["target1_basis"]), (104.0, "阻力 1"))
         self.assertIsNone(levels.locked_plan({}, 100.0, date(2026, 10, 27)))
 
@@ -107,6 +107,35 @@ class ManageTests(unittest.TestCase):
         before = dict(plan)
         self.assertEqual(levels.manage(plan, [102.0], [101.0], 1.0, date(2026, 10, 27))[3], [])
         self.assertEqual(plan, before)
+
+
+class StructureStopTests(unittest.TestCase):
+    LV = [{"price": 97.0, "label": "20 日线", "kind": "ma"}, {"price": 96.0, "label": "支撑 1", "kind": "swing"},
+          {"price": 90.0, "label": "支撑 2", "kind": "swing"}]
+    FB = (95.0, "2 个 ATR（附近没有合适的结构位）")
+
+    def test_first_level_at_least_one_atr_away(self):
+        self.assertEqual(levels.stop_for(97.5, self.LV, 2.0, self.FB), (95.5, "支撑 1 下方"))
+
+    def test_close_level_is_widened_to_one_atr(self):
+        self.assertEqual(levels.stop_for(97.5, self.LV[:1], 2.0, self.FB), (95.5, "20 日线 下方（加宽到 1 个 ATR）"))
+
+    def test_far_level_below_the_band_is_not_used(self):
+        lv = [self.LV[0], self.LV[2]]                                     # 20-day line, then a support 7 % lower
+        self.assertEqual(levels.stop_for(97.5, lv, 2.0, self.FB), (95.5, "20 日线 下方（加宽到 1 个 ATR）"))
+
+    def test_percent_cap(self):
+        stop, basis = levels.stop_for(90.0, [{"price": 78.0, "label": "200 日线", "kind": "ma"}], 6.0, (84.0, "突破位下方 1 个 ATR"))
+        self.assertEqual(stop, 84.0)                                     # 78 − 1.5 is 15 % away: over the 10 % cap
+        self.assertIn("太远", basis)
+
+    def test_far_structure_falls_back(self):
+        stop, basis = levels.stop_for(110.0, self.LV[1:], 2.0, self.FB)
+        self.assertEqual(stop, 95.0)
+        self.assertIn("支撑 1 96.00 太远", basis)
+
+    def test_structural_excludes_the_20_day_line(self):
+        self.assertEqual([p["label"] for p in levels.structural(self.LV)], ["支撑 1", "支撑 2"])
 
 
 class ExitPlanTests(unittest.TestCase):

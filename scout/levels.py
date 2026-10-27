@@ -24,11 +24,13 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+MAP_VERSION = 2              # bump when the rules change: stored maps of an older version are recomputed
 ZONE_ATR = 0.5
 MAX_ZONE_PCT = 0.05          # O'Neil: more than ~5 % above the buy point is extended
 STOP_BUFFER_ATR = 0.25       # a stop sits a little below the level it protects
 MIN_STOP_ATR = 1.0           # closer than one ATR is inside normal daily noise
 MAX_STOP_ATR = 3.5
+MAX_STOP_PCT = 0.10          # a structure more than 10 % away is too far to risk on (O'Neil caps losses at 7–8 %)
 FALLBACK_STOP_ATR = 2.0
 MAX_PULLBACK_ATR = 4.0       # a level further below is not a pullback buy point
 MAX_BREAKOUT_PCT = 0.15      # a resistance further above is not a near-term buy point
@@ -66,15 +68,32 @@ def key_levels(f: dict, s: dict) -> tuple[list[dict], list[dict]]:
     return above, below
 
 
-def stop_for(mid: float, buy_point: float, below: list[dict], atr: float, ref: str = "买点") -> tuple[float, str]:
-    """Tightest stop under the zone that is 1–3.5 ATR away: one ATR under the buy point,
-    or just under a lower level; two ATR when nothing fits."""
-    cands = [(buy_point - MIN_STOP_ATR * atr, f"{ref}下方 1 个 ATR")]
-    cands += [(p["price"] - STOP_BUFFER_ATR * atr, f"{p['label']} 下方") for p in below if p["price"] < buy_point]
-    valid = [(v, b) for v, b in cands if MIN_STOP_ATR * atr <= mid - v <= MAX_STOP_ATR * atr]
-    if valid:
-        return max(valid)
-    return mid - FALLBACK_STOP_ATR * atr, f"{FALLBACK_STOP_ATR:g} 个 ATR（附近没有合适的结构位）"
+def structural(levels: list[dict]) -> list[dict]:
+    """Levels whose break says the trade idea failed: swing lows / highs and the 50 / 200-day lines
+    (the 20-day line is crossed too often; it counts only when it is the buy point itself)."""
+    return [p for p in levels if p["kind"] == "swing" or p["label"] in ("50 日线", "200 日线")]
+
+
+def stop_for(mid: float, anchors: list[dict], atr: float, fallback: tuple[float, str]) -> tuple[float, str]:
+    """Structure first: just under the nearest level whose break invalidates the entry (`anchors`,
+    nearest first). Closer than one ATR is inside daily noise, so the stop is widened to one ATR
+    (or to just under a level inside that band). Further than min(3.5 ATR, 10 %) the structure is
+    too far to risk on, and `fallback` is used."""
+    max_d = max(MIN_STOP_ATR * atr, min(MAX_STOP_ATR * atr, MAX_STOP_PCT * mid))
+    if not anchors:
+        return fallback
+    first = anchors[0]
+    under = first["price"] - STOP_BUFFER_ATR * atr
+    if mid - under >= MIN_STOP_ATR * atr:
+        if mid - under <= max_d:
+            return under, f"{first['label']} 下方"
+        return fallback[0], f"{fallback[1]}；最近的结构位 {first['label']} {first['price']:.2f} 太远"
+    widened = mid - MIN_STOP_ATR * atr
+    for p in anchors[1:]:                    # a level inside the widened band: just under it instead
+        u = p["price"] - STOP_BUFFER_ATR * atr
+        if p["price"] >= widened >= u and mid - u <= max_d:
+            return u, f"{p['label']} 下方"
+    return widened, f"{first['label']} 下方（加宽到 1 个 ATR）"
 
 
 def targets_for(mid: float, risk: float, over: list[dict]) -> tuple[float, str, float, str]:
@@ -91,11 +110,14 @@ def targets_for(mid: float, risk: float, over: list[dict]) -> tuple[float, str, 
     return t1, t1_basis, t2, t2_basis
 
 
-def entry(name: str, buy_point: float, f: dict, above: list[dict], below: list[dict], note: str) -> dict:
+def entry(name: str, buy_point: float, f: dict, above: list[dict], anchors: list[dict], note: str,
+          breakout: bool = False) -> dict:
     atr = f["atr14"]
     hi = buy_point + min(ZONE_ATR * atr, MAX_ZONE_PCT * buy_point)
     mid = (buy_point + hi) / 2
-    stop, basis = stop_for(mid, buy_point, below, atr)
+    fallback = ((buy_point - MIN_STOP_ATR * atr, "突破位下方 1 个 ATR（突破失败即离场）") if breakout
+                else (mid - FALLBACK_STOP_ATR * atr, f"{FALLBACK_STOP_ATR:g} 个 ATR（附近没有合适的结构位）"))
+    stop, basis = stop_for(mid, anchors, atr, fallback)
     risk = mid - stop
     t1, t1_basis, t2, t2_basis = targets_for(mid, risk, [p for p in above if p["price"] > hi])
     rr = round((t1 - mid) / risk, 1)
@@ -120,8 +142,8 @@ def price_map(f: dict, s: dict, options: dict | None = None, estimates: dict | N
     r1 = swing_above[0] if swing_above else None
     # The pivot is the first level whose break changes the picture: a swing low or the 50 / 200-day line
     # (the 20-day line is crossed too often to mean much).
-    structural = [p for p in below if p["kind"] == "swing" or p["label"] in ("50 日线", "200 日线")]
-    s1 = structural[0] if structural else None
+    pivots = structural(below)
+    s1 = pivots[0] if pivots else None
 
     if trend == "down":
         # the nearer of the first swing resistance and the 50-day line: where a downtrend is first in question
@@ -139,7 +161,7 @@ def price_map(f: dict, s: dict, options: dict | None = None, estimates: dict | N
         up_next = above[0] if above else None
         out["preferred"] = (f"{bias}：守住 {s1['label']} {s1['price']:.2f} 之上，" +
                             (f"上方先看 {up_next['label']} {up_next['price']:.2f}" if up_next else "上方没有明显阻力") + "。")
-        lower = [p for p in structural if p["price"] < s1["price"] * 0.995]
+        lower = [p for p in pivots if p["price"] < s1["price"] * 0.995]
         out["alternative"] = f"收盘跌破 {s1['price']:.2f}，判断失效，转为偏弱" + (
             f"，下方看 {lower[0]['label']} {lower[0]['price']:.2f}" if lower else "") + "。"
 
@@ -147,13 +169,16 @@ def price_map(f: dict, s: dict, options: dict | None = None, estimates: dict | N
         near = [p for p in below if close - p["price"] <= MAX_PULLBACK_ATR * atr and p["kind"] in ("swing", "ma")]
         if near:
             bp = near[0]
-            out["entries"].append(entry("回调买点", bp["price"], f, above, below,
+            # the buy point is the support: the stop goes under it
+            out["entries"].append(entry("回调买点", bp["price"], f, above, [bp] + structural(below[below.index(bp) + 1:]),
                                         f"回落到 {bp['label']} 附近并企稳（缩量回调、收盘守住）再考虑；有效跌破止损说明支撑失效。"))
     if r1 and r1["price"] / close - 1 <= MAX_BREAKOUT_PCT:
         name = "突破买点" if trend != "down" else "反转确认"
         note = ("放量（量比 ≥ 1.5 倍）收盘站上阻力才算有效突破；冲高回落、缩量站上都不算。" if trend != "down"
                 else "下降趋势中只在放量收复阻力、结构转强后才考虑做多。")
-        out["entries"].append(entry(name, r1["price"], f, [p for p in above if p["price"] > r1["price"]], below, note))
+        # under the base the breakout came out of (its last swing low / 50-day line), else the failed-breakout level
+        out["entries"].append(entry(name, r1["price"], f, [p for p in above if p["price"] > r1["price"]], structural(below), note,
+                                    breakout=True))
     if trend == "down" and not out["entries"]:
         out["note"] = "下降趋势中，近处没有可确认的反转位置，不给做多的买点。"
 
@@ -211,7 +236,8 @@ def locked_plan(pm: dict, fill: float, opened_on: date) -> dict | None:
         pts = (pm.get("resistances") or []) + (pm.get("supports") or [])
         above = sorted((p for p in pts if p["price"] > fill), key=lambda p: p["price"])
         below = sorted((p for p in pts if p["price"] < fill), key=lambda p: -p["price"])
-        stop, basis = stop_for(fill, fill, below, atr, ref="成交价")
+        stop, basis = stop_for(fill, structural(below), atr,
+                               (fill - FALLBACK_STOP_ATR * atr, f"{FALLBACK_STOP_ATR:g} 个 ATR（附近没有合适的结构位）"))
         t1, b1, t2, b2 = targets_for(fill, fill - stop, above)
         name = "按成交价"
     return {"from": name, "stop": round(stop, 2), "stop_basis": basis, "target1": round(t1, 2), "target1_basis": b1,
@@ -310,8 +336,8 @@ async def get_map(ticker: str, refresh: bool = False, before: date | None = None
     if not feat:
         return None
     if not refresh:
-        row = await db.fetch_one("SELECT payload FROM scout.price_levels WHERE ticker = :t AND asof = :d",
-                                 {"t": ticker, "d": feat["date"]})
+        row = await db.fetch_one("SELECT payload FROM scout.price_levels WHERE ticker = :t AND asof = :d AND version = :v",
+                                 {"t": ticker, "d": feat["date"], "v": MAP_VERSION})
         if row:
             return row["payload"]
     bars = await db.fetch_all(
@@ -322,9 +348,9 @@ async def get_map(ticker: str, refresh: bool = False, before: date | None = None
     pm = price_map(feat["payload"] or {}, structure.compute(bars), (opt or {}).get("payload"), (est or {}).get("payload"))
     if not pm:
         return None
-    pm.update(asof=str(feat["date"]), computed_at=datetime.now(timezone.utc).isoformat(timespec="minutes"))
+    pm.update(version=MAP_VERSION, asof=str(feat["date"]), computed_at=datetime.now(timezone.utc).isoformat(timespec="minutes"))
     await db.execute(
-        "INSERT INTO scout.price_levels (ticker, asof, payload) VALUES (:t, :d, CAST(:p AS JSONB)) "
-        "ON CONFLICT (ticker, asof) DO UPDATE SET payload = EXCLUDED.payload, created_at = now()",
-        {"t": ticker, "d": feat["date"], "p": db.jsonb(pm)})
+        "INSERT INTO scout.price_levels (ticker, asof, version, payload) VALUES (:t, :d, :v, CAST(:p AS JSONB)) "
+        "ON CONFLICT (ticker, asof, version) DO UPDATE SET payload = EXCLUDED.payload, created_at = now()",
+        {"t": ticker, "d": feat["date"], "v": MAP_VERSION, "p": db.jsonb(pm)})
     return pm
