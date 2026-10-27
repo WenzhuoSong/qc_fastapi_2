@@ -91,12 +91,12 @@ def entry(name: str, buy_point: float, f: dict, above: list[dict], below: list[d
         t2, t2_basis = nxt[0]["price"], nxt[0]["label"]
     else:
         t2, t2_basis = max(mid + 3 * risk, t1), "3R"
+    rr = round((t1 - mid) / risk, 1)
     return {"name": name, "buy_point": round(buy_point, 2), "zone_lo": round(buy_point, 2), "zone_hi": round(hi, 2),
             "stop": round(stop, 2), "stop_basis": basis, "stop_pct": round(stop / mid - 1, 4),
             "target1": round(t1, 2), "target1_basis": t1_basis, "target2": round(t2, 2), "target2_basis": t2_basis,
-            "rr": round((t1 - mid) / risk, 2), "time_stop_days": TIME_STOP.get(name, 15), "note": note,
-            "warning": (f"到目标 1 的空间小于止损距离（R:R {(t1 - mid) / risk:.1f}），性价比低"
-                        if (t1 - mid) / risk < MIN_RR else None)}
+            "rr": rr, "time_stop_days": TIME_STOP.get(name, 15), "note": note,
+            "warning": f"到目标 1 的空间小于止损距离（R:R {rr:.1f}），性价比低" if rr < MIN_RR else None}
 
 
 def price_map(f: dict, s: dict, options: dict | None = None, estimates: dict | None = None) -> dict:
