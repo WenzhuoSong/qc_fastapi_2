@@ -10,6 +10,7 @@ The pack and the validation result are stored with the text for audit.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import date, timedelta
@@ -17,7 +18,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from scout import context, db, knowledge, opportunities, sectors, structure, universe
+from scout import (context, db, event_cause, events, fundamentals, knowledge, opportunities, sectors, structure,
+                   universe)
 from scout.analysis import attribution, scout_view
 from scout.config import get_scout_settings
 from scout.thesis import allowed_numbers, unsupported_numbers
@@ -26,6 +28,9 @@ logger = logging.getLogger("scout.insight")
 
 NEWS_DAYS = 7
 MAX_NEWS = 8
+EVENT_RESEARCH_SESSIONS = 20     # abnormal days this recent get a cause search if not cached
+EVENT_MUST_EXPLAIN_SESSIONS = 10 # ... and this recent must be explained first in the write-up
+MAX_EVENT_SEARCHES = 2
 Verdict = Literal["偏多", "中性", "偏空", "不适用"]
 
 
@@ -38,10 +43,14 @@ class LensView(BaseModel):
 
 class Insight(BaseModel):
     headline: str = Field(description="一句话结论，≤ 40 字")
+    recent_event: str | None = Field(
+        default=None,
+        description="context.events 里距今 10 个交易日内有异常波动时必填：1–2 句先解释它，写明日期（如 10-23）、幅度、"
+                    "原因类型和对业务/预期的影响，外部检索来源写'据外部报道'；没有时为 null")
     driver: Literal["个股自身", "大盘/板块", "混合", "不适用"] = Field(
         description="近 20 日走势的驱动力；context.scout_view 给出了规则判定时必须一致")
     attribution: str = Field(description="走势归因：个股自身还是大盘/板块带动，1–2 句")
-    lenses: list[LensView]
+    lenses: list[LensView] = Field(description="evidence.lenses 里的每个视角各一条，按给出的顺序，一个都不能少")
     watch: list[str] = Field(description="值得关注的条件（触发什么会让机会成立），1–3 条")
     invalidation: list[str] = Field(description="失效条件（出现什么说明判断错了），1–3 条")
     key_risk: str
@@ -58,9 +67,13 @@ SYSTEM_PROMPT = """你是一名资深美股技术分析师，按"多视角工作
 
 工作方法：
 1. 逐个视角，按 method 里的检查清单对照 evidence 判断：偏多 / 中性 / 偏空 / 不适用（数据不足时）。
+   lenses 共有多少个视角就输出多少条（包括 异常事件 和 基本面与预期），按 id 一一对应，不能遗漏。
 2. 每个视角写 1–3 条要点，并在 evidence 字段列出所引用的 key（数据用"字段"值，context 用 context 里的 key）。
 3. 先写走势归因：driver 必须与 context.driver（规则按 20 日个股自身 vs 大盘贡献判定）一致，再综合各视角给出一句话结论、值得关注的条件、失效条件和主要风险。
 4. 视角之间的矛盾要明确指出（例如趋势向上但成交量不配合），这是专业分析最有价值的部分。
+0. 先看 context.events：近期有统计上的异常波动时，先在 recent_event 里解释它，结论也要围绕它——日期、幅度（标准差倍数）、原因类型、
+   对哪部分业务或预期有影响、事后历史上通常怎么走（异常事件视角的 同类异动后 统计）。原因以 events 给出的为准，
+   来自网络检索的要写明"据外部报道"。不要用异动之后的新闻解释之前的下跌。
 5. 结论要和要点自洽：要点里方向不一致时（例如波段结构向上、但短期跌破 20 日线），结论写"中性"就要在要点里说明为什么不是偏多/偏空。
 6. 正文不要出现英文字段名（如 swing_trend、sma50），引用放在 evidence 里，正文用中文名称。
 
@@ -68,7 +81,8 @@ SYSTEM_PROMPT = """你是一名资深美股技术分析师，按"多视角工作
 - 数字只能原样引用证据包里出现的"数值"或文字中的数字，不要自己计算或换算新的数字。
 - 读数是标准口径；如果要表达不同看法，必须说明依据。
 - Scout 规则分析里的趋势结论是确定性计算，不能与之相反地描述趋势方向。
-- 不编造新闻、财报或任何证据包里没有的事实；没有新闻就说没有。
+- 不编造新闻、财报或任何证据包里没有的事实；写"没有新闻/没有利好"之前先核对 context.news。
+- 异动之后的新消息（例如公司随后公布的利好数据）要在催化视角里写出来，并说明它是否修复了异动（看 异动后至今涨跌）。
 - 标的是 ETF 时，用"ETF 自身"而不是"个股自身"来表述归因。
 - 中文、专业、简洁；可以写"关注条件 / 失效条件"，不要下达买卖指令；不是投资建议。"""
 
@@ -99,9 +113,14 @@ async def gather(ticker: str) -> dict | None:
         sector_feat = await db.fetch_one(
             "SELECT payload FROM scout.features_daily WHERE ticker = :t ORDER BY date DESC LIMIT 1", {"t": sector_etf}
         )
+    evs, causes, fund, ev_rates = await _events_and_fundamentals(t, inst, sector_etf)
     return {
         "ticker": t,
         "asof": asof,
+        "events": evs,
+        "event_causes": causes,
+        "event_rates": ev_rates,
+        "fundamentals": fund,
         "instrument": inst,
         "features": feat["payload"] or {},
         "structure": structure.compute(bars),
@@ -115,9 +134,79 @@ async def gather(ticker: str) -> dict | None:
     }
 
 
+def material(ev: dict) -> bool:
+    """Large enough to need an explanation: ≥ 3σ of its own moves or ≥ 8%."""
+    return abs(ev.get("sigma_mult") or 0) >= events.EVENT_SIGMA or abs(ev["ret"]) >= events.EVENT_BIG_MOVE
+
+
+async def _events_and_fundamentals(t: str, inst: dict, sector_etf: str | None) -> tuple[list, dict, dict, dict]:
+    evs = await events.recent(t, sector_etf)
+    causes = await event_cause.cached(t, [e["date"] for e in evs])
+    todo = [e for e in evs if e["date"] not in causes and material(e) and e["sessions_ago"] <= EVENT_RESEARCH_SESSIONS]
+    found = await asyncio.gather(*(event_cause.explain(t, inst.get("name") or t, e) for e in todo[:MAX_EVENT_SEARCHES]),
+                                 return_exceptions=True)
+    for e, rec in zip(todo, found):
+        if isinstance(rec, dict):
+            causes[e["date"]] = rec
+        else:
+            logger.warning("event cause for %s %s failed: %s", t, e["date"], rec)
+    fund = {}
+    if (inst.get("kind") or "stock") == "stock":
+        try:
+            fund = await fundamentals.get(t)
+        except Exception as exc:
+            logger.warning("fundamentals for %s failed: %s", t, exc)
+    return evs, causes, fund, await events.load_base_rates()
+
+
+def key_event(evs: list[dict]) -> dict | None:
+    """The event the write-up leads with: the most recent material one, else the largest."""
+    recent = [e for e in evs if material(e)]
+    if recent:
+        return min(recent, key=lambda e: e["sessions_ago"])
+    return max(evs, key=lambda e: abs(e["idio"])) if evs else None
+
+
+def event_values(ev: dict | None, rates: dict, above_200: bool | None) -> dict:
+    if not ev:
+        return {}
+    out = {"event_ret": ev["ret"], "event_idio": ev["idio"], "event_sigma": ev.get("sigma_mult"), "event_gap": ev["gap"],
+           "event_intraday": ev["intraday"], "event_vol_ratio": ev.get("vol_ratio"), "event_sector_ret": ev.get("sector_ret"),
+           "event_after_ret": ev["after_ret"], "event_sessions_ago": ev["sessions_ago"]}
+    br = events.base_rate_for(rates, ev, above_200)
+    if br:
+        out.update({"event_fwd20_median": br[1].get("ex20_median"), "event_fwd20_up_share": br[1].get("ex20_up_share"),
+                    "event_fwd_n": br[1].get("n")})
+    return out
+
+
+SOURCE_LABEL = {"llm": "AI 归因（已校验）", "fallback": "规则判断"}
+
+
+def event_block(i: int, ev: dict, cause: dict | None) -> dict:
+    fmt = knowledge.fmt
+    block = {"key": f"event_{i + 1}", "日期": ev["date"], "距今交易日": ev["sessions_ago"], "当日涨跌": fmt("event_ret", ev["ret"]),
+             "个股自身": fmt("event_idio", ev["idio"]), "标准差倍数": fmt("event_sigma", ev.get("sigma_mult")),
+             "发生时段": ev["timing"], "量比": fmt("event_vol_ratio", ev.get("vol_ratio")),
+             "板块当日": fmt("event_sector_ret", ev.get("sector_ret")), "异动后至今": fmt("event_after_ret", ev["after_ret"])}
+    if cause:
+        web = "web" in (cause.get("sources") or [])
+        block.update({"原因类型": cause["cause_type"], "原因": cause["summary"], "关联公司": cause.get("related_company"),
+                      "业务影响": cause["business_impact"], "归因置信度": cause["confidence"],
+                      "归因依据": ("网络检索（外部来源，未经核实）" if web else SOURCE_LABEL.get(cause.get("source"), "")),
+                      "来源": [s["title"] for s in (cause.get("web_sources") or [])][:3]})
+    else:
+        block["原因类型"] = "原因未检索（不要写成'没有找到原因'）"
+    return block
+
+
 def build_pack(facts: dict) -> dict:
     """Evidence pack shown to the LLM (and stored for audit)."""
-    values = {**facts["features"], **facts["structure"]}
+    feat = facts["features"]
+    above_200 = (feat["close"] > feat["sma200"]) if feat.get("close") and feat.get("sma200") else None
+    top = key_event(facts.get("events") or [])
+    values = {**feat, **facts["structure"], **(facts.get("fundamentals") or {}),
+              **event_values(top, facts.get("event_rates") or {}, above_200)}
     is_stock = (facts["instrument"].get("kind") or "stock") == "stock"
     lens_blocks = []
     for lens in knowledge.lenses():
@@ -151,6 +240,9 @@ def build_pack(facts: dict) -> dict:
          "标题": n["headline"], **({"摘要": n["summary"]} if n.get("summary") else {})}
         for i, n in enumerate(facts["news"])
     ] or "近 7 天没有可匹配的新闻"
+    evs = facts.get("events") or []
+    ctx["events"] = ([event_block(i, e, (facts.get("event_causes") or {}).get(e["date"])) for i, e in enumerate(evs)]
+                     or "近 60 个交易日没有统计上的异常波动")
     if facts["earnings"]:
         ctx["earnings"] = facts["earnings"]
     opp = facts["opportunity"]
@@ -196,7 +288,24 @@ def evidence_keys(pack: dict) -> set[str]:
     keys |= set(ctx)
     if isinstance(ctx.get("news"), list):
         keys |= {n["key"] for n in ctx["news"]}
+    if isinstance(ctx.get("events"), list):
+        keys |= {e["key"] for e in ctx["events"]}
     return keys
+
+
+def must_explain(pack: dict) -> dict | None:
+    """A material event in the last few sessions that the write-up has to lead with."""
+    for e in pack["context"].get("events") or []:
+        if isinstance(e, dict) and e["距今交易日"] <= EVENT_MUST_EXPLAIN_SESSIONS and (
+                e["标准差倍数"] not in ("—",) and abs(float(e["标准差倍数"].rstrip("σ"))) >= events.EVENT_SIGMA
+                or abs(float(e["当日涨跌"].rstrip("%"))) >= events.EVENT_BIG_MOVE * 100):
+            return e
+    return None
+
+
+def date_marks(iso: str) -> list[str]:
+    d = date.fromisoformat(iso)
+    return [d.isoformat(), f"{d.month:02d}-{d.day:02d}", f"{d.month}-{d.day}", f"{d.month}月{d.day}日", f"{d.month}/{d.day}"]
 
 
 def validate(ins: Insight, pack: dict, python_trend_tone: str) -> list[str]:
@@ -213,7 +322,9 @@ def validate(ins: Insight, pack: dict, python_trend_tone: str) -> list[str]:
     lens_ids = [b["id"] for b in pack["lenses"]]
     got = [lv.lens for lv in ins.lenses]
     if sorted(got) != sorted(lens_ids):
-        issues.append(f"必须且只能覆盖这些视角各一次：{', '.join(lens_ids)}（实际：{', '.join(got)}）")
+        missing = [x for x in lens_ids if x not in got]
+        issues.append(f"必须且只能覆盖这些视角各一次：{', '.join(lens_ids)}（实际：{', '.join(got)}"
+                      + (f"；缺少：{', '.join(missing)}，请补上" if missing else "") + "）")
     expected_driver = pack["context"].get("driver")
     if expected_driver and ins.driver != expected_driver:
         issues.append(f"驱动力判定应为「{expected_driver}」（按 20 日个股自身 vs 大盘贡献的规则），实际写成「{ins.driver}」")
@@ -224,6 +335,14 @@ def validate(ins: Insight, pack: dict, python_trend_tone: str) -> list[str]:
         if lv.verdict != "不适用" and not lv.evidence:
             issues.append(f"视角 {lv.lens} 没有引用任何证据")
     issues += structure_conflicts(ins, pack)
+    ev = must_explain(pack)
+    if ev:
+        lens_ev = next((lv for lv in ins.lenses if lv.lens == "events"), None)
+        if not lens_ev or not any(k.startswith("event") for k in lens_ev.evidence):
+            issues.append(f"异常事件视角必须引用 {ev['key']}（{ev['日期']} {ev['当日涨跌']}）")
+        if not ins.recent_event or not any(m in ins.recent_event for m in date_marks(ev["日期"])):
+            issues.append(f"近期有异常波动（{ev['日期']} {ev['当日涨跌']}，{ev['原因类型']}）：recent_event 必须解释它，"
+                          f"并写明日期（例如 {ev['日期'][5:]}）")
     return issues
 
 
@@ -246,6 +365,21 @@ def structure_conflicts(ins: Insight, pack: dict) -> list[str]:
     return []
 
 
+def complete_lenses(ins: Insight, pack: dict) -> Insight:
+    """Lenses without any evidence (an ETF's fundamentals, no recent events) are filled
+    as 不适用 deterministically; lenses with evidence stay the model's job. recent_event
+    is kept only when a material move happened in the last few sessions."""
+    if ins.recent_event and not must_explain(pack):      # the field is for the last 10 sessions only
+        ins = ins.model_copy(update={"recent_event": None})
+    have = {lv.lens for lv in ins.lenses}
+    filler = [LensView(lens=b["id"], verdict="不适用", points=["没有相关数据"], evidence=[])
+              for b in pack["lenses"] if b["id"] not in have and not b["evidence"]]
+    if not filler:
+        return ins
+    order = {b["id"]: i for i, b in enumerate(pack["lenses"])}
+    return ins.model_copy(update={"lenses": sorted(ins.lenses + filler, key=lambda lv: order.get(lv.lens, 99))})
+
+
 def fallback(pack: dict) -> Insight:
     """Deterministic version: the readings themselves, lens by lens."""
     sv = pack["context"]["scout_view"]
@@ -255,8 +389,13 @@ def fallback(pack: dict) -> Insight:
         points = [f"{i['名称']} {i['数值']}" + (f"（{i['读数']}）" if i.get("读数") else "") for i in items]
         lens_views.append(LensView(lens=block["id"], verdict="中性" if items else "不适用",
                                    points=points or ["数据不足"], evidence=[i["字段"] for i in items]))
+    ev = must_explain(pack)
+    recent = None
+    if ev:
+        recent = (f"{ev['日期'][5:]} {ev['当日涨跌']}（个股自身 {ev['个股自身']}，{ev['标准差倍数']}，{ev['发生时段']}，量比 {ev['量比']}）"
+                  + (f"：{ev['原因类型']}——{ev['原因']}" if ev.get("原因") else "，原因未检索"))
     return Insight(
-        headline=sv["结论"], driver=pack["context"].get("driver", "不适用"),
+        headline=sv["结论"], recent_event=recent, driver=pack["context"].get("driver", "不适用"),
         attribution=sv["要点"].get("归因", sv["要点"].get("大盘 vs 个股", "数据不足")),
         lenses=lens_views, watch=["见规则分析"], invalidation=["见规则分析"],
         key_risk=sv["要点"].get("风险", "—"), confidence="low", confidence_reason="AI 解读未通过校验，以下为规则读数。",
@@ -290,6 +429,7 @@ async def generate(ticker: str) -> dict | None:
                 logger.warning("insight LLM call failed for %s: %s", ticker, exc)
                 issues = [f"LLM 调用失败：{type(exc).__name__}"]
                 break
+            parsed = complete_lenses(parsed, pack)
             issues = validate(parsed, pack, tone)
             history.append({"attempt": attempts, "issues": issues})
             if not issues:
@@ -333,7 +473,10 @@ VERDICT_ICON = {"偏多": "🟢", "中性": "⚪", "偏空": "🔴", "不适用"
 
 
 def render_text(ins: Insight, pack: dict) -> str:
-    lines = [f"【{pack['ticker']} · {ins.headline}】（数据日期 {pack['data_date']}）", f"归因：{ins.attribution}", ""]
+    lines = [f"【{pack['ticker']} · {ins.headline}】（数据日期 {pack['data_date']}）"]
+    if ins.recent_event:
+        lines.append(f"⚡ 近期异动：{ins.recent_event}")
+    lines += [f"归因：{ins.attribution}", ""]
     for lv in ins.lenses:
         lines.append(f"{VERDICT_ICON.get(lv.verdict, '')} {LENS_TITLES.get(lv.lens, lv.lens)}：{lv.verdict}")
         lines += [f"  · {p}" for p in lv.points]

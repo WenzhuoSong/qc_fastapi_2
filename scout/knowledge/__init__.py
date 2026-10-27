@@ -63,7 +63,12 @@ def fmt(key: str, value) -> str:
     if unit in ("beta", "corr"):
         return f"{value:.2f}"
     if unit == "usd":
-        return f"${value / 1e9:.1f}B" if value >= 1e9 else f"${value / 1e6:.0f}M"
+        sign, mag = ("-" if value < 0 else ""), abs(value)
+        return f"{sign}${mag / 1e9:.1f}B" if mag >= 1e9 else f"{sign}${mag / 1e6:.1f}M"
+    if unit == "count":
+        return f"{value:.0f}"
+    if unit == "pp":
+        return f"{value * 100:+.0f} 个百分点"
     return f"{value:.2f}"
 
 
@@ -138,7 +143,7 @@ def _field_names() -> dict[str, str]:
 
 _KEY = r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+|[a-z]+\d+"      # snake_case or rsi14-style
 # Evidence citations (news_4, wrap_1, earnings.next.date, XLE.rel_20, q.ES=F) belong in the evidence list.
-_CITE = re.compile(r"(?:news|macro|wrap|econw?|focus)(?:_\d+)?|[A-Za-z][\w^=-]*\.[\w.]+")
+_CITE = re.compile(r"(?:news|macro|wrap|econw?|focus|event|filing|web|insiders|earnings)(?:_\d+)?|[A-Za-z][\w^=-]*\.[\w.]+")
 
 
 def humanize(text: str) -> str:

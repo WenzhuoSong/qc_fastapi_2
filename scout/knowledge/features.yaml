@@ -398,3 +398,189 @@ tone_net:
     - {min: 0.2, text: 新闻偏正面}
     - {min: -0.2, text: 新闻中性}
     - {max: -0.2, text: 新闻偏负面}
+
+# ── 异常事件（scout/events.py）：最近 60 个交易日里最显著的一次异动 ──
+event_ret:
+  zh: 异动日涨跌
+  unit: pct
+  definition: 异动当天的收盘涨跌。异动 = 个股自身部分 ≥ 事前 60 日个股自身波动的 3 倍标准差（且涨跌 ≥ 4%），或涨跌 ≥ 8%，或量能 ≥ 3 倍且涨跌 ≥ 3%。
+event_idio:
+  zh: 异动日个股自身
+  unit: pct
+  definition: 异动当天扣除大盘贡献（β × SPY）之后的个股自身涨跌。
+event_sigma:
+  zh: 异动幅度（标准差倍数）
+  unit: sigma
+  definition: 异动日个股自身涨跌 ÷ 事前 60 个交易日个股自身日波动的标准差。用事前分布衡量，避免事件本身把波动抬高。
+  readings:
+    - {max: -4, text: 极端下跌（−4σ 以上，罕见）}
+    - {max: -3, text: 显著异常下跌（−3σ 以上）}
+    - {max: 3, text: 幅度在常见范围内（主要因成交量或绝对涨跌入选）}
+    - {max: 4, text: 显著异常上涨（+3σ 以上）}
+    - {min: 4, text: 极端上涨（+4σ 以上，罕见）}
+event_gap:
+  zh: 异动日开盘跳空
+  unit: pct
+  definition: 异动日开盘价 / 前一日收盘价 − 1。跳空占主导说明消息在盘前或隔夜发布。
+event_intraday:
+  zh: 异动日盘中涨跌
+  unit: pct
+  definition: 异动日收盘价 / 开盘价 − 1。盘中占主导说明消息在交易时段内发布或逐步发酵。
+event_vol_ratio:
+  zh: 异动日量比
+  unit: ratio
+  definition: 异动日成交量 ÷ 此前 50 日平均成交量。
+  readings:
+    - {min: 3, text: 剧烈放量（≥ 3 倍），有新信息或大资金进出}
+    - {min: 1.5, text: 明显放量}
+    - {max: 1.5, text: 量能一般}
+event_sector_ret:
+  zh: 异动日所属板块涨跌
+  unit: pct
+  definition: 异动当天所属行业 ETF 的涨跌，用来区分个股事件和板块行情。
+event_after_ret:
+  zh: 异动后至今涨跌
+  unit: pct
+  definition: 异动日收盘到最近收盘的涨跌，看事件后是延续还是修复。
+event_sessions_ago:
+  zh: 距异动交易日数
+  unit: count
+  definition: 异动日距最近一个交易日相隔的交易日数（0 = 最近一个交易日）。
+event_fwd20_median:
+  zh: 同类异动后 20 日超额中位数
+  unit: pct
+  definition: Scout 回放：全市场同方向、同时段（跳空/盘中）、同趋势位置的异动之后 20 个交易日相对 SPY 的超额收益中位数（含幸存者偏差）。
+event_fwd20_up_share:
+  zh: 同类异动后 20 日跑赢 SPY 比例
+  unit: score01
+  definition: 同类异动之后 20 个交易日跑赢 SPY 的比例；接近 50% 说明方向没有统计上的倾向。
+event_fwd_n:
+  zh: 同类异动样本数
+  unit: count
+  definition: 回放中同类异动的次数。
+
+# ── 基本面与预期（scout/fundamentals.py，Finnhub 免费数据，按日缓存）──
+market_cap:
+  zh: 市值
+  unit: usd
+  definition: 总市值（美元）。
+pe_ttm:
+  zh: 市盈率（TTM）
+  unit: ratio
+  definition: 股价 ÷ 过去 12 个月每股收益。盈利很小或为负时没有可比性。
+  readings:
+    - {max: 0, text: 亏损，市盈率不适用}
+    - {max: 15, text: 估值偏低}
+    - {max: 30, text: 估值中等}
+    - {max: 60, text: 估值偏高}
+    - {min: 60, text: 估值很高（市场定价未来增长，预期落空时回撤大）}
+ps_ttm:
+  zh: 市销率（TTM）
+  unit: ratio
+  definition: 市值 ÷ 过去 12 个月营收。
+  readings:
+    - {max: 3, text: 市销率偏低}
+    - {max: 10, text: 市销率中等}
+    - {min: 10, text: 市销率很高（高增长或高毛利预期）}
+pb_ratio:
+  zh: 市净率
+  unit: ratio
+  definition: 市值 ÷ 最近季度净资产。
+rev_growth_ttm:
+  zh: 营收增速（TTM 同比）
+  unit: pct
+  definition: 过去 12 个月营收相对上一个 12 个月的增长。
+  readings:
+    - {max: 0, text: 营收下滑}
+    - {max: 0.10, text: 低速增长}
+    - {max: 0.25, text: 中速增长}
+    - {min: 0.25, text: 高速增长（≥ 25%）}
+rev_growth_q:
+  zh: 营收增速（最近季度同比）
+  unit: pct
+  definition: 最近一个季度营收相对去年同季的增长，比 TTM 更能反映最新趋势。
+eps_growth_ttm:
+  zh: 每股收益增速（TTM 同比）
+  unit: pct
+  definition: 过去 12 个月每股收益相对上一个 12 个月的变化。
+gross_margin:
+  zh: 毛利率（TTM）
+  unit: pct_mag
+  definition: 毛利 ÷ 营收。
+op_margin:
+  zh: 营业利润率（TTM）
+  unit: pct
+  definition: 营业利润 ÷ 营收，反映扣除研发和销售费用后的经营盈利能力。
+  readings:
+    - {max: 0, text: 经营亏损}
+    - {max: 0.10, text: 经营利润率偏低}
+    - {max: 0.25, text: 经营利润率中等}
+    - {min: 0.25, text: 经营利润率高}
+net_margin:
+  zh: 净利率（TTM）
+  unit: pct
+  definition: 净利润 ÷ 营收。
+roe_ttm:
+  zh: 净资产收益率（TTM）
+  unit: pct
+  definition: 净利润 ÷ 平均净资产。
+current_ratio:
+  zh: 流动比率
+  unit: ratio
+  definition: 流动资产 ÷ 流动负债；低于 1 说明短期偿债压力较大。
+  readings:
+    - {max: 1, text: 短期偿债压力较大}
+    - {max: 2, text: 短期偿债能力正常}
+    - {min: 2, text: 现金和流动资产充裕}
+debt_equity:
+  zh: 负债权益比
+  unit: ratio
+  definition: 总负债 ÷ 股东权益（最近季度）。
+  readings:
+    - {max: 0.3, text: 负债很低}
+    - {max: 1, text: 负债适中}
+    - {min: 1, text: 杠杆较高}
+analyst_buy_share:
+  zh: 分析师买入评级占比
+  unit: score01
+  definition: 最近一个月覆盖分析师中"买入 + 强烈买入"的比例（Finnhub 汇总）。
+  readings:
+    - {min: 0.7, text: 分析师普遍看多}
+    - {min: 0.4, text: 分析师观点分歧}
+    - {max: 0.4, text: 分析师偏谨慎}
+analyst_buy_change:
+  zh: 买入占比三个月变化
+  unit: pp
+  definition: 买入评级占比与三个月前相比的变化（百分点），反映评级是在上调还是下调。
+  readings:
+    - {max: -0.1, text: 评级明显下调}
+    - {max: 0.1, text: 评级基本稳定}
+    - {min: 0.1, text: 评级明显上调}
+analyst_count:
+  zh: 覆盖分析师数
+  unit: count
+  definition: 最近一个月给出评级的分析师人数。
+eps_beat_count:
+  zh: 近 4 季超预期次数
+  unit: count
+  definition: 最近 4 个季度中实际每股收益高于一致预期的次数。
+eps_quarters:
+  zh: 可比季度数
+  unit: count
+  definition: 有实际值和预期值的季度数（最多 4）。
+eps_surprise_last:
+  zh: 最近一季 EPS 超预期幅度
+  unit: pct
+  definition: （实际 − 预期）÷ |预期|。预期接近 0 时不计算。
+insider_net_value_90d:
+  zh: 内部人 90 日净买卖额
+  unit: usd
+  definition: 最近 90 天内部人在公开市场的买入额 − 卖出额（只计 P/S 交易，不含授予和行权）。许多卖出是预先计划（10b5-1）的，单笔卖出信息量有限，集中买入更值得注意。
+insider_buyers_90d:
+  zh: 内部人买入人数（90 日）
+  unit: count
+  definition: 最近 90 天在公开市场买入的内部人人数。
+insider_sellers_90d:
+  zh: 内部人卖出人数（90 日）
+  unit: count
+  definition: 最近 90 天在公开市场卖出的内部人人数。

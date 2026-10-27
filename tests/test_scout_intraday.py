@@ -52,6 +52,14 @@ class RenderTests(unittest.TestCase):
         self.assertIn("⚡并购/出售", text)
         self.assertIsNone(intraday.render([], datetime.now()))
 
+    def test_big_move_shows_cause(self):
+        alerts = [{"kind": "big_move", "ticker": "CORT", "payload": {
+            "tag": "持仓", "change": -0.201, "price": 85.86, "time_et": "10-23 15:55",
+            "cause": {"type": "竞争对手/同业传导", "summary": "Genmab 三期数据成功", "external": True}}}]
+        text = intraday.render(alerts, datetime(2026, 10, 23, 19, 55, tzinfo=ZoneInfo("UTC")))
+        self.assertIn("⚡ [持仓] <b>CORT</b> 盘中 -20.1%", text)
+        self.assertIn("竞争对手/同业传导：Genmab 三期数据成功（据外部报道）", text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,8 @@ the same simulator the replay uses.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -19,6 +21,8 @@ from scout.market_calendar import is_us_equity_trading_day, us_equity_market_sta
 
 ET = ZoneInfo("America/New_York")
 NEWS_LOOKBACK_S = 3 * 3600        # a missed run (or a slow news cron) is caught by the next one
+BIG_MOVE = 0.08                   # session move of a holding / idea that gets a cause search
+MAX_CAUSE_SEARCHES = 3
 
 
 def sessions_since(start: date, end: date) -> int:
@@ -94,6 +98,30 @@ async def _news_alerts(held: set[str], opps: set[str], watch: set[str], since: i
     return out
 
 
+async def _research_moves(moves: list[dict], today: date) -> None:
+    """Attach a researched cause to big session moves (web search, cached per ticker and day)."""
+    from scout import event_cause
+
+    if not moves:
+        return
+    names = {r["ticker"]: r["name"] for r in await db.fetch_all(
+        "SELECT ticker, name FROM scout.instruments WHERE ticker = ANY(:t)", {"t": [m["ticker"] for m in moves]})}
+
+    async def one(m: dict) -> None:
+        ch = m["payload"]["change"]
+        ev = {"date": today.isoformat(), "ret": ch, "idio": ch, "sigma_mult": None, "gap": 0.0, "intraday": ch,
+              "timing": "盘中", "vol_ratio": None, "spy_ret": None, "sector_ret": None, "after_ret": 0.0, "sessions_ago": 0}
+        try:
+            c = await event_cause.explain(m["ticker"], names.get(m["ticker"]) or m["ticker"], ev)
+            m["payload"]["cause"] = {"type": c["cause_type"], "summary": c["summary"],
+                                     "external": "web" in (c.get("sources") or [])}
+        except Exception as exc:
+            m["payload"]["cause"] = None
+            logging.getLogger("scout.intraday").warning("cause search for %s failed: %s", m["ticker"], exc)
+
+    await asyncio.gather(*(one(m) for m in moves[:MAX_CAUSE_SEARCHES]))
+
+
 async def scan(today: date) -> dict:
     from scout.detectors import registry
 
@@ -119,16 +147,23 @@ async def scan(today: date) -> dict:
                 alerts.append({"key": f"{kind}:{o['id']}", "kind": kind, "ticker": o["ticker"],
                                "payload": {"text": text, "price": q["last"], "time_et": q["time_et"],
                                            "rule": det.label if det else o["primary_detector"]}})
+    tracked = {t["ticker"]: "持仓" for t in held} | {o["ticker"]: "机会" for o in opps if o["ticker"] not in {t["ticker"] for t in held}}
+    for tk, tag in tracked.items():
+        q = quotes.get(tk)
+        if q and not q["stale"] and q["change"] is not None and abs(q["change"]) >= BIG_MOVE:
+            alerts.append({"key": f"move:{tk}:{today}", "kind": "big_move", "ticker": tk,
+                           "payload": {"tag": tag, "change": q["change"], "price": q["last"], "time_et": q["time_et"]}})
     alerts += await _news_alerts({t["ticker"] for t in held}, {o["ticker"] for o in opps}, watch,
                                  int(time.time()) - NEWS_LOOKBACK_S)
     fresh = await _claim(alerts)
+    await _research_moves([a for a in fresh if a["kind"] == "big_move"], today)
     return {"checked": {"trades": len(held), "opportunities": len(opps), "quotes": len(quotes)},
             "alerts": fresh}
 
 
 ICON = {"trade_stop": "🔻", "trade_target": "🎯", "opp_stop": "🔻", "opp_target": "🎯", "opp_zone": "🟦", "opp_void": "⚪",
-        "news": "📰"}
-ORDER = ("trade_stop", "trade_target", "opp_stop", "opp_target", "opp_zone", "opp_void", "news")
+        "big_move": "⚡", "news": "📰"}
+ORDER = ("trade_stop", "trade_target", "big_move", "opp_stop", "opp_target", "opp_zone", "opp_void", "news")
 
 
 def render(alerts: list[dict], now: datetime) -> str | None:
@@ -139,7 +174,12 @@ def render(alerts: list[dict], now: datetime) -> str | None:
     lines = [f"⏱ <b>盘中提醒</b> {now.astimezone(ET):%H:%M} 美东"]
     for a in sorted(alerts, key=lambda a: ORDER.index(a["kind"])):
         p = a["payload"]
-        if a["kind"] == "news":
+        if a["kind"] == "big_move":
+            c = p.get("cause")
+            why = (f"{esc(c['type'])}：{esc(c['summary'])}" + ("（据外部报道）" if c.get("external") else "")) if c else "原因未查到"
+            lines.append(f"{ICON['big_move']} [{esc(p['tag'])}] <b>{esc(a['ticker'])}</b> 盘中 {p['change'] * 100:+.1f}%"
+                         f"（{p['price']:.2f}，{esc(p['time_et'])}）· {why}")
+        elif a["kind"] == "news":
             flags = f"⚡{'、'.join(p['flags'])} " if p["flags"] else ""
             lines.append(f"{ICON['news']} [{esc(p['tag'])}] <b>{esc(a['ticker'])}</b> {flags}{esc(p['headline'])}（{esc(p['source'])}）")
         else:

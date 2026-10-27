@@ -19,6 +19,7 @@ Archived, not in this tree: the QC observer (git tag `qc-observer-final`, local 
 - Exits are part of a rule (`Detector.exit`: `fixed` or `trail_low`), and replay and live tracking share `scout/simulate.py`. Change an exit only when the replay improves in both halves of the sample and theory supports it.
 - A rule's edge is judged net of `simulate.ROUND_TRIP_COST` and against just holding the same stock (`avg_edge_vs_hold`), not against SPY alone. New rules start as candidates (`Detector(live=False)`: replayed and shown on the scoreboard, never scanned or pushed) until their replay shows an independent edge.
 - Every LLM-facing number comes with its meaning: add new features to `scout/knowledge/features.yaml` (tests enforce it). The ticker "AI 解读" is the `scout/insight.py` workflow (evidence pack → structured output → deterministic validation); edit methodology in `scout/knowledge/lenses/*.md`, and rerun `python -m scout.jobs.eval_insight` after changing prompts, lenses or models.
+- Web search (OpenAI Responses `web_search_preview`) is external evidence: the cause write-up must cite it, the page labels it "据外部报道（未经核实）", and numbers in prose still come from the evidence pack.
 - Never log secrets: httpx INFO logging is silenced because Telegram/Finnhub URLs carry tokens.
 
 ## Scout layout
@@ -45,6 +46,9 @@ Archived, not in this tree: the QC observer (git tag `qc-observer-final`, local 
 | `scout/market_calendar.py` | US equity trading days / holidays |
 | `scout/web/` | FastAPI app (webhook + dashboard) and HTML views |
 | `scout/premarket.py` | Pre-market brief: overnight quotes, opportunity positions, earnings, economic calendar (Forex Factory feed), news → LLM + checks |
+| `scout/events.py` | Abnormal moves (idio ≥ 3σ ex ante, ≥ 8%, or 3× volume): detection per ticker + post-event base rates over the universe |
+| `scout/event_cause.py` | Why it moved: dated news, SEC filings, insiders, earnings, web search → cause taxonomy, validated, cached in `scout.stock_events` |
+| `scout/fundamentals.py` | Finnhub free fundamentals / analyst mix / EPS surprises / insiders, cached daily (`scout.fundamentals`); raw calls in `scout/data/finnhub.py` |
 | `scout/portfolio.py` | User side: account settings, position sizing, trade journal, concentration |
 | `scout/intraday.py` | Session monitor: price levels of trades / opportunities and direct news, each alert sent once (`scout.alerts`) |
 | `scout/jobs/` | `premarket`, `intraday`, `eod`, `weekly`, `backfill` entrypoints (`python -m scout.jobs.<name>`) |

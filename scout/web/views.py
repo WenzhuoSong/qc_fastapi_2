@@ -218,6 +218,7 @@ def insight_card(rec: dict) -> str:
     return f"""<div class='card' id='insight' style='grid-column:1/-1'>
 <h3>AI 解读 · 多视角 <span class='small muted'>数据日期 {e(pack['data_date'])} · {e(source)}</span></h3>
 <div class='headline'>{e(ins['headline'])}</div>
+{f"<p class='warn'><b>⚡ 近期异动</b>：{e(ins['recent_event'])}</p>" if ins.get('recent_event') else ''}
 <p><span class='chip'>驱动力：{e(ins.get('driver', '—'))}</span> {e(ins['attribution'])}</p>
 <div class='grid'>{lens_html}</div>
 <p><b>关注条件</b>：{e('；'.join(ins['watch']))}<br><b>失效条件</b>：{e('；'.join(ins['invalidation']))}<br>
@@ -587,3 +588,81 @@ def trades_table(rows: list[dict], closable: bool = True) -> str:
     if closable:
         head = head + ["操作"]
     return table(head, body)
+
+
+CAUSE_SOURCE = {"llm": "AI 归因 · 已校验", "fallback": "规则判断"}
+
+
+def events_card(ticker: str, evs: list[dict], causes: dict[str, dict], rates: dict, above_200: bool | None) -> str:
+    """Abnormal days of the last 60 sessions with their researched cause and what usually followed."""
+    from scout.events import base_rate_for
+    from scout.insight import material
+
+    fmt = knowledge.fmt
+    if not evs:
+        return ("<div class='card'><h3>异动</h3><p class='small muted'>近 60 个交易日没有统计上的异常波动"
+                "（个股自身 ≥ 3σ、涨跌 ≥ 8% 或 3 倍放量）。</p></div>")
+    items = []
+    pending = False
+    for ev in evs:
+        c = causes.get(ev["date"])
+        head = (f"<b>{escape(ev['date'])}</b> <span class='{'down' if ev['ret'] < 0 else 'up'}'>{fmt('event_ret', ev['ret'])}</span>"
+                f" · 个股自身 {fmt('event_idio', ev['idio'])}（{fmt('event_sigma', ev.get('sigma_mult'))}）· {escape(ev['timing'])}"
+                f" · 量比 {fmt('event_vol_ratio', ev.get('vol_ratio'))} · 板块当日 {fmt('event_sector_ret', ev.get('sector_ret'))}"
+                f" · 之后 {fmt('event_after_ret', ev['after_ret'])}")
+        body = ""
+        if c:
+            web = "web" in (c.get("sources") or [])
+            label = "据外部报道（未经核实）" if web else CAUSE_SOURCE.get(c.get("source"), "")
+            body = (f"<div><span class='chip'>{escape(c['cause_type'])}</span>"
+                    + (f"<span class='chip'>关联：{escape(c['related_company'])}</span>" if c.get("related_company") else "")
+                    + f"{escape(c['summary'])}</div><div class='small'>影响：{escape(c['business_impact'])}</div>"
+                    f"<div class='small muted'>{escape(label)} · 置信度 {escape(CONFIDENCE_LABELS.get(c['confidence'], c['confidence']))}</div>")
+            links = [(s["title"], s["url"]) for s in c.get("web_sources") or []]
+            links += [(v["title"], v.get("url")) for k, v in (c.get("links") or {}).items() if k in (c.get("sources") or [])]
+            if links:
+                body += "<ul class='tight small'>" + "".join(
+                    f"<li><a href='{escape(u)}' target='_blank' rel='noopener'>{escape(t[:110])}</a></li>" if u else f"<li>{escape(t)}</li>"
+                    for t, u in links[:5]) + "</ul>"
+        elif material(ev):
+            pending = True
+            body = "<div class='small muted'>原因未检索</div>"
+        br = base_rate_for(rates, ev, above_200) if material(ev) else None
+        if br:
+            s = br[1]
+            body += (f"<div class='small'>历史上同类异动（{escape(br[0].replace('|', ' · '))}，{s['n']} 次）之后 20 日："
+                     f"相对 SPY 中位数 {fmt('event_fwd20_median', s.get('ex20_median'))}，"
+                     f"跑赢 {fmt('event_fwd20_up_share', s.get('ex20_up_share'))}</div>")
+        items.append(f"<li style='margin-bottom:8px'>{head}{body}</li>")
+    button = (f"<form method='post' action='/ticker/{escape(ticker)}/events'><button>检索异动原因</button>"
+              f"<span class='small muted'> 新闻、SEC 文件、内部人交易、网络检索，约 30 秒</span></form>") if pending else ""
+    return (f"<div class='card'><h3>异动 <span class='small muted'>近 60 个交易日</span></h3><ul class='tight' style='list-style:none;padding:0'>"
+            f"{''.join(items)}</ul>{button}<p class='small muted'>异动 = 个股自身涨跌 ≥ 事前 3σ，或涨跌 ≥ 8%，或 3 倍放量。"
+            f"同类异动统计含幸存者偏差；跑赢比例接近 50% 说明没有方向性。</p></div>")
+
+
+FUNDAMENTAL_ROWS = (
+    ("估值", ("market_cap", "pe_ttm", "ps_ttm", "pb_ratio")),
+    ("增长", ("rev_growth_ttm", "rev_growth_q", "eps_growth_ttm")),
+    ("盈利", ("gross_margin", "op_margin", "net_margin", "roe_ttm")),
+    ("资产负债", ("current_ratio", "debt_equity")),
+    ("预期", ("analyst_buy_share", "analyst_buy_change", "analyst_count", "eps_beat_count", "eps_surprise_last")),
+    ("内部人（90 日）", ("insider_net_value_90d", "insider_buyers_90d", "insider_sellers_90d")),
+)
+
+
+def fundamentals_card(f: dict) -> str:
+    if not f:
+        return ""
+    rows = []
+    for group, keys in FUNDAMENTAL_ROWS:
+        cells = [f"<span title='{escape(knowledge.features()[k].get('definition', ''))}'>{escape(knowledge.zh(k))}</span> "
+                 f"<b>{escape(knowledge.fmt(k, f[k]))}</b>" for k in keys if f.get(k) is not None]
+        if cells:
+            rows.append(f"<tr><td class='muted'>{escape(group)}</td><td>{' · '.join(cells)}</td></tr>")
+    notes = [r for r in (knowledge.reading(k, f.get(k)) for k in ("pe_ttm", "rev_growth_ttm", "op_margin", "analyst_buy_change"))
+             if r]
+    return (f"<div class='card'><h3>基本面与预期 <span class='small muted'>Finnhub 免费数据 · 按日缓存</span></h3>"
+            f"<table class='small'><tbody>{''.join(rows)}</tbody></table>"
+            + (f"<p class='small'>{escape('；'.join(notes))}</p>" if notes else "")
+            + "<p class='small muted'>内部人卖出多为预先计划（10b5-1），集中买入更有信息量。</p></div>")

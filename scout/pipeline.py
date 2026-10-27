@@ -4,7 +4,8 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta
 
-from scout import bars, base_rates, context, db, opportunities, sectors, structure, telegram, thesis, tracker, universe
+from scout import (bars, base_rates, context, db, events, opportunities, sectors, structure, telegram, thesis, tracker,
+                   universe)
 from scout.config import get_scout_settings
 from scout.data.provider import get_provider
 from scout.features import SNAPSHOT_FEATURES, FeaturePanel, build_panel
@@ -82,6 +83,7 @@ async def ensure_base_rates(force: bool = False) -> dict:
     full = await load_panel(lookback_days=None)
     rates = base_rates.compute(full)
     await base_rates.store(rates)
+    await events.store_base_rates(events.compute_base_rates(full))     # same full history, same week
     return rates
 
 

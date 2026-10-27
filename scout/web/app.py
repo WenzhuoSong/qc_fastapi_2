@@ -12,7 +12,8 @@ from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, stat
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from scout import db, opportunities, portfolio, premarket, telegram, universe
+from scout import db, event_cause, fundamentals, opportunities, portfolio, premarket, telegram, universe
+from scout import events as events_mod
 from scout.config import get_scout_settings
 from scout.features import SNAPSHOT_FEATURES
 from scout.market_calendar import us_equity_market_status
@@ -227,6 +228,20 @@ async def ticker_ai(ticker: str, _: str = Depends(require_auth)):
     return RedirectResponse(f"/ticker/{t}#insight", status_code=303)
 
 
+@app.post("/ticker/{ticker}/events")
+async def ticker_events(ticker: str, _: str = Depends(require_auth)):
+    """Research the cause of recent material abnormal days (web search; ~30 s)."""
+    from scout.insight import material
+
+    t = universe.yahoo_symbol(ticker)
+    inst = await db.fetch_one("SELECT name, sector FROM scout.instruments WHERE ticker = :t", {"t": t}) or {}
+    evs = await events_mod.recent(t, universe.SECTOR_ETFS.get(inst.get("sector") or ""))
+    done = await event_cause.cached(t, [x["date"] for x in evs])
+    todo = [x for x in evs if x["date"] not in done and material(x)][:3]
+    await asyncio.gather(*(event_cause.explain(t, inst.get("name") or t, x) for x in todo), return_exceptions=True)
+    return RedirectResponse(f"/ticker/{t}", status_code=303)
+
+
 @app.get("/ticker")
 async def ticker_lookup(t: str = "", _: str = Depends(require_auth)):
     return RedirectResponse(f"/ticker/{universe.yahoo_symbol(t)}" if t else "/", status_code=302)
@@ -304,6 +319,15 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
     body += '<div class="grid" style="margin-top:12px">'
     body += f'<div id="scout">{views.scout_panel(t, headline, lines, ai, bool(get_scout_settings().openai_api_key))}</div>'
     body += f'<div class="card"><h3>新闻</h3><ul class="tight">{news_html}</ul></div>'
+    evs = await events_mod.recent(t, universe.SECTOR_ETFS.get((inst or {}).get("sector") or ""))
+    above_200 = (payload["close"] > payload["sma200"]) if payload.get("close") and payload.get("sma200") else None
+    body += views.events_card(t, evs, await event_cause.cached(t, [x["date"] for x in evs]),
+                              await events_mod.load_base_rates(), above_200)
+    if (inst or {}).get("kind", "stock") == "stock":
+        try:
+            body += views.fundamentals_card(await asyncio.wait_for(fundamentals.get(t), timeout=10))
+        except Exception as exc:            # a slow data source must not break the page
+            logger.warning("fundamentals for %s unavailable: %s", t, exc)
     if latest:
         body += opp_card(latest)
     body += await sector_members_card(t)

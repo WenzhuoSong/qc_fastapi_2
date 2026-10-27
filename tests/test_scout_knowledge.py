@@ -17,7 +17,7 @@ class DictionaryTests(unittest.TestCase):
 
     def test_lens_fields_are_defined_and_lenses_load(self):
         lenses = knowledge.lenses()
-        self.assertEqual(len(lenses), 6)
+        self.assertEqual(len(lenses), 8)
         for lens in lenses:
             self.assertTrue(lens.body and lens.sources, lens.id)
             for f in lens.fields:
