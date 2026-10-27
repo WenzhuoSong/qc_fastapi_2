@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -22,6 +24,18 @@ from scout.config import get_scout_settings
 logger = logging.getLogger("scout.db")
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
+
+# Per-request query stats (count, seconds, slowest) for the web's Server-Timing header.
+QUERY_STATS: ContextVar[dict | None] = ContextVar("scout_query_stats", default=None)
+
+
+def _record(sql: str, seconds: float) -> None:
+    st = QUERY_STATS.get()
+    if st is not None:
+        st["n"] += 1
+        st["s"] += seconds
+        if seconds > st["max"][0]:
+            st["max"] = (seconds, " ".join(sql.split())[:80])
 
 
 def _async_url(url: str) -> str:
@@ -76,9 +90,12 @@ def _json_default(value: Any) -> Any:
 
 
 async def fetch_all(sql: str, params: dict | None = None) -> list[dict]:
+    t0 = time.perf_counter()
     async with session() as s:
         result = await s.execute(text(sql), params or {})
-        return [dict(r._mapping) for r in result]
+        rows = [dict(r._mapping) for r in result]
+    _record(sql, time.perf_counter() - t0)
+    return rows
 
 
 async def fetch_one(sql: str, params: dict | None = None) -> dict | None:

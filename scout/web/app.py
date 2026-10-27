@@ -40,6 +40,26 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="scout", version="1.0.0", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def timing(request, call_next):
+    """Server-Timing (total / db) on every response, and a log line for slow pages."""
+    import time
+
+    stats = {"n": 0, "s": 0.0, "max": (0.0, "")}
+    token = db.QUERY_STATS.set(stats)
+    t0 = time.perf_counter()
+    try:
+        response = await call_next(request)
+    finally:
+        db.QUERY_STATS.reset(token)
+    total = time.perf_counter() - t0
+    response.headers["Server-Timing"] = f"total;dur={total * 1000:.0f}, db;dur={stats['s'] * 1000:.0f};desc=\"{stats['n']} queries\""
+    if total > 2:
+        logger.info("slow %s %s: %.1fs, %d queries %.1fs, slowest %.2fs %s", request.method, request.url.path, total,
+                    stats["n"], stats["s"], stats["max"][0], stats["max"][1])
+    return response
+
+
 def require_auth(credentials: HTTPBasicCredentials = Depends(security)) -> str:
     s = get_scout_settings()
     if not s.scout_dashboard_user or not s.scout_dashboard_password:
