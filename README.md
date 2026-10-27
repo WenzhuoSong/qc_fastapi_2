@@ -2,7 +2,7 @@
 
 **Scout** is a US-equity opportunity observer for a single user. After every close it scans ~950 stocks and ETFs, finds rule-based setups, writes evidence-backed opportunity cards (Python numbers, LLM prose), tracks every card to an outcome, and answers questions via Telegram and a dashboard. It never trades.
 
-A shared news cron (`cron/pre_fetch_news.py`, 24/7 multi-source news: Finnhub + Alpha Vantage + RSS, every `50 */2 * * *`) feeds the news tables Scout reads.
+A shared news cron (`cron/pre_fetch_news.py`: Finnhub + RSS, `*/30 * * * *`, tiered by US Eastern time) feeds the news tables Scout reads.
 
 Start here: [docs/project_overview_zh.md](docs/project_overview_zh.md) (architecture, deployment, code map, extension guide, known issues).
 Design: [docs/scout_opportunity_observer_design_v1_zh.md](docs/scout_opportunity_observer_design_v1_zh.md)
@@ -34,7 +34,7 @@ python -m unittest discover -s tests -t .
 | `scout-eod` | `python -m scout.jobs.eod` | `30 21 * * 1-5` |
 | `scout-premarket` | `python -m scout.jobs.premarket` | `0 13 * * 1-5` |
 | `scout-weekly` | `python -m scout.jobs.weekly` | `0 14 * * 6` |
-| `cron-pre-fetch-news` | `python -m cron.pre_fetch_news` | `50 */2 * * *` (24/7 multi-source news) |
+| `cron-pre-fetch-news` | `python -m cron.pre_fetch_news` | `*/30 * * * *` (tiered: ~100 tickers every 30 min in US hours, ~900 at 05:30 / 16:30 ET, 2-hourly otherwise) |
 | `Postgres` | — | — |
 
 Shared secrets live in the environment's Shared Variables and are referenced as `${{shared.X}}`.

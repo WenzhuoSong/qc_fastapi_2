@@ -265,7 +265,7 @@ qc_fastapi_2/
 │   └── jobs/              ...     _run.py（日志、job_runs、失败告警）、premarket、eod、weekly、backfill
 │
 ├── cron/pre_fetch_news.py  683    ── 共用新闻管线（约 60 只标的，按 Finnhub 免费层限速）
-├── services/                      新闻客户端：finnhub、alphavantage、rss；news_summarizer；cron_audit；retry_protocol
+├── services/                      新闻客户端：finnhub、rss（Alpha Vantage 新闻接口已收费，2026-10-27 移除）；news_summarizer；cron_audit；retry_protocol
 ├── tools/notify_tools.py    81    新闻任务的 Telegram 告警
 ├── db/                            新闻表的 ORM（4 个模型）、session、2 个 SQL migration
 ├── constants.py             61    新闻覆盖的标的：17 只 ETF + Scout watchlist / 活跃机会

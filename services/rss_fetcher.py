@@ -29,8 +29,9 @@ RSS_FEEDS: List[Tuple[str, str]] = [
     ("https://feeds.content.dowjones.io/public/rss/mw_topstories", "MarketWatch"),
     ("https://feeds.content.dowjones.io/public/rss/mw_marketpulse", "MarketWatch"),
     ("https://www.cnbc.com/id/100003114/device/rss/rss.html", "CNBC"),
-    ("https://finance.yahoo.com/news/rssindex", "Yahoo Finance"),
-    ("https://feeds.reuters.com/reuters/businessNews", "Reuters"),
+    # Yahoo's rssindex now serves an HTML page and feeds.reuters.com was shut down (checked 2026-10-27).
+    ("https://www.cnbc.com/id/20910258/device/rss/rss.html", "CNBC"),          # Markets
+    ("https://www.investing.com/rss/news_25.rss", "Investing.com"),            # Stock market news
 ]
 
 

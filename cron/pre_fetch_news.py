@@ -1,45 +1,43 @@
 """
-cron/pre_fetch_news.py -- Cron 1: Independent multi-source news pre-fetch.
+cron/pre_fetch_news.py -- multi-source news pre-fetch shared with Scout.
 
-Responsibilities: Fully decoupled from the main pipeline, runs every 2h:
-    Phase A: Finnhub -> fetch_macro_news + fetch_economic_calendar -> upsert MacroNewsCache
-                       + per-ticker news -> TickerNewsLibrary
-    Phase B: Alpha Vantage -> bulk ticker news -> TickerNewsLibrary (source_api=alphavantage)
-    Phase C: RSS feeds -> fetch 5 feeds in parallel -> keyword-match ticker -> TickerNewsLibrary (source_api=rss)
-    Phase D: LLM batch summarize (gpt-4o-mini, existing, executed within Phase A)
-    Phase E: cross-source dedup (url dedup, already done per-Phase by url)
-    Phase F: cleanup 48h old news
+Runs every 30 minutes (Railway cron `*/30 * * * *`); `plan_run` decides what a
+slot does, by US Eastern time:
+    full   weekdays 05:30 and 16:30 ET: the whole Scout scan universe (~900 stocks)
+    core   weekdays 04:00-20:00 ET: ETFs, holdings, open ideas, watchlist, sector leaders (~100)
+    core   other times: every second hour only
+    skip   the remaining slots
 
-Two crons fail independently: trading analysis requires a fresh news cache before
-                   entering the pipeline; main pipeline down -> news continues refreshing.
-Each Phase fails independently: Phase B/C down does not affect Phase A (Finnhub), and vice versa.
+Phases per run:
+    A  Finnhub macro news -> MacroNewsCache; Finnhub per-ticker news -> TickerNewsLibrary
+       (one call per ticker; earnings-soon flags read the scout.market_events table)
+    C  RSS feeds -> keyword-matched to ETFs -> TickerNewsLibrary
+    D  LLM summary per new article (gpt-4o-mini), inside A
+    F  archive and drop library rows older than 48h
+
+Alpha Vantage NEWS_SENTIMENT became a premium endpoint and was removed
+(2026-10-27). The news pipeline does not import Scout; it reads Scout tables
+with plain SQL.
 
 Usage:
-    python -m cron.pre_fetch_news
-
-Railway recommended cron (UTC):
-    50 */2 * * *  (24/7 every 2h; news is an external event stream, not trading-day data)
+    python -m cron.pre_fetch_news [--tier full|core]
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any
 
-from openai import AsyncOpenAI
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 
 from constants import resolve_universe
 from db.models import MacroNewsCache, TickerNewsArchive, TickerNewsLibrary
 from db.session import AsyncSessionLocal
-from services.alphavantage_client import fetch_ticker_news_av
 from services.finnhub_client import (
-    fetch_economic_calendar,
-    fetch_earnings_flag,
     fetch_macro_news,
     fetch_ticker_news,
     get_source_credibility,
@@ -55,133 +53,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger("qc_fastapi_2.cron.pre_fetch_news")
 
-PRE_FETCH_TIMEOUT_S = 1500      # 25 minutes; ticker loop is paced for the Finnhub free tier
+TIMEOUT_S = {"core": 1500, "full": 3300}   # a full run must end before the slot after next
 TTL_SECONDS         = 48 * 3600 # 48h
-# Two Finnhub calls per ticker; 2.2s pacing keeps the loop under the free tier's 60 calls/min.
-FINNHUB_TICKER_PACING_S = 2.2
-
-# ═══════════════════════════════════════════════════════════════
-# News Structuring (Phase D')
-# ═══════════════════════════════════════════════════════════════
-
-NEWS_STRUCTURING_PROMPT = """
-You are a financial news structuring engine. I will give you a set of raw news articles,
-and you need to extract structured signals useful for ETF portfolio management.
-
-## Input news
-{raw_news_text}
-
-## ETF Universe
-{etf_universe}
-
-## Output requirements (strict JSON, no prefix)
-
-{{
-  "processed_at": "ISO timestamp",
-  "macro_signals": [
-    {{
-      "event": "event name (≤20 chars)",
-      "category": "fed_policy"|"inflation"|"employment"|"geopolitical"|"earnings"|"other",
-      "direction": "positive"|"negative"|"neutral"|"mixed",
-      "impact_horizon": "immediate"|"short_term"|"medium_term",
-      "confidence": "high"|"medium"|"low",
-      "affected_sectors": ["XLK", "XLF"],
-      "summary": "one-sentence explanation (≤40 chars)"
-    }}
-  ],
-  "ticker_signals": {{
-    "<TICKER>": {{
-      "sentiment": "positive"|"negative"|"neutral",
-      "news_count": <int>,
-      "key_events": ["event 1 (≤20 chars)", "event 2"],
-      "data_quality": "fresh"|"stale"|"no_news"
-    }}
-  }},
-  "noise_filtered": <int>,  // duplicate/low-quality news filtered out
-  "data_gaps": ["XLE has no valid news in past 48h", "..."]
-}}
-
-macro_signals: max 5 items, only keep impact >= medium.
-ticker_signals: only include tickers with news; do not include tickers with no news.
-If multiple news items describe the same event, merge into one; do not duplicate.
-"""
+# One Finnhub call per ticker; >= 1.1 s per ticker stays under the free tier's 60 calls/min.
+FINNHUB_TICKER_PACING_S = 1.1
+ET = ZoneInfo("America/New_York")
+FULL_SLOTS = {(5, 30), (16, 30)}            # ET: before the pre-market brief, after the close
 
 
-async def structure_news_with_llm(
-    raw_news: list[dict],
-    etf_universe: list[str],
-) -> dict:
-    """
-    Call gpt-4o-mini to structurize raw news.
-    raw_news format: Finnhub/AlphaVantage/RSS unified format
-      {headline, summary, source, datetime, url, ...}
-    Cost: ~$0.002-0.005 per run (far lower than gpt-4o)
-    """
-    from config import get_settings
-    settings = get_settings()
-
-    if not raw_news:
-        return {
-            "macro_signals": [],
-            "ticker_signals": {},
-            "noise_filtered": 0,
-            "data_gaps": ["no news data"],
-        }
-
-    # Concatenate raw news (control tokens, truncate key fields)
-    news_parts = []
-    for n in raw_news[:40]:  # max 40 items to prevent token overflow
-        source = n.get("source", "?")
-        dt = n.get("datetime", 0)
-        if dt:
-            from datetime import datetime as dt_cls
-            try:
-                dt_str = dt_cls.utcfromtimestamp(dt).strftime("%Y-%m-%d %H:%M")
-            except (ValueError, OSError):
-                dt_str = str(dt)
-        else:
-            dt_str = "?"
-        headline = n.get("headline", "")
-        summary = n.get("summary", "")[:300]
-        news_parts.append(
-            f"[{source}] {dt_str}\nTitle: {headline}\nSummary: {summary}"
-        )
-    news_text = "\n\n".join(news_parts)
-
-    prompt = NEWS_STRUCTURING_PROMPT.format(
-        raw_news_text=news_text,
-        etf_universe=", ".join(etf_universe),
-    )
-
-    try:
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
-        response = await client.chat.completions.create(
-            model=settings.openai_model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=1500,
-            temperature=0.1,  # low temperature to ensure structure stability
-            response_format={"type": "json_object"},
-        )
-
-        structured = json.loads(response.choices[0].message.content)
-        structured["_model"] = settings.openai_model
-        structured["_raw_news_count"] = len(raw_news)
-        logger.info(
-            f"News structuring complete: {len(raw_news)} raw -> "
-            f"{len(structured.get('macro_signals', []))} macro_signals"
-        )
-        return structured
-
-    except Exception as e:
-        logger.error(f"News structuring failed: {e}, using empty structure")
-        return {
-            "macro_signals": [],
-            "ticker_signals": {},
-            "noise_filtered": 0,
-            "data_gaps": [f"structuring failed: {str(e)}"],
-            "_fallback": True,
-        }
-
+def plan_run(now: datetime | None = None) -> str | None:
+    """'full', 'core' or None (skip) for the 30-minute slot containing `now`."""
+    et = (now or datetime.now(ET)).astimezone(ET)
+    slot = (et.hour, 30 if et.minute >= 30 else 0)
+    weekday = et.weekday() < 5
+    if weekday and slot in FULL_SLOTS:
+        return "full"
+    if weekday and 4 <= et.hour < 20:
+        return "core"
+    return "core" if slot[1] == 0 and et.hour % 2 == 0 else None
 
 # ═══════════════════════════════════════════════════════════════
 # Macro section
@@ -189,15 +78,13 @@ async def structure_news_with_llm(
 
 async def _refresh_macro_cache(universe: list[str]) -> dict[str, Any]:
     """
-    Pull macro news + calendar, upsert to MacroNewsCache (single row, id=1).
-    Phase D': call gpt-4o-mini for structurization, store raw_payload + structured_payload.
+    Pull macro news, upsert to MacroNewsCache (single row, id=1).
+    The economic calendar is not in Finnhub's free tier (Scout reads a free
+    weekly feed instead), and nothing reads the old LLM structuring any more.
     """
-    # Move sync httpx to to_thread to avoid blocking event loop
     macro_news   = await asyncio.to_thread(fetch_macro_news, 20)
-    econ_events  = await asyncio.to_thread(fetch_economic_calendar, 3)
-
-    # Phase D': News structurization
-    structured = await structure_news_with_llm(macro_news, universe)
+    econ_events: list[dict] = []
+    structured = None
 
     prose = _build_macro_prose(macro_news, econ_events)
 
@@ -223,8 +110,7 @@ async def _refresh_macro_cache(universe: list[str]) -> dict[str, Any]:
         await db.commit()
 
     logger.info(
-        f"macro cache refreshed | news={len(macro_news)} | calendar={len(econ_events)} | "
-        f"structured={not structured.get('_fallback')}"
+        f"macro cache refreshed | news={len(macro_news)}"
     )
     return {"n_news": len(macro_news), "n_events": len(econ_events)}
 
@@ -262,7 +148,7 @@ def _build_macro_prose(macro_news: list[dict], econ_events: list[dict]) -> str:
 # Ticker section
 # ═══════════════════════════════════════════════════════════════
 
-async def _process_ticker(ticker: str) -> int:
+async def _process_ticker(ticker: str, earnings_soon: set[str]) -> int:
     """
     Process single ticker: fetch -> dedupe -> summarize -> hard_risks -> insert.
     Returns number of newly written entries.
@@ -301,8 +187,7 @@ async def _process_ticker(ticker: str) -> int:
     summaries = await summarize_headlines_batch(ticker, new_items)
 
     # earnings + hard risks (based on all news_items, not just newly added)
-    has_earnings = await asyncio.to_thread(fetch_earnings_flag, ticker, 7)
-    hard_risks   = scan_hard_risks(ticker, news_items, has_earnings)
+    hard_risks   = scan_hard_risks(ticker, news_items, ticker in earnings_soon)
 
     # Batch insert
     rows: list[TickerNewsLibrary] = []
@@ -337,62 +222,6 @@ async def _process_ticker(ticker: str) -> int:
             return 0
 
     return len(rows)
-
-
-# ═══════════════════════════════════════════════════════════════
-# Phase B: Alpha Vantage
-# ═══════════════════════════════════════════════════════════════
-
-async def _fetch_alphavantage(universe: list[str]) -> int:
-    """
-    Phase B: Bulk fetch news from Alpha Vantage.
-    AV supports comma-separated multi-ticker in one request (free 25 req/day).
-    Returns number of newly written entries.
-    """
-    try:
-        av_items = await asyncio.to_thread(fetch_ticker_news_av, universe, 50)
-    except Exception as e:
-        logger.error(f"Alpha Vantage fetch failed: {e}")
-        return 0
-
-    if not av_items:
-        return 0
-
-    # Bucket by ticker (AV returns related ticker list in 'related')
-    universe_set = set(universe)
-    ticker_buckets: dict[str, list[dict]] = {}
-    for item in av_items:
-        url = (item.get("url") or "").strip()
-        if not url:
-            continue
-        item["headline"] = sanitize(item.get("headline", ""))
-        if not item["headline"]:
-            continue
-
-        # Match our universe tickers from ticker_sentiments or related
-        related = item.get("related") or []
-        av_sentiments = item.get("ticker_sentiments") or {}
-        matched_tickers = set()
-        for t in related:
-            if t in universe_set:
-                matched_tickers.add(t)
-        for t in av_sentiments:
-            if t in universe_set:
-                matched_tickers.add(t)
-
-        if not matched_tickers:
-            continue
-
-        for t in matched_tickers:
-            ticker_buckets.setdefault(t, []).append(item)
-
-    total_new = 0
-    for ticker, items in ticker_buckets.items():
-        n = await _insert_external_news(ticker, items, "alphavantage")
-        total_new += n
-
-    logger.info(f"Phase B (Alpha Vantage): {total_new} new articles across {len(ticker_buckets)} tickers")
-    return total_new
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -598,34 +427,44 @@ async def _cleanup_old_news() -> int:
 # Main
 # ═══════════════════════════════════════════════════════════════
 
-async def run_pre_fetch() -> dict:
+async def _earnings_soon(days: int = 7) -> set[str]:
+    """Tickers reporting within `days`, read off Scout's earnings calendar table (no API call)."""
+    from sqlalchemy import text
+
+    try:
+        async with AsyncSessionLocal() as db:
+            rows = await db.execute(text(
+                "SELECT DISTINCT ticker FROM scout.market_events WHERE event_type = 'earnings' "
+                "AND event_date BETWEEN current_date AND current_date + :d"), {"d": days})
+            return {r[0] for r in rows}
+    except Exception:
+        return set()
+
+
+async def run_pre_fetch(tier: str = "core") -> dict:
     """Main entry. Returns statistics."""
     from db.session import init_db
     await init_db()
 
-    universe = await resolve_universe()
-    logger.info(f"=== pre_fetch_news START | universe={len(universe)} tickers ===")
+    universe = await resolve_universe(full=tier == "full")
+    earnings_soon = await _earnings_soon()
+    logger.info(f"=== pre_fetch_news START | tier={tier} | universe={len(universe)} tickers ===")
 
     # ── Phase A: Finnhub (macro + per-ticker) ──
     macro_stats = await _refresh_macro_cache(universe)
 
     finnhub_new = 0
     for ticker in universe:
+        started = time.monotonic()
         try:
-            n = await _process_ticker(ticker)
+            n = await _process_ticker(ticker, earnings_soon)
             if n > 0:
                 logger.info(f"  [finnhub] {ticker}: {n} new articles")
             finnhub_new += n
         except Exception as e:
             logger.error(f"  [finnhub] {ticker}: FAILED — {e}")
-        await asyncio.sleep(FINNHUB_TICKER_PACING_S)
-
-    # ── Phase B: Alpha Vantage (bulk ticker news) ──
-    av_new = 0
-    try:
-        av_new = await _fetch_alphavantage(universe)
-    except Exception as e:
-        logger.error(f"Phase B (Alpha Vantage) FAILED — {e}")
+        # Summarizing new articles already takes time; only wait out the rest of the pace.
+        await asyncio.sleep(max(0.0, FINNHUB_TICKER_PACING_S - (time.monotonic() - started)))
 
     # ── Phase C: RSS feeds (keyword-matched to tickers) ──
     rss_new = 0
@@ -637,36 +476,38 @@ async def run_pre_fetch() -> dict:
     # ── Phase F: Cleanup 48h ──
     deleted = await _cleanup_old_news()
 
-    total_new = finnhub_new + av_new + rss_new
+    total_new = finnhub_new + rss_new
     logger.info(
-        f"=== pre_fetch_news DONE | macro_news={macro_stats['n_news']} "
-        f"| finnhub={finnhub_new} | alphavantage={av_new} | rss={rss_new} "
-        f"| total_new={total_new} | cleaned={deleted} ==="
+        f"=== pre_fetch_news DONE | tier={tier} | macro_news={macro_stats['n_news']} "
+        f"| finnhub={finnhub_new} | rss={rss_new} | total_new={total_new} | cleaned={deleted} ==="
     )
 
     return {
+        "tier":             tier,
         "universe_size":    len(universe),
         "macro_news":       macro_stats["n_news"],
-        "macro_events":     macro_stats["n_events"],
         "finnhub_articles": finnhub_new,
-        "av_articles":      av_new,
         "rss_articles":     rss_new,
         "total_new":        total_new,
         "cleaned":          deleted,
     }
 
 
-async def main() -> None:
+async def main(tier: str | None = None) -> None:
     from services.cron_audit import audit_cron_run
 
+    tier = tier or plan_run()
+    if tier is None:
+        logger.info("pre_fetch_news: nothing scheduled for this slot")
+        return
     try:
         async with audit_cron_run("pre_fetch_news") as audit:
-            result = await asyncio.wait_for(run_pre_fetch(), timeout=PRE_FETCH_TIMEOUT_S)
+            result = await asyncio.wait_for(run_pre_fetch(tier), timeout=TIMEOUT_S[tier])
             audit.add_rows(result.get("total_new"))
             audit.set_summary(**result)
             logger.info(f"pre_fetch_news result: {result}")
     except asyncio.TimeoutError:
-        logger.error(f"pre_fetch_news TIMEOUT after {PRE_FETCH_TIMEOUT_S}s")
+        logger.error(f"pre_fetch_news TIMEOUT after {TIMEOUT_S[tier]}s (tier={tier})")
         raise
     except Exception as e:
         logger.exception("pre_fetch_news FAILED")
@@ -680,4 +521,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import sys
+
+    forced = sys.argv[sys.argv.index("--tier") + 1] if "--tier" in sys.argv else None
+    asyncio.run(main(forced))
