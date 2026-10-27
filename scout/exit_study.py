@@ -156,4 +156,9 @@ def summarize(rows: list[dict]) -> dict:
     return {"n": len(rows), "avg_net": round(float(ret.mean()), 5), "median_net": round(float(np.median(ret)), 5),
             "win_rate": round(float((ret > 0).mean()), 4), "avg_r": round(float(np.mean([r["r"] for r in rows])), 3),
             "edge_vs_hold": round(float(vs_hold.mean()), 5) if vs_hold.size else None,
+            # payoff shape in R: how big wins and losses are, and how many losers took the full stop
+            "avg_win_r": round(float(np.mean([r["r"] for r, x in zip(rows, ret) if x > 0] or [0])), 3),
+            "avg_loss_r": round(float(np.mean([r["r"] for r, x in zip(rows, ret) if x <= 0] or [0])), 3),
+            "full_stop_share": round(float(np.mean([r["r"] <= -0.9 for r, x in zip(rows, ret) if x <= 0] or [0])), 3),
+            "scratch_share": round(float(np.mean([-0.3 < r["r"] <= 0 for r, x in zip(rows, ret) if x <= 0] or [0])), 3),
             "avg_days": round(float(np.mean([r["days"] for r in rows])), 1)}

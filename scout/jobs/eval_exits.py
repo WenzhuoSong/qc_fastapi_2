@@ -47,12 +47,16 @@ async def study() -> dict:
                 ret, days = exit_study.manage(path, entry, lv.stop, lv.target1, lv.target2, pol)
                 hold = float(np.exp(drift[ticker] * days) - 1) if ticker in drift else None
                 rows[pol.name].append({"ret": ret, "days": days, "hold": hold, "r": ret * entry / (entry - lv.stop),
-                                       "date": d, "detector": det.name})
+                                       "date": d, "detector": det.name, "t1_r": (lv.target1 - entry) / (entry - lv.stop),
+                                       "stop_atr": (entry - lv.stop) / a["atr14"][i] if a["atr14"][i] > 0 else None})
     dates = sorted(r["date"] for r in rows["fixed"])
     if not dates:
         return {"n": 0}
     mid = dates[len(dates) // 2]
-    out: dict = {"n": len(dates), "first": str(dates[0]), "split": str(mid), "last": str(dates[-1]), "policies": {}}
+    base = rows["fixed"]
+    out: dict = {"n": len(dates), "first": str(dates[0]), "split": str(mid), "last": str(dates[-1]), "policies": {},
+                 "median_t1_r": round(float(np.median([r["t1_r"] for r in base])), 2),
+                 "median_stop_atr": round(float(np.nanmedian([r["stop_atr"] or np.nan for r in base])), 2)}
     for pol in exit_study.POLICIES:
         rs = rows[pol.name]
         out["policies"][pol.name] = {
