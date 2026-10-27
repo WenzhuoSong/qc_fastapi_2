@@ -109,6 +109,39 @@ class ManageTests(unittest.TestCase):
         self.assertEqual(plan, before)
 
 
+class ExitPlanTests(unittest.TestCase):
+    PLAN = {"stop": 95.0, "target1": 110.0, "target1_basis": "阻力 1", "target2": 120.0, "target2_basis": "3R"}
+
+    def stages(self, remaining, **hit):
+        return levels.exit_plan({**self.PLAN, **hit}, 100.0, 200, remaining, 97.0)
+
+    def test_thirds_with_reasoning(self):
+        t1, t2, rest = self.stages(200)
+        self.assertEqual((t1["price"], t1["r"], t1["suggest"], t1["state"]), (110.0, 2.0, 67, "pending"))
+        self.assertIn("整笔也大致不亏", t1["why"])                      # target 1 at 2R
+        self.assertEqual((t2["suggest"], rest["suggest"], rest["price"]), (66, 67, 97.0))   # 200 = 67 + 66 + 67
+
+    def test_advice_follows_what_was_sold(self):
+        t1, t2, _ = self.stages(200, target1_hit="2026-10-28")
+        self.assertEqual((t1["state"], t1["sell_now"]), ("due", 67))
+        t1, t2, _ = self.stages(133, target1_hit="2026-10-28")
+        self.assertEqual((t1["state"], t2["state"], t2["suggest"]), ("done", "pending", 66))
+        t1, t2, _ = self.stages(180, target1_hit="2026-10-28")           # sold less than advised
+        self.assertEqual((t1["state"], t1["sell_now"]), ("due", 47))
+        t1, t2, _ = self.stages(100, target1_hit="2026-10-28")           # sold more: target 2 shrinks
+        self.assertEqual(t2["suggest"], 33)
+        t1, t2, _ = self.stages(200, target1_hit="2026-10-28", target2_hit="2026-10-28")   # both passed, nothing sold
+        self.assertEqual((t1["state"], t2["state"], t2["sell_now"]), ("merged", "due", 133))
+
+    def test_intraday_target_alert_advises_shares(self):
+        from scout import intraday
+
+        t = {"entry_price": 100.0, "shares": 200, "sold_shares": 0, "stop": 95.0, "target": 110.0, "plan": self.PLAN}
+        text = intraday.trade_events(t, 110.5)[0][1]
+        self.assertIn("建议卖出 67 股", text)
+        self.assertIn("/sell", text)
+
+
 class PlanPanelTests(unittest.TestCase):
     OPP = {"id": "o1", "ticker": "VLO", "primary_detector": "pullback_in_uptrend", "status": "triggered",
            "asof": date(2026, 10, 23), "triggered_on": date(2026, 10, 26), "entry_lo": 410.75, "entry_hi": 423.54,

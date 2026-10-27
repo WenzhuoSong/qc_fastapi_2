@@ -275,7 +275,8 @@ async def _side_panel(t: str, opp: dict | None, f: dict, struct: dict, bars: lis
     panel = views.price_panel(pm, live, settings, opp=active, today=today, tracking_html=tracking, ticker=t)
     held = [x for x in await portfolio.trades(open_only=True) if x["ticker"] == t]
     if held:
-        panel += views.holding_card(held, live, f.get("close"), today)
+        panel += views.holding_card(held, live, f.get("close"), today,
+                                    {x["id"]: await portfolio.sells(x["id"]) for x in held})
     return f"<div>{panel}</div>"
 
 
@@ -789,12 +790,19 @@ async def trades_add(ticker: str = Form(...), opened_on: str = Form(...), entry_
     return RedirectResponse("/trades", status_code=303)
 
 
-@app.post("/trades/{trade_id}/close")
-async def trades_close(trade_id: int, exit_price: str = Form(...), closed_on: str = Form(...), _: str = Depends(require_auth)):
-    price = _num(exit_price)
-    if not price or price <= 0:
-        raise HTTPException(status_code=400, detail="出场价必须是正数")
-    await portfolio.close_trade(trade_id, price, date.fromisoformat(closed_on))
+@app.post("/trades/{trade_id}/sell")
+async def trades_sell(trade_id: int, price: str = Form(...), sold_on: str = Form(...), shares: str = Form(""),
+                      back: str = Form("/trades"), _: str = Depends(require_auth)):
+    try:
+        await portfolio.add_sell(trade_id, date.fromisoformat(sold_on), _num(price) or 0, _num(shares))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return RedirectResponse(back if back.startswith("/") and not back.startswith("//") else "/trades", status_code=303)
+
+
+@app.post("/trades/sells/{sell_id}/delete")
+async def trades_sell_delete(sell_id: int, _: str = Depends(require_auth)):
+    await portfolio.delete_sell(sell_id)
     return RedirectResponse("/trades", status_code=303)
 
 

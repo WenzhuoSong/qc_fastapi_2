@@ -84,11 +84,12 @@ async def manage_trade(t: dict) -> list[str]:
     from scout import levels
 
     plan = t.get("plan")
-    if not plan or "history" not in plan:     # no plan yet (or one from before the system managed trades)
+    if not plan or "target1" not in plan:     # no plan yet (a sell note alone does not make one)
         pm = await levels.get_map(t["ticker"], before=t["opened_on"]) or {}
-        plan = levels.locked_plan(pm, t["entry_price"], t["opened_on"])
-        if not plan:
+        new = levels.locked_plan(pm, t["entry_price"], t["opened_on"])
+        if not new:
             return []
+        plan = {**new, "history": (plan or {}).get("history", [])}
     bars = await db.fetch_all("SELECT date, high, close FROM scout.bars_daily WHERE ticker = :t AND date >= :d ORDER BY date",
                               {"t": t["ticker"], "d": t["opened_on"]})
     feat = await db.fetch_one("SELECT payload FROM scout.features_daily WHERE ticker = :t ORDER BY date DESC LIMIT 1",
@@ -98,6 +99,10 @@ async def manage_trade(t: dict) -> list[str]:
     reached = [b["close"] if b["date"] == t["opened_on"] else b["high"] for b in bars]
     stop, target, _, msgs = levels.manage(plan, reached, [b["close"] for b in bars],
                                           ((feat or {}).get("payload") or {}).get("atr14"), asof)
+    remaining = t["shares"] - sum(r["shares"] for r in await sells(t["id"]))
+    for st in levels.exit_plan(plan, t["entry_price"], t["shares"], remaining, stop):
+        if st["sell_now"] and any(m.startswith(f"到达{st['stage']}") for m in msgs):
+            msgs.append(f"建议卖出 {st['sell_now']:g} 股（原仓位约 {st['fraction']}，剩余 {remaining:g} 股）")
     await db.execute("UPDATE scout.trades SET stop = :s, target = :g, plan = CAST(:p AS JSONB), updated_at = now() WHERE id = :id",
                      {"s": stop, "g": target, "p": db.jsonb(plan), "id": t["id"]})
     return msgs
@@ -117,9 +122,55 @@ async def manage_open_trades() -> list[dict]:
     return out
 
 
-async def close_trade(trade_id: int, exit_price: float, closed_on: date) -> None:
-    await db.execute("UPDATE scout.trades SET exit_price = :p, closed_on = :d, updated_at = now() WHERE id = :id",
-                     {"p": exit_price, "d": closed_on, "id": trade_id})
+async def sells(trade_id: int) -> list[dict]:
+    return await db.fetch_all("SELECT * FROM scout.trade_sells WHERE trade_id = :id ORDER BY sold_on, id", {"id": trade_id})
+
+
+async def _note(trade_id: int, text: str, on: date) -> None:
+    await db.execute("UPDATE scout.trades SET plan = jsonb_set(coalesce(plan, '{}'::jsonb), '{history}', "
+                     "coalesce(plan->'history', '[]'::jsonb) || CAST(:h AS JSONB)) WHERE id = :id",
+                     {"h": db.jsonb([{"date": on.isoformat(), "text": text}]), "id": trade_id})
+
+
+async def _settle(trade_id: int) -> dict:
+    """Close the trade when nothing remains (exit = average sell), reopen it otherwise; then manage it."""
+    t = await db.fetch_one("SELECT * FROM scout.trades WHERE id = :id", {"id": trade_id})
+    rows = await sells(trade_id)
+    n = sum(r["shares"] for r in rows)
+    if rows and n >= t["shares"] - 1e-9:
+        avg = sum(r["shares"] * r["price"] for r in rows) / n
+        await db.execute("UPDATE scout.trades SET exit_price = :p, closed_on = :d, updated_at = now() WHERE id = :id",
+                         {"p": avg, "d": max(r["sold_on"] for r in rows), "id": trade_id})
+    else:
+        await db.execute("UPDATE scout.trades SET exit_price = NULL, closed_on = NULL, updated_at = now() WHERE id = :id",
+                         {"id": trade_id})
+        await manage_trade(await db.fetch_one("SELECT * FROM scout.trades WHERE id = :id", {"id": trade_id}))
+    return {"remaining": t["shares"] - n, "closed": bool(rows) and n >= t["shares"] - 1e-9}
+
+
+async def add_sell(trade_id: int, sold_on: date, price: float, shares: float | None, note: str = "") -> dict:
+    """Record a sell (all remaining shares when `shares` is None). Raises ValueError on bad input."""
+    t = await db.fetch_one("SELECT * FROM scout.trades WHERE id = :id", {"id": trade_id})
+    if not t or t["closed_on"]:
+        raise ValueError("这笔持仓不存在或已平仓")
+    remaining = t["shares"] - sum(r["shares"] for r in await sells(trade_id))
+    shares = remaining if shares is None else shares
+    if price <= 0 or shares <= 0 or shares > remaining + 1e-9:
+        raise ValueError(f"卖出股数须在 0 到剩余 {remaining:g} 股之间，价格须为正数")
+    if sold_on < t["opened_on"]:
+        raise ValueError("卖出日期早于买入日期")
+    await db.execute("INSERT INTO scout.trade_sells (trade_id, sold_on, price, shares, note) VALUES (:t, :d, :p, :n, :note)",
+                     {"t": trade_id, "d": sold_on, "p": price, "n": shares, "note": note or None})
+    left = remaining - shares
+    await _note(trade_id, f"卖出 {shares:g} 股 @ {price:.2f}（{price / t['entry_price'] - 1:+.1%}），剩余 {left:g} 股", sold_on)
+    return {**await _settle(trade_id), "ticker": t["ticker"], "shares": shares, "price": price}
+
+
+async def delete_sell(sell_id: int) -> None:
+    row = await db.execute_returning("DELETE FROM scout.trade_sells WHERE id = :id RETURNING trade_id, sold_on, shares, price", {"id": sell_id})
+    if row:
+        await _note(row["trade_id"], f"撤销卖出记录 {row['shares']:g} 股 @ {row['price']:.2f}", row["sold_on"])
+        await _settle(row["trade_id"])
 
 
 async def delete_trade(trade_id: int) -> None:
@@ -129,27 +180,41 @@ async def delete_trade(trade_id: int) -> None:
 async def trades(open_only: bool | None = None) -> list[dict]:
     where = "" if open_only is None else ("WHERE t.closed_on IS NULL" if open_only else "WHERE t.closed_on IS NOT NULL")
     return await db.fetch_all(
-        f"""SELECT t.*, i.name, i.sector, i.industry, b.close AS last_close, b.date AS last_date
+        f"""SELECT t.*, i.name, i.sector, i.industry, b.close AS last_close, b.date AS last_date,
+                   coalesce(sl.sold, 0) AS sold_shares, coalesce(sl.value, 0) AS sold_value
             FROM scout.trades t
             LEFT JOIN scout.instruments i USING (ticker)
             LEFT JOIN LATERAL (SELECT close, date FROM scout.bars_daily WHERE ticker = t.ticker ORDER BY date DESC LIMIT 1) b ON true
+            LEFT JOIN LATERAL (SELECT sum(shares) AS sold, sum(shares * price) AS value FROM scout.trade_sells
+                               WHERE trade_id = t.id) sl ON true
             {where} ORDER BY coalesce(t.closed_on, t.opened_on) DESC, t.id DESC""")
 
 
+def sold(t: dict) -> tuple[float, float]:
+    """(shares sold, proceeds); a trade closed before partial sells existed counts as one sell at its exit."""
+    n, v = t.get("sold_shares") or 0.0, t.get("sold_value") or 0.0
+    if t.get("closed_on") and not n and t.get("exit_price"):
+        return t["shares"], t["shares"] * t["exit_price"]
+    return n, v
+
+
 def metrics(t: dict) -> dict:
-    """P&L of one trade at its exit (closed) or the last close (open)."""
+    """P&L of one trade: realized on the shares sold plus, while open, the rest at the last close."""
+    n_sold, proceeds = sold(t)
+    remaining = max(0.0, t["shares"] - n_sold)
     price = t.get("exit_price") if t.get("closed_on") else t.get("last_close")
-    out: dict = {"price": price}
-    if price is None:
+    out: dict = {"price": price, "remaining": remaining, "sold": n_sold}
+    realized = proceeds - n_sold * t["entry_price"]
+    if price is None and remaining:
         return out
-    pnl = (price - t["entry_price"]) * t["shares"]
-    out.update(pnl=pnl, pnl_pct=price / t["entry_price"] - 1)
+    pnl = realized + ((price - t["entry_price"]) * remaining if remaining else 0.0)
+    out.update(pnl=pnl, realized=realized, pnl_pct=pnl / (t["entry_price"] * t["shares"]))
     # R is measured against the initial stop; the stop the system has raised since only sets the open risk
     first = (t.get("plan") or {}).get("stop") or t.get("stop")
     if first and t["entry_price"] > first:
-        out["r"] = (price - t["entry_price"]) / (t["entry_price"] - first)
-    if t.get("stop"):
-        out["open_risk"] = max(0.0, (price - t["stop"]) * t["shares"]) if not t.get("closed_on") else None
+        out["r"] = pnl / ((t["entry_price"] - first) * t["shares"])
+    if t.get("stop") and price and not t.get("closed_on"):
+        out["open_risk"] = max(0.0, (price - t["stop"]) * remaining)
         out["to_stop"] = t["stop"] / price - 1
     return out
 

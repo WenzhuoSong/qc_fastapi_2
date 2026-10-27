@@ -31,7 +31,8 @@ HELP_TEXT = (
     "/stats — 规则记分板\n"
     "/sectors — 板块热度、轮动与市场关注点\n"
     "/premarket — 今天的盘前简报\n"
-    "/trades — 我的持仓与盈亏（在 Dashboard「我的交易」记录）\n"
+    "/trades — 我的持仓、止损和下一步止盈建议\n"
+    "/sell CART 66 61.50 [2026-10-28] — 记录卖出（代码 股数 价格 [日期]，股数可写 all）\n"
     "直接发文字即可提问（例如：今天最强的板块是什么？）"
 )
 
@@ -342,27 +343,80 @@ async def dispatch(text: str) -> str:
         return await premarket_text()
     if cmd in ("/trades", "/positions"):
         return await trades_text()
+    if cmd == "/sell":
+        return await sell_cmd(args)
     return HELP_TEXT
+
+
+def next_step(t: dict, m: dict) -> str:
+    """The take-profit step for one open trade, in words."""
+    from scout import levels
+
+    pl = t.get("plan") or {}
+    if "target1" not in pl:
+        return ""
+    for st in levels.exit_plan(pl, t["entry_price"], t["shares"], m["remaining"], t.get("stop")):
+        if st["state"] == "due":
+            return f"⚠️ {st['stage']} {st['price']:.2f} 已到，建议卖出 {st['sell_now']:g} 股"
+        if st["state"] == "pending":
+            return (f"下一步：{st['stage']} {st['price']:.2f} 卖 {st['suggest']:g} 股" if st["stage"] != "余下仓位"
+                    else f"余下 {m['remaining']:g} 股跟随移动止损")
+    return ""
 
 
 async def trades_text() -> str:
     held = await portfolio.trades(open_only=True)
     if not held:
-        return "没有记录的持仓。在 Dashboard「我的交易」页记录入场后，这里和盘前简报会跟踪它们。"
-    lines = ["<b>我的持仓</b>（按最近收盘价）"]
+        return "没有记录的持仓。在 Dashboard「我的交易」页记录买入后，这里和盘前简报会跟踪它们。"
+    lines = ["<b>我的持仓</b>（按最近收盘价；止损和止盈由系统每天收盘后更新）"]
     total = 0.0
     for t in held:
         m = portfolio.metrics(t)
+        qty = f"{m['remaining']:g}/{t['shares']:g}" if m["sold"] else f"{t['shares']:g}"
         if "pnl" not in m:
-            lines.append(f"• <b>{esc(t['ticker'])}</b> {t['shares']:g} 股 @ {t['entry_price']:.2f} · 无行情")
+            lines.append(f"• <b>{esc(t['ticker'])}</b> {qty} 股 @ {t['entry_price']:.2f} · 无行情")
             continue
         total += m["pnl"]
-        stop = f" · 距止损 {pct(m['to_stop'], 1, True)}" if "to_stop" in m else ""
+        stop = f" · 止损 {t['stop']:.2f}（{pct(m['to_stop'], 1, True)}）" if "to_stop" in m else ""
         r = f" · {m['r']:+.1f}R" if "r" in m else ""
-        lines.append(f"• <b>{esc(t['ticker'])}</b> {t['shares']:g} 股 @ {t['entry_price']:.2f} → {m['price']:.2f} "
-                     f"{m['pnl']:+,.0f}（{pct(m['pnl_pct'], 1, True)}）{r}{stop}")
-    lines.append(f"合计浮动盈亏 {total:+,.0f}")
+        step = next_step(t, m)
+        lines.append(f"• <b>{esc(t['ticker'])}</b> {qty} 股 @ {t['entry_price']:.2f} → {m['price']:.2f} "
+                     f"{m['pnl']:+,.0f}（{pct(m['pnl_pct'], 1, True)}）{r}{stop}" + (f"\n  {esc(step)}" if step else ""))
+    lines.append(f"合计盈亏 {total:+,.0f}（含已实现）")
     return "\n".join(lines)
+
+
+async def sell_cmd(args: list[str]) -> str:
+    """/sell TICKER SHARES|all PRICE [YYYY-MM-DD]: a sell against the oldest open buy of that ticker."""
+    from datetime import date
+
+    from scout.market_calendar import us_equity_market_status
+
+    usage = "用法：/sell 代码 股数 价格 [日期]，例如 /sell CART 66 61.50 或 /sell CART all 61.50 2026-10-28"
+    if len(args) < 3:
+        return usage
+    try:
+        ticker = universe.yahoo_symbol(args[0])
+        shares = None if args[1].lower() in ("all", "全部") else float(args[1])
+        price = float(args[2].replace("$", "").replace(",", ""))
+        day = date.fromisoformat(args[3]) if len(args) > 3 else date.fromisoformat(us_equity_market_status().market_date)
+    except ValueError:
+        return usage
+    held = [t for t in await portfolio.trades(open_only=True) if t["ticker"] == ticker]
+    if not held:
+        return f"没有 {esc(ticker)} 的持仓记录。"
+    t = min(held, key=lambda x: (x["opened_on"], x["id"]))
+    try:
+        res = await portfolio.add_sell(t["id"], day, price, shares)
+    except ValueError as exc:
+        return esc(str(exc))
+    if res["closed"]:
+        return f"✅ 已记录：{esc(ticker)} 卖出 {res['shares']:g} 股 @ {price:.2f}，这笔持仓已全部卖出并平仓。"
+    t2 = next(x for x in await portfolio.trades(open_only=True) if x["id"] == t["id"])
+    m = portfolio.metrics(t2)
+    step = next_step(t2, m)
+    return (f"✅ 已记录：{esc(ticker)} 卖出 {res['shares']:g} 股 @ {price:.2f}，剩余 {m['remaining']:g} 股，"
+            f"已实现 {m['realized']:+,.0f}。止损 {t2['stop']:.2f}" + (f"\n{esc(step)}" if step else ""))
 
 
 async def premarket_text() -> str:

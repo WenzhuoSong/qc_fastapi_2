@@ -58,7 +58,17 @@ def trade_events(t: dict, price: float) -> list[tuple[str, str]]:
     if t.get("stop") and price <= t["stop"]:
         out.append(("trade_stop", f"跌破持仓止损 {t['stop']:.2f}（成本 {t['entry_price']:.2f}，{pnl * 100:+.1f}%）"))
     if t.get("target") and price >= t["target"]:
-        out.append(("trade_target", f"到达持仓止盈位 {t['target']:.2f}（成本 {t['entry_price']:.2f}，{pnl * 100:+.1f}%）"))
+        advice = ""
+        if "target1" in (t.get("plan") or {}) and t.get("shares"):
+            from scout import levels
+
+            remaining = t["shares"] - (t.get("sold_shares") or 0)
+            stage = "目标 1" if t["target"] == t["plan"]["target1"] else "目标 2"
+            keep = next(st["keep_after"] for st in levels.exit_plan(t["plan"], t["entry_price"], t["shares"], remaining, t.get("stop"))
+                        if st["stage"] == stage)
+            if remaining > keep:
+                advice = f"，按计划建议卖出 {remaining - keep:g} 股（剩余 {remaining:g} 股），卖出后用 /sell 记录"
+        out.append(("trade_target", f"到达持仓止盈位 {t['target']:.2f}（成本 {t['entry_price']:.2f}，{pnl * 100:+.1f}%）{advice}"))
     return out
 
 
@@ -126,7 +136,10 @@ async def scan(today: date) -> dict:
     from scout.detectors import registry
 
     rules = {d.name: d for d in registry(include_candidates=True)}
-    held = await db.fetch_all("SELECT id, ticker, entry_price, stop, target FROM scout.trades WHERE closed_on IS NULL")
+    held = await db.fetch_all(
+        "SELECT t.id, t.ticker, t.entry_price, t.shares, t.stop, t.target, t.plan, "
+        "(SELECT coalesce(sum(shares), 0) FROM scout.trade_sells WHERE trade_id = t.id) AS sold_shares "
+        "FROM scout.trades t WHERE t.closed_on IS NULL")
     opps = await db.fetch_all(
         "SELECT id, ticker, status, asof, primary_detector, entry_lo, entry_hi, stop, current_stop, target1 "
         "FROM scout.opportunities WHERE status IN ('new', 'triggered')")

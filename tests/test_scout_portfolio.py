@@ -39,6 +39,16 @@ class JournalTests(unittest.TestCase):
         self.assertAlmostEqual(m["open_risk"], 400.0)
         self.assertAlmostEqual(m["to_stop"], 380 / 420 - 1)
 
+    def test_partial_sell_metrics(self):
+        t = {**self.OPEN, "sold_shares": 4, "sold_value": 4 * 430.0}
+        m = portfolio.metrics(t)
+        self.assertEqual((m["remaining"], m["realized"]), (6, 120.0))
+        self.assertAlmostEqual(m["pnl"], 120.0 + 6 * 20.0)
+        self.assertAlmostEqual(m["r"], 240.0 / (20.0 * 10))
+        self.assertAlmostEqual(m["open_risk"], 6 * 40.0)
+        closed = portfolio.metrics({**t, "closed_on": date(2026, 10, 30), "exit_price": 436.0, "sold_shares": 10, "sold_value": 4360.0})
+        self.assertAlmostEqual(closed["pnl"], 360.0)
+
     def test_raised_stop_keeps_r_on_the_initial_stop(self):
         m = portfolio.metrics({**self.OPEN, "stop": 405.0, "plan": {"stop": 380.0}})
         self.assertAlmostEqual(m["r"], 1.0)
@@ -68,7 +78,7 @@ class JournalTests(unittest.TestCase):
         html = trades_table([{**self.OPEN, "id": 1, "opened_on": date(2026, 10, 26), "last_date": date(2026, 10, 26)}])
         self.assertIn("+200", html)
         self.assertIn("+1.0R", html)
-        self.assertIn("/trades/1/close", html)
+        self.assertIn("/trades/1/sell", html)
 
 
 class OutcomeAndEventTests(unittest.TestCase):

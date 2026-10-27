@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from html import escape
 from typing import Any, Iterable
 
@@ -41,6 +42,7 @@ th{font-size:12px;color:var(--muted);font-weight:500}tr:last-child td{border-bot
 ul.tight{margin:4px 0;padding-left:18px}pre{white-space:pre-wrap;font:inherit;margin:0}
 input,textarea,select,button{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
 button{background:var(--accent);color:#fff;border:none;cursor:pointer}
+button.linkbtn{background:none;color:var(--accent);padding:0 2px;text-decoration:underline}
 .chartrow{display:grid;grid-template-columns:minmax(0,2.2fr) minmax(260px,1fr);gap:12px;align-items:start}
 .duo{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:12px;align-items:start;margin-bottom:12px}
 @media (max-width:900px){.chartrow,.duo{grid-template-columns:1fr}}
@@ -424,10 +426,17 @@ def trade_plan(o: dict, close: float | None, settings: dict | None = None, live:
 入场区间由信号日 ATR 决定，规定交易日内进入区间才算成交。</p></div>"""
 
 
-def holding_card(trades: list[dict], live: dict | None, close: float | None, today=None) -> str:
-    """The user's open position(s) in this stock with the stop and target the system manages."""
+STAGE_STATE = {"done": ("已执行", "muted"), "due": ("已到达，待卖出", "warn"), "merged": ("已越过，并入下一档一起卖", "muted"),
+               "pending": ("未到", "")}
+
+
+def holding_card(trades: list[dict], live: dict | None, close: float | None, today=None,
+                 sells: dict[int, list[dict]] | None = None) -> str:
+    """The user's open position(s) in this stock: the system stop, the take-profit plan
+    (reasoning, price, share, what to sell now) and the sells recorded so far."""
     from datetime import date as _date
 
+    from scout import levels
     from scout.intraday import sessions_since
 
     if not trades:
@@ -436,32 +445,48 @@ def holding_card(trades: list[dict], live: dict | None, close: float | None, tod
     items = []
     for t in trades:
         pl = t.get("plan") or {}
-        pnl = (price / t["entry_price"] - 1) if price else None
-        risk0 = t["entry_price"] - pl["stop"] if pl.get("stop") and t["entry_price"] > pl["stop"] else None
-        line = (f"<li>{escape(str(t['opened_on']))} {t['shares']:g} 股 @ {t['entry_price']:.2f} · 浮动 {signed(pnl)}"
-                + (f"（{(price - t['entry_price']) / risk0:+.1f}R）" if price and risk0 else ""))
+        m = portfolio.metrics({**t, "last_close": price})
+        line = (f"<div style='margin-top:6px'><b>{escape(str(t['opened_on']))} 买入 {t['shares']:g} 股 @ {t['entry_price']:.2f}</b>"
+                + (f"，已卖 {m['sold']:g} 股，剩余 {m['remaining']:g} 股" if m["sold"] else "")
+                + (f" · 盈亏 {signed(m['pnl_pct'])}（{m['pnl']:+,.0f}" + (f"，{m['r']:+.1f}R" if "r" in m else "") + "）" if "pnl" in m else ""))
         if t.get("stop"):
-            line += (f"<br><b>止损 {t['stop']:.2f}</b>（{escape(pl.get('stop_now_basis') or pl.get('stop_basis') or '')}"
-                     + (f"，距现价 {signed(t['stop'] / price - 1)}" if price else "") + "）")
-        if pl:
-            stage = ("已过目标 2，余下仓位只用移动止损" if pl.get("target2_hit") else
-                     f"止盈看目标 2 {pl['target2']:.2f}（{escape(pl['target2_basis'])}，目标 1 已于 {escape(pl['target1_hit'])} 到达）"
-                     if pl.get("target1_hit") else
-                     f"止盈看目标 1 {pl['target1']:.2f}（{escape(pl['target1_basis'])}，到达减仓一部分），之后看目标 2 {pl['target2']:.2f}")
-            held = sessions_since(t["opened_on"], today or _date.today())
-            line += f"<br>{stage}"
+            line += (f"<div class='small'><b>止损 {t['stop']:.2f}</b>（{escape(pl.get('stop_now_basis') or pl.get('stop_basis') or '')}"
+                     + (f"，距现价 {signed(t['stop'] / price - 1)}" if price else "") + "）</div>")
+        if "target1" in pl:
+            rows = []
+            for st in levels.exit_plan(pl, t["entry_price"], t["shares"], m["remaining"], t.get("stop")):
+                label, tone = STAGE_STATE[st["state"]]
+                act = (f"卖 {st['sell_now']:g} 股" if st["state"] == "due" else
+                       f"卖 {st['suggest']:g} 股" if st["state"] == "pending" and st["suggest"] else "—")
+                rows.append(f"<tr><td>{escape(st['stage'])}</td><td>{st['price']:.2f}" + (f"（{st['r']:.1f}R）" if st["r"] else "")
+                            + f"</td><td>{escape(st['fraction'])}</td><td class='{tone}'>{act}<br><span class='small'>{label}</span></td>"
+                            f"<td class='small muted'>{escape(st['why'])}</td></tr>" if st["price"] else "")
+            line += ("<table class='small'><thead><tr><th>止盈</th><th>价位</th><th>比例</th><th>建议</th><th>逻辑</th></tr></thead>"
+                     f"<tbody>{''.join(rows)}</tbody></table>")
             if not pl.get("target1_hit"):
-                line += f" · 时间止损 {held}/{pl['time_stop_days']} 个交易日"
+                held = sessions_since(t["opened_on"], today or _date.today())
+                line += f"<div class='small'>时间止损 {held}/{pl['time_stop_days']} 个交易日"
                 if held >= pl["time_stop_days"]:
-                    line += " <span class='warn'>已到时间止损仍未到目标 1，考虑离场</span>"
-            hist = pl.get("history") or []
-            if hist:
-                line += "<br><span class='muted'>" + "；".join(f"{escape(h['date'])} {escape(h['text'])}" for h in hist[-3:]) + "</span>"
-        items.append(line + "</li>")
-    return (f"<div class='card plan'><h3>我的持仓</h3><ul class='tight small'>{''.join(items)}</ul>"
-            "<p class='small muted'>止损和止盈由系统管理：初始值来自买入时的价位图（结构位下方、至少 1 个 ATR；目标 1 / 2），"
-            "每天收盘后更新：止损按吊灯止损（22 日最高收盘 − 3×ATR）只升不降，到目标 1 后止盈改看目标 2，过了目标 2 只用移动止损。"
-            "盘中监控和盘前简报按这里的止损和止盈提醒；Scout 不会替你下单。</p></div>")
+                    line += " <span class='warn'>已到时间止损仍未到目标 1，考虑卖出全部</span>"
+                line += "</div>"
+        sl = (sells or {}).get(t["id"]) or []
+        if sl:
+            line += "<div class='small'>卖出记录：" + "；".join(
+                f"{escape(str(x['sold_on']))} {x['shares']:g} 股 @ {x['price']:.2f}"
+                f" <form method='post' action='/trades/sells/{x['id']}/delete' style='display:inline' "
+                f"onsubmit=\"return confirm('撤销这条卖出记录？')\"><button class='linkbtn small'>撤销</button></form>" for x in sl) + "</div>"
+        hist = pl.get("history") or []
+        if hist:
+            line += "<div class='small muted'>" + "；".join(f"{escape(h['date'])} {escape(h['text'])}" for h in hist[-4:]) + "</div>"
+        line += (f"<form method='post' action='/trades/{t['id']}/sell' style='display:flex;gap:4px;flex-wrap:wrap;margin-top:4px'>"
+                 f"<input name='shares' value='{m['remaining']:g}' size='5' title='卖出股数' required>"
+                 f"<input name='price' placeholder='卖出价' size='7' required><input name='sold_on' type='date' value='{date.today()}' required>"
+                 f"<input type='hidden' name='back' value='/ticker/{escape(t['ticker'])}'><button>记录卖出</button></form></div>")
+        items.append(line)
+    return (f"<div class='card plan'><h3>我的持仓</h3>{''.join(items)}"
+            "<p class='small muted'>止损和止盈由系统管理：初始值来自买入前的价位图，每天收盘后更新；止损按吊灯止损（22 日最高收盘 − 3×ATR）只升不降。"
+            "分批止盈：目标 1 卖约 1/3、目标 2 再卖约 1/3，余下的交给移动止损——先落袋降低风险，同时保留趋势延续的收益。"
+            "记录卖出后（这里、「我的交易」或 Telegram <code>/sell 代码 股数 价格</code>），剩余股数、盈亏和下一步建议会立即更新。Scout 不会替你下单。</p></div>")
 
 
 QUAD_COLORS = {"leading": "var(--up)", "weakening": "var(--warn)", "lagging": "var(--down)", "improving": "var(--accent)"}
@@ -625,32 +650,54 @@ def premarket_card(rec: dict | None, current: bool) -> str:
     return f"<details class='card analysis' style='margin-bottom:12px'><summary>{title}（上一份）</summary>{inner}</details>"
 
 
+def next_exit(t: dict, m: dict) -> str:
+    """The take-profit stage an open trade is at: price and the shares to sell there."""
+    from scout import levels
+
+    pl = t.get("plan") or {}
+    if "target1" not in pl:
+        return f"{t['target']:.2f}" if t.get("target") else "—"
+    for st in levels.exit_plan(pl, t["entry_price"], t["shares"], m["remaining"], t.get("stop")):
+        if st["state"] == "due":
+            return f"<span class='warn'>{st['stage']} 已到，建议卖出 {st['sell_now']:g} 股</span>"
+        if st["state"] == "pending":
+            return (f"{st['price']:.2f}（{st['stage']}，卖 {st['suggest']:g} 股）" if st["stage"] != "余下仓位"
+                    else f"移动止损，剩余 {m['remaining']:g} 股")
+    return "—"
+
+
 def trades_table(rows: list[dict], closable: bool = True) -> str:
-    """Open or closed trades with P&L at the last close (open) or the exit (closed)."""
+    """Open or closed trades: realized + open P&L, the system stop and the next take-profit step."""
     if not rows:
         return "<p class='muted small'>没有记录。</p>"
-    head = ["代码", "开仓", "股数", "入场", "现价" if not rows[0].get("closed_on") else "出场", "盈亏", "R", "止损", "距止损", "止盈", "备注"]
+    is_open = not rows[0].get("closed_on")
+    head = ["代码", "开仓", "股数", "入场", "现价" if is_open else "平均卖出", "盈亏", "R"]
+    head += ["止损", "距止损", "止盈", "备注"] if is_open else ["备注"]
     body = []
     for t in rows:
         m = portfolio.metrics(t)
         pnl = (f"<span class='{'up' if m['pnl'] >= 0 else 'down'}'>{m['pnl']:+,.0f}（{signed(m['pnl_pct'])}）</span>"
                if "pnl" in m else "<span class='muted'>无行情</span>")
+        if is_open and m.get("realized"):
+            pnl += f"<div class='small muted'>已实现 {m['realized']:+,.0f}</div>"
         price = f"{m['price']:.2f}" if m.get("price") is not None else "—"
         if t.get("closed_on"):
             price += f"<div class='small muted'>{escape(str(t['closed_on']))}</div>"
         elif t.get("last_date"):
             price += f"<div class='small muted'>收盘 {escape(str(t['last_date']))}</div>"
+        qty = f"{m['remaining']:g} / {t['shares']:g}" if is_open and m["sold"] else f"{t['shares']:g}"
         cells = [f"<a href='/ticker/{escape(t['ticker'])}'>{escape(t['ticker'])}</a>", escape(str(t["opened_on"])),
-                 f"{t['shares']:g}", f"{t['entry_price']:.2f}", price, pnl,
-                 f"{m['r']:+.1f}R" if "r" in m else "—", f"{t['stop']:.2f}" if t.get("stop") else "—",
-                 signed(m["to_stop"]) if "to_stop" in m and not t.get("closed_on") else "—",
-                 f"{t['target']:.2f}" if t.get("target") else ("移动止损" if (t.get("plan") or {}).get("target2_hit") else "—"),
-                 escape(t.get("note") or "")]
-        if closable and not t.get("closed_on"):
+                 qty, f"{t['entry_price']:.2f}", price, pnl, f"{m['r']:+.1f}R" if "r" in m else "—"]
+        if is_open:
+            cells += [f"{t['stop']:.2f}" if t.get("stop") else "—", signed(m["to_stop"]) if "to_stop" in m else "—",
+                      next_exit(t, m)]
+        cells.append(escape(t.get("note") or ""))
+        if closable and is_open:
             cells.append(
-                f"<form method='post' action='/trades/{t['id']}/close' style='display:flex;gap:4px'>"
-                f"<input name='exit_price' placeholder='出场价' size='7' required><input name='closed_on' type='date' required>"
-                f"<button>平仓</button></form>")
+                f"<form method='post' action='/trades/{t['id']}/sell' style='display:flex;gap:4px;flex-wrap:wrap'>"
+                f"<input name='shares' value='{m['remaining']:g}' size='5' title='卖出股数（默认全部剩余）' required>"
+                f"<input name='price' placeholder='卖出价' size='7' required><input name='sold_on' type='date' value='{date.today()}' required>"
+                f"<button>卖出</button></form>")
         elif closable:
             cells.append(f"<form method='post' action='/trades/{t['id']}/delete' onsubmit=\"return confirm('删除这条记录？')\">"
                          f"<button style='background:var(--muted)'>删除</button></form>")
