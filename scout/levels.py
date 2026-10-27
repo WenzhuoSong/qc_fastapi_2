@@ -338,7 +338,8 @@ async def get_map(ticker: str, refresh: bool = False, before: date | None = None
     if not refresh:
         row = await db.fetch_one("SELECT payload FROM scout.price_levels WHERE ticker = :t AND asof = :d AND version = :v",
                                  {"t": ticker, "d": feat["date"], "v": MAP_VERSION})
-        if row:
+        # a map made from a mid-session bar is stale once the day's final close is stored
+        if row and row["payload"].get("close") == round((feat["payload"] or {}).get("close") or 0, 2):
             return row["payload"]
     bars = await db.fetch_all(
         "SELECT * FROM (SELECT date, open, high, low, close, volume FROM scout.bars_daily WHERE ticker = :t AND date <= :d "

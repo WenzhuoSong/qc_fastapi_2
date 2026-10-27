@@ -79,7 +79,10 @@ async def refresh(provider: MarketDataProvider, tickers: list[str], years: int) 
     )
     stored: dict[str, dict[date, float]] = {}
     for r in overlap:
-        stored.setdefault(r["ticker"], {})[r["date"]] = r["close"]
+        # The newest stored bar may have been written mid-session (a partial bar): its close
+        # differing from the final one is not a vendor re-adjustment.
+        if r["date"] < have[r["ticker"]]:
+            stored.setdefault(r["ticker"], {})[r["date"]] = r["close"]
 
     readjust = [t for t, f in fresh.items() if needs_readjust(stored.get(t, {}), f)]
     incremental = {t: f for t, f in fresh.items() if t not in readjust}
