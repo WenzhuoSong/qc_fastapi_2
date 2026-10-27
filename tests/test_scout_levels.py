@@ -6,35 +6,81 @@ from scout import levels
 F_UP = {"close": 100.0, "atr14": 2.0, "sma20": 97.0, "sma50": 94.0, "sma200": 85.0}
 
 
-class ReferencePlanTests(unittest.TestCase):
-    def test_uptrend_gets_pullback_and_breakout(self):
-        ref = levels.reference_plans(F_UP, {"support": 96.0, "resistance": 104.0})
-        names = [s["name"] for s in ref["scenarios"]]
-        self.assertEqual(ref["trend"], "up")
-        self.assertEqual(names, ["回调买入", "突破买入"])
-        pull, brk = ref["scenarios"]
-        self.assertEqual((pull["entry_lo"], pull["entry_hi"], pull["stop"]), (97.0, 98.0, 95.0))   # nearest level: 20-day line
-        self.assertLessEqual(pull["target1"], 104.0)                                                 # capped at resistance
-        self.assertEqual((brk["entry_lo"], brk["entry_hi"], brk["stop"]), (104.0, 105.0, 102.0))
-        self.assertAlmostEqual(brk["rr"], 2.0)
+S_UP = {"resistances": [{"price": 104.0}, {"price": 108.0}], "supports": [{"price": 96.0}, {"price": 90.0}]}
+F_DOWN = {"close": 50.0, "atr14": 1.5, "sma20": 52.0, "sma50": 55.0, "sma200": 60.0}
+
+
+class PriceMapTests(unittest.TestCase):
+    def test_levels_pivot_and_entries(self):
+        pm = levels.price_map({**F_UP, "dist_52w_high": -0.1}, S_UP)
+        self.assertEqual([p["label"] for p in pm["resistances"]], ["阻力 1", "阻力 2", "52 周高点"])
+        self.assertEqual([p["label"] for p in pm["supports"]][:3], ["20 日线", "支撑 1", "50 日线"])
+        self.assertEqual(pm["pivot"], {"price": 96.0, "label": "支撑 1", "side": "below"})
+        self.assertIn("收盘跌破 96.00", pm["alternative"])
+        pull, brk = pm["entries"]
+        self.assertEqual((pull["name"], pull["zone_lo"], pull["zone_hi"]), ("回调买点", 97.0, 98.0))   # 20-day line + 0.5 ATR
+        self.assertEqual((pull["stop"], pull["stop_basis"]), (95.5, "支撑 1 下方"))
+        self.assertEqual((pull["target1"], pull["target2"], pull["target2_basis"]), (101.5, 104.0, "阻力 1"))
+        self.assertEqual((brk["name"], brk["zone_lo"], brk["zone_hi"], brk["stop"]), ("突破买点", 104.0, 105.0, 102.0))
+        self.assertEqual((brk["target1"], brk["target1_basis"]), (108.0, "阻力 2"))
+        self.assertEqual((pull["time_stop_days"], brk["time_stop_days"]), (10, 20))
+
+    def test_zone_is_capped_at_five_percent(self):
+        pm = levels.price_map({**F_UP, "atr14": 12.0}, S_UP)
+        brk = next(e for e in pm["entries"] if e["name"] == "突破买点")
+        self.assertAlmostEqual(brk["zone_hi"], 104.0 * 1.05)
 
     def test_stop_is_at_least_one_atr_below_the_zone(self):
-        for sc in levels.reference_plans(F_UP, {"support": 96.0, "resistance": 104.0})["scenarios"]:
-            self.assertLessEqual(sc["stop"], sc["entry_lo"] - F_UP["atr14"] + 1e-9)
+        for e in levels.price_map(F_UP, S_UP)["entries"]:
+            self.assertLessEqual(e["stop"], (e["zone_lo"] + e["zone_hi"]) / 2 - F_UP["atr14"] + 1e-9)
 
     def test_downtrend_only_offers_a_reversal_trigger(self):
-        f = {"close": 50.0, "atr14": 1.5, "sma20": 52.0, "sma50": 55.0, "sma200": 60.0}
-        ref = levels.reference_plans(f, {"support": 47.0, "resistance": 54.0})
-        self.assertEqual([s["name"] for s in ref["scenarios"]], ["反转确认"])
-        none = levels.reference_plans(f, {"support": 47.0, "resistance": 70.0})
-        self.assertEqual(none["scenarios"], [])
-        self.assertIn("不提供做多参考价位", none["note"])
+        pm = levels.price_map(F_DOWN, {"resistances": [{"price": 54.0}], "supports": [{"price": 47.0}]})
+        self.assertEqual([e["name"] for e in pm["entries"]], ["反转确认"])
+        self.assertEqual(pm["pivot"]["side"], "above")
+        far = levels.price_map(F_DOWN, {"resistances": [{"price": 70.0}], "supports": [{"price": 47.0}]})
+        self.assertEqual(far["entries"], [])
+        self.assertEqual(far["pivot"]["label"], "50 日线")                  # nearer than the far swing high
+        self.assertIn("不给做多的买点", far["note"])
 
-    def test_far_levels_are_ignored(self):
-        ref = levels.reference_plans(F_UP, {"support": 80.0, "resistance": 130.0})
-        self.assertEqual([s["name"] for s in ref["scenarios"]], ["回调买入"])     # 20-day line, not the far support
-        self.assertEqual(ref["scenarios"][0]["entry_lo"], 97.0)
+    def test_reality_checks(self):
+        pm = levels.price_map(F_UP, S_UP, {"quality": "ok", "expiries": {"front": {"expiry": "2026-11-06", "straddle_move": 0.05}}},
+                              {"price_targets": {"low": 90, "median": 120, "mean": 118, "high": 140}})
+        self.assertEqual((pm["expected_move"]["low"], pm["expected_move"]["high"]), (95.0, 105.0))
+        self.assertEqual(pm["analyst_targets"]["median"], 120)
+        thin = levels.price_map(F_UP, S_UP, {"quality": "thin", "expiries": {"front": {"straddle_move": 0.05}}})
+        self.assertNotIn("expected_move", thin)
 
+
+class StatusTests(unittest.TestCase):
+    PM = levels.price_map(F_UP, S_UP)
+
+    def states(self, price):
+        return [e["state"] for e in levels.status(self.PM, price)["entries"]]
+
+    def test_live_price_only_moves_the_status(self):
+        self.assertEqual(self.states(99.0), ["waiting", "waiting"])
+        self.assertEqual(self.states(97.5), ["in_zone", "waiting"])
+        self.assertEqual(self.states(96.5), ["below", "waiting"])
+        self.assertEqual(self.states(104.5), ["waiting", "in_zone"])
+        self.assertEqual(self.states(107.0), ["waiting", "extended"])
+        self.assertIn("不追", levels.status(self.PM, 107.0)["entries"][1]["text"])
+
+    def test_pivot_break(self):
+        st = levels.status(self.PM, 93.0)
+        self.assertTrue(st["pivot_broken"])
+        self.assertEqual(st["entries"][0]["state"], "failed")
+        self.assertIn("备选情景", st["pivot_text"])
+
+    def test_locked_plan_follows_the_fill(self):
+        plan = levels.locked_plan(self.PM, 97.6, date(2026, 10, 27))
+        self.assertEqual((plan["from"], plan["stop"], plan["target1"], plan["in_zone"]), ("回调买点", 95.5, 101.5, True))
+        off = levels.locked_plan(self.PM, 103.0, date(2026, 10, 27))
+        self.assertEqual((off["from"], off["in_zone"]), ("突破买点", False))
+        self.assertIsNone(levels.locked_plan({}, 100.0, date(2026, 10, 27)))
+
+
+class TrailingStopTests(unittest.TestCase):
     def test_trailing_stops(self):
         closes = [90 + i * 0.5 for i in range(30)]
         lows = [c - 1 for c in closes]
@@ -70,12 +116,15 @@ class PlanPanelTests(unittest.TestCase):
         self.assertIn("入场窗口还剩 2 个交易日", html)
         self.assertIn("最近收盘", html)
 
-    def test_price_panel_leads_with_buying_now(self):
+    def test_price_panel_from_the_stored_map(self):
         from scout.web.views import price_panel
 
-        s_ = {"support": 96.0, "resistance": 112.0}
-        html = price_panel(F_UP, s_, None, None)
-        self.assertLess(html.index("如果现在买入"), html.index("回调买入"))
+        pm = {**levels.price_map(F_UP, S_UP), "asof": "2026-10-26"}
+        html = price_panel(pm, {"last": 97.5, "change": -0.02, "time_et": "10-27 10:15", "session": "盘中"}, None, ticker="ABC")
+        self.assertIn("多空分界", html)
+        self.assertIn("2026-10-26 收盘计算并保存，盘中不变", html)
+        self.assertIn("/trades?t=ABC&plan=%E5%9B%9E%E8%B0%83%E4%B9%B0%E7%82%B9", html)   # only the entry in its zone links
+        self.assertEqual(html.count("按此计划记录买入"), 1)
         self.assertIn("不是经过回放检验的规则信号", html)
         self.assertNotIn("系统跟踪", html)
 
@@ -85,35 +134,10 @@ class PlanPanelTests(unittest.TestCase):
         opp = {**self.OPP, "entry_lo": 73.81, "entry_hi": 77.35, "stop": 70.85, "target1": 92.46,
                "primary_detector": "pullback_in_uptrend"}
         f = {"close": 80.55, "atr14": 2.9, "sma20": 79.0, "sma50": 76.0, "sma200": 65.0}
-        html = price_panel(f, {"support": 75.65, "resistance": 82.78}, None, None, opp=opp, today=date(2026, 10, 27),
-                           tracking_html="<p>tracking</p>")
+        pm = levels.price_map(f, {"supports": [{"price": 75.65}], "resistances": [{"price": 82.78}]})
+        html = price_panel(pm, None, None, opp=opp, today=date(2026, 10, 27), tracking_html="<p>tracking</p>")
         self.assertIn("现价高于原区间上沿 4.1%，此时买入已不属于规则入场", html)
         self.assertIn("系统跟踪", html)
-
-
-class BuyNowTests(unittest.TestCase):
-    def test_structural_stop_outside_the_noise(self):
-        now = levels.buy_now(F_UP, {"support": 96.0, "resistance": 112.0, "last_swing_low": {"price": 95.0}})
-        self.assertEqual(now["entry"], 100.0)
-        self.assertEqual(now["stop"], 96.5)                      # 20-day line 97 − 0.25 ATR: tightest valid level
-        self.assertEqual(now["stop_basis"], "20 日线下方")
-        self.assertEqual(now["target1"], 107.0)                  # resistance beyond 2R → 2R
-        self.assertEqual(now["level"], "ok")
-
-    def test_close_resistance_makes_buying_now_poor(self):
-        now = levels.buy_now(F_UP, {"support": 96.0, "resistance": 101.5})
-        self.assertEqual((now["target1"], now["target1_basis"], now["level"]), (101.5, "阻力位", "bad"))
-        self.assertIn("太近", now["verdict"])
-
-    def test_no_structure_falls_back_to_two_atr(self):
-        f = {"close": 100.0, "atr14": 2.0, "sma200": 80.0, "sma50": 90.0}
-        now = levels.buy_now(f, {})
-        self.assertEqual(now["stop"], 96.0)
-        self.assertIn("ATR", now["stop_basis"])
-
-    def test_downtrend_is_flagged(self):
-        f = {"close": 50.0, "atr14": 1.5, "sma20": 52.0, "sma50": 55.0, "sma200": 60.0}
-        self.assertEqual(levels.buy_now(f, {"support": 47.0})["level"], "bad")
 
 
 if __name__ == "__main__":

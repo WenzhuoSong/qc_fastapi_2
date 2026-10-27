@@ -180,9 +180,24 @@ async def run_daily(limit: int | None = None) -> dict:
         summary["macro_rows"] = f"failed: {type(exc).__name__}"
         await _quality(asof, "fred_failed", None, {"error": repr(exc)[:300]})
     summary["price_check"] = await price_crosscheck(pool, asof)
+    summary["price_levels"] = await price_levels(pool)
     summary["storage"] = await storage_check(asof)
     summary["seconds"] = round(time.time() - t0)
     return summary
+
+
+async def price_levels(pool: list[str]) -> dict:
+    """Store each pool stock's price map for the latest data date (after the snapshots it reads)."""
+    from scout import levels
+
+    done = failed = 0
+    for t in pool:
+        try:
+            done += bool(await levels.get_map(t, refresh=True))
+        except Exception as exc:
+            failed += 1
+            logger.warning("price levels %s failed: %s", t, exc)
+    return {"stored": done, "failed": failed}
 
 
 STORAGE_WARN = 0.8

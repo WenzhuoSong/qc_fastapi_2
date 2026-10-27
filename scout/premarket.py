@@ -62,14 +62,21 @@ def position_label(price: float, o: dict) -> str:
     return f"距止损 {(price / stop - 1) * 100:.1f}%，距目标 1 {(t1 / price - 1) * 100:.1f}%"
 
 
-def holding_label(price: float, t: dict) -> str:
-    """Where a pre-market price sits against the user's own trade."""
+def holding_label(price: float, t: dict, session: date | None = None) -> str:
+    """Where a pre-market price sits against the user's own trade (and its locked plan's time stop)."""
     pnl = price / t["entry_price"] - 1
     text = f"较你的成本 {pnl * 100:+.1f}%"
     if t.get("stop"):
         text += f"，盘前已跌破止损（你的止损 {t['stop']:.2f}）" if price <= t["stop"] else f"，距你的止损 {(price / t['stop'] - 1) * 100:.1f}%"
     if t.get("target") and price >= t["target"]:
         text += f"，已到目标 1 附近（你的目标 {t['target']:.2f}）"
+    plan = t.get("plan") or {}
+    if session and plan.get("time_stop_days") and not (plan.get("target1") and price >= plan["target1"]):
+        from scout.intraday import sessions_since
+
+        held = sessions_since(t["opened_on"], session)
+        if held >= plan["time_stop_days"]:
+            text += f"，持有 {held} 个交易日仍未到目标 1，已到计划的时间止损"
     return text
 
 
@@ -159,7 +166,7 @@ async def build_pack(session: date) -> dict:
         "SELECT ticker, event_date, payload FROM scout.market_events WHERE event_type = 'earnings' "
         "AND event_date BETWEEN :a AND :b", {"a": prev, "b": session + timedelta(days=6)},
     )
-    held = await db.fetch_all("SELECT ticker, entry_price, shares, stop, target, opened_on FROM scout.trades WHERE closed_on IS NULL")
+    held = await db.fetch_all("SELECT ticker, entry_price, shares, stop, target, opened_on, plan FROM scout.trades WHERE closed_on IS NULL")
     focus = set(watch) | {o["ticker"] for o in opps} | {t["ticker"] for t in held}
 
     def relevant(t: str) -> bool:
@@ -232,7 +239,7 @@ async def build_pack(session: date) -> dict:
         row = {"key": f"pos.{t['ticker']}", "代码": t["ticker"], "成本": f"{t['entry_price']:.2f}", "股数": f"{t['shares']:g}",
                **({"止损": f"{t['stop']:.2f}"} if t.get("stop") else {})}
         if q and not q["stale"]:
-            row.update({"盘前价": f"{q['last']:.2f}", "盘前较前收": _pct(q["change"]), "位置判断": holding_label(q["last"], t)})
+            row.update({"盘前价": f"{q['last']:.2f}", "盘前较前收": _pct(q["change"]), "位置判断": holding_label(q["last"], t, session)})
         else:
             row["位置判断"] = "盘前暂无成交"
         holdings.append(row)

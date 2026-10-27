@@ -90,6 +90,15 @@ class OutcomeAndEventTests(unittest.TestCase):
         self.assertIn("较你的成本 +2.0%，距你的止损 7.4%", holding_label(102.0, t))
         self.assertIn("已到目标 1 附近", holding_label(111.0, t))
 
+    def test_holding_label_time_stop(self):
+        from datetime import date
+
+        t = {"entry_price": 100.0, "stop": 95.0, "opened_on": date(2026, 10, 12),
+             "plan": {"time_stop_days": 10, "target1": 106.0}}
+        self.assertIn("已到计划的时间止损", holding_label(101.0, t, date(2026, 10, 27)))
+        self.assertNotIn("时间止损", holding_label(101.0, t, date(2026, 10, 20)))
+        self.assertNotIn("时间止损", holding_label(107.0, t, date(2026, 10, 27)))
+
 
 if __name__ == "__main__":
     unittest.main()

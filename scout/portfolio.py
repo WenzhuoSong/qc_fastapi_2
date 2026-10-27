@@ -65,11 +65,11 @@ def size_text(sz: dict | None) -> str | None:
 
 async def add_trade(t: dict) -> int:
     row = await db.execute_returning(
-        "INSERT INTO scout.trades (ticker, opportunity_id, opened_on, entry_price, shares, stop, target, note) "
-        "VALUES (:ticker, :opp, :opened, :entry, :shares, :stop, :target, :note) RETURNING id",
+        "INSERT INTO scout.trades (ticker, opportunity_id, opened_on, entry_price, shares, stop, target, note, plan) "
+        "VALUES (:ticker, :opp, :opened, :entry, :shares, :stop, :target, :note, CAST(:plan AS JSONB)) RETURNING id",
         {"ticker": t["ticker"].upper().strip(), "opp": t.get("opportunity_id") or None, "opened": t["opened_on"],
          "entry": t["entry_price"], "shares": t["shares"], "stop": t.get("stop"), "target": t.get("target"),
-         "note": t.get("note") or None})
+         "note": t.get("note") or None, "plan": db.jsonb(t["plan"]) if t.get("plan") else None})
     return row["id"]
 
 

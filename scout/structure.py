@@ -36,6 +36,22 @@ def pivots(highs: Sequence[float], lows: Sequence[float], dates: Sequence, k: in
     return hs, ls
 
 
+LEVELS = 3
+MERGE_PCT = 0.015    # pivots this close together are one price zone
+
+
+def ladder(points: list[Pivot], close: float, ascending: bool) -> list[dict]:
+    """Up to three distinct levels moving away from the close (nearby pivots merged)."""
+    out: list[dict] = []
+    for p in sorted(points, key=lambda p: p.price, reverse=not ascending):
+        if out and abs(p.price / out[-1]["price"] - 1) < MERGE_PCT:
+            continue
+        out.append({"price": p.price, "date": str(p.date)})
+        if len(out) == LEVELS:
+            break
+    return out
+
+
 def swing_trend(hs: list[Pivot], ls: list[Pivot]) -> str:
     if len(hs) < 2 or len(ls) < 2:
         return "数据不足"
@@ -78,6 +94,8 @@ def compute(bars: list[dict]) -> dict:
     if below:
         s = max(below, key=lambda p: p.price)
         out.update(support=s.price, support_date=str(s.date), dist_support=s.price / close - 1)
+    out["resistances"] = ladder(above, close, ascending=True)
+    out["supports"] = ladder(below, close, ascending=False)
     if hs:
         out["last_swing_high"] = {"date": str(hs[-1].date), "price": hs[-1].price}
     if ls:

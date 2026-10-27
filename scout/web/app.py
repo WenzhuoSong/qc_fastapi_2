@@ -267,7 +267,12 @@ async def _side_panel(t: str, opp: dict | None, f: dict, struct: dict, bars: lis
                                   {"i": active["id"]})
         tracking = views.trade_plan(active, f.get("close"), None, live=live, today=today,
                                     entry_price=(trig or {}).get("price"))
-    panel = views.price_panel(f, struct, live, settings, opp=active, today=today, tracking_html=tracking)
+    try:
+        pm = await levels.get_map(t) or {}
+    except Exception:
+        logger.exception("price map for %s failed", t)
+        pm = {}
+    panel = views.price_panel(pm, live, settings, opp=active, today=today, tracking_html=tracking, ticker=t)
     held = [x for x in await portfolio.trades(open_only=True) if x["ticker"] == t]
     if held:
         stops = levels.trailing_stops(f, [b["close"] for b in bars], [b["low"] for b in bars])
@@ -697,10 +702,21 @@ def _num(x: str | None) -> float | None:
 
 
 @app.get("/trades", response_class=HTMLResponse)
-async def trades_page(opp: str | None = None, _: str = Depends(require_auth)) -> str:
+async def trades_page(opp: str | None = None, t: str | None = None, plan: str | None = None,
+                      _: str = Depends(require_auth)) -> str:
+    from scout import levels
+
     settings = await portfolio.get_settings()
     open_rows, closed_rows = await portfolio.trades(open_only=True), await portfolio.trades(open_only=False)
     pre = {}
+    if t and plan and not opp:
+        pm = await levels.get_map(universe.yahoo_symbol(t)) or {}
+        en = next((x for x in pm.get("entries") or [] if x["name"] == plan), None)
+        if en:
+            mid = (en["zone_lo"] + en["zone_hi"]) / 2
+            sz = portfolio.size(mid, en["stop"], settings) or {}
+            pre = {"ticker": universe.yahoo_symbol(t), "entry": f"{mid:.2f}", "stop": f"{en['stop']:.2f}",
+                   "target": f"{en['target1']:.2f}", "shares": str(sz.get("shares") or ""), "from": plan}
     if opp:
         o = await db.fetch_one("SELECT * FROM scout.opportunities WHERE id = :id", {"id": opp})
         if o:
@@ -728,7 +744,9 @@ async def trades_page(opp: str | None = None, _: str = Depends(require_auth)) ->
 <label class="small">止损<br><input name="stop" value="{e(pre.get('stop', ''))}" size="8"></label>
 <label class="small">目标<br><input name="target" value="{e(pre.get('target', ''))}" size="8"></label>
 <label class="small">备注<br><input name="note" size="20"></label><button>记录</button></form>
-{'<p class="small muted">已按机会卡预填入场中点、止损和建议股数，请改成你的实际成交。</p>' if pre else ''}</div>"""
+{(f'<p class="small muted">已按价位参考的「{e(pre["from"])}」预填买入区间中点、止损、目标 1 和建议股数，请改成你的实际成交。'
+   '记录后这只股票的计划锁定：止损和目标不再随每日价位变化，之后只上移止损。</p>' if pre.get("from") else
+   '<p class="small muted">已按机会卡预填入场中点、止损和建议股数，请改成你的实际成交。</p>') if pre else ''}</div>"""
     risk = sum(portfolio.metrics(t).get("open_risk") or 0 for t in open_rows)
     risk_line = (f"<p class='small'>持仓 {len(open_rows)} 笔 · 全部触发止损的潜在亏损约 ${risk:,.0f}"
                  + (f"（账户的 {risk / acct * 100:.1f}%）" if acct else "") + "</p>") if open_rows else ""
@@ -764,9 +782,23 @@ async def trades_add(ticker: str = Form(...), opened_on: str = Form(...), entry_
     entry, qty = _num(entry_price), _num(shares)
     if not entry or not qty or entry <= 0 or qty <= 0:
         raise HTTPException(status_code=400, detail="成交价和股数必须是正数")
-    await portfolio.add_trade({"ticker": ticker, "opened_on": date.fromisoformat(opened_on), "entry_price": entry,
-                               "shares": qty, "stop": _num(stop), "target": _num(target), "note": note,
-                               "opportunity_id": opportunity_id or None})
+    from scout import levels
+
+    opened = date.fromisoformat(opened_on)
+    plan = None
+    if not opportunity_id:                  # a rule card keeps its own plan; otherwise lock today's price map
+        try:
+            pm = await levels.get_map(universe.yahoo_symbol(ticker))
+            plan = levels.locked_plan(pm or {}, entry, opened)
+        except Exception:
+            logger.exception("price map for %s failed", ticker)
+    stop_v, target_v = _num(stop), _num(target)
+    if plan:
+        plan.update(stop_user=stop_v, target_user=target_v)
+    await portfolio.add_trade({"ticker": ticker, "opened_on": opened, "entry_price": entry, "shares": qty,
+                               "stop": stop_v if stop_v is not None else (plan or {}).get("stop"),
+                               "target": target_v if target_v is not None else (plan or {}).get("target1"),
+                               "note": note, "opportunity_id": opportunity_id or None, "plan": plan})
     return RedirectResponse("/trades", status_code=303)
 
 
