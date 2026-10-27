@@ -485,7 +485,7 @@ def holding_card(trades: list[dict], live: dict | None, close: float | None, tod
         items.append(line)
     return (f"<div class='card plan'><h3>我的持仓</h3>{''.join(items)}"
             "<p class='small muted'>止损和止盈由系统管理：初始值来自买入前的价位图，每天收盘后更新；止损按吊灯止损（22 日最高收盘 − 3×ATR）只升不降。"
-            "分批止盈：目标 1 卖约 1/3、目标 2 再卖约 1/3，余下的交给移动止损——先落袋降低风险，同时保留趋势延续的收益。"
+            "止盈：目标 1 卖约 1/3 落袋，余下约 2/3 跟随吊灯止损、不设固定目标——出场回放显示这比在目标 2 再卖一批更好（前后两段样本都是）。"
             "记录卖出后（这里、「我的交易」或 Telegram <code>/sell 代码 股数 价格</code>），剩余股数、盈亏和下一步建议会立即更新。Scout 不会替你下单。</p></div>")
 
 
@@ -926,8 +926,8 @@ def price_panel(pm: dict, live: dict | None, settings: dict | None, opp: dict | 
             f"<table class='small'><tbody>"
             f"<tr><td>买入区间</td><td>{en['zone_lo']:.2f}–{en['zone_hi']:.2f}</td><td class='muted'>高于上沿不追</td></tr>"
             f"<tr><td style='color:var(--down)'>止损</td><td>{en['stop']:.2f}</td><td class='muted'>{en['stop_pct'] * 100:.1f}% · {escape(en['stop_basis'])}</td></tr>"
-            f"<tr><td style='color:var(--up)'>目标 1</td><td>{en['target1']:.2f}</td><td class='muted'>{escape(en['target1_basis'])} · R:R {en['rr']:.1f} · 到达减仓一部分</td></tr>"
-            f"<tr><td style='color:var(--up)'>目标 2</td><td>{en['target2']:.2f}</td><td class='muted'>{escape(en['target2_basis'])} · 余下仓位用移动止损</td></tr>"
+            f"<tr><td style='color:var(--up)'>目标 1</td><td>{en['target1']:.2f}</td><td class='muted'>{escape(en['target1_basis'])} · R:R {en['rr']:.1f} · 到达卖出约 1/3</td></tr>"
+            f"<tr><td style='color:var(--up)'>上方参考</td><td>{en['target2']:.2f}</td><td class='muted'>{escape(en['target2_basis'])} · 不在这里卖，余下 2/3 跟随吊灯止损</td></tr>"
             f"<tr><td>时间止损</td><td>{en['time_stop_days']} 个交易日</td><td class='muted'>入场后迟迟不到目标 1 就离场</td></tr>"
             f"</tbody></table>"
             + (f"<div class='small warn'>{escape(en['warning'])}</div>" if en.get("warning") else "")

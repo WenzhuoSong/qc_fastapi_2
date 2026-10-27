@@ -63,9 +63,8 @@ def trade_events(t: dict, price: float) -> list[tuple[str, str]]:
             from scout import levels
 
             remaining = t["shares"] - (t.get("sold_shares") or 0)
-            stage = "目标 1" if t["target"] == t["plan"]["target1"] else "目标 2"
             keep = next(st["keep_after"] for st in levels.exit_plan(t["plan"], t["entry_price"], t["shares"], remaining, t.get("stop"))
-                        if st["stage"] == stage)
+                        if st["stage"] == "目标 1")
             if remaining > keep:
                 advice = f"，按计划建议卖出 {remaining - keep:g} 股（剩余 {remaining:g} 股），卖出后用 /sell 记录"
         out.append(("trade_target", f"到达持仓止盈位 {t['target']:.2f}（成本 {t['entry_price']:.2f}，{pnl * 100:+.1f}%）{advice}"))

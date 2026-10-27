@@ -763,7 +763,7 @@ async def trades_page(opp: str | None = None, t: str | None = None, plan: str | 
 <label class="small">股数<br><input name="shares" value="{e(pre.get('shares', ''))}" size="6" required></label>
 <label class="small">备注<br><input name="note" size="20"></label><button>记录</button></form>
 <p class="small muted">只需填代码、日期、成交价和股数。止损和止盈由系统设置：按成交时的价位图给出初始止损、目标 1 / 2，
-之后每天收盘后自动更新（止损用吊灯止损只升不降，到目标 1 后止盈改看目标 2），与个股页「我的持仓」一致，变动会推送到 Telegram。</p>
+之后每天收盘后自动更新（目标 1 卖约 1/3，余下跟随吊灯止损，止损只升不降），与个股页「我的持仓」一致，变动会推送到 Telegram。</p>
 {'<p class="small muted">已按' + ('价位参考的「' + e(pre["from"]) + '」' if pre.get("from") else '机会卡') + '预填买入区间中点和建议股数，请改成你的实际成交。</p>' if pre else ''}</div>"""
     risk = sum(portfolio.metrics(t).get("open_risk") or 0 for t in open_rows)
     risk_line = (f"<p class='small'>持仓 {len(open_rows)} 笔 · 全部触发止损的潜在亏损约 ${risk:,.0f}"

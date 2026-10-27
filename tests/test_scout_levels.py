@@ -85,21 +85,20 @@ class StatusTests(unittest.TestCase):
 class ManageTests(unittest.TestCase):
     PLAN = {"stop": 95.5, "stop_basis": "支撑 1 下方", "target1": 101.5, "target2": 104.0, "time_stop_days": 10}
 
-    def test_stop_only_rises_and_targets_advance(self):
+    def test_stop_only_rises_and_target_one_then_trailing(self):
         plan = dict(self.PLAN)
         stop, target, _, msgs = levels.manage(plan, [99.0], [98.5], 2.0, date(2026, 10, 27))
         self.assertEqual((stop, target, msgs), (95.5, 101.5, []))           # chandelier 92.5 is below the plan stop
         closes, highs = [98.5, 100.0, 102.0, 103.0], [99.0, 100.5, 102.5, 103.5]
         stop, target, basis, msgs = levels.manage(plan, highs, closes, 2.0, date(2026, 10, 30))
-        self.assertEqual((stop, target), (97.0, 104.0))                    # 103 − 3×2; target 1 traded → target 2
+        self.assertEqual((stop, target), (97.0, None))                     # 103 − 3×2; target 1 traded → trailing only
         self.assertIn("吊灯", basis)
         self.assertEqual(len(msgs), 2)
         stop, target, _, _ = levels.manage(plan, highs + [101.0], closes + [100.0], 2.0, date(2026, 10, 31))
-        self.assertEqual((stop, target), (97.0, 104.0))                    # a pullback never lowers the stop
-        stop, target, _, msgs = levels.manage(plan, highs + [101.0, 104.2], closes + [100.0, 104.0], 2.0, date(2026, 11, 2))
-        self.assertIsNone(target)                                          # past target 2: trailing stop only
+        self.assertEqual(stop, 97.0)                                       # a pullback never lowers the stop
+        stop, _, _, _ = levels.manage(plan, highs + [101.0, 104.2], closes + [100.0, 104.0], 2.0, date(2026, 11, 2))
         self.assertEqual(stop, 98.0)
-        self.assertEqual(len(plan["history"]), 4)
+        self.assertEqual(len(plan["history"]), 3)
 
     def test_rerun_on_the_same_bars_changes_nothing(self):
         plan = dict(self.PLAN)
@@ -144,27 +143,27 @@ class ExitPlanTests(unittest.TestCase):
     def stages(self, remaining, **hit):
         return levels.exit_plan({**self.PLAN, **hit}, 100.0, 200, remaining, 97.0)
 
-    def test_thirds_with_reasoning(self):
-        t1, t2, rest = self.stages(200)
+    def test_a_third_at_target_one_then_trailing(self):
+        t1, rest = self.stages(200)
         self.assertEqual((t1["price"], t1["r"], t1["suggest"], t1["state"]), (110.0, 2.0, 67, "pending"))
         self.assertIn("整笔也大致不亏", t1["why"])                      # target 1 at 2R
-        self.assertEqual((t2["suggest"], rest["suggest"], rest["price"]), (66, 67, 97.0))   # 200 = 67 + 66 + 67
+        self.assertEqual((rest["fraction"], rest["suggest"], rest["price"]), ("约 2/3", 133, 97.0))
+        self.assertIn("吊灯止损", rest["why"])
 
     def test_advice_follows_what_was_sold(self):
-        t1, t2, _ = self.stages(200, target1_hit="2026-10-28")
+        t1, _ = self.stages(200, target1_hit="2026-10-28")
         self.assertEqual((t1["state"], t1["sell_now"]), ("due", 67))
-        t1, t2, _ = self.stages(133, target1_hit="2026-10-28")
-        self.assertEqual((t1["state"], t2["state"], t2["suggest"]), ("done", "pending", 66))
-        t1, t2, _ = self.stages(180, target1_hit="2026-10-28")           # sold less than advised
+        t1, rest = self.stages(133, target1_hit="2026-10-28")
+        self.assertEqual((t1["state"], rest["suggest"]), ("done", 133))
+        t1, _ = self.stages(180, target1_hit="2026-10-28")               # sold less than advised
         self.assertEqual((t1["state"], t1["sell_now"]), ("due", 47))
-        t1, t2, _ = self.stages(100, target1_hit="2026-10-28")           # sold more: target 2 shrinks
-        self.assertEqual(t2["suggest"], 33)
-        t1, t2, _ = self.stages(200, target1_hit="2026-10-28", target2_hit="2026-10-28")   # both passed, nothing sold
-        self.assertEqual((t1["state"], t2["state"], t2["sell_now"]), ("merged", "due", 133))
-        above = levels.due_advice(t2, 121.0, 97.0)
-        self.assertIn("建议卖出 133 股", above)
-        self.assertIn("限价不低于 120.00", above)
-        below = levels.due_advice(t2, 118.0, 97.0)
+        t1, rest = self.stages(100, target1_hit="2026-10-28")            # sold more: the trailing part is smaller
+        self.assertEqual((t1["state"], rest["suggest"]), ("done", 100))
+        t1, _ = self.stages(200, target1_hit="2026-10-28")
+        above = levels.due_advice(t1, 111.0, 97.0)
+        self.assertIn("建议卖出 67 股", above)
+        self.assertIn("限价不低于 110.00", above)
+        below = levels.due_advice(t1, 108.0, 97.0)
         self.assertIn("回落到目标下方", below)
         self.assertIn("收盘跌破止损 97.00 则卖出全部", below)
 

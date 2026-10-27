@@ -36,8 +36,10 @@ MAX_PULLBACK_ATR = 4.0       # a level further below is not a pullback buy point
 MAX_BREAKOUT_PCT = 0.15      # a resistance further above is not a near-term buy point
 MIN_RR = 1.0                 # less reward to target 1 than risk to the stop is flagged
 TIME_STOP = {"回调买点": 10, "突破买点": 20, "反转确认": 20}
-# Scale out in thirds: a third at target 1, a third at target 2, the rest rides the trailing stop.
-EXIT_STEPS = (("target1", 1 / 3), ("target2", 1 / 3))
+# A third at target 1, the rest rides the chandelier stop. The exit study (2026-10-27, 4,872 fills,
+# `python -m scout.jobs.eval_exits`) found this better than also selling a third at target 2 in both
+# halves of the sample, net and against holding: selling at fixed targets cuts the large winners.
+EXIT_STEPS = (("target1", 1 / 3),)
 CHANDELIER_ATR = 3.0
 CHANDELIER_DAYS = 22
 
@@ -252,8 +254,7 @@ def manage(plan: dict, highs: list[float], closes: list[float], atr: float | Non
     `highs`: prices traded after the fill per session (the buy day counts with its close);
     `closes` start on the buy day. Stop: the plan's stop, raised (never lowered) to the chandelier stop over the closes since the
     buy (highest close of the last 22 sessions − 3 ATR) once that is higher and still below the
-    last close. Target: target 1, then target 2 once target 1 traded, then none (the trailing stop
-    manages the rest). Changes are appended to plan['history']; returns (stop, target, stop basis, messages)."""
+    last close. Target: target 1 until it trades, then none (the chandelier stop manages the rest). Changes are appended to plan['history']; returns (stop, target, stop basis, messages)."""
     stop, basis = plan.get("stop_now", plan["stop"]), plan.get("stop_now_basis", plan["stop_basis"])
     msgs: list[str] = []
     if atr and closes:
@@ -265,11 +266,10 @@ def manage(plan: dict, highs: list[float], closes: list[float], atr: float | Non
             plan["chandelier_broken"] = asof.isoformat()
             msgs.append(f"收盘 {closes[-1]:.2f} 已低于吊灯止损 {chand:.2f}，趋势转弱，止损仍为 {stop:.2f}")
     top = max(highs) if highs else None
-    for k in ("target1", "target2"):
-        if top is not None and top >= plan[k] and not plan.get(f"{k}_hit"):
-            plan[f"{k}_hit"] = asof.isoformat()
-            msgs.append(f"到达目标 {k[-1]} {plan[k]:.2f}" + ("，止盈改看目标 2" if k == "target1" else "，余下仓位只用移动止损管理"))
-    target = None if plan.get("target2_hit") else plan["target2"] if plan.get("target1_hit") else plan["target1"]
+    if top is not None and top >= plan["target1"] and not plan.get("target1_hit"):
+        plan["target1_hit"] = asof.isoformat()
+        msgs.append(f"到达目标 1 {plan['target1']:.2f}，余下仓位只用吊灯止损管理")
+    target = None if plan.get("target1_hit") else plan["target1"]
     plan["stop_now"], plan["stop_now_basis"] = stop, basis
     for m in msgs:
         plan.setdefault("history", []).append({"date": asof.isoformat(), "text": m})
@@ -279,8 +279,8 @@ def manage(plan: dict, highs: list[float], closes: list[float], atr: float | Non
 def exit_plan(plan: dict, entry_price: float, shares: float, remaining: float, stop: float | None) -> list[dict]:
     """Take-profit stages with their reasoning, price, share of the position and what to sell now.
 
-    Each stage says how many shares should remain after it (a third, then two thirds of the
-    original sold), so the advice corrects itself: a stage reached but not (fully) sold
+    Each stage says how many shares should remain after it (a third of the original sold at
+    target 1), so the advice corrects itself: a stage reached but not (fully) sold
     still shows what is left to sell, and selling more than advised moves the next stage."""
     whole = float(shares).is_integer()
     risk = entry_price - plan["stop"] if plan.get("stop") and entry_price > plan["stop"] else None
@@ -294,7 +294,7 @@ def exit_plan(plan: dict, entry_price: float, shares: float, remaining: float, s
             why = (f"{'第一个上方价位（' + basis + '）' if basis not in ('2R', '3R') else basis}，先卖出约 1/3 落袋，降低这笔交易的风险"
                    + ("；目标 1 在 2R 以上，余下仓位即使止损，整笔也大致不亏" if r is not None and r >= 2 else ""))
         else:
-            why = f"{'下一个上方价位（' + basis + '）' if basis not in ('2R', '3R') else basis}，再卖出约 1/3，余下仓位交给移动止损"
+            why = f"{'下一个上方价位（' + basis + '）' if basis not in ('2R', '3R') else basis}，再卖出一部分"
         hit = plan.get(f"{k}_hit")
         out.append({"stage": f"目标 {k[-1]}", "price": price, "r": r, "fraction": "1/3", "why": why, "keep_after": keep,
                     # reached: everything above this stage's level (catches up a stage not sold);
@@ -306,9 +306,9 @@ def exit_plan(plan: dict, entry_price: float, shares: float, remaining: float, s
     due = [st for st in out if st["state"] == "due"]
     for st in due[:-1]:                      # several targets passed at once: one sell, at the last one
         st.update(state="merged", sell_now=0.0)
-    out.append({"stage": "余下仓位", "price": stop, "r": None, "fraction": "约 1/3", "keep_after": 0.0, "sell_now": 0.0,
+    out.append({"stage": "余下仓位", "price": stop, "r": None, "fraction": "约 2/3", "keep_after": 0.0, "sell_now": 0.0,
                 "suggest": min(remaining, out[-1]["keep_after"]), "state": "pending",
-                "why": "不设固定目标，让利润奔跑；收盘跌破移动止损时卖出余下全部"})
+                "why": "不设固定目标，让利润奔跑（回放显示在目标位继续分批会砍掉大赢家）；跌破吊灯止损时卖出余下全部"})
     return out
 
 
