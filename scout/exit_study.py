@@ -31,7 +31,7 @@ class Policy:
     trail: str = "none"       # none | chandelier | swing | chand_swing | low5 | ma20 | ma50
     after_t1: bool = False    # trail only once target 1 traded (before: the initial stop)
     close_based: bool = False # the trailing stop triggers on a close below it (exit next open)
-    scale: bool = True        # False: no partial sells, the whole position trails
+    scale: tuple[float, ...] = SCALE   # shares sold at target 1 (and target 2); () = no partial sells
 
 
 POLICIES = (
@@ -45,7 +45,9 @@ POLICIES = (
     Policy("low5", "5 日最低价", "low5"),
     Policy("ma20", "收盘跌破 20 日线离场", "ma20"),
     Policy("ma50", "收盘跌破 50 日线离场", "ma50"),
-    Policy("chandelier_all", "不分批，全部仓位用吊灯止损", "chandelier", scale=False),
+    Policy("chandelier_third", "只在目标 1 卖 1/3，其余用吊灯止损", "chandelier", scale=(1 / 3,)),
+    Policy("chandelier_all", "不分批，全部仓位用吊灯止损", "chandelier", scale=()),
+    Policy("chandelier_all_t1", "不分批，到目标 1 后才启用吊灯止损", "chandelier", after_t1=True, scale=()),
 )
 
 
@@ -111,15 +113,16 @@ def manage(p: Path, entry: float, stop0: float, t1: float, t2: float, pol: Polic
             proceeds += left * (stop if (first or o > stop) else o)
             left = 0.0
             break
-        if pol.scale:
-            if not t1_done and h >= t1:
-                proceeds += SCALE[0] * (t1 if (first or o < t1) else o)
-                left -= SCALE[0]
-                t1_done = True
-            if t1_done and not t2_done and h >= t2:
-                proceeds += SCALE[1] * (t2 if (first or o < t2) else o)
-                left -= SCALE[1]
-                t2_done = True
+        if not t1_done and h >= t1:
+            t1_done = True
+            if pol.scale:
+                proceeds += pol.scale[0] * (t1 if (first or o < t1) else o)
+                left -= pol.scale[0]
+        if t1_done and not t2_done and h >= t2:
+            t2_done = True
+            if len(pol.scale) > 1:
+                proceeds += pol.scale[1] * (t2 if (first or o < t2) else o)
+                left -= pol.scale[1]
         top_close = max(top_close, c)
         active = not pol.after_t1 or t1_done
         if active and pol.trail in ("ma20", "ma50"):
