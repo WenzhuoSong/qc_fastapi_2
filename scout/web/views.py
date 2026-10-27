@@ -338,14 +338,53 @@ def _ladder_svg(rows: list[tuple[str, float, str]], close: float, entry_lo: floa
     return f"<svg viewBox='0 0 230 {H + 2 * top}' width='100%' style='max-height:330px'>{''.join(parts)}</svg>"
 
 
-def trade_plan(o: dict, close: float | None, settings: dict | None = None) -> str:
+def live_line(live: dict | None, close: float | None) -> str:
+    """'实时 216.40（盘前 05:50 美东，较前收 +0.2%）' or the last close when no live print."""
+    if live:
+        return (f"<b>{live['last']:.2f}</b> <span class='small muted'>{escape(live['session'])} {escape(live['time_et'][-5:])} 美东，"
+                f"较前收 {signed(live['change'])}</span>")
+    return f"<b>{close:.2f}</b> <span class='small muted'>最近收盘</span>" if close else "—"
+
+
+def plan_status(o: dict, price: float, today, outcome: dict | None, entry_price: float | None) -> str:
+    """Where the plan is in its life: waiting for entry, in the trade, or done."""
+    from scout.detectors import registry
+    from scout.intraday import sessions_since
+    from scout.premarket import position_label
+
+    det = next((d for d in registry(include_candidates=True) if d.name == o["primary_detector"]), None)
+    window = det.trigger_window if det else 3
+    if o["status"] == "new":
+        left = window - sessions_since(o["asof"], today)
+        when = f"入场窗口还剩 {left} 个交易日" if left > 0 else "今天是入场窗口最后一天" if left == 0 else "入场窗口已过，收盘后会标记为未成交"
+        return f"<b>等待入场</b> · {escape(when)} · {escape(position_label(price, o))}"
+    if o["status"] == "triggered":
+        held = sessions_since(o["triggered_on"], today) if o.get("triggered_on") else 0
+        stop = o.get("current_stop") or o["stop"]
+        text = f"<b>已入场</b>（{escape(str(o['triggered_on']))}"
+        if entry_price:
+            r = (price - entry_price) / max(entry_price - o["stop"], 1e-9)
+            text += f"，模拟成交 {entry_price:.2f}）· 浮动 {signed(price / entry_price - 1)}（{r:+.1f}R）"
+        else:
+            text += "）"
+        return text + f" · 持有第 {held} / {o['horizon_days']} 个交易日 · 现行止损 {stop:.2f} · {escape(position_label(price, o))}"
+    if outcome:
+        label = STATUS_LABELS.get(outcome["outcome"], outcome["outcome"])
+        return f"<b>已结束</b>：{escape(str(label))}（{escape(str(outcome['closed_on']))}），收益 {signed(outcome.get('return_pct'))}"
+    return f"<b>{escape(str(STATUS_LABELS.get(o['status'], o['status'])))}</b>"
+
+
+def trade_plan(o: dict, close: float | None, settings: dict | None = None, live: dict | None = None,
+               today=None, outcome: dict | None = None, entry_price: float | None = None) -> str:
     """Order-ticket style panel next to the chart for the active (or latest) plan."""
+    from datetime import date as _date
+
     ev = o.get("evidence") or {}
     ex = ev.get("exit") or {}
     trailing = ex.get("kind") == "trail_low"
     mid = (o["entry_lo"] + o["entry_hi"]) / 2
     risk = mid - o["stop"]
-    close = close or mid
+    price = (live or {}).get("last") or close or mid
     cur = o.get("current_stop") if (o.get("current_stop") or 0) > o["stop"] else None
     tgt = "参考目标" if trailing else "目标"
     rows = [(f"{tgt} 1", o["target1"], "--up"), ("入场上沿", o["entry_hi"], "--accent"),
@@ -354,45 +393,85 @@ def trade_plan(o: dict, close: float | None, settings: dict | None = None) -> st
         rows.insert(0, (f"{tgt} 2", o["target2"], "--up"))
     if cur:
         rows.append(("跟进止损", cur, "--warn"))
+    if entry_price:
+        rows.append(("模拟成交价", entry_price, "--ink"))
     table_rows = "".join(
-        f"<tr><td style='color:var({c})'>{escape(label)}</td><td>{price:.2f}</td>"
-        f"<td>{signed(price / close - 1)}</td><td>{(price - mid) / risk:+.1f}R</td></tr>"
-        for label, price, c in rows
+        f"<tr><td style='color:var({c})'>{escape(label)}</td><td>{p:.2f}</td>"
+        f"<td>{signed(p / price - 1)}</td><td>{(p - mid) / risk:+.1f}R</td></tr>"
+        for label, p, c in sorted(rows, key=lambda r: -r[1])
     )
-    status = STATUS_LABELS.get(o.get("status"), o.get("status"))
     label = (ev.get("setup") or {}).get("label", o["primary_detector"])
     exit_rule = ex.get("rule") or f"固定：到目标 1 止盈，{o['horizon_days']} 个交易日到期"
     extra = ""
-    outcome = outcome_text(o.get("base_rate") or {})
-    if outcome:
-        extra += f"<p class='small'><b>历史上</b>：{escape(outcome.removeprefix('历史结局：'))}。目标是最好情况，不是预期结果。</p>"
+    outcome_hist = outcome_text(o.get("base_rate") or {})
+    if outcome_hist:
+        extra += f"<p class='small'><b>历史上</b>：{escape(outcome_hist.removeprefix('历史结局：'))}。目标是最好情况，不是预期结果。</p>"
     if settings is not None and o.get("status") in ("new", "triggered"):
         sz = portfolio.size_text(portfolio.size(mid, o.get("current_stop") or o["stop"], settings))
         if sz:
             extra += f"<p class='small'><b>仓位</b>：{escape(sz)} · <a href='/trades?opp={escape(o['id'])}'>记录入场</a></p>"
     extra += event_html(o.get("evidence") or {})
-    return f"""<div class="card plan"><h3>交易计划 <span class="chip">{escape(label)}</span> <span class="chip">{escape(str(status))}</span></h3>
-<div class="small muted">信号 {escape(str(o['asof']))}{' · 入场 ' + escape(str(o['triggered_on'])) if o.get('triggered_on') else ''} · 1R = {risk:.2f}（{risk / mid * 100:.1f}%）· R:R {(o.get('risk_reward') or 0):.1f}</div>
-{_ladder_svg([(r[0], r[1], r[2]) for r in rows], close, o['entry_lo'], o['entry_hi'], o['stop'], max(o.get('target2') or 0, o['target1']))}
+    stop_rule = ("跟进止损每天收盘后按规则上移（只升不降）" if trailing else "止损和目标固定不变")
+    return f"""<div class="card plan"><h3>交易计划 <span class="chip">{escape(label)}</span></h3>
+<div class="small">现价 {live_line(live, close)}</div>
+<div class="small" style="margin:4px 0">{plan_status(o, price, today or _date.today(), outcome, entry_price)}</div>
+<div class="small muted">信号 {escape(str(o['asof']))} · 1R = {risk:.2f}（{risk / mid * 100:.1f}%）· R:R {(o.get('risk_reward') or 0):.1f}</div>
+{_ladder_svg([(r[0], r[1], r[2]) for r in rows], price, o['entry_lo'], o['entry_hi'], o['stop'], max(o.get('target2') or 0, o['target1']))}
 <table><thead><tr><th></th><th>价格</th><th>距现价</th><th>R</th></tr></thead><tbody>{table_rows}</tbody></table>
 <p class="small"><b>出场规则</b>：{escape(exit_rule)}</p>
 {extra}
-<p class="small muted">入场区间由信号日 ATR 决定，3 个交易日内（突破回踩类 10 日）进入区间才算成交；保护性止损放在结构位下方且至少距入场中点 1 个 ATR。</p></div>"""
+<p class="small muted">价位在信号当天确定，是规则的一部分（与历史回放一致），不随股价调整；{stop_rule}；状态每天收盘后更新。
+入场区间由信号日 ATR 决定，规定交易日内进入区间才算成交。</p></div>"""
 
 
-def key_levels(f: dict, s: dict) -> str:
-    """Panel for tickers without a plan: where the meaningful prices are."""
+def reference_card(ref: dict, f: dict, s: dict, live: dict | None) -> str:
+    """For stocks without a rule plan: key levels plus pullback / breakout reference scenarios."""
     close = f.get("close")
     if not close:
         return ""
+    price = (live or {}).get("last") or close
     items = [("阻力位", s.get("resistance")), ("50 日线", f.get("sma50")), ("200 日线", f.get("sma200")),
              ("20 日线", f.get("sma20")), ("支撑位", s.get("support"))]
     if f.get("dist_52w_high") is not None:
         items.insert(0, ("52 周高点", close / (1 + f["dist_52w_high"])))
-    rows = "".join(f"<tr><td>{escape(n)}</td><td>{v:.2f}</td><td>{signed(v / close - 1)}</td></tr>"
-                   for n, v in sorted((i for i in items if i[1]), key=lambda i: -i[1]))
-    return (f"<div class='card plan'><h3>关键价位</h3><div class='small muted'>当前没有规则给出的交易计划。图上灰色虚线为最近的主要支撑和阻力。</div>"
-            f"<table><thead><tr><th></th><th>价格</th><th>距现价 {close:.2f}</th></tr></thead><tbody>{rows}</tbody></table></div>")
+    level_rows = "".join(f"<tr><td>{escape(n)}</td><td>{v:.2f}</td><td>{signed(v / price - 1)}</td></tr>"
+                         for n, v in sorted((i for i in items if i[1]), key=lambda i: -i[1]))
+    trend_zh = {"up": "上升趋势", "down": "下降趋势", "mixed": "震荡", "unknown": "趋势不明"}.get(ref.get("trend"), "")
+    scen = ""
+    for sc in ref.get("scenarios") or []:
+        state = "价格已在区间内" if sc["in_zone"] else f"区间中点距现价 {signed(sc['distance'])}"
+        scen += (f"<div style='margin-top:8px'><b>{escape(sc['name'])}</b> <span class='small muted'>{escape(state)}</span>"
+                 f"<div class='levels'><div><span>入场</span>{sc['entry_lo']:.2f}–{sc['entry_hi']:.2f}</div>"
+                 f"<div><span>保护性止损</span>{sc['stop']:.2f}</div><div><span>目标 1</span>{sc['target1']:.2f}</div>"
+                 f"<div><span>目标 2</span>{sc['target2']:.2f}</div></div>"
+                 f"<div class='small'>止损距入场中点 {signed(sc['stop_pct'])} · R:R {sc['rr']:.1f} · {escape(sc['note'])}</div></div>")
+    if ref.get("note"):
+        scen += f"<p class='small warn'>{escape(ref['note'])}</p>"
+    return (f"<div class='card plan'><h3>参考价位 <span class='chip'>{escape(trend_zh)}</span></h3>"
+            f"<div class='small'>现价 {live_line(live, close)}</div>"
+            f"<table><thead><tr><th></th><th>价格</th><th>距现价</th></tr></thead><tbody>{level_rows}</tbody></table>{scen}"
+            f"<p class='small muted'>当前没有规则信号。参考价位按支撑 / 阻力和波动（ATR {ref.get('atr', 0):.2f}）计算，每天收盘后随最新数据重算；"
+            f"止损至少距入场中点 1 个 ATR，目标按 2R / 3R 或下一个阻力位。<b>这不是规则信号，没有历史回放统计</b>，只作为价位参考。</p></div>")
+
+
+def holding_card(trades: list[dict], stops: list[dict], live: dict | None, close: float | None) -> str:
+    """The user's own open position(s) in this stock, with ways to raise the stop."""
+    if not trades:
+        return ""
+    price = (live or {}).get("last") or close
+    rows = []
+    for t in trades:
+        pnl = (price / t["entry_price"] - 1) if price else None
+        r = ((price - t["entry_price"]) / (t["entry_price"] - t["stop"])) if price and t.get("stop") and t["entry_price"] > t["stop"] else None
+        rows.append(f"<li>{escape(str(t['opened_on']))} {t['shares']:g} 股 @ {t['entry_price']:.2f} · 浮动 {signed(pnl)}"
+                    + (f"（{r:+.1f}R）" if r is not None else "")
+                    + (f" · 你的止损 {t['stop']:.2f}（距现价 {signed(t['stop'] / price - 1)}）" if t.get("stop") and price else "") + "</li>")
+    stop_rows = "".join(f"<tr><td>{escape(x['name'])}</td><td>{x['price']:.2f}</td><td>{signed(x['price'] / price - 1) if price else '—'}</td>"
+                        f"<td class='small muted'>{escape(x['note'])}</td></tr>" for x in stops)
+    return (f"<div class='card plan'><h3>我的持仓</h3><ul class='tight small'>{''.join(rows)}</ul>"
+            + (f"<div class='small'><b>止损上移参考</b>（按最新收盘重算，只升不降由你决定）</div>"
+               f"<table class='small'><tbody>{stop_rows}</tbody></table>" if stop_rows else "")
+            + "<p class='small muted'>在「我的交易」修改止损后，盘中监控和盘前简报会按新止损提醒。</p></div>")
 
 
 QUAD_COLORS = {"leading": "var(--up)", "weakening": "var(--warn)", "lagging": "var(--down)", "improving": "var(--accent)"}

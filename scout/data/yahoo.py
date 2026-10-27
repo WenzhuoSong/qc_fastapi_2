@@ -124,3 +124,34 @@ async def latest_quotes(symbols: list[str], session: date) -> dict[str, dict]:
     except Exception as exc:
         logger.warning("yahoo quotes failed: %s", exc)
         return {}
+
+
+# ── One live quote for a page view (cached briefly) ──
+_LIVE_TTL_S = 60
+_live_cache: dict[str, tuple[float, dict | None]] = {}
+
+
+def session_label(time_et: str) -> str:
+    """'MM-DD HH:MM' (US Eastern) → 盘前 / 盘中 / 盘后."""
+    hm = time_et[-5:]
+    return "盘前" if hm < "09:30" else "盘中" if hm < "16:00" else "盘后"
+
+
+async def live_quote(ticker: str) -> dict | None:
+    """Latest print incl. pre/post market vs the previous session's close; None when unavailable."""
+    import time
+
+    from scout.market_calendar import is_us_equity_trading_day, previous_us_equity_trading_day, us_equity_market_status
+
+    hit = _live_cache.get(ticker)
+    if hit and time.monotonic() - hit[0] < _LIVE_TTL_S:
+        return hit[1]
+    today = date.fromisoformat(us_equity_market_status().market_date)
+    session = today if is_us_equity_trading_day(today) else previous_us_equity_trading_day(today)
+    q = (await latest_quotes([ticker], session)).get(ticker)
+    if q and not q["stale"]:
+        q = {**q, "session": session_label(q["time_et"])}
+    else:
+        q = None
+    _live_cache[ticker] = (time.monotonic(), q)
+    return q

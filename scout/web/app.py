@@ -248,6 +248,33 @@ async def ticker_lookup(t: str = "", _: str = Depends(require_auth)):
     return RedirectResponse(f"/ticker/{universe.yahoo_symbol(t)}" if t else "/", status_code=302)
 
 
+async def _side_panel(t: str, opp: dict | None, f: dict, struct: dict, bars: list[dict]) -> str:
+    """Next to the chart: the active rule plan (with its lifecycle) or reference levels, plus the user's holding."""
+    from scout import levels
+    from scout.data.yahoo import live_quote
+    from scout.market_calendar import us_equity_market_status
+
+    try:
+        live = await asyncio.wait_for(live_quote(t), timeout=8)
+    except Exception:                       # the page must render on the last close when Yahoo is slow
+        live = None
+    today = date.fromisoformat(us_equity_market_status().market_date)
+    if opp and opp["status"] in ("new", "triggered"):
+        trig = await db.fetch_one("SELECT price FROM scout.opportunity_events WHERE opportunity_id = :i AND event_type = 'triggered'",
+                                  {"i": opp["id"]})
+        out = await db.fetch_one("SELECT * FROM scout.opportunity_outcomes WHERE opportunity_id = :i", {"i": opp["id"]})
+        panel = views.trade_plan(opp, f.get("close"), await portfolio.get_settings(), live=live, today=today,
+                                 outcome=out, entry_price=(trig or {}).get("price"))
+    else:
+        price = (live or {}).get("last")
+        panel = views.reference_card(levels.reference_plans(f, struct, price), f, struct, live)
+    held = [x for x in await portfolio.trades(open_only=True) if x["ticker"] == t]
+    if held:
+        stops = levels.trailing_stops(f, [b["close"] for b in bars], [b["low"] for b in bars])
+        panel += views.holding_card(held, stops, live, f.get("close"))
+    return f"<div>{panel}</div>"
+
+
 async def _research_card(t: str, inst: dict, feat: dict) -> str:
     """The data behind the fundamental / expectations / ownership / options / macro lenses."""
     from scout import context, research
@@ -320,7 +347,7 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
     name = " · ".join(x for x in ((inst or {}).get("name"), (inst or {}).get("sector")) if x)
     body = f"<h2>{e(t)} <span class='muted small'>{e(name)}</span></h2>"
     struct = price_structure.compute(bars)
-    side = views.trade_plan(plan_opp, payload.get("close"), await portfolio.get_settings()) if plan_opp else views.key_levels(payload, struct)
+    side = await _side_panel(t, plan_opp, payload, struct, bars)
     body += f"<div class='chartrow'>{views.chart_script(bars, plan, struct)}{side}</div>"
     from scout import sectors as sector_mod
 
