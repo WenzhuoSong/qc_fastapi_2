@@ -33,7 +33,7 @@ class OpportunityEventTests(unittest.TestCase):
 class TradeEventTests(unittest.TestCase):
     def test_stop_and_target(self):
         t = {"entry_price": 100.0, "stop": 95.0, "target": 110.0}
-        self.assertIn("跌破你的止损 95.00", intraday.trade_events(t, 94.0)[0][1])
+        self.assertIn("跌破持仓止损 95.00", intraday.trade_events(t, 94.0)[0][1])
         self.assertEqual(intraday.trade_events(t, 111.0)[0][0], "trade_target")
         self.assertEqual(intraday.trade_events({**t, "stop": None, "target": None}, 50.0), [])
 
@@ -43,7 +43,7 @@ class RenderTests(unittest.TestCase):
         alerts = [
             {"kind": "news", "ticker": "CART", "payload": {"tag": "机会", "headline": "Deal <talks>", "source": "Reuters",
                                                          "flags": ["并购/出售"]}},
-            {"kind": "trade_stop", "ticker": "VLO", "payload": {"text": "跌破你的止损 400.00", "price": 398.2, "time_et": "10-27 10:15"}},
+            {"kind": "trade_stop", "ticker": "VLO", "payload": {"text": "跌破持仓止损 400.00", "price": 398.2, "time_et": "10-27 10:15"}},
         ]
         text = intraday.render(alerts, datetime(2026, 10, 27, 14, 15, tzinfo=ZoneInfo("UTC")))
         self.assertTrue(text.startswith("⏱ <b>盘中提醒</b> 10:15 美东"))

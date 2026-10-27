@@ -67,9 +67,9 @@ def holding_label(price: float, t: dict, session: date | None = None) -> str:
     pnl = price / t["entry_price"] - 1
     text = f"较你的成本 {pnl * 100:+.1f}%"
     if t.get("stop"):
-        text += f"，盘前已跌破止损（你的止损 {t['stop']:.2f}）" if price <= t["stop"] else f"，距你的止损 {(price / t['stop'] - 1) * 100:.1f}%"
+        text += f"，盘前已跌破止损（持仓止损 {t['stop']:.2f}）" if price <= t["stop"] else f"，距持仓止损 {(price / t['stop'] - 1) * 100:.1f}%"
     if t.get("target") and price >= t["target"]:
-        text += f"，已到目标 1 附近（你的目标 {t['target']:.2f}）"
+        text += f"，已到止盈位附近（{t['target']:.2f}）"
     plan = t.get("plan") or {}
     if session and plan.get("time_stop_days") and not (plan.get("target1") and price >= plan["target1"]):
         from scout.intraday import sessions_since

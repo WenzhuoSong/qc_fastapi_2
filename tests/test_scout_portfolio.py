@@ -86,9 +86,9 @@ class OutcomeAndEventTests(unittest.TestCase):
 
     def test_holding_label(self):
         t = {"entry_price": 100.0, "stop": 95.0, "target": 110.0}
-        self.assertIn("跌破止损（你的止损 95.00）", holding_label(94.0, t))
-        self.assertIn("较你的成本 +2.0%，距你的止损 7.4%", holding_label(102.0, t))
-        self.assertIn("已到目标 1 附近", holding_label(111.0, t))
+        self.assertIn("跌破止损（持仓止损 95.00）", holding_label(94.0, t))
+        self.assertIn("较你的成本 +2.0%，距持仓止损 7.4%", holding_label(102.0, t))
+        self.assertIn("已到止盈位附近", holding_label(111.0, t))
 
     def test_holding_label_time_stop(self):
         from datetime import date

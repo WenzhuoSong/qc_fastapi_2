@@ -1,16 +1,21 @@
 """The user's side: account settings, position sizing, trade journal, concentration.
 
-Scout never trades. The journal is what the user says they did, so the
-scoreboard of the rules and the user's own results can be compared. Sizing
-is fixed-fractional: risk a set share of the account between entry and stop.
+Scout never trades. The journal is what the user says they did (ticker, date,
+fill, shares), so the scoreboard of the rules and the user's own results can be
+compared. Stops and targets are the system's: set from the price map at the buy
+and advanced after each close (`manage_trade`). Sizing is fixed-fractional: risk
+a set share of the account between entry and stop.
 """
 from __future__ import annotations
 
+import logging
 import math
 from collections import Counter
 from datetime import date
 
 from scout import db
+
+logger = logging.getLogger("scout.portfolio")
 
 DEFAULTS = {"account_size": None, "risk_pct": 0.01, "max_position_pct": 0.20}
 SECTOR_CROWDED = 3       # this many open ideas/trades in one sector is one bet, not several
@@ -73,13 +78,48 @@ async def add_trade(t: dict) -> int:
     return row["id"]
 
 
+async def manage_trade(t: dict) -> list[str]:
+    """Set an open trade's stop and target from its plan (created from the price map if missing),
+    as the system manages them; returns what changed today."""
+    from scout import levels
+
+    plan = t.get("plan")
+    if not plan or "history" not in plan:     # no plan yet (or one from before the system managed trades)
+        pm = await levels.get_map(t["ticker"], before=t["opened_on"]) or {}
+        plan = levels.locked_plan(pm, t["entry_price"], t["opened_on"])
+        if not plan:
+            return []
+    bars = await db.fetch_all("SELECT date, high, close FROM scout.bars_daily WHERE ticker = :t AND date >= :d ORDER BY date",
+                              {"t": t["ticker"], "d": t["opened_on"]})
+    feat = await db.fetch_one("SELECT payload FROM scout.features_daily WHERE ticker = :t ORDER BY date DESC LIMIT 1",
+                              {"t": t["ticker"]})
+    asof = bars[-1]["date"] if bars else t["opened_on"]
+    # the buy day's high may have come before the fill, its close did not
+    reached = [b["close"] if b["date"] == t["opened_on"] else b["high"] for b in bars]
+    stop, target, _, msgs = levels.manage(plan, reached, [b["close"] for b in bars],
+                                          ((feat or {}).get("payload") or {}).get("atr14"), asof)
+    await db.execute("UPDATE scout.trades SET stop = :s, target = :g, plan = CAST(:p AS JSONB), updated_at = now() WHERE id = :id",
+                     {"s": stop, "g": target, "p": db.jsonb(plan), "id": t["id"]})
+    return msgs
+
+
+async def manage_open_trades() -> list[dict]:
+    """After the close: every open trade's system stop / target; [{ticker, messages}] for the push."""
+    out = []
+    for t in await db.fetch_all("SELECT * FROM scout.trades WHERE closed_on IS NULL ORDER BY id"):
+        try:
+            msgs = await manage_trade(t)
+        except Exception:
+            logger.exception("managing trade %s failed", t["id"])
+            continue
+        if msgs:
+            out.append({"ticker": t["ticker"], "messages": msgs})
+    return out
+
+
 async def close_trade(trade_id: int, exit_price: float, closed_on: date) -> None:
     await db.execute("UPDATE scout.trades SET exit_price = :p, closed_on = :d, updated_at = now() WHERE id = :id",
                      {"p": exit_price, "d": closed_on, "id": trade_id})
-
-
-async def update_stop(trade_id: int, stop: float) -> None:
-    await db.execute("UPDATE scout.trades SET stop = :s, updated_at = now() WHERE id = :id", {"s": stop, "id": trade_id})
 
 
 async def delete_trade(trade_id: int) -> None:

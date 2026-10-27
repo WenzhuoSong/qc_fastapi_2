@@ -275,8 +275,7 @@ async def _side_panel(t: str, opp: dict | None, f: dict, struct: dict, bars: lis
     panel = views.price_panel(pm, live, settings, opp=active, today=today, tracking_html=tracking, ticker=t)
     held = [x for x in await portfolio.trades(open_only=True) if x["ticker"] == t]
     if held:
-        stops = levels.trailing_stops(f, [b["close"] for b in bars], [b["low"] for b in bars])
-        panel += views.holding_card(held, stops, live, f.get("close"))
+        panel += views.holding_card(held, live, f.get("close"), today)
     return f"<div>{panel}</div>"
 
 
@@ -741,12 +740,10 @@ async def trades_page(opp: str | None = None, t: str | None = None, plan: str | 
 <label class="small">日期<br><input name="opened_on" type="date" value="{date.today()}" required></label>
 <label class="small">成交价<br><input name="entry_price" value="{e(pre.get('entry', ''))}" size="8" required></label>
 <label class="small">股数<br><input name="shares" value="{e(pre.get('shares', ''))}" size="6" required></label>
-<label class="small">止损<br><input name="stop" value="{e(pre.get('stop', ''))}" size="8"></label>
-<label class="small">目标<br><input name="target" value="{e(pre.get('target', ''))}" size="8"></label>
 <label class="small">备注<br><input name="note" size="20"></label><button>记录</button></form>
-{(f'<p class="small muted">已按价位参考的「{e(pre["from"])}」预填买入区间中点、止损、目标 1 和建议股数，请改成你的实际成交。'
-   '记录后这只股票的计划锁定：止损和目标不再随每日价位变化，之后只上移止损。</p>' if pre.get("from") else
-   '<p class="small muted">已按机会卡预填入场中点、止损和建议股数，请改成你的实际成交。</p>') if pre else ''}</div>"""
+<p class="small muted">只需填代码、日期、成交价和股数。止损和止盈由系统设置：按成交时的价位图给出初始止损、目标 1 / 2，
+之后每天收盘后自动更新（止损用吊灯止损只升不降，到目标 1 后止盈改看目标 2），与个股页「我的持仓」一致，变动会推送到 Telegram。</p>
+{'<p class="small muted">已按' + ('价位参考的「' + e(pre["from"]) + '」' if pre.get("from") else '机会卡') + '预填买入区间中点和建议股数，请改成你的实际成交。</p>' if pre else ''}</div>"""
     risk = sum(portfolio.metrics(t).get("open_risk") or 0 for t in open_rows)
     risk_line = (f"<p class='small'>持仓 {len(open_rows)} 笔 · 全部触发止损的潜在亏损约 ${risk:,.0f}"
                  + (f"（账户的 {risk / acct * 100:.1f}%）" if acct else "") + "</p>") if open_rows else ""
@@ -777,28 +774,18 @@ async def trades_settings(account_size: str = Form(""), risk_pct: str = Form("1"
 
 @app.post("/trades/add")
 async def trades_add(ticker: str = Form(...), opened_on: str = Form(...), entry_price: str = Form(...), shares: str = Form(...),
-                     stop: str = Form(""), target: str = Form(""), note: str = Form(""), opportunity_id: str = Form(""),
+                     note: str = Form(""), opportunity_id: str = Form(""),
                      _: str = Depends(require_auth)):
     entry, qty = _num(entry_price), _num(shares)
     if not entry or not qty or entry <= 0 or qty <= 0:
         raise HTTPException(status_code=400, detail="成交价和股数必须是正数")
-    from scout import levels
-
-    opened = date.fromisoformat(opened_on)
-    plan = None
-    if not opportunity_id:                  # a rule card keeps its own plan; otherwise lock today's price map
-        try:
-            pm = await levels.get_map(universe.yahoo_symbol(ticker))
-            plan = levels.locked_plan(pm or {}, entry, opened)
-        except Exception:
-            logger.exception("price map for %s failed", ticker)
-    stop_v, target_v = _num(stop), _num(target)
-    if plan:
-        plan.update(stop_user=stop_v, target_user=target_v)
-    await portfolio.add_trade({"ticker": ticker, "opened_on": opened, "entry_price": entry, "shares": qty,
-                               "stop": stop_v if stop_v is not None else (plan or {}).get("stop"),
-                               "target": target_v if target_v is not None else (plan or {}).get("target1"),
-                               "note": note, "opportunity_id": opportunity_id or None, "plan": plan})
+    tid = await portfolio.add_trade({"ticker": universe.yahoo_symbol(ticker), "opened_on": date.fromisoformat(opened_on),
+                                     "entry_price": entry, "shares": qty, "note": note, "opportunity_id": opportunity_id or None})
+    row = await db.fetch_one("SELECT * FROM scout.trades WHERE id = :id", {"id": tid})
+    try:                                    # stop and target are the system's from the start
+        await portfolio.manage_trade(row)
+    except Exception:
+        logger.exception("managing new trade %s failed", tid)
     return RedirectResponse("/trades", status_code=303)
 
 
@@ -808,15 +795,6 @@ async def trades_close(trade_id: int, exit_price: str = Form(...), closed_on: st
     if not price or price <= 0:
         raise HTTPException(status_code=400, detail="出场价必须是正数")
     await portfolio.close_trade(trade_id, price, date.fromisoformat(closed_on))
-    return RedirectResponse("/trades", status_code=303)
-
-
-@app.post("/trades/{trade_id}/stop")
-async def trades_stop(trade_id: int, stop: str = Form(...), _: str = Depends(require_auth)):
-    value = _num(stop)
-    if not value or value <= 0:
-        raise HTTPException(status_code=400, detail="止损必须是正数")
-    await portfolio.update_stop(trade_id, value)
     return RedirectResponse("/trades", status_code=303)
 
 

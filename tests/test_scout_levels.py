@@ -75,20 +75,38 @@ class StatusTests(unittest.TestCase):
     def test_locked_plan_follows_the_fill(self):
         plan = levels.locked_plan(self.PM, 97.6, date(2026, 10, 27))
         self.assertEqual((plan["from"], plan["stop"], plan["target1"], plan["in_zone"]), ("回调买点", 95.5, 101.5, True))
-        off = levels.locked_plan(self.PM, 103.0, date(2026, 10, 27))
-        self.assertEqual((off["from"], off["in_zone"]), ("突破买点", False))
+        off = levels.locked_plan(self.PM, 101.0, date(2026, 10, 27))       # bought outside any zone
+        self.assertEqual((off["from"], off["in_zone"]), ("按成交价", False))
+        self.assertEqual((off["stop"], off["stop_basis"]), (99.0, "成交价下方 1 个 ATR"))   # tightest stop ≥ 1 ATR away
+        self.assertEqual((off["target1"], off["target1_basis"]), (104.0, "阻力 1"))
         self.assertIsNone(levels.locked_plan({}, 100.0, date(2026, 10, 27)))
 
 
-class TrailingStopTests(unittest.TestCase):
-    def test_trailing_stops(self):
-        closes = [90 + i * 0.5 for i in range(30)]
-        lows = [c - 1 for c in closes]
-        stops = levels.trailing_stops(F_UP, closes, lows)
-        names = [x["name"] for x in stops]
-        self.assertTrue(any("吊灯" in n for n in names))
-        self.assertNotIn("成本价（保本）", names)
-        self.assertEqual(stops, sorted(stops, key=lambda x: -x["price"]))
+class ManageTests(unittest.TestCase):
+    PLAN = {"stop": 95.5, "stop_basis": "支撑 1 下方", "target1": 101.5, "target2": 104.0, "time_stop_days": 10}
+
+    def test_stop_only_rises_and_targets_advance(self):
+        plan = dict(self.PLAN)
+        stop, target, _, msgs = levels.manage(plan, [99.0], [98.5], 2.0, date(2026, 10, 27))
+        self.assertEqual((stop, target, msgs), (95.5, 101.5, []))           # chandelier 92.5 is below the plan stop
+        closes, highs = [98.5, 100.0, 102.0, 103.0], [99.0, 100.5, 102.5, 103.5]
+        stop, target, basis, msgs = levels.manage(plan, highs, closes, 2.0, date(2026, 10, 30))
+        self.assertEqual((stop, target), (97.0, 104.0))                    # 103 − 3×2; target 1 traded → target 2
+        self.assertIn("吊灯", basis)
+        self.assertEqual(len(msgs), 2)
+        stop, target, _, _ = levels.manage(plan, highs + [101.0], closes + [100.0], 2.0, date(2026, 10, 31))
+        self.assertEqual((stop, target), (97.0, 104.0))                    # a pullback never lowers the stop
+        stop, target, _, msgs = levels.manage(plan, highs + [101.0, 104.2], closes + [100.0, 104.0], 2.0, date(2026, 11, 2))
+        self.assertIsNone(target)                                          # past target 2: trailing stop only
+        self.assertEqual(stop, 98.0)
+        self.assertEqual(len(plan["history"]), 4)
+
+    def test_rerun_on_the_same_bars_changes_nothing(self):
+        plan = dict(self.PLAN)
+        levels.manage(plan, [102.0], [101.0], 1.0, date(2026, 10, 27))
+        before = dict(plan)
+        self.assertEqual(levels.manage(plan, [102.0], [101.0], 1.0, date(2026, 10, 27))[3], [])
+        self.assertEqual(plan, before)
 
 
 class PlanPanelTests(unittest.TestCase):

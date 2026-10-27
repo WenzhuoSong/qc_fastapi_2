@@ -4,8 +4,8 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta
 
-from scout import (bars, base_rates, context, db, events, ledger, opportunities, sectors, structure, telegram, thesis,
-                   tracker, universe)
+from scout import (bars, base_rates, context, db, events, ledger, opportunities, portfolio, sectors, structure, telegram,
+                   thesis, tracker, universe)
 from scout.config import get_scout_settings
 from scout.data.provider import get_provider
 from scout.features import SNAPSHOT_FEATURES, FeaturePanel, build_panel
@@ -163,6 +163,15 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
 
     transitions = await tracker.update_all()
     summary["transitions"] = [t.__dict__ for t in transitions]
+    try:                               # the user's holdings: system stop / target after this close
+        managed = await portfolio.manage_open_trades()
+        summary["trades_managed"] = managed
+        if push and managed:
+            await telegram.send("📌 <b>持仓止损 / 止盈更新</b>\n" + "\n".join(
+                f"• <b>{telegram.esc(m['ticker'])}</b>：" + "；".join(telegram.esc(x) for x in m["messages"]) for m in managed))
+    except Exception as exc:
+        logger.warning("trade management failed: %s", exc)
+        summary["trades_managed"] = f"failed: {type(exc).__name__}"
     try:                               # the ledger must never block the scan
         summary["ledger"] = {"sector_heat": await ledger.record_sector_heat(sector_rows, asof),
                              "scored": await ledger.score_due()}
