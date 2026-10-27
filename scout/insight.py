@@ -18,7 +18,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from scout import (context, db, event_cause, events, fundamentals, knowledge, opportunities, sectors, structure,
+from scout import (context, db, event_cause, events, fundamentals, knowledge, ledger, opportunities, sectors, structure,
                    universe)
 from scout.analysis import attribution, scout_view
 from scout.config import get_scout_settings
@@ -74,6 +74,8 @@ SYSTEM_PROMPT = """你是一名资深美股技术分析师，按"多视角工作
 0. 先看 context.events：近期有统计上的异常波动时，先在 recent_event 里解释它，结论也要围绕它——日期、幅度（标准差倍数）、原因类型、
    对哪部分业务或预期有影响、事后历史上通常怎么走（异常事件视角的 同类异动后 统计）。原因以 events 给出的为准，
    来自网络检索的要写明"据外部报道"。不要用异动之后的新闻解释之前的下跌。
+5a. context.history 里有之前的判断时，在 confidence_reason 里回应：上次说了什么、后来的走势符合还是不符合、这次为什么相同或不同；
+   判断错了要直接承认。context.lens_reliability 是各视角过去的命中率（样本不足的不要引用），可靠度低的视角在结论里要降低权重。
 5. 结论要和要点自洽：要点里方向不一致时（例如波段结构向上、但短期跌破 20 日线），结论写"中性"就要在要点里说明为什么不是偏多/偏空。
 6. 正文不要出现英文字段名（如 swing_trend、sma50），引用放在 evidence 里，正文用中文名称。
 
@@ -114,7 +116,11 @@ async def gather(ticker: str) -> dict | None:
             "SELECT payload FROM scout.features_daily WHERE ticker = :t ORDER BY date DESC LIMIT 1", {"t": sector_etf}
         )
     evs, causes, fund, ev_rates = await _events_and_fundamentals(t, inst, sector_etf)
+    past = await ledger.history(t, asof)
+    reliability = await ledger.lens_reliability()
     return {
+        "history": past,
+        "reliability": reliability,
         "ticker": t,
         "asof": asof,
         "events": evs,
@@ -240,6 +246,8 @@ def build_pack(facts: dict) -> dict:
          "标题": n["headline"], **({"摘要": n["summary"]} if n.get("summary") else {})}
         for i, n in enumerate(facts["news"])
     ] or "近 7 天没有可匹配的新闻"
+    ctx["history"] = facts.get("history") or "这是 Scout 第一次分析这只股票（或之前的判断还没有记录）"
+    ctx["lens_reliability"] = facts.get("reliability") or "各视角的历史判断样本还在积累，暂无校准数据"
     evs = facts.get("events") or []
     ctx["events"] = ([event_block(i, e, (facts.get("event_causes") or {}).get(e["date"])) for i, e in enumerate(evs)]
                      or "近 60 个交易日没有统计上的异常波动")
@@ -450,6 +458,10 @@ async def generate(ticker: str) -> dict | None:
         "INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('ticker_ai', :d, :c, CAST(:p AS JSONB))",
         {"d": facts["asof"], "c": render_text(insight, pack), "p": db.jsonb(record)},
     )
+    try:
+        await ledger.record_insight(record)
+    except Exception as exc:          # the ledger must never lose the user an interpretation
+        logger.warning("ledger record for %s failed: %s", ticker, exc)
     return record
 
 

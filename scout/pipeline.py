@@ -4,8 +4,8 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta
 
-from scout import (bars, base_rates, context, db, events, opportunities, sectors, structure, telegram, thesis, tracker,
-                   universe)
+from scout import (bars, base_rates, context, db, events, ledger, opportunities, sectors, structure, telegram, thesis,
+                   tracker, universe)
 from scout.config import get_scout_settings
 from scout.data.provider import get_provider
 from scout.features import SNAPSHOT_FEATURES, FeaturePanel, build_panel
@@ -163,6 +163,12 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
 
     transitions = await tracker.update_all()
     summary["transitions"] = [t.__dict__ for t in transitions]
+    try:                               # the ledger must never block the scan
+        summary["ledger"] = {"sector_heat": await ledger.record_sector_heat(sector_rows, asof),
+                             "scored": await ledger.score_due()}
+    except Exception as exc:
+        logger.warning("ledger update failed: %s", exc)
+        summary["ledger"] = f"failed: {type(exc).__name__}"
     already = await db.fetch_one(
         "SELECT 1 AS x FROM scout.briefs WHERE kind = 'eod' AND asof = :d LIMIT 1", {"d": asof}
     )
@@ -199,6 +205,10 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         await opportunities.save(c, ev, th.model_dump(), source)
         saved.append(c.id)
     summary["saved"] = saved
+    try:
+        summary["ledger_opportunities"] = await ledger.backfill_opportunities()
+    except Exception as exc:
+        logger.warning("ledger opportunities failed: %s", exc)
 
     focus = None
     try:                               # an LLM hiccup must not fail the scan
@@ -300,6 +310,20 @@ async def render_weekly_report() -> str:
     rotation = sectors.rotation_line(sector_rows)
     if rotation:
         lines.append(f"\n本周{rotation}")
+    cal = [r for r in await ledger.calibration(20) if r["enough"] and r["kind"] in ("insight", "insight_lens", "sector_heat")]
+    if cal:
+        from scout.insight import LENS_TITLES
+
+        best = sorted(cal, key=lambda r: -r["hit_rate"])[:3]
+        worst = sorted(cal, key=lambda r: r["hit_rate"])[:2]
+        def label(r):
+            name = LENS_TITLES.get(r["lens"], r["lens"]) if r["kind"] == "insight_lens" else ledger.KIND_ZH[r["kind"]]
+            return f"{name}·{ledger.STANCE_ZH[r['stance']]} {r['hit_rate'] * 100:.0f}%（{r['n']}）"
+        lines.append("\n<b>判断校准（20 日命中率）</b>\n最准：" + telegram.esc("；".join(label(r) for r in best))
+                     + "\n最弱：" + telegram.esc("；".join(label(r) for r in worst)))
+    rated = await db.fetch_one("SELECT count(*) AS n FROM scout.judgments WHERE human_rating IS NOT NULL "
+                               "AND made_at >= date_trunc('month', now())")
+    lines.append(f"本月人工抽检 {rated['n']}/10（Dashboard「判断台账」）")
     health = base_rates.rule_health(await base_rates.load())
     if health:
         lines.append("\n<b>规则体检</b>\n" + "\n".join(telegram.esc(x) for x in health))

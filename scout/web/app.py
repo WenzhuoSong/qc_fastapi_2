@@ -779,3 +779,57 @@ async def data_page(_: str = Depends(require_auth)) -> str:
                                                 else "<p class='muted small'>没有发现问题。</p>")
             + "<h2>最近任务</h2>" + table(["任务", "状态", "开始（UTC）", "摘要"], run_rows))
     return layout("数据状态", "data", body)
+
+
+@app.get("/ledger", response_class=HTMLResponse)
+async def ledger_page(h: int = 20, kind: str = "", _: str = Depends(require_auth)) -> str:
+    """Calibration of every kind of judgment, and the judgments themselves for spot checks."""
+    from scout import ledger
+    from scout.insight import LENS_TITLES
+
+    h = h if h in ledger.HORIZONS else 20
+    tabs = " ".join(f"<a class='chip' style='{'background:var(--accent);color:#fff' if x == h else ''}' href='/ledger?h={x}'>{x} 日</a>"
+                    for x in ledger.HORIZONS)
+    cal_rows = []
+    for r in await ledger.calibration(h):
+        name = LENS_TITLES.get(r["lens"], r["lens"]) if r["kind"] == "insight_lens" else (r["lens"] or "—")
+        enough = r["enough"]
+        cal_rows.append([e(ledger.KIND_ZH.get(r["kind"], r["kind"])), e(name), e(ledger.STANCE_ZH[r["stance"]]), str(r["n"]),
+                         f"{r['hit_rate'] * 100:.0f}%" if enough else f"<span class='muted'>{r['hit_rate'] * 100:.0f}%（样本不足）</span>",
+                         signed(r["median_excess"]) if enough else "<span class='muted'>—</span>"])
+    where = "WHERE j.kind = :k" if kind in ledger.KIND_ZH else ""
+    recent = await db.fetch_all(
+        f"SELECT j.*, o20.excess_spy AS x20, o20.hit AS hit20, o5.excess_spy AS x5 FROM scout.judgments j "
+        f"LEFT JOIN scout.judgment_outcomes o20 ON o20.judgment_id = j.id AND o20.horizon = 20 "
+        f"LEFT JOIN scout.judgment_outcomes o5 ON o5.judgment_id = j.id AND o5.horizon = 5 "
+        f"{where} ORDER BY j.asof DESC, j.id DESC LIMIT 60", {"k": kind})
+    judg_rows = []
+    for j in recent:
+        p = j["payload"] or {}
+        what = p.get("headline") or ("；".join(p.get("points") or [])[:80]) or (f"热度 {p.get('heat')}" if j["kind"] == "sector_heat" else "")
+        lens = LENS_TITLES.get(j["lens"], j["lens"]) if j["kind"] == "insight_lens" else j["lens"]
+        rating = {1: "👍", -1: "👎"}.get(j["human_rating"], "")
+        form = (f"<form method='post' action='/ledger/{j['id']}/rate' style='display:inline'>"
+                f"<button name='r' value='1' style='padding:0 6px'>👍</button><button name='r' value='-1' style='padding:0 6px;background:var(--down)'>👎</button></form>")
+        judg_rows.append([e(j["asof"]), f"<a href='/ticker/{e(j['ticker'])}'>{e(j['ticker'])}</a>",
+                          e(ledger.KIND_ZH.get(j["kind"], j["kind"])) + (f"<div class='small muted'>{e(lens)}</div>" if lens else ""),
+                          e(ledger.STANCE_ZH[j["stance"]]), e(what), signed(j["x5"]) if j["x5"] is not None else "—",
+                          (signed(j["x20"]) + (" ✓" if j["hit20"] else " ✗" if j["hit20"] is False else "")) if j["x20"] is not None else "未到期",
+                          rating or form])
+    kinds = " ".join(f"<a class='chip' href='/ledger?h={h}&kind={k}'>{e(v)}</a>" for k, v in ledger.KIND_ZH.items())
+    rated = await db.fetch_one("SELECT count(*) AS n FROM scout.judgments WHERE human_rating IS NOT NULL "
+                               "AND made_at >= date_trunc('month', now())")
+    body = (f"<h2>判断台账 {tabs}</h2><p class='small muted'>每个判断记录当时的数据日期和价格；{h} 个交易日后与 SPY 比较。"
+            f"偏多 = 跑赢，偏空 = 跑输，中性 = 相对 SPY 在 ±{ledger.NEUTRAL_BAND[h] * 100:.1f}% 以内。"
+            f"少于 {ledger.MIN_SAMPLES} 个样本的只显示，不参与任何调整。</p>"
+            + (table(["类别", "视角 / 规则", "判断", "样本", "命中率", "相对 SPY 中位数"], cal_rows) if cal_rows
+               else "<p class='muted small'>还没有到期的判断：最早的判断在 5 个交易日后开始打分。</p>")
+            + f"<h2>最近的判断</h2><p class='small'>{kinds}　本月人工抽检 {rated['n']}/10（判断写得是否合理，与结果无关）</p>"
+            + table(["日期", "代码", "类别", "判断", "内容", "5 日相对 SPY", "20 日相对 SPY", "抽检"], judg_rows))
+    return layout("判断台账", "ledger", body)
+
+
+@app.post("/ledger/{judgment_id}/rate")
+async def ledger_rate(judgment_id: int, r: int = Form(...), _: str = Depends(require_auth)):
+    await db.execute("UPDATE scout.judgments SET human_rating = :r WHERE id = :i", {"r": 1 if r > 0 else -1, "i": judgment_id})
+    return RedirectResponse("/ledger", status_code=303)

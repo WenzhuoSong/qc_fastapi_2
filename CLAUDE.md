@@ -51,6 +51,7 @@ Archived, not in this tree: the QC observer (git tag `qc-observer-final`, local 
 | `scout/event_cause.py` | Why it moved: dated news, SEC filings, insiders, earnings, web search → cause taxonomy, validated, cached in `scout.stock_events` |
 | `scout/fundamentals.py` | Finnhub free fundamentals / analyst mix / EPS surprises / insiders, cached daily (`scout.fundamentals`); raw calls in `scout/data/finnhub.py` |
 | `scout/research_data.py` | v2 research pool data, point in time: SEC filings + XBRL quarterly financials (`scout/data/sec.py`), Yahoo estimates / ratings / ownership / options (`scout/data/yahoo_research.py`, `scout/data/options.py`), FRED (`scout/data/fred.py`), price cross-check, storage check; `/data` page |
+| `scout/ledger.py` | v2 judgment ledger: every AI view (overall + per lens), opportunity card and sector heat with its date and price; scored at 5/20/60 sessions vs SPY and sector; calibration (≥ 30 samples) shown on `/ledger`, in the weekly report and to the AI; per-ticker history fed back |
 | `scout/portfolio.py` | User side: account settings, position sizing, trade journal, concentration |
 | `scout/intraday.py` | Session monitor: price levels of trades / opportunities and direct news, each alert sent once (`scout.alerts`) |
 | `scout/jobs/` | `premarket`, `intraday`, `options`, `eod`, `research`, `weekly`, `backfill` entrypoints (`python -m scout.jobs.<name>`) |
