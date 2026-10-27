@@ -456,7 +456,7 @@ def holding_card(trades: list[dict], live: dict | None, close: float | None, tod
             rows = []
             for st in levels.exit_plan(pl, t["entry_price"], t["shares"], m["remaining"], t.get("stop")):
                 label, tone = STAGE_STATE[st["state"]]
-                act = (f"卖 {st['sell_now']:g} 股" if st["state"] == "due" else
+                act = (escape(levels.due_advice(st, price, t.get("stop"))) if st["state"] == "due" else
                        f"卖 {st['suggest']:g} 股" if st["state"] == "pending" and st["suggest"] else "—")
                 rows.append(f"<tr><td>{escape(st['stage'])}</td><td>{st['price']:.2f}" + (f"（{st['r']:.1f}R）" if st["r"] else "")
                             + f"</td><td>{escape(st['fraction'])}</td><td class='{tone}'>{act}<br><span class='small'>{label}</span></td>"
@@ -659,7 +659,7 @@ def next_exit(t: dict, m: dict) -> str:
         return f"{t['target']:.2f}" if t.get("target") else "—"
     for st in levels.exit_plan(pl, t["entry_price"], t["shares"], m["remaining"], t.get("stop")):
         if st["state"] == "due":
-            return f"<span class='warn'>{st['stage']} 已到，建议卖出 {st['sell_now']:g} 股</span>"
+            return f"<span class='warn'>{escape(levels.due_advice(st, m.get('price'), t.get('stop')))}</span>"
         if st["state"] == "pending":
             return (f"{st['price']:.2f}（{st['stage']}，卖 {st['suggest']:g} 股）" if st["stage"] != "余下仓位"
                     else f"移动止损，剩余 {m['remaining']:g} 股")

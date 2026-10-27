@@ -286,6 +286,18 @@ def exit_plan(plan: dict, entry_price: float, shares: float, remaining: float, s
     return out
 
 
+def due_advice(st: dict, price: float | None, stop: float | None) -> str:
+    """What to do at a reached take-profit stage: how many shares, at what price."""
+    head = f"{st['stage']} {st['price']:.2f} 已到，建议卖出 {st['sell_now']:g} 股"
+    if price is None:
+        return f"{head}，限价不低于 {st['price']:.2f}"
+    if price >= st["price"]:
+        return (f"{head}：现价 {price:.2f} 在目标之上（{price / st['price'] - 1:+.1%}），按现价附近卖出，"
+                f"限价不低于 {st['price']:.2f}")
+    return (f"{head}：现价 {price:.2f} 已回落到目标下方（{price / st['price'] - 1:+.1%}），可挂 {st['price']:.2f} 的限价等反弹卖出，"
+            f"或按现价卖出" + (f"；收盘跌破止损 {stop:.2f} 则卖出全部" if stop else ""))
+
+
 # ── stored per data date ──
 
 async def get_map(ticker: str, refresh: bool = False, before: date | None = None) -> dict | None:

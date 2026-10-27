@@ -132,6 +132,12 @@ class ExitPlanTests(unittest.TestCase):
         self.assertEqual(t2["suggest"], 33)
         t1, t2, _ = self.stages(200, target1_hit="2026-10-28", target2_hit="2026-10-28")   # both passed, nothing sold
         self.assertEqual((t1["state"], t2["state"], t2["sell_now"]), ("merged", "due", 133))
+        above = levels.due_advice(t2, 121.0, 97.0)
+        self.assertIn("建议卖出 133 股", above)
+        self.assertIn("限价不低于 120.00", above)
+        below = levels.due_advice(t2, 118.0, 97.0)
+        self.assertIn("回落到目标下方", below)
+        self.assertIn("收盘跌破止损 97.00 则卖出全部", below)
 
     def test_intraday_target_alert_advises_shares(self):
         from scout import intraday

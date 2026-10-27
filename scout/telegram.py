@@ -357,7 +357,7 @@ def next_step(t: dict, m: dict) -> str:
         return ""
     for st in levels.exit_plan(pl, t["entry_price"], t["shares"], m["remaining"], t.get("stop")):
         if st["state"] == "due":
-            return f"⚠️ {st['stage']} {st['price']:.2f} 已到，建议卖出 {st['sell_now']:g} 股"
+            return "⚠️ " + levels.due_advice(st, m.get("price"), t.get("stop"))
         if st["state"] == "pending":
             return (f"下一步：{st['stage']} {st['price']:.2f} 卖 {st['suggest']:g} 股" if st["stage"] != "余下仓位"
                     else f"余下 {m['remaining']:g} 股跟随移动止损")
