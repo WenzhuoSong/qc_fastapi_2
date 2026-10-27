@@ -118,7 +118,10 @@ async def execute(sql: str, params: dict | Sequence[dict] | None = None) -> None
         await s.commit()
 
 
-async def execute_many(sql: str, rows: Iterable[dict], chunk: int = 5000) -> int:
+async def execute_many(sql: str, rows: Iterable[dict], chunk: int = 5000, atomic: bool = True) -> int:
+    """Batched writes. `atomic=False` commits each chunk: a bulk load (millions of bars) must not
+    hold one transaction open for minutes, or every migration and reader queued behind its
+    locks stalls the live services."""
     buffer: list[dict] = []
     total = 0
     async with session() as s:
@@ -128,6 +131,8 @@ async def execute_many(sql: str, rows: Iterable[dict], chunk: int = 5000) -> int
                 await s.execute(text(sql), buffer)
                 total += len(buffer)
                 buffer = []
+                if not atomic:
+                    await s.commit()
         if buffer:
             await s.execute(text(sql), buffer)
             total += len(buffer)

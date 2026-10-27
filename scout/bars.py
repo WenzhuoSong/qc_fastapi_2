@@ -38,9 +38,10 @@ async def store(frames: dict[str, pd.DataFrame], replace: bool = False) -> int:
         await db.execute(
             "DELETE FROM scout.bars_daily WHERE ticker = ANY(:t)", {"t": list(frames)}
         )
-    # One session for all tickers: per-ticker transactions cost a round trip each.
+    # One session for all tickers (per-ticker transactions cost a round trip each), committed
+    # per chunk so a full backfill never holds its locks for minutes.
     return await db.execute_many(
-        _UPSERT, (row for ticker, frame in frames.items() for row in _rows(ticker, frame))
+        _UPSERT, (row for ticker, frame in frames.items() for row in _rows(ticker, frame)), atomic=False
     )
 
 
