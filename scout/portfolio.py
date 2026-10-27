@@ -144,9 +144,11 @@ def metrics(t: dict) -> dict:
         return out
     pnl = (price - t["entry_price"]) * t["shares"]
     out.update(pnl=pnl, pnl_pct=price / t["entry_price"] - 1)
-    risk = t["entry_price"] - t["stop"] if t.get("stop") else None
-    if risk and risk > 0:
-        out["r"] = (price - t["entry_price"]) / risk
+    # R is measured against the initial stop; the stop the system has raised since only sets the open risk
+    first = (t.get("plan") or {}).get("stop") or t.get("stop")
+    if first and t["entry_price"] > first:
+        out["r"] = (price - t["entry_price"]) / (t["entry_price"] - first)
+    if t.get("stop"):
         out["open_risk"] = max(0.0, (price - t["stop"]) * t["shares"]) if not t.get("closed_on") else None
         out["to_stop"] = t["stop"] / price - 1
     return out

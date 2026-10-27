@@ -39,6 +39,11 @@ class JournalTests(unittest.TestCase):
         self.assertAlmostEqual(m["open_risk"], 400.0)
         self.assertAlmostEqual(m["to_stop"], 380 / 420 - 1)
 
+    def test_raised_stop_keeps_r_on_the_initial_stop(self):
+        m = portfolio.metrics({**self.OPEN, "stop": 405.0, "plan": {"stop": 380.0}})
+        self.assertAlmostEqual(m["r"], 1.0)
+        self.assertAlmostEqual(m["open_risk"], 150.0)
+
     def test_closed_summary(self):
         closed = [{**self.OPEN, "closed_on": date(2026, 10, 30), "exit_price": 440.0},
                   {**self.OPEN, "closed_on": date(2026, 10, 30), "exit_price": 380.0}]
