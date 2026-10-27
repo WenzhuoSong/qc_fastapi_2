@@ -45,7 +45,9 @@ Archived, not in this tree: the QC observer (git tag `qc-observer-final`, local 
 | `scout/market_calendar.py` | US equity trading days / holidays |
 | `scout/web/` | FastAPI app (webhook + dashboard) and HTML views |
 | `scout/premarket.py` | Pre-market brief: overnight quotes, opportunity positions, earnings, economic calendar (Forex Factory feed), news → LLM + checks |
-| `scout/jobs/` | `premarket`, `eod`, `weekly`, `backfill` entrypoints (`python -m scout.jobs.<name>`) |
+| `scout/portfolio.py` | User side: account settings, position sizing, trade journal, concentration |
+| `scout/intraday.py` | Session monitor: price levels of trades / opportunities and direct news, each alert sent once (`scout.alerts`) |
+| `scout/jobs/` | `premarket`, `intraday`, `eod`, `weekly`, `backfill` entrypoints (`python -m scout.jobs.<name>`) |
 
 Reusable pieces of the removed trading system are catalogued in `docs/legacy_reusable_catalog_zh.md`; retrieve and adapt them rather than rewriting from scratch.
 
