@@ -248,6 +248,18 @@ async def ticker_lookup(t: str = "", _: str = Depends(require_auth)):
     return RedirectResponse(f"/ticker/{universe.yahoo_symbol(t)}" if t else "/", status_code=302)
 
 
+async def _research_card(t: str, inst: dict, feat: dict) -> str:
+    """The data behind the fundamental / expectations / ownership / options / macro lenses."""
+    from scout import context, research
+
+    asof = feat["date"]
+    fund = await fundamentals.get(t) if inst.get("kind", "stock") == "stock" else {}
+    events_ = (await context.earnings_map(asof, days_back=120, days_ahead=90)).get(t, [])
+    rs = await research.build(t, asof, feat["payload"] or {}, inst.get("sector"),
+                              context.earnings_summary(events_, asof) if events_ else {}, fund)
+    return views.research_card(rs, {**fund, **rs["values"]})
+
+
 @app.get("/ticker/{ticker}", response_class=HTMLResponse)
 async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
     from scout.analysis import scout_view
@@ -324,11 +336,11 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
     above_200 = (payload["close"] > payload["sma200"]) if payload.get("close") and payload.get("sma200") else None
     body += views.events_card(t, evs, await event_cause.cached(t, [x["date"] for x in evs]),
                               await events_mod.load_base_rates(), above_200)
-    if (inst or {}).get("kind", "stock") == "stock":
-        try:
-            body += views.fundamentals_card(await asyncio.wait_for(fundamentals.get(t), timeout=10))
-        except Exception as exc:            # a slow data source must not break the page
-            logger.warning("fundamentals for %s unavailable: %s", t, exc)
+    if feat:
+        try:                                # a slow data source must not break the page
+            body += await asyncio.wait_for(_research_card(t, inst or {}, feat), timeout=20)
+        except Exception as exc:
+            logger.warning("research data for %s unavailable: %s", t, exc)
     if latest:
         body += opp_card(latest)
     body += await sector_members_card(t)

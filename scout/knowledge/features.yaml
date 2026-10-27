@@ -584,3 +584,378 @@ insider_sellers_90d:
   zh: 内部人卖出人数（90 日）
   unit: count
   definition: 最近 90 天在公开市场卖出的内部人人数。
+
+# ── v2 第 3 阶段：基本面趋势（SEC EDGAR 季度财报，按申报日期取当时已知的数据）──
+fin_period:
+  zh: 最近财报期
+  unit: text
+  definition: 最近一份已申报财报的期末日期；外国公司多为年度数据。
+fin_rev_yoy:
+  zh: 最近一季营收同比
+  unit: pct
+  definition: 最近一个季度营收相对去年同季的增长（年度申报公司为年度同比）。
+  readings:
+    - {max: -0.05, text: 营收明显下滑}
+    - {max: 0.05, text: 营收基本持平}
+    - {max: 0.20, text: 营收稳健增长}
+    - {min: 0.20, text: 营收高速增长（≥ 20%）}
+fin_rev_accel:
+  zh: 营收增速变化
+  unit: pp
+  definition: 最近一季的营收同比增速 − 上一季的同比增速。正值 = 增长在加速，负值 = 在放缓。
+  readings:
+    - {max: -0.05, text: 增速明显放缓}
+    - {max: 0.05, text: 增速大致稳定}
+    - {min: 0.05, text: 增速明显加快}
+fin_gross_margin:
+  zh: 最近一季毛利率
+  unit: pct_mag
+  definition: 毛利 ÷ 营收（没有毛利科目时用营收 − 营业成本）。
+fin_gross_margin_chg:
+  zh: 毛利率同比变化
+  unit: pp
+  definition: 最近一季毛利率 − 去年同季毛利率（百分点）。
+  readings:
+    - {max: -0.02, text: 毛利率明显下降（定价权或成本承压）}
+    - {max: 0.02, text: 毛利率稳定}
+    - {min: 0.02, text: 毛利率明显提升}
+fin_op_margin:
+  zh: 最近一季营业利润率
+  unit: pct
+  definition: 营业利润 ÷ 营收。
+  readings:
+    - {max: 0, text: 经营亏损}
+    - {max: 0.10, text: 营业利润率偏低}
+    - {max: 0.25, text: 营业利润率中等}
+    - {min: 0.25, text: 营业利润率高}
+fin_op_margin_chg:
+  zh: 营业利润率同比变化
+  unit: pp
+  definition: 最近一季营业利润率 − 去年同季（百分点），反映经营杠杆是在释放还是在收缩。
+  readings:
+    - {max: -0.03, text: 利润率明显收缩}
+    - {max: 0.03, text: 利润率大致稳定}
+    - {min: 0.03, text: 利润率明显扩张（经营杠杆释放）}
+fin_fcf_ttm:
+  zh: 自由现金流（近 4 季）
+  unit: usd
+  definition: 近 4 个季度经营现金流 − 资本开支之和（只对美元报表计算）。
+fin_fcf_margin:
+  zh: 自由现金流率
+  unit: pct
+  definition: 近 4 季自由现金流 ÷ 近 4 季营收。
+  readings:
+    - {max: 0, text: 在消耗现金}
+    - {max: 0.10, text: 现金创造一般}
+    - {min: 0.10, text: 现金创造能力强}
+fin_net_cash:
+  zh: 净现金
+  unit: usd
+  definition: 现金及短期投资 − 长期和短期有息负债（最近一个资产负债表日）；负数为净负债。
+fin_share_change:
+  zh: 稀释股本一年变化
+  unit: pct
+  definition: 最近一季稀释后加权股数相对一年前的变化。正值 = 股本稀释（增发、股权激励），负值 = 回购。
+  readings:
+    - {max: -0.02, text: 持续回购}
+    - {max: 0.02, text: 股本基本稳定}
+    - {min: 0.02, text: 股本明显稀释}
+fin_quarters:
+  zh: 季度财报数量
+  unit: count
+  definition: 可用于计算的季度数量。
+
+# ── 估值位置 ──
+val_pe_ttm:
+  zh: 市盈率（近 4 季）
+  unit: ratio
+  definition: 股价 ÷ 近 4 季稀释每股收益之和（外国公司用 Yahoo 的 trailing PE）。盈利为负时不计算。
+  readings:
+    - {max: 15, text: 估值偏低}
+    - {max: 30, text: 估值中等}
+    - {max: 60, text: 估值偏高}
+    - {min: 60, text: 估值很高}
+val_fwd_pe:
+  zh: 预期市盈率
+  unit: ratio
+  definition: 股价 ÷ 未来 12 个月一致预期每股收益（Yahoo）。
+val_ps_ttm:
+  zh: 市销率（近 4 季）
+  unit: ratio
+  definition: 股价 × 稀释股数 ÷ 近 4 季营收。
+val_pfcf:
+  zh: 市值 / 自由现金流
+  unit: ratio
+  definition: 市值 ÷ 近 4 季自由现金流（自由现金流为正时）。
+val_ev_ebitda:
+  zh: EV / EBITDA
+  unit: ratio
+  definition: 企业价值 ÷ 近 12 个月 EBITDA（Yahoo）。
+val_ev_sales:
+  zh: EV / 营收
+  unit: ratio
+  definition: 企业价值 ÷ 近 12 个月营收（Yahoo）。
+val_ps_pctile:
+  zh: 市销率历史分位
+  unit: score01
+  definition: 当前市销率在过去约 3 年各季末市销率中的分位（0 = 最便宜，100% = 最贵）。
+  readings:
+    - {min: 0.8, text: 处于自身历史高位}
+    - {min: 0.2, text: 处于自身历史中间区域}
+    - {max: 0.2, text: 处于自身历史低位}
+val_ps_hist_n:
+  zh: 市销率历史样本数
+  unit: count
+  definition: 计算历史分位用到的季末数量。
+val_ev_sales_vs_sector:
+  zh: EV/营收相对同行
+  unit: ratio
+  definition: 本公司 EV/营收 ÷ 研究池内同行业公司的中位数。1 = 与同行相当。
+  readings:
+    - {min: 1.5, text: 明显贵于同行}
+    - {min: 0.67, text: 与同行相当}
+    - {max: 0.67, text: 明显便宜于同行}
+val_fwd_pe_vs_sector:
+  zh: 预期市盈率相对同行
+  unit: ratio
+  definition: 本公司预期市盈率 ÷ 研究池内同行业公司的中位数。
+  readings:
+    - {min: 1.5, text: 明显贵于同行}
+    - {min: 0.67, text: 与同行相当}
+    - {max: 0.67, text: 明显便宜于同行}
+
+# ── 预期与修正（Yahoo 一致预期，每日快照）──
+est_eps_rev_30d:
+  zh: 本财年 EPS 预期 30 日修正
+  unit: pct
+  definition: 本财年一致预期每股收益相对 30 天前的变化。上调说明分析师在追认好消息。
+  readings:
+    - {max: -0.03, text: 预期明显下调}
+    - {max: 0.03, text: 预期基本稳定}
+    - {min: 0.03, text: 预期明显上调}
+est_eps_rev_90d:
+  zh: 本财年 EPS 预期 90 日修正
+  unit: pct
+  definition: 本财年一致预期每股收益相对 90 天前的变化。
+  readings:
+    - {max: -0.05, text: 一个季度内预期明显下调}
+    - {max: 0.05, text: 预期基本稳定}
+    - {min: 0.05, text: 一个季度内预期明显上调}
+est_up_30d:
+  zh: 30 日上调预期人数
+  unit: count
+  definition: 过去 30 天上调本财年 EPS 预期的分析师人数。
+est_down_30d:
+  zh: 30 日下调预期人数
+  unit: count
+  definition: 过去 30 天下调本财年 EPS 预期的分析师人数。
+est_analysts:
+  zh: 覆盖分析师（预期）
+  unit: count
+  definition: 给出本财年 EPS 预期的分析师人数。
+est_eps_growth_next:
+  zh: 下一财年 EPS 预期增长
+  unit: pct
+  definition: 下一财年一致预期 EPS ÷ 本财年一致预期 EPS − 1。
+est_target_upside:
+  zh: 目标价均值空间
+  unit: pct
+  definition: 分析师目标价均值 ÷ 当前股价 − 1。目标价普遍滞后于价格，大幅下跌后空间会被动放大。
+est_target_dispersion:
+  zh: 目标价分歧度
+  unit: pct_mag
+  definition: （最高目标价 − 最低目标价）÷ 目标价均值。越大说明分析师观点越分散。
+  readings:
+    - {min: 1.0, text: 分歧极大}
+    - {min: 0.5, text: 分歧较大}
+    - {max: 0.5, text: 观点较集中}
+est_upgrades_30d:
+  zh: 30 日评级上调次数
+  unit: count
+  definition: 过去 30 天评级上调的机构数（Yahoo 评级变动明细）。
+est_downgrades_30d:
+  zh: 30 日评级下调次数
+  unit: count
+  definition: 过去 30 天评级下调的机构数。
+est_pt_raises_30d:
+  zh: 30 日上调目标价次数
+  unit: count
+  definition: 过去 30 天上调目标价的次数。
+est_pt_cuts_30d:
+  zh: 30 日下调目标价次数
+  unit: count
+  definition: 过去 30 天下调目标价的次数。
+
+# ── 财报事件 ──
+earn_days_since:
+  zh: 距上次财报天数
+  unit: count
+  definition: 最近一次财报发布距今的自然日数。
+earn_days_to_next:
+  zh: 距下次财报天数
+  unit: count
+  definition: 距下一次财报发布的自然日数。
+earn_eps_surprise:
+  zh: 上次财报 EPS 超预期
+  unit: pct
+  definition: （实际 EPS − 预期 EPS）÷ |预期 EPS|。
+earn_rev_surprise:
+  zh: 上次财报营收超预期
+  unit: pct
+  definition: （实际营收 − 预期营收）÷ 预期营收。
+earn_last_move:
+  zh: 上次财报股价反应
+  unit: pct
+  definition: 财报前一交易日收盘到财报后第一个交易日收盘的涨跌（按 SEC 8-K 2.02 发布日）。
+earn_avg_abs_move:
+  zh: 历次财报平均波动
+  unit: pct_mag
+  definition: 最近（最多 8 次）财报前后收盘涨跌幅绝对值的平均。
+earn_reactions_n:
+  zh: 财报样本数
+  unit: count
+  definition: 计算平均财报波动用到的次数。
+earn_implied_vs_hist:
+  zh: 期权预期 / 历史财报波动
+  unit: ratio
+  definition: 下次财报落在最近到期月内时，跨式期权隐含的涨跌幅 ÷ 历次财报平均波动。> 1 说明期权把这次财报定价得比历史更剧烈。
+  readings:
+    - {min: 1.3, text: 期权预期的财报波动明显高于历史}
+    - {min: 0.8, text: 期权预期与历史财报波动相当}
+    - {max: 0.8, text: 期权预期低于历史财报波动（可能低估）}
+
+# ── 持仓与资金（Yahoo 持仓 / 做空快照 + Finnhub 内部人）──
+own_inst_pct:
+  zh: 机构持股比例
+  unit: score01
+  definition: 机构投资者持有的流通股比例（13F 汇总，按季更新）。
+own_insider_pct:
+  zh: 内部人持股比例
+  unit: score01
+  definition: 公司内部人持有的股份比例。
+own_short_float:
+  zh: 做空占流通股比例
+  unit: pct_mag
+  definition: 未平仓空头股数 ÷ 流通股（FINRA，约每两周更新）。
+  readings:
+    - {min: 0.15, text: 做空比例很高（≥ 15%），有轧空可能，也说明分歧大}
+    - {min: 0.05, text: 做空比例中等}
+    - {max: 0.05, text: 做空比例低}
+own_short_days:
+  zh: 空头回补天数
+  unit: days
+  definition: 空头股数 ÷ 日均成交量，空头全部回补大约需要的交易日数。
+  readings:
+    - {min: 5, text: 回补需要 5 天以上，空头拥挤}
+    - {max: 5, text: 回补压力不大}
+own_short_change:
+  zh: 空头股数月度变化
+  unit: pct
+  definition: 最新空头股数相对上一期的变化。
+own_top_holder_change:
+  zh: 前十大机构持仓变化
+  unit: pct
+  definition: 前十大机构最近一期 13F 持股数变化的平均值。
+  readings:
+    - {max: -0.05, text: 大机构在减持}
+    - {max: 0.05, text: 大机构持仓稳定}
+    - {min: 0.05, text: 大机构在增持}
+
+# ── 期权市场的预期（每日 15:30–16:00 美东快照，Black-Scholes 自算隐含波动）──
+opt_iv_front:
+  zh: 近月平值隐含波动
+  unit: pct_mag
+  definition: 最近一个（≥ 7 天）到期日平值期权的隐含波动率（年化）。
+opt_iv_30:
+  zh: 30 天平值隐含波动
+  unit: pct_mag
+  definition: 约 30 天到期的平值期权隐含波动率（年化）。
+opt_iv_rv_ratio:
+  zh: 隐含 / 实际波动
+  unit: ratio
+  definition: 30 天隐含波动 ÷ 近 20 日实际波动（年化）。> 1 说明期权市场预期未来比过去更动荡（常见于事件前）。
+  readings:
+    - {min: 1.5, text: 期权市场预期波动明显上升（事件或恐慌）}
+    - {min: 0.8, text: 预期波动与近期实际相当}
+    - {max: 0.8, text: 期权定价低于近期实际波动}
+opt_term_slope:
+  zh: 期限结构斜率
+  unit: pp
+  definition: 远月平值隐含波动 − 近月平值隐含波动。负值（倒挂）说明市场预期近期有事件或压力。
+  readings:
+    - {max: -0.03, text: 期限结构倒挂（近期事件或压力）}
+    - {min: -0.03, text: 期限结构正常}
+opt_move_front:
+  zh: 近月跨式隐含涨跌幅
+  unit: pct_mag
+  definition: 近月平值看涨 + 看跌期权中间价 ÷ 股价，近似期权市场预期到期前的涨跌幅度。
+opt_put_skew:
+  zh: 看跌偏斜
+  unit: pp
+  definition: 10% 虚值看跌期权的隐含波动 − 平值隐含波动。越高说明市场越愿意为下跌保护付钱。
+  readings:
+    - {min: 0.10, text: 下跌保护需求很强}
+    - {min: 0.03, text: 正常的看跌偏斜}
+    - {max: 0.03, text: 看跌偏斜很低（市场不担心下跌）}
+opt_pc_volume:
+  zh: 看跌 / 看涨成交量比
+  unit: num
+  definition: 当日看跌期权总成交量 ÷ 看涨期权总成交量（最近几个到期日）。
+  readings:
+    - {min: 1.5, text: 看跌成交明显偏多}
+    - {min: 0.5, text: 看跌看涨大致均衡}
+    - {max: 0.5, text: 看涨成交明显偏多}
+opt_unusual_count:
+  zh: 异常成交合约数
+  unit: count
+  definition: 当日成交量 ≥ 500 且 ≥ 2 倍昨日持仓量的合约数（新开仓的大量交易）。免费数据看不出买卖方向。
+opt_iv_history_days:
+  zh: 隐含波动历史天数
+  unit: count
+  definition: 已积累的每日期权快照天数；达到 60 天后才计算隐含波动历史分位。
+opt_iv_rank:
+  zh: 隐含波动历史分位
+  unit: score01
+  definition: 今日 30 天隐含波动在已积累历史中的分位。
+  readings:
+    - {min: 0.8, text: 期权处于历史较贵的位置}
+    - {min: 0.2, text: 期权价格处于历史中间}
+    - {max: 0.2, text: 期权处于历史较便宜的位置}
+
+# ── 宏观敏感度（近 252 个交易日回归：个股日收益 ~ SPY + 10 年期收益率变化 + 美元 + 原油）──
+macro_rate_10bp:
+  zh: 利率敏感度（每 +10bp）
+  unit: pct2
+  definition: 控制大盘后，10 年期美债收益率每上升 0.10 个百分点，个股平均额外涨跌。负值 = 怕加息/利率上行。
+macro_rate_t:
+  zh: 利率敏感度 t 值
+  unit: num
+  definition: 利率敏感度的 t 统计量；绝对值 ≥ 2 才算统计上显著。
+  readings:
+    - {max: -2, text: 显著（负向）}
+    - {max: 2, text: 不显著}
+    - {min: 2, text: 显著（正向）}
+macro_usd_1pct:
+  zh: 美元敏感度（每 +1%）
+  unit: pct2
+  definition: 控制大盘后，美元指数每上涨 1%，个股平均额外涨跌。海外收入占比高的公司通常为负。
+macro_usd_t:
+  zh: 美元敏感度 t 值
+  unit: num
+  definition: 美元敏感度的 t 统计量；绝对值 ≥ 2 才算显著。
+  readings:
+    - {max: -2, text: 显著（负向）}
+    - {max: 2, text: 不显著}
+    - {min: 2, text: 显著（正向）}
+macro_oil_10pct:
+  zh: 油价敏感度（每 +10%）
+  unit: pct2
+  definition: 控制大盘后，WTI 原油每上涨 10%，个股平均额外涨跌。
+macro_oil_t:
+  zh: 油价敏感度 t 值
+  unit: num
+  definition: 油价敏感度的 t 统计量；绝对值 ≥ 2 才算显著。
+  readings:
+    - {max: -2, text: 显著（负向）}
+    - {max: 2, text: 不显著}
+    - {min: 2, text: 显著（正向）}

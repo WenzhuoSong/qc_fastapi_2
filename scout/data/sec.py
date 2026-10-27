@@ -53,6 +53,23 @@ METRICS: dict[str, tuple[tuple[str, ...], str]] = {
                 "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"), "instant"),
     "inventory": (("InventoryNet",), "instant"),
 }
+# IFRS filers (TSMC, many ADRs) use the ifrs-full taxonomy, often annual only (20-F).
+IFRS_METRICS: dict[str, tuple[str, ...]] = {
+    "revenue": ("Revenue", "RevenueFromContractsWithCustomers"),
+    "cost_of_revenue": ("CostOfSales",),
+    "gross_profit": ("GrossProfit",),
+    "rnd": ("ResearchAndDevelopmentExpense",),
+    "operating_income": ("ProfitLossFromOperatingActivities",),
+    "net_income": ("ProfitLossAttributableToOwnersOfParent", "ProfitLoss"),
+    "operating_cash_flow": ("CashFlowsFromUsedInOperatingActivities",),
+    "capex": ("PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities", "PurchaseOfPropertyPlantAndEquipment"),
+    "eps_diluted": ("DilutedEarningsLossPerShare",),
+    "cash": ("CashAndCashEquivalents",),
+    "total_assets": ("Assets",),
+    "total_liabilities": ("Liabilities",),
+    "equity": ("EquityAttributableToOwnersOfParent", "Equity"),
+    "inventory": ("Inventories",),
+}
 FILING_FORMS = {"8-K", "8-K/A", "10-K", "10-K/A", "10-Q", "10-Q/A", "4", "S-1", "S-3", "424B5", "424B3",
                 "SC 13D", "SC 13D/A", "SC 13G", "SC 13G/A", "DEF 14A", "6-K", "20-F"}
 
@@ -158,23 +175,50 @@ def quarterly(entries: list[dict], kind: str) -> dict[str, dict]:
     return out
 
 
+def pick_unit(units: dict, kind: str) -> str | None:
+    """USD when reported in USD, else the reporting currency; per-share units for EPS / shares."""
+    names = list(units)
+    if kind == "per_share":
+        return next((u for u in names if "/shares" in u and u.startswith("USD")), None) or \
+            next((u for u in names if "/shares" in u or u == "shares"), None)
+    if "USD" in names:
+        return "USD"
+    return next((u for u in names if len(u) == 3 and u.isalpha() and u.isupper()), None)
+
+
 def financial_rows(facts: dict, ticker: str) -> list[dict]:
-    """All METRICS as quarterly rows; concepts merged by priority per period."""
-    gaap = ((facts or {}).get("facts") or {}).get("us-gaap") or {}
+    """All METRICS as quarterly (or, for annual-only filers, yearly) rows; concepts merged by priority per period."""
+    ns = (facts or {}).get("facts") or {}
+    gaap, ifrs = ns.get("us-gaap") or {}, ns.get("ifrs-full") or {}
     rows = []
     for metric, (concepts, kind) in METRICS.items():
-        merged: dict[str, tuple[str, dict]] = {}
-        for concept in concepts:
-            spec = gaap.get(concept)
+        merged: dict[str, tuple[str, str, dict]] = {}
+        sources = [(gaap, c) for c in concepts] + [(ifrs, c) for c in IFRS_METRICS.get(metric, ())]
+        for taxonomy, concept in sources:
+            spec = taxonomy.get(concept)
             if not spec:
                 continue
-            unit = "USD" if kind in ("flow", "instant") else next(iter(spec["units"]), None)
+            unit = pick_unit(spec.get("units") or {}, kind)
             entries = (spec.get("units") or {}).get(unit) or []
-            for end, q in quarterly(entries, kind).items():
-                merged.setdefault(end, (concept, q))
-        for end, (concept, q) in merged.items():
+            periods = quarterly(entries, kind)
+            if not periods and kind != "instant":
+                periods = annual(entries)
+            for end, q in periods.items():
+                merged.setdefault(end, (concept, unit, q))
+        for end, (concept, unit, q) in merged.items():
             rows.append({"ticker": ticker, "metric": metric, "period_end": date.fromisoformat(end),
                          "period_start": date.fromisoformat(q["start"]) if q["start"] else None,
                          "value": float(q["value"]), "fy": q["fy"], "fp": q["fp"], "form": q["form"],
-                         "filed": date.fromisoformat(q["filed"]), "derived": q["derived"], "concept": concept})
+                         "filed": date.fromisoformat(q["filed"]), "derived": q["derived"], "concept": concept,
+                         "unit": unit or "USD"})
     return rows
+
+
+def annual(entries: list[dict]) -> dict[str, dict]:
+    """Full-year values for filers without quarterly XBRL (20-F); fp = 'FY'."""
+    out = {}
+    for (start, end), e in _latest(entries).items():
+        if start and 350 <= _days(start, end) <= 380:
+            out[end] = {"start": start, "value": e["val"], "fy": e.get("fy"), "fp": "FY", "form": e.get("form"),
+                        "filed": e["filed"], "derived": False}
+    return out

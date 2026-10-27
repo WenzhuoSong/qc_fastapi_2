@@ -220,6 +220,7 @@ def insight_card(rec: dict) -> str:
 <div class='headline'>{e(ins['headline'])}</div>
 {f"<p class='warn'><b>⚡ 近期异动</b>：{e(ins['recent_event'])}</p>" if ins.get('recent_event') else ''}
 <p><span class='chip'>驱动力：{e(ins.get('driver', '—'))}</span> {e(ins['attribution'])}</p>
+{("<p class='small'><b>视角矛盾</b>：" + "；".join(e(c) for c in ins['conflicts']) + "</p>") if ins.get('conflicts') else ''}
 <div class='grid'>{lens_html}</div>
 <p><b>关注条件</b>：{e('；'.join(ins['watch']))}<br><b>失效条件</b>：{e('；'.join(ins['invalidation']))}<br>
 <b>主要风险</b>：{e(ins['key_risk'])}<br><b>置信度</b>：{e(CONF_ZH.get(ins['confidence'], ins['confidence']))} — {e(ins['confidence_reason'])}</p>
@@ -666,3 +667,62 @@ def fundamentals_card(f: dict) -> str:
             f"<table class='small'><tbody>{''.join(rows)}</tbody></table>"
             + (f"<p class='small'>{escape('；'.join(notes))}</p>" if notes else "")
             + "<p class='small muted'>内部人卖出多为预先计划（10b5-1），集中买入更有信息量。</p></div>")
+
+
+RESEARCH_ROWS = (
+    ("基本面趋势", ("fin_period", "fin_rev_yoy", "fin_rev_accel", "fin_gross_margin", "fin_gross_margin_chg", "fin_op_margin",
+                "fin_op_margin_chg", "fin_fcf_margin", "fin_fcf_ttm", "fin_net_cash", "fin_share_change")),
+    ("估值", ("market_cap", "val_pe_ttm", "val_fwd_pe", "val_ps_ttm", "val_pfcf", "val_ev_ebitda", "val_ps_pctile",
+            "val_ev_sales_vs_sector", "val_fwd_pe_vs_sector")),
+    ("预期与评级", ("est_eps_rev_30d", "est_eps_rev_90d", "est_up_30d", "est_down_30d", "est_target_upside",
+               "est_target_dispersion", "est_upgrades_30d", "est_downgrades_30d", "est_pt_raises_30d", "est_pt_cuts_30d",
+               "analyst_buy_share", "eps_beat_count")),
+    ("财报", ("earn_days_to_next", "earn_eps_surprise", "earn_rev_surprise", "earn_last_move", "earn_avg_abs_move",
+            "earn_implied_vs_hist")),
+    ("持仓与资金", ("own_inst_pct", "own_top_holder_change", "own_short_float", "own_short_days", "own_short_change",
+               "insider_net_value_90d", "insider_buyers_90d", "insider_sellers_90d")),
+    ("期权", ("opt_iv_30", "opt_iv_rv_ratio", "opt_term_slope", "opt_move_front", "opt_put_skew", "opt_pc_volume",
+            "opt_unusual_count", "opt_iv_rank", "opt_iv_history_days")),
+    ("宏观敏感度", ("macro_rate_10bp", "macro_rate_t", "macro_usd_1pct", "macro_usd_t", "macro_oil_10pct", "macro_oil_t")),
+)
+
+
+def research_card(rs: dict, values: dict) -> str:
+    """Point-in-time research data behind the new lenses, with readings and freshness."""
+    spec = knowledge.features()
+    rows = []
+    for group, keys in RESEARCH_ROWS:
+        cells = []
+        for k in keys:
+            if values.get(k) is None:
+                continue
+            reading = knowledge.reading(k, values[k])
+            cells.append(f"<span title='{escape(spec[k].get('definition', ''))}'>{escape(knowledge.zh(k))}</span> "
+                         f"<b>{escape(knowledge.fmt(k, values[k]))}</b>"
+                         + (f" <span class='muted'>（{escape(reading)}）</span>" if reading else ""))
+        if cells:
+            rows.append(f"<tr><td class='muted' style='white-space:nowrap'>{escape(group)}</td><td>{'<br>'.join(cells)}</td></tr>")
+    if not rows:
+        return ""
+    c = rs.get("context") or {}
+    fresh = "；".join(f"{k} {v['日期']}" + ("（已过期）" if v["已过期"] else "") for k, v in (c.get("freshness") or {}).items())
+    quarters = ""
+    if c.get("quarters"):
+        unit = rs.get("unit") or "USD"
+        def money(v):
+            return "—" if v is None else (knowledge.fmt("fin_fcf_ttm", v) if unit == "USD" else f"{v / 1e9:.1f}B {unit}")
+        quarters = ("<details><summary class='small'>季度财务（SEC 申报）</summary>" + table(
+            ["期末", "营收", "同比", "毛利率", "营业利润率", "自由现金流"],
+            [[escape(q["period"]), money(q["revenue"]), signed(q["yoy"]),
+              knowledge.fmt("fin_gross_margin", q["gross_margin"]), knowledge.fmt("fin_op_margin", q["op_margin"]),
+              money(q["fcf"])] for q in reversed(c["quarters"])]) + "</details>")
+    actions = ""
+    if c.get("analyst_actions"):
+        actions = ("<details><summary class='small'>最近评级变动</summary><ul class='tight small'>" + "".join(
+            f"<li>{escape(a['date'])} {escape(a['firm'])}：{escape(a.get('from') or '—')} → {escape(a.get('to') or '—')}"
+            + (f"，目标价 {a.get('prior_target') or '—'} → {a['target']}" if a.get("target") else "") + "</li>"
+            for a in c["analyst_actions"]) + "</ul></details>")
+    return (f"<div class='card'><h3>研究数据 <span class='small muted'>SEC · Yahoo · FRED · Finnhub</span></h3>"
+            f"<table class='small'><tbody>{''.join(rows)}</tbody></table>{quarters}{actions}"
+            + (f"<p class='small muted'>快照日期：{escape(fresh)}</p>" if fresh else "")
+            + "<p class='small muted'>只用当时已申报 / 已发布的数据；鼠标悬停指标名看定义。</p></div>")

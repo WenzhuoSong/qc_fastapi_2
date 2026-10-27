@@ -77,8 +77,8 @@ async def sec_company(ticker: str, cik: str, asof: date) -> dict:
         rows = sec.financial_rows(facts, ticker)
         if rows:
             n_facts = await db.execute_many(
-                "INSERT INTO scout.financials (ticker, metric, period_end, period_start, value, fy, fp, form, filed, derived, concept) "
-                "VALUES (:ticker, :metric, :period_end, :period_start, :value, :fy, :fp, :form, :filed, :derived, :concept) "
+                "INSERT INTO scout.financials (ticker, metric, period_end, period_start, value, fy, fp, form, filed, derived, concept, unit) "
+                "VALUES (:ticker, :metric, :period_end, :period_start, :value, :fy, :fp, :form, :filed, :derived, :concept, :unit) "
                 "ON CONFLICT (ticker, metric, period_end, filed) DO NOTHING", rows)
             await db.execute("UPDATE scout.sec_companies SET facts_accession = :a, facts_fetched_at = now() WHERE ticker = :t",
                              {"a": latest_fact_filing, "t": ticker})
@@ -259,6 +259,25 @@ async def latest(ticker: str, kind: str, asof: date | None = None) -> dict | Non
         return None
     age = ((asof or date.today()) - row["asof"]).days
     return {**row, "age_days": age, "stale": age > MAX_AGE_DAYS.get(kind, 3)}
+
+
+async def ensure_ticker(ticker: str, max_age_days: int = 1) -> dict:
+    """On-demand research data for a ticker outside the pool (e.g. an AI interpretation of
+    any stock): SEC filings / financials and Yahoo snapshots, unless fresh ones exist."""
+    today = date.today()
+    fresh = await db.fetch_one("SELECT max(asof) AS d FROM scout.research_snapshots WHERE ticker = :t AND kind = 'estimates'",
+                               {"t": ticker})
+    if fresh and fresh["d"] and (today - fresh["d"]).days < max_age_days:
+        return {"skipped": "fresh"}
+    out: dict = {}
+    ciks = await _ensure_ciks([ticker])
+    if ticker in ciks:
+        try:
+            out["sec"] = await sec_company(ticker, ciks[ticker], today)
+        except Exception as exc:
+            out["sec"] = f"failed: {type(exc).__name__}"
+    out["yahoo"] = await yahoo_company(ticker, today, asyncio.Semaphore(1))
+    return out
 
 
 async def status() -> dict:

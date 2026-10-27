@@ -67,8 +67,16 @@ def fmt(key: str, value) -> str:
         return f"{sign}${mag / 1e9:.1f}B" if mag >= 1e9 else f"{sign}${mag / 1e6:.1f}M"
     if unit == "count":
         return f"{value:.0f}"
+    if unit == "days":
+        return f"{value:.1f} 天"
+    if unit == "num":
+        return f"{value:.2f}"
+    if unit == "pct2":
+        return f"{value * 100:+.2f}%"
+    if unit == "text":
+        return str(value)
     if unit == "pp":
-        return f"{value * 100:+.0f} 个百分点"
+        return f"{value * 100:+.1f} 个百分点"
     return f"{value:.2f}"
 
 

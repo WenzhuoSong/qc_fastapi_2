@@ -35,7 +35,8 @@ async def evaluate(tickers: list[str]) -> dict:
                 issue_kinds[issue.split("：")[0][:24]] += 1
         rows.append({
             "ticker": t, "source": rec["source"], "attempts": rec["validation"]["attempts"],
-            "first_pass": bool(hist) and not hist[0]["issues"], "seconds": round(time.time() - t0, 1),
+            "first_pass": rec["validation"].get("first_pass", bool(hist) and not hist[0]["issues"]),
+            "seconds": round(time.time() - t0, 1), "fallback_groups": rec["validation"].get("fallback_groups", []),
             "driver": rec["insight"].get("driver"), "confidence": rec["insight"].get("confidence"),
         })
         print(f"{t:6} {rec['source']:8} attempts={rows[-1]['attempts']} first_pass={rows[-1]['first_pass']} "
@@ -48,6 +49,7 @@ async def evaluate(tickers: list[str]) -> dict:
         "first_pass_rate": round(sum(r["first_pass"] for r in done) / n, 3),
         "llm_rate": round(sum(r["source"] == "llm" for r in done) / n, 3),
         "fallback_rate": round(sum(r["source"] == "fallback" for r in done) / n, 3),
+        "partial_rate": round(sum(r["source"] == "partial" for r in done) / n, 3),
         "avg_seconds": round(sum(r["seconds"] for r in done) / n, 1),
         "issue_kinds": dict(issue_kinds.most_common()),
         "rows": rows,

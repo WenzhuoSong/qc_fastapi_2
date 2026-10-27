@@ -112,3 +112,16 @@ class FredTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ForeignFilerTests(unittest.TestCase):
+    def test_ifrs_annual_in_local_currency(self):
+        facts = {"facts": {"ifrs-full": {"Revenue": {"units": {"TWD": [
+            {"start": "2024-01-01", "end": "2024-12-31", "val": 2.9e12, "fp": "FY", "fy": 2024, "form": "20-F", "filed": "2025-04-17"}]}}}}}
+        rows = sec.financial_rows(facts, "TSM")
+        self.assertEqual((rows[0]["metric"], rows[0]["fp"], rows[0]["unit"]), ("revenue", "FY", "TWD"))
+
+    def test_us_gaap_in_euros(self):
+        facts = {"facts": {"us-gaap": {"Revenues": {"units": {"EUR": [e("2026-04-01", "2026-06-30", 7.7e9, "Q2")]}}}}}
+        rows = sec.financial_rows(facts, "ASML")
+        self.assertEqual((rows[0]["value"], rows[0]["unit"]), (7.7e9, "EUR"))

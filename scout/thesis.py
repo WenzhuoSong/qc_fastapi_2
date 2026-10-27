@@ -93,7 +93,11 @@ def llm_view(value: Any, key: str | None = None) -> Any:
     return round(value, 1) if key in ("vol_ratio", "rsi14", "rsi2") else round(value, 2)
 
 
-_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# Dates are not data points: 2026-10-23, 2026年10月23日, 2026年, 10月23日, 10-23, 10/23.
+_DATE_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}|\d{4}\s*年(?:\s*\d{1,2}\s*月(?:\s*\d{1,2}\s*日)?)?|\d{1,2}\s*月\s*\d{1,2}\s*日"
+    r"|(?<![\d.])(?:0?[1-9]|1[0-2])[-/](?:0?[1-9]|[12]\d|3[01])(?![\d.%])"
+)
 _NUM_RE = re.compile(r"(?<![A-Za-z\d.])[-+]?\d+(?:\.\d+)?")
 _SMALL_INT_OK = 5
 
