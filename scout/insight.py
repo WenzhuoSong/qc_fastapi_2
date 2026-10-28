@@ -24,7 +24,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from scout import (context, db, event_cause, events, fundamentals, knowledge, ledger, opportunities, research,
+from scout import (context, db, event_cause, events, fundamentals, knowledge, learned, ledger, opportunities, research,
                    research_data, sectors, structure, universe)
 from scout.analysis import attribution, scout_view
 from scout.config import get_scout_settings
@@ -72,13 +72,15 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "期权与宏观": ("options", "macro"),
 }
 # Context keys each group may read and cite; everything else stays out of its prompt.
+# "knowledge" is further narrowed per group to the entries about its lenses (or its opportunity's rule).
 GROUP_CONTEXT: dict[str, tuple[str, ...]] = {
-    "技术与市场": ("scout_view", "market", "sector", "driver"),
-    "事件与财报": ("scout_view", "news", "events", "earnings", "earnings_reactions", "opportunity"),
-    "基本面与预期": ("research", "earnings", "sector"),
-    "期权与宏观": ("options_activity", "macro_now", "earnings", "market"),
+    "技术与市场": ("scout_view", "market", "sector", "driver", "knowledge"),
+    "事件与财报": ("scout_view", "news", "events", "earnings", "earnings_reactions", "opportunity", "knowledge"),
+    "基本面与预期": ("research", "earnings", "sector", "knowledge"),
+    "期权与宏观": ("options_activity", "macro_now", "earnings", "market", "knowledge"),
 }
-SYNTH_CONTEXT = ("scout_view", "driver", "market", "sector", "events", "earnings", "opportunity", "history", "lens_reliability")
+SYNTH_CONTEXT = ("scout_view", "driver", "market", "sector", "events", "earnings", "opportunity", "history", "lens_reliability",
+                 "knowledge")
 
 
 class GroupView(BaseModel):
@@ -123,6 +125,8 @@ LENS_PROMPT = """你是一名资深美股分析师，负责多视角研究中的
   网络检索要写"据外部报道"）、对业务或预期的影响，以及历史上同类异动之后通常怎么走；不要用异动之后的新闻解释之前的下跌。
 - 催化视角：异动之后的新消息（例如公司随后公布的利好）要写出来，并说明它是否修复了异动（看 异动后至今涨跌）。
 - research.数据日期 里标着"已过期"的数据，要写明数据日期。
+- context.knowledge 是 Scout 知识库里与本组相关的检验结论，按 用法 使用：已确认的可以作为依据；回测通过或前向验证中的，
+  引用时必须写明"尚未验证"；否定的表示这种做法经检验无效，不能当作看多或看空的理由。引用时在 evidence 里列出它的 key（kb_N）。
 - 标的是 ETF 时，用"ETF 自身"而不是"个股自身"。
 - 中文、专业、简洁；不下达买卖指令。"""
 
@@ -135,7 +139,9 @@ SYNTH_PROMPT = """你是一名资深美股策略分析师。各视角的分析�
 3. 综合各视角：哪些一致、哪些矛盾（写进 conflicts）。矛盾是最有价值的部分，例如技术面转弱但预期在上调、估值高位但增长放缓。
    context.lens_reliability 是各视角过去的命中率（样本不足的不要引用），可靠度低的视角要降低权重。
 4. context.history 里有之前的判断时，在 confidence_reason 里回应：上次说了什么、后来符合还是不符合、这次为什么相同或不同；判断错了要承认。
-5. 写一句话结论、关注条件、失效条件和主要风险（风险要具体到这只股票，不写空话）。
+5. context.knowledge 是知识库里经过检验的结论，按 用法 使用。context.opportunity 的规则在知识库里是"否定"时，
+   不能把这条规则信号当作看多理由，并在 confidence_reason 里说明这条规则未通过公平检验。
+6. 写一句话结论、关注条件、失效条件和主要风险（风险要具体到这只股票，不写空话）。
 
 硬性规则：
 - 数字只能原样引用 lens_views 或 context 里出现的数字，不要自己计算。
@@ -182,7 +188,10 @@ async def gather(ticker: str) -> dict | None:
         research_facts = {"values": {}, "context": {}, "unit": "USD"}
     past = await ledger.history(t, asof)
     reliability = await ledger.lens_reliability()
+    learned_entries = await learned.for_insight(
+        (opp or {}).get("primary_detector"), {lens.id for lens in knowledge.lenses()}, {"kind": inst.get("kind") or "stock"})
     return {
+        "knowledge": learned_entries,
         "research": research_facts,
         "history": past,
         "reliability": reliability,
@@ -312,6 +321,9 @@ def build_pack(facts: dict) -> dict:
          "标题": n["headline"], **({"摘要": n["summary"]} if n.get("summary") else {})}
         for i, n in enumerate(facts["news"])
     ] or "近 7 天没有可匹配的新闻"
+    kb_block, kb_scope = learned.context_block(facts.get("knowledge") or [])
+    if kb_block:
+        ctx["knowledge"] = kb_block
     ctx["history"] = facts.get("history") or "这是 Scout 第一次分析这只股票（或之前的判断还没有记录）"
     ctx["lens_reliability"] = facts.get("reliability") or "各视角的历史判断样本还在积累，暂无校准数据"
     evs = facts.get("events") or []
@@ -328,7 +340,7 @@ def build_pack(facts: dict) -> dict:
             "日期": str(opp["asof"]), "状态": opp["status"],
             "入场": f"{opp['entry_lo']:.2f}–{opp['entry_hi']:.2f}", "止损": f"{opp['stop']:.2f}",
             "目标": f"{opp['target1']:.2f}",
-            "规则历史扣费后相对持有": knowledge.fmt("ret_1d", br.get("avg_edge_vs_hold")) if br.get("avg_edge_vs_hold") is not None else "—",
+            "规则公平检验": _rule_check(opp["primary_detector"], kb_block, kb_scope),
         }
     return {
         "ticker": facts["ticker"],
@@ -337,7 +349,17 @@ def build_pack(facts: dict) -> dict:
         "data_date": str(facts["asof"]),
         "lenses": lens_blocks,
         "context": ctx,
+        "knowledge_scope": kb_scope,
+        "opportunity_detector": (opp or {}).get("primary_detector"),
     }
+
+
+def _rule_check(detector: str, block: list[dict], scope: dict[str, dict]) -> str:
+    """The rule's verdict from the knowledge base, replacing the biased vs-hold base rate."""
+    for item in block:
+        if detector in scope[item["key"]]["detectors"]:
+            return f"{item['状态']}：{item['条目']}（见 {item['key']}）"
+    return "尚未做公平基准检验"
 
 
 def _money(v: float | None, unit: str) -> str:
@@ -409,6 +431,7 @@ def evidence_keys(pack: dict) -> set[str]:
         keys |= {n["key"] for n in ctx["news"]}
     if isinstance(ctx.get("events"), list):
         keys |= {e["key"] for e in ctx["events"]}
+    keys |= {k["key"] for k in ctx.get("knowledge") or []}
     return keys
 
 
@@ -576,10 +599,22 @@ def fallback(pack: dict) -> Insight:
 
 
 def sub_pack(pack: dict, lens_ids: tuple[str, ...], ctx_keys: tuple[str, ...]) -> dict:
-    """What one lens group sees: its lenses and the context it may cite."""
+    """What one lens group sees: its lenses and the context it may cite. Knowledge entries
+    reach a group when they are about one of its lenses, or about the opportunity's rule
+    when the group reads the opportunity."""
+    ctx = {k: v for k, v in pack["context"].items() if k in ctx_keys}
+    if ctx.get("knowledge"):
+        scope = pack.get("knowledge_scope") or {}
+        rule = None
+        if "opportunity" in ctx_keys and pack["context"].get("opportunity"):
+            rule = pack.get("opportunity_detector")
+        ctx["knowledge"] = [k for k in ctx["knowledge"]
+                            if set(scope.get(k["key"], {}).get("lenses", [])) & set(lens_ids)
+                            or (rule and rule in scope.get(k["key"], {}).get("detectors", []))]
+        if not ctx["knowledge"]:
+            del ctx["knowledge"]
     return {**{k: pack[k] for k in ("ticker", "name", "type", "data_date")},
-            "lenses": [b for b in pack["lenses"] if b["id"] in lens_ids],
-            "context": {k: v for k, v in pack["context"].items() if k in ctx_keys}}
+            "lenses": [b for b in pack["lenses"] if b["id"] in lens_ids], "context": ctx}
 
 
 def fill_lenses(views: list[LensView], pack: dict) -> list[LensView]:

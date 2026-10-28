@@ -16,6 +16,12 @@ def run(job: str, fn: Callable[[], Awaitable[dict]], alert: bool = True) -> None
     async def _main() -> None:
         await db.apply_migrations()
         try:
+            from scout import learned
+
+            await learned.seed()
+        except Exception as exc:          # a seed problem must not stop the job
+            logging.getLogger("scout.jobs").warning("knowledge seed failed: %s", exc)
+        try:
             async with db.job_run(job) as summary:
                 summary.update(await fn())
             logging.getLogger("scout.jobs").info("%s done: %s", job, json.dumps(summary, default=str)[:4000])

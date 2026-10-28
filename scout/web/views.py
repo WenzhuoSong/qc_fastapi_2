@@ -59,7 +59,7 @@ ul.rrgread{list-style:none;padding:0;margin:6px 0}ul.rrgread li{padding:2px 0}
 
 def layout(title: str, active: str, body: str, head: str = "") -> str:
     nav = [("/", "today", "今日"), ("/market", "market", "市场全景"), ("/ideas", "ideas", "机会看板"), ("/screens", "screens", "策略筛选"), ("/scoreboard", "scoreboard", "记分板"),
-           ("/watchlist", "watchlist", "Watchlist"), ("/trades", "trades", "我的交易"), ("/ledger", "ledger", "判断台账"), ("/chat", "chat", "问答"), ("/data", "data", "数据")]
+           ("/watchlist", "watchlist", "Watchlist"), ("/trades", "trades", "我的交易"), ("/ledger", "ledger", "判断台账"), ("/knowledge", "knowledge", "知识库"), ("/chat", "chat", "问答"), ("/data", "data", "数据")]
     links = "".join(f'<a href="{h}" class="{"on" if k == active else ""}">{t}</a>' for h, k, t in nav)
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title)} · Scout</title>
@@ -945,3 +945,81 @@ def price_panel(pm: dict, live: dict | None, settings: dict | None, opp: dict | 
     return f"<div class='card plan'>{''.join(out)}</div>"
 
 
+
+
+# ── knowledge base ──────────────────────────────────────────────────────
+
+KB_SECTIONS = (("confirmed", "已确认"), ("forward", "前向验证中"), ("backtested", "回测通过，待前向验证"), ("hypothesis", "假设（已预登记）"),
+               ("rejected", "否定：经检验无效"), ("retired", "已失效"))
+KB_ACTION_ZH = {"backtested": "标记回测通过", "forward": "进入前向验证", "confirmed": "确认", "rejected": "否定",
+                "retired": "标记失效", "hypothesis": "重新检验"}
+KB_TOPIC_ZH = {"entry": "入场", "exit": "出场", "evaluation": "评价方法"}
+
+
+def _kb_scope(en: dict) -> str:
+    from scout.detectors import registry
+    from scout.insight import LENS_TITLES
+
+    rules = {d.name: d.label for d in registry(include_candidates=True)}
+    ap, ctx = en.get("applies") or {}, en.get("context") or {}
+    parts = [rules.get(d, d) for d in ap.get("detectors") or []] + [LENS_TITLES.get(x, x) for x in ap.get("lenses") or []]
+    parts += [KB_TOPIC_ZH.get(t, t) for t in ap.get("topics") or []]
+    names = {"kind": "标的", "regime": "市场状态", "horizon_days": "持有期（交易日）", "stock": "个股", "etf": "ETF",
+             "uptrend": "上升", "mixed": "震荡", "downtrend": "下降"}
+    cond = "；".join(f"{names.get(k, k)}：{'、'.join(names.get(str(x), str(x)) for x in v) if isinstance(v, list) else v}"
+                    for k, v in ctx.items())
+    return "、".join(dict.fromkeys(parts)) + (f"<span class='muted'>（条件 {e(cond)}）</span>" if cond else "")
+
+
+def knowledge_card(en: dict, versions: list[dict], today: date) -> str:
+    from scout import learned
+
+    overdue = en.get("recheck_on") and en["status"] in (*learned.OPEN, "confirmed") and en["recheck_on"] <= today
+    tone = "up" if en["polarity"] == "positive" else "down"
+    evidence = "".join(f"<li><span class='chip'>{e(ev['source'])} {e(ev['date'])}</span>{e(ev['summary'])}</li>"
+                       for ev in en.get("evidence") or [])
+    acts = ""
+    nxt = learned.allowed_next(en)
+    if nxt:
+        buttons = "".join(f"<button name='status' value='{s}' style='margin-right:6px"
+                          f"{';background:var(--down)' if s in ('rejected', 'retired') else ''}'>{KB_ACTION_ZH[s]}</button>"
+                          for s in nxt)
+        acts = (f"<form method='post' action='/knowledge/{e(en['key'])}/status' class='small' style='margin-top:8px'>"
+                f"<input name='note' placeholder='理由（必填）' required style='width:60%;margin-right:6px'>{buttons}</form>")
+    hist = "".join(f"<tr><td>v{v['version']}</td><td>{e(v['created_at'].date() if v.get('created_at') else '')}</td>"
+                   f"<td>{e(learned.STATUS_ZH.get(v['status'], v['status']))}</td><td>{e({'seed': '首批', 'system': '系统', 'user': '你'}.get(v['changed_by'], v['changed_by']))}</td>"
+                   f"<td>{e(v.get('note') or '')}</td></tr>" for v in versions)
+    return (f"<div class='card' id='{e(en['key'])}'><h3><span class='{tone}'>{'✓' if en['polarity'] == 'positive' else '✗'}</span> {e(en['title'])}</h3>"
+            f"<div class='small muted'><span class='chip'>{e(learned.KIND_ZH.get(en['kind'], en['kind']))}</span>"
+            f"{e(learned.STATUS_ZH[en['status']])} · 关于：{_kb_scope(en)}</div>"
+            f"<p>{e(en['claim'])}</p>"
+            + (f"<p class='small'><b>机制</b>：{e(en['mechanism'])}</p>" if en.get("mechanism") else "")
+            + f"<div class='small'><b>证据</b><ul class='tight'>{evidence}</ul></div>"
+            + (f"<div class='small'><b>失效条件</b>：{e(en['invalidation'])}</div>" if en.get("invalidation") else "")
+            + (f"<div class='small {'warn' if overdue else 'muted'}'>复查日期 {e(en['recheck_on'])}{'（已到期）' if overdue else ''}</div>"
+               if en.get("recheck_on") else "")
+            + acts
+            + f"<details class='small' style='margin-top:6px'><summary>版本记录（{len(versions)}）</summary>"
+              f"<table><thead><tr><th>版本</th><th>日期</th><th>状态</th><th>修改者</th><th>理由</th></tr></thead><tbody>{hist}</tbody></table></details>"
+            + "</div>")
+
+
+def knowledge_page(entries: list[dict], versions: dict[str, list[dict]], today: date) -> str:
+    from scout import learned
+
+    counts = {s: sum(en["status"] == s for en in entries) for s, _ in KB_SECTIONS}
+    chips = " ".join(f"<a class='chip' href='#s-{s}'>{label} {counts[s]}</a>" for s, label in KB_SECTIONS if counts[s])
+    due = learned.due(entries, today)
+    body = ("<h2>知识库</h2><p class='small muted'>Scout 学到的结论和它们有多可靠。每条知识写明机制、成立条件、证据和复查日期；"
+            "要逐关通过：预登记的假设 → 回测（公平对照、前后两半、扣成本、t ≥ 3）→ 前向验证（至少 6 个月且 30 个样本）→ 由你确认。"
+            "经检验无效的也保留为否定知识，避免换个说法重复尝试。AI 解读会按股票的情境引用相关条目。</p>"
+            f"<p>{chips}</p>"
+            + (f"<p class='small warn'>已到复查日期：{'、'.join(e(en['title']) for en in due)}</p>" if due else ""))
+    for status, label in KB_SECTIONS:
+        group = [en for en in entries if en["status"] == status]
+        if group:
+            body += (f"<h2 id='s-{status}'>{label}</h2><div class='grid'>"
+                     + "".join(knowledge_card(en, versions.get(en["key"], []), today) for en in group) + "</div>")
+    if not entries:
+        body += "<p class='muted'>知识库还是空的。</p>"
+    return layout("知识库", "knowledge", body)

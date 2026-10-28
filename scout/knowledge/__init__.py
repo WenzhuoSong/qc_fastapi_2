@@ -151,7 +151,7 @@ def _field_names() -> dict[str, str]:
 
 _KEY = r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+|[a-z]+\d+"      # snake_case or rsi14-style
 # Evidence citations (news_4, wrap_1, earnings.next.date, XLE.rel_20, q.ES=F) belong in the evidence list.
-_CITE = re.compile(r"(?:news|macro|wrap|econw?|focus|event|filing|web|insiders|earnings)(?:_\d+)?|[A-Za-z][\w^=-]*\.[\w.]+")
+_CITE = re.compile(r"(?:news|macro|wrap|econw?|focus|event|filing|web|insiders|earnings|kb)(?:_\d+)?|[A-Za-z][\w^=-]*\.[\w.]+")
 
 
 def humanize(text: str) -> str:

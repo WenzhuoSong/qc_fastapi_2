@@ -1,0 +1,197 @@
+# Seed entries of the knowledge base (scout.knowledge). Loaded once per key:
+# an entry already in the database is never overwritten from here; later
+# changes are new versions written through scout.learned.
+#
+# Fields: see scout/learned.py. Numbers in `summary` come from the stored
+# study briefs named in `source`; copy them, never round them by hand.
+
+- key: breakout_retest_selection
+  kind: rule
+  polarity: positive
+  status: backtested
+  title: 突破回踩：选出的股票跑赢同日随机股票
+  claim: 收盘突破 55 日高点后不追价、等 10 个交易日内回踩突破位再入场，这些股票在同样的止损止盈下跑赢同一天随机选的股票，前后两半都成立。
+  mechanism: 突破说明有新的需求；回踩不破说明突破位从阻力变成支撑，短线获利盘已经离场。与"趋势突破"同一个触发条件，追价没有优势而等回踩有，说明优势在入场时机和选择上，而不在突破本身。
+  context: {kind: [stock], horizon_days: 20}
+  applies: {detectors: [breakout_retest, trend_breakout], lenses: [support_resistance]}
+  evidence:
+    - source: rule_benchmarks
+      date: 2026-10-28
+      summary: 12 年回放 2313 笔成交；相对同日随机股票 +0.76%（t 3.78）/ +1.01%（t 3.32）（前半 / 后半），相对同股随机日期 +0.48%（t 2.15）/ +0.67%（t 1.68）；相对 SPY 只有 +0.29%（t 1.85），相对等权股票池 +0.18%（t 1.5）。
+  invalidation: 前向相对同日随机股票的超额不为正，或滚动 24 个月 t < 0。
+  recheck_on: 2027-04-28
+  note: 回测（G1）通过；还没有预登记和前向记录，下一步进入前向检验。
+
+- key: bracket_trade_drag
+  kind: regularity
+  polarity: negative
+  status: rejected
+  title: 区间入场 + 固定止损止盈的交易方式本身跑输大盘
+  claim: 把规则的入场区间、止损和目标套在同一天随机选的股票上，结果跑输 SPY；规则选股带来的信息大部分被这种交易方式吃掉。
+  mechanism: 止损在噪声里频繁触发，止盈截断了少数大涨的股票，而个股收益的分布正是靠少数大涨拉高均值。
+  context: {kind: [stock]}
+  applies: {topics: [entry, exit], lenses: [support_resistance]}
+  evidence:
+    - source: rule_benchmarks
+      date: 2026-10-28
+      summary: 突破回踩相对同日随机股票 +0.89%（t 4.97），相对 SPY 却只有 +0.29%（t 1.85）；强势回调相对同日随机股票 +0.40%（t 2.01），相对 SPY +0.41%（t 2.43）。
+  invalidation: 换成次日开盘买入、固定持有的方式后，规则相对 SPY 的超额仍然不比现在大。
+  recheck_on: 2027-04-28
+
+- key: pullback_in_uptrend_decay
+  kind: rule
+  polarity: negative
+  status: rejected
+  title: 强势回调：优势只在前半段样本
+  claim: 强势回调前半段样本跑赢同日随机股票，后半段（2021 年以后）不再显著；不能作为可靠的买入依据。
+  mechanism: 上升趋势中的超短期回调（RSI(2) 低位）是广为人知的做法，可能已被套利。
+  context: {kind: [stock]}
+  applies: {detectors: [pullback_in_uptrend]}
+  evidence:
+    - source: rule_benchmarks
+      date: 2026-10-28
+      summary: 4808 笔成交；相对同日随机股票 +0.36%（t 2.06）/ +0.45%（t 0.35）（前半 / 后半），相对同股随机日期 +0.20%（t 1.14）/ +0.08%（t 0.91）。
+  invalidation: 后续前向记录相对同日随机股票 t ≥ 3。
+  recheck_on: 2027-04-28
+  note: 规则仍在推送，等用户决定是否暂停。
+
+- key: power_gap_no_edge
+  kind: rule
+  polarity: negative
+  status: rejected
+  title: 放量跳空：没有显著优势
+  claim: 放量跳空相对同日随机股票和同股随机日期都没有显著超额，样本也偏少。
+  context: {kind: [stock]}
+  applies: {detectors: [power_gap]}
+  evidence:
+    - source: rule_benchmarks
+      date: 2026-10-28
+      summary: 1287 笔成交；相对同日随机股票 +0.53%（t 1.35）/ +1.01%（t 1.03），相对同股随机日期 +0.00%（t -0.14）/ +0.20%（t 0.35）。
+  invalidation: 样本增加后相对同日随机股票 t ≥ 3。
+  recheck_on: 2027-04-28
+  note: 规则仍在推送，等用户决定是否暂停。
+
+- key: volume_shock_no_edge
+  kind: rule
+  polarity: negative
+  status: rejected
+  title: 放量异动：没有显著优势
+  claim: 放量异动前后两半方向不一致，相对任何对照都不显著。
+  context: {kind: [stock]}
+  applies: {detectors: [volume_shock]}
+  evidence:
+    - source: rule_benchmarks
+      date: 2026-10-28
+      summary: 970 笔成交；相对同日随机股票 -0.26%（t -1.17）/ +1.09%（t 1.84），相对同股随机日期 -0.58%（t -2.14）/ +0.48%（t 0.62）。
+  invalidation: 样本增加后相对同日随机股票 t ≥ 3。
+  recheck_on: 2027-04-28
+  note: 规则仍在推送，等用户决定是否暂停。
+
+- key: trend_breakout_no_edge
+  kind: rule
+  polarity: negative
+  status: rejected
+  title: 趋势突破（追价）：没有优势
+  claim: 收盘突破 55 日高点后直接追入，相对同日随机股票、同股随机日期和等权股票池都没有优势。
+  context: {kind: [stock]}
+  applies: {detectors: [trend_breakout]}
+  evidence:
+    - source: rule_benchmarks
+      date: 2026-10-28
+      summary: 3067 笔成交；相对同日随机股票 +0.08%（t -0.18）/ +0.51%（t 0.42），相对等权股票池 -0.34%（t -1.75）。
+  invalidation: —
+  recheck_on: 2027-10-28
+
+- key: sector_rotation_no_edge
+  kind: rule
+  polarity: negative
+  status: rejected
+  title: 板块轮动龙头：没有优势
+  claim: 行业由弱转强时买入行业内相对强度最高的股票，相对各种对照都没有优势，后半段选时反而为负。
+  context: {kind: [stock]}
+  applies: {detectors: [sector_rotation]}
+  evidence:
+    - source: rule_benchmarks
+      date: 2026-10-28
+      summary: 8899 笔成交；相对同日随机股票 -0.10%（t -0.92）/ -0.25%（t -0.97），相对同股随机日期 +0.01%（t -0.5）/ -0.79%（t -2.21）。
+  invalidation: —
+  recheck_on: 2027-10-28
+
+- key: zscore_oversold_no_edge
+  kind: rule
+  polarity: negative
+  status: rejected
+  title: z 分数超跌：没有优势
+  claim: 上升趋势股跌到 20 日均值下方 2 个标准差以上买入，相对同日随机股票和同股随机日期都没有显著超额。
+  context: {kind: [stock]}
+  applies: {detectors: [zscore_oversold]}
+  evidence:
+    - source: rule_benchmarks
+      date: 2026-10-28
+      summary: 4244 笔成交；相对同日随机股票 -0.01%（t -0.13）/ +0.30%（t 1.58），相对同股随机日期 -0.22%（t 0.82）/ -0.24%（t 1.49）。
+  invalidation: —
+  recheck_on: 2027-10-28
+
+- key: pullback_buy_point_worse
+  kind: method
+  polarity: negative
+  status: rejected
+  title: 等价位图的回调买点不如直接买入
+  claim: 价位图给出回调买点后挂单等待，成交后的净收益前后两半都低于次日开盘直接买入（同样的止损止盈方法）。
+  mechanism: 能跌进回调区间的股票，往往是走弱的那一部分（逆向选择）；真正强的股票不回调就走了。
+  context: {kind: [stock]}
+  applies: {lenses: [support_resistance], topics: [entry]}
+  evidence:
+    - source: level_study
+      date: 2026-10-27
+      summary: 每 5 个交易日按当时数据重建价位图；回调买点 205774 笔，净收益 +0.75% / +0.23%（前半 / 后半），直接买入 +1.10% / +0.40%。
+  invalidation: —
+  recheck_on: 2027-10-28
+
+- key: breakout_needs_close_confirmation
+  kind: method
+  polarity: positive
+  status: backtested
+  title: 突破买点要等放量收盘确认，不要盘中触及就买
+  claim: 价位图的突破买点，放量（≥ 1.5 倍均量）收盘站上再按收盘成交，前后两半都明显好于盘中触及就成交；但两者都没有胜过直接买入。
+  mechanism: 盘中触及后回落的假突破很多；收盘和量能确认过滤掉了大部分。
+  context: {kind: [stock]}
+  applies: {lenses: [support_resistance], topics: [entry]}
+  evidence:
+    - source: level_study
+      date: 2026-10-27
+      summary: 放量收盘确认 8996 笔，净收益 +0.85% / +0.83%（前半 / 后半）；盘中触及 122136 笔，+0.60% / +0.07%；直接买入 +1.10% / +0.40%。
+  invalidation: 前向记录中收盘确认不再好于盘中触及。
+  recheck_on: 2027-04-28
+
+- key: exit_scale_out_costs
+  kind: method
+  polarity: positive
+  status: backtested
+  title: 出场：分批止盈降低收益，不分批、到目标 1 后才启用吊灯止损最好
+  claim: 在所有规则信号上比较出场方式，不分批、到目标 1 后才启用吊灯止损，前后两半的净收益都最高；现行的"目标 1 卖 1/3、其余吊灯止损"排在中间。
+  mechanism: 分批止盈和过早收紧的止损都截断了少数大涨的交易，而均值主要靠它们。
+  context: {kind: [stock]}
+  applies: {topics: [exit]}
+  evidence:
+    - source: exit_study
+      date: 2026-10-27
+      summary: 25113 笔成交；不分批、到目标 1 后才启用吊灯止损 +1.55% / +1.13%（前半 / 后半）；不移动止损 +1.48% / +1.08%；不分批、全部用吊灯止损 +1.25% / +0.96%；目标 1 卖 1/3、其余吊灯止损（现行）+1.09% / +0.81%。
+  invalidation: 前向持仓记录中现行方式不再落后。
+  recheck_on: 2027-04-28
+  note: 持仓管理是否改用最优方式，等用户决定。
+
+- key: hold_drift_benchmark_biased
+  kind: method
+  polarity: negative
+  status: rejected
+  title: 用"相对持有该股的平均涨幅"评价规则有偏差
+  claim: 原来的规则基准用的是该股整段历史的平均日涨幅：既用到了未来，又建立在当前指数成分股（过去的赢家）上，对规则是偏高的门槛，不能单独作为结论。评价规则要用同日随机股票和同股随机日期这类当时就能得到的对照。
+  context: {}
+  applies: {topics: [evaluation]}
+  evidence:
+    - source: rule_benchmarks
+      date: 2026-10-28
+      summary: 放量异动按原基准只比持有多 +0.05%，按公平对照前后两半方向不一致；突破回踩按公平对照相对同日随机股票 +0.89%（t 4.97）。
+  invalidation: —
+  recheck_on: 2027-10-28

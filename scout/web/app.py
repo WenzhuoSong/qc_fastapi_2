@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, stat
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from scout import db, event_cause, fundamentals, opportunities, portfolio, premarket, telegram, universe
+from scout import db, event_cause, fundamentals, learned, opportunities, portfolio, premarket, telegram, universe
 from scout import events as events_mod
 from scout.config import get_scout_settings
 from scout.features import SNAPSHOT_FEATURES
@@ -31,6 +31,7 @@ _background: set[asyncio.Task] = set()
 async def lifespan(_: FastAPI):
     try:
         await db.apply_migrations()
+        await learned.seed()
     except Exception as exc:  # web must still boot to report health
         logger.error("migrations failed at startup: %s", exc)
     yield
@@ -910,3 +911,25 @@ async def ledger_page(h: int = 20, kind: str = "", _: str = Depends(require_auth
 async def ledger_rate(judgment_id: int, r: int = Form(...), _: str = Depends(require_auth)):
     await db.execute("UPDATE scout.judgments SET human_rating = :r WHERE id = :i", {"r": 1 if r > 0 else -1, "i": judgment_id})
     return RedirectResponse("/ledger", status_code=303)
+
+
+@app.get("/knowledge", response_class=HTMLResponse)
+async def knowledge_page(_: str = Depends(require_auth)) -> str:
+    entries = await learned.current()
+    rows = await db.fetch_all("SELECT key, version, status, changed_by, note, created_at FROM scout.knowledge "
+                              "ORDER BY key, version DESC")
+    versions: dict[str, list[dict]] = {}
+    for r in rows:
+        versions.setdefault(r["key"], []).append(r)
+    return views.knowledge_page(entries, versions, date.today())
+
+
+@app.post("/knowledge/{key}/status")
+async def knowledge_status(key: str, status_: str = Form(..., alias="status"), note: str = Form(""),
+                           _: str = Depends(require_auth)):
+    """The user moves an entry along the gate (the only way to `confirmed`)."""
+    try:
+        await learned.move(key, status_, "user", note)
+    except learned.KnowledgeError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return RedirectResponse(f"/knowledge#{key}", status_code=303)
