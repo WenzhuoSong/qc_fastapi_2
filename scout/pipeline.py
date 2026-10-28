@@ -237,6 +237,14 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         summary["market_focus"] = f"failed: {type(exc).__name__}"
 
     brief = render_eod_brief(asof, market, candidates, transitions, saved, sector_rows, focus)
+    from scout import learned
+
+    quiet = learned.held_back(await learned.current())
+    cards = [o for o in [await telegram.load_opportunity(i) for i in saved] if o]
+    muted = [o for o in cards if o["primary_detector"] in quiet]
+    if muted:
+        brief += (f"\n\n今天有 {len(muted)} 张规则机会卡只记录、不推送：这些规则没有通过公平基准检验"
+                  "（见 Dashboard「知识库」），仍在机会看板和判断台账里跟踪。")
     await db.execute(
         "INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('eod', :d, :c, CAST(:p AS JSONB))",
         {"d": asof, "c": brief, "p": db.jsonb({"market": market, "saved": saved, "candidates": len(candidates)})},
@@ -244,12 +252,14 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     if push:
         await telegram.send(brief)
         pushed = 0
-        for opp_id in saved:
-            o = await telegram.load_opportunity(opp_id)
-            if o and o["score"] >= settings.scout_push_threshold and pushed < settings.scout_max_push_cards:
+        for o in cards:
+            if o["primary_detector"] in quiet:
+                continue
+            if o["score"] >= settings.scout_push_threshold and pushed < settings.scout_max_push_cards:
                 if await telegram.push_card(o):
                     pushed += 1
         summary["pushed"] = pushed
+    summary["held_back"] = [o["id"] for o in muted]
     return summary
 
 

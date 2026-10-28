@@ -246,6 +246,14 @@ def rule_of(entry: dict) -> str | None:
     return detectors[0] if entry["kind"] == "rule" and detectors else None
 
 
+def held_back(entries: list[dict]) -> set[str]:
+    """Rules whose cards are recorded but not pushed: the knowledge base says they do not work
+    (rejected or retired after the fair-benchmark test). Scanning, the board and the ledger go on,
+    so the rules keep being measured forward."""
+    return {r for en in entries if en["kind"] == "rule" and en["status"] in ("rejected", "retired")
+            for r in [rule_of(en)] if r}
+
+
 def due(entries: list[dict], today: date) -> list[dict]:
     """Entries past their re-check date (open and confirmed ones)."""
     return [en for en in entries if en.get("recheck_on") and en["status"] in (*OPEN, "confirmed")

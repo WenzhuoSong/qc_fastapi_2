@@ -153,3 +153,16 @@ class InsightTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PushTests(unittest.TestCase):
+    def test_rules_that_failed_the_fair_test_are_not_pushed(self):
+        entries = [_entry(key="a", status="rejected", polarity="negative", applies={"detectors": ["power_gap"]}),
+                   _entry(key="b", status="forward", spec={"detector": "breakout_retest"}),
+                   _entry(key="c", kind="method", status="rejected", polarity="negative", applies={"detectors": ["volume_shock"]}),
+                   _entry(key="d", status="retired", applies={"detectors": ["pullback_in_uptrend", "x"]})]
+        self.assertEqual(learned.held_back(entries), {"power_gap", "pullback_in_uptrend"})
+
+    def test_all_three_live_rules_are_held_back_by_the_seeds(self):
+        live = {d.name for d in registry(include_candidates=False)}
+        self.assertEqual(learned.held_back(learned.seed_entries()) & live, live)

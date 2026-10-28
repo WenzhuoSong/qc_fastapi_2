@@ -43,7 +43,7 @@ Archived, not in this tree: the QC observer (git tag `qc-observer-final`, local 
 | `scout/tracker.py` | Lifecycle updates, outcomes, scoreboard |
 | `scout/telegram.py` | Card rendering, push, commands, feedback callbacks |
 | `scout/agent.py` | Read-only tool-calling Q&A agent |
-| `scout/pipeline.py` | `run_eod` (skips holidays, scans/pushes a session once; `--force` reruns), `run_weekly`, `prepare`, `ensure_base_rates` |
+| `scout/pipeline.py` | `run_eod` (skips holidays, scans/pushes a session once; `--force` reruns; cards of rules the knowledge base rejects are saved and tracked but not pushed, `learned.held_back`), `run_weekly`, `prepare`, `ensure_base_rates` |
 | `scout/market_calendar.py` | US equity trading days / holidays |
 | `scout/web/` | FastAPI app (webhook + dashboard) and HTML views |
 | `scout/premarket.py` | Pre-market brief: overnight quotes, opportunity positions, earnings, economic calendar (Forex Factory feed), news → LLM + checks |
