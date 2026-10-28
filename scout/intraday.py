@@ -58,16 +58,8 @@ def trade_events(t: dict, price: float) -> list[tuple[str, str]]:
     if t.get("stop") and price <= t["stop"]:
         out.append(("trade_stop", f"跌破持仓止损 {t['stop']:.2f}（成本 {t['entry_price']:.2f}，{pnl * 100:+.1f}%）"))
     if t.get("target") and price >= t["target"]:
-        advice = ""
-        if "target1" in (t.get("plan") or {}) and t.get("shares"):
-            from scout import levels
-
-            remaining = t["shares"] - (t.get("sold_shares") or 0)
-            keep = next(st["keep_after"] for st in levels.exit_plan(t["plan"], t["entry_price"], t["shares"], remaining, t.get("stop"))
-                        if st["stage"] == "目标 1")
-            if remaining > keep:
-                advice = f"，按计划建议卖出 {remaining - keep:g} 股（剩余 {remaining:g} 股），卖出后用 /sell 记录"
-        out.append(("trade_target", f"到达持仓止盈位 {t['target']:.2f}（成本 {t['entry_price']:.2f}，{pnl * 100:+.1f}%）{advice}"))
+        out.append(("trade_target", f"到达目标 1 {t['target']:.2f}（成本 {t['entry_price']:.2f}，{pnl * 100:+.1f}%）："
+                                    "按计划不卖出，收盘后止损改用吊灯止损（只升不降）"))
     return out
 
 

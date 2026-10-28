@@ -85,20 +85,36 @@ class StatusTests(unittest.TestCase):
 class ManageTests(unittest.TestCase):
     PLAN = {"stop": 95.5, "stop_basis": "支撑 1 下方", "target1": 101.5, "target2": 104.0, "time_stop_days": 10}
 
-    def test_stop_only_rises_and_target_one_then_trailing(self):
+    def test_initial_stop_until_target_one_then_chandelier(self):
         plan = dict(self.PLAN)
-        stop, target, _, msgs = levels.manage(plan, [99.0], [98.5], 2.0, date(2026, 10, 27))
-        self.assertEqual((stop, target, msgs), (95.5, 101.5, []))           # chandelier 92.5 is below the plan stop
-        closes, highs = [98.5, 100.0, 102.0, 103.0], [99.0, 100.5, 102.5, 103.5]
+        closes, highs = [98.5, 100.0, 100.5], [99.0, 100.5, 101.0]
+        stop, target, _, msgs = levels.manage(plan, highs, closes, 0.5, date(2026, 10, 28))
+        self.assertEqual((stop, target, msgs), (95.5, 101.5, []))           # chandelier 99.0 ignored before target 1
+        closes, highs = closes + [102.0, 103.0], highs + [102.5, 103.5]
         stop, target, basis, msgs = levels.manage(plan, highs, closes, 2.0, date(2026, 10, 30))
-        self.assertEqual((stop, target), (97.0, None))                     # 103 − 3×2; target 1 traded → trailing only
-        self.assertIn("吊灯", basis)
-        self.assertEqual(len(msgs), 2)
-        stop, target, _, _ = levels.manage(plan, highs + [101.0], closes + [100.0], 2.0, date(2026, 10, 31))
+        self.assertEqual((stop, target), (97.0, None))                     # 103 − 3×2 once target 1 traded
+        self.assertIn("买入以来最高收盘", basis)
+        self.assertIn("不卖出", msgs[0])
+        stop, _, _, _ = levels.manage(plan, highs + [101.0], closes + [100.0], 2.0, date(2026, 10, 31))
         self.assertEqual(stop, 97.0)                                       # a pullback never lowers the stop
         stop, _, _, _ = levels.manage(plan, highs + [101.0, 104.2], closes + [100.0, 104.0], 2.0, date(2026, 11, 2))
         self.assertEqual(stop, 98.0)
-        self.assertEqual(len(plan["history"]), 3)
+
+    def test_the_chandelier_uses_the_highest_close_since_the_buy(self):
+        plan = {**self.PLAN, "target1_hit": "2026-09-01"}
+        closes = [100.0, 120.0] + [118.0] * 30                             # the 120 close is more than 22 sessions back
+        stop, _, _, _ = levels.manage(plan, [x + 1 for x in closes], closes, 2.0, date(2026, 10, 30))
+        self.assertEqual(stop, 114.0)                                      # 120 − 3×2, not 118 − 3×2
+
+    def test_sold_after_the_holding_period(self):
+        plan = dict(self.PLAN)
+        closes = [99.0] * (levels.HOLD_SESSIONS - 1)
+        self.assertNotIn("hold_limit_hit", (levels.manage(plan, closes, closes, 1.0, date(2026, 12, 1)), plan)[1])
+        msgs = levels.manage(plan, closes + [99.0], closes + [99.0], 1.0, date(2026, 12, 2))[3]
+        self.assertIn("卖出余下全部", msgs[-1])
+        due = [st for st in levels.exit_plan(plan, 98.0, 100, 100, 95.5) if st["state"] == "due"]
+        self.assertEqual((due[0]["stage"], due[0]["sell_now"]), ("持有期满", 100))
+        self.assertIn("建议卖出余下 100 股", levels.due_advice(due[0], 99.0, 95.5))
 
     def test_rerun_on_the_same_bars_changes_nothing(self):
         plan = dict(self.PLAN)
@@ -143,37 +159,27 @@ class ExitPlanTests(unittest.TestCase):
     def stages(self, remaining, **hit):
         return levels.exit_plan({**self.PLAN, **hit}, 100.0, 200, remaining, 97.0)
 
-    def test_a_third_at_target_one_then_trailing(self):
+    def test_nothing_is_sold_at_target_one(self):
         t1, rest = self.stages(200)
-        self.assertEqual((t1["price"], t1["r"], t1["suggest"], t1["state"]), (110.0, 2.0, 67, "pending"))
-        self.assertIn("整笔也大致不亏", t1["why"])                      # target 1 at 2R
-        self.assertEqual((rest["fraction"], rest["suggest"], rest["price"]), ("约 2/3", 133, 97.0))
-        self.assertIn("吊灯止损", rest["why"])
+        self.assertEqual((t1["price"], t1["r"], t1["sell_now"], t1["fraction"], t1["state"]), (110.0, 2.0, 0.0, "不卖", "pending"))
+        self.assertIn("吊灯止损", t1["why"])
+        self.assertEqual((rest["stage"], rest["suggest"], rest["price"]), ("全部仓位", 200, 97.0))
+        t1, rest = self.stages(200, target1_hit="2026-10-28")
+        self.assertEqual((t1["state"], t1["sell_now"]), ("done", 0.0))
+        self.assertIn("跌破吊灯止损", rest["why"])
+        self.assertFalse(any(st["state"] == "due" for st in self.stages(200, target1_hit="2026-10-28")))
 
-    def test_advice_follows_what_was_sold(self):
-        t1, _ = self.stages(200, target1_hit="2026-10-28")
-        self.assertEqual((t1["state"], t1["sell_now"]), ("due", 67))
-        t1, rest = self.stages(133, target1_hit="2026-10-28")
-        self.assertEqual((t1["state"], rest["suggest"]), ("done", 133))
-        t1, _ = self.stages(180, target1_hit="2026-10-28")               # sold less than advised
-        self.assertEqual((t1["state"], t1["sell_now"]), ("due", 47))
-        t1, rest = self.stages(100, target1_hit="2026-10-28")            # sold more: the trailing part is smaller
-        self.assertEqual((t1["state"], rest["suggest"]), ("done", 100))
-        t1, _ = self.stages(200, target1_hit="2026-10-28")
-        above = levels.due_advice(t1, 111.0, 97.0)
-        self.assertIn("建议卖出 67 股", above)
-        self.assertIn("限价不低于 110.00", above)
-        below = levels.due_advice(t1, 108.0, 97.0)
-        self.assertIn("回落到目标下方", below)
-        self.assertIn("收盘跌破止损 97.00 则卖出全部", below)
+    def test_shares_sold_under_the_old_plan_follow_the_same_rules(self):
+        _, rest = self.stages(67, target1_hit="2026-10-20")
+        self.assertEqual(rest["suggest"], 67)
 
-    def test_intraday_target_alert_advises_shares(self):
+    def test_intraday_target_alert_says_do_not_sell(self):
         from scout import intraday
 
         t = {"entry_price": 100.0, "shares": 200, "sold_shares": 0, "stop": 95.0, "target": 110.0, "plan": self.PLAN}
         text = intraday.trade_events(t, 110.5)[0][1]
-        self.assertIn("建议卖出 67 股", text)
-        self.assertIn("/sell", text)
+        self.assertIn("不卖出", text)
+        self.assertIn("吊灯止损", text)
 
 
 class PlanPanelTests(unittest.TestCase):

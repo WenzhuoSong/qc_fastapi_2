@@ -101,8 +101,8 @@ async def manage_trade(t: dict) -> list[str]:
                                           ((feat or {}).get("payload") or {}).get("atr14"), asof)
     remaining = t["shares"] - sum(r["shares"] for r in await sells(t["id"]))
     for st in levels.exit_plan(plan, t["entry_price"], t["shares"], remaining, stop):
-        if st["sell_now"] and any(m.startswith(f"到达{st['stage']}") for m in msgs):
-            msgs.append(f"建议卖出 {st['sell_now']:g} 股（原仓位约 {st['fraction']}，剩余 {remaining:g} 股）")
+        if st["state"] == "due" and st["sell_now"] and plan.get("hold_limit_hit") == asof.isoformat():
+            msgs.append(f"建议卖出余下 {st['sell_now']:g} 股，卖出后记录（/sell 或「我的交易」）")
     await db.execute("UPDATE scout.trades SET stop = :s, target = :g, plan = CAST(:p AS JSONB), updated_at = now() WHERE id = :id",
                      {"s": stop, "g": target, "p": db.jsonb(plan), "id": t["id"]})
     return msgs

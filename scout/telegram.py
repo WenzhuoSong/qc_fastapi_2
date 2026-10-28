@@ -359,8 +359,8 @@ def next_step(t: dict, m: dict) -> str:
         if st["state"] == "due":
             return "⚠️ " + levels.due_advice(st, m.get("price"), t.get("stop"))
         if st["state"] == "pending":
-            return (f"下一步：{st['stage']} {st['price']:.2f} 卖 {st['suggest']:g} 股" if st["stage"] != "余下仓位"
-                    else f"余下 {m['remaining']:g} 股跟随移动止损")
+            return (f"下一步：到目标 1 {st['price']:.2f} 后止损改用吊灯止损（不卖）" if st["stage"] == "目标 1"
+                    else f"{m['remaining']:g} 股跟随吊灯止损")
     return ""
 
 

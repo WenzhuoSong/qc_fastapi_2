@@ -455,13 +455,16 @@ def holding_card(trades: list[dict], live: dict | None, close: float | None, tod
         if "target1" in pl:
             rows = []
             for st in levels.exit_plan(pl, t["entry_price"], t["shares"], m["remaining"], t.get("stop")):
-                label, tone = STAGE_STATE[st["state"]]
+                label, tone = (("已到达，止损已改为吊灯止损", "muted") if st["stage"] == "目标 1" and st["state"] == "done"
+                               else STAGE_STATE[st["state"]])
                 act = (escape(levels.due_advice(st, price, t.get("stop"))) if st["state"] == "due" else
-                       f"卖 {st['suggest']:g} 股" if st["state"] == "pending" and st["suggest"] else "—")
-                rows.append(f"<tr><td>{escape(st['stage'])}</td><td>{st['price']:.2f}" + (f"（{st['r']:.1f}R）" if st["r"] else "")
-                            + f"</td><td>{escape(st['fraction'])}</td><td class='{tone}'>{act}<br><span class='small'>{label}</span></td>"
-                            f"<td class='small muted'>{escape(st['why'])}</td></tr>" if st["price"] else "")
-            line += ("<table class='small'><thead><tr><th>止盈</th><th>价位</th><th>比例</th><th>建议</th><th>逻辑</th></tr></thead>"
+                       "改用吊灯止损" if st["stage"] == "目标 1" and st["state"] == "pending" else
+                       f"跌破时卖 {st['suggest']:g} 股" if st["state"] == "pending" and st["suggest"] else "—")
+                at = (f"{st['price']:.2f}" + (f"（{st['r']:.1f}R）" if st["r"] else "")) if st["price"] else "—"
+                rows.append(f"<tr><td>{escape(st['stage'])}</td><td>{at}</td><td>{escape(st['fraction'])}</td>"
+                            f"<td class='{tone}'>{act}<br><span class='small'>{label}</span></td>"
+                            f"<td class='small muted'>{escape(st['why'])}</td></tr>")
+            line += ("<table class='small'><thead><tr><th>出场</th><th>价位</th><th>卖出</th><th>建议</th><th>逻辑</th></tr></thead>"
                      f"<tbody>{''.join(rows)}</tbody></table>")
             if not pl.get("target1_hit"):
                 held = sessions_since(t["opened_on"], today or _date.today())
@@ -484,8 +487,9 @@ def holding_card(trades: list[dict], live: dict | None, close: float | None, tod
                  f"<input type='hidden' name='back' value='/ticker/{escape(t['ticker'])}'><button>记录卖出</button></form></div>")
         items.append(line)
     return (f"<div class='card plan'><h3>我的持仓</h3>{''.join(items)}"
-            "<p class='small muted'>止损和止盈由系统管理：初始值来自买入前的价位图，每天收盘后更新；止损按吊灯止损（22 日最高收盘 − 3×ATR）只升不降。"
-            "止盈：目标 1 卖约 1/3 落袋，余下约 2/3 跟随吊灯止损、不设固定目标——出场回放显示这比在目标 2 再卖一批更好（前后两段样本都是）。"
+            "<p class='small muted'>止损和出场由系统管理：初始止损和目标 1 来自买入前的价位图，每天收盘后更新。"
+            "不分批：到目标 1 之前用初始止损；到目标 1 不卖出，止损改为吊灯止损（买入以来最高收盘 − 3×ATR，只升不降），跌破时卖出全部；"
+            f"最长持有 {levels.HOLD_SESSIONS} 个交易日。12 年出场回放里这在前后两段样本都是最好的方式（分批止盈和过早收紧止损都会砍掉大赢家）。"
             "记录卖出后（这里、「我的交易」或 Telegram <code>/sell 代码 股数 价格</code>），剩余股数、盈亏和下一步建议会立即更新。Scout 不会替你下单。</p></div>")
 
 
@@ -661,8 +665,8 @@ def next_exit(t: dict, m: dict) -> str:
         if st["state"] == "due":
             return f"<span class='warn'>{escape(levels.due_advice(st, m.get('price'), t.get('stop')))}</span>"
         if st["state"] == "pending":
-            return (f"{st['price']:.2f}（{st['stage']}，卖 {st['suggest']:g} 股）" if st["stage"] != "余下仓位"
-                    else f"移动止损，剩余 {m['remaining']:g} 股")
+            return (f"{st['price']:.2f}（目标 1，到达后改用吊灯止损，不卖）" if st["stage"] == "目标 1"
+                    else f"吊灯止损，{m['remaining']:g} 股")
     return "—"
 
 
@@ -926,8 +930,8 @@ def price_panel(pm: dict, live: dict | None, settings: dict | None, opp: dict | 
             f"<table class='small'><tbody>"
             f"<tr><td>买入区间</td><td>{en['zone_lo']:.2f}–{en['zone_hi']:.2f}</td><td class='muted'>高于上沿不追</td></tr>"
             f"<tr><td style='color:var(--down)'>止损</td><td>{en['stop']:.2f}</td><td class='muted'>{en['stop_pct'] * 100:.1f}% · {escape(en['stop_basis'])}</td></tr>"
-            f"<tr><td style='color:var(--up)'>目标 1</td><td>{en['target1']:.2f}</td><td class='muted'>{escape(en['target1_basis'])} · R:R {en['rr']:.1f} · 到达卖出约 1/3</td></tr>"
-            f"<tr><td style='color:var(--up)'>上方参考</td><td>{en['target2']:.2f}</td><td class='muted'>{escape(en['target2_basis'])} · 不在这里卖，余下 2/3 跟随吊灯止损</td></tr>"
+            f"<tr><td style='color:var(--up)'>目标 1</td><td>{en['target1']:.2f}</td><td class='muted'>{escape(en['target1_basis'])} · R:R {en['rr']:.1f} · 到达后不卖，止损改用吊灯止损</td></tr>"
+            f"<tr><td style='color:var(--up)'>上方参考</td><td>{en['target2']:.2f}</td><td class='muted'>{escape(en['target2_basis'])} · 只作参考，不在这里卖</td></tr>"
             f"<tr><td>时间止损</td><td>{en['time_stop_days']} 个交易日</td><td class='muted'>入场后迟迟不到目标 1 就离场</td></tr>"
             f"</tbody></table>"
             + (f"<div class='small warn'>{escape(en['warning'])}</div>" if en.get("warning") else "")
