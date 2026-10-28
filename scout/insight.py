@@ -117,7 +117,11 @@ LENS_PROMPT = """你是一名资深美股分析师，负责多视角研究中的
 4. 正文不要出现英文字段名（如 swing_trend、sma50），用中文名称。
 
 硬性规则：
-- 数字只能原样引用证据中出现的"数值"或文字中的数字，不要自己计算或换算。
+- 数字只能原样引用证据中出现的"数值"或文字中的数字，不要自己计算或换算：不算差值、比值、合计、每股数、
+  增速或目标价与现价的差；需要比较时用文字描述（如"高于""收窄"），或引用证据里已有的对应字段。
+- 金额按给出的写法照抄（如 $4.5B、-$8.5M），不要改写成"亿""万"。
+- 内部人只有卖出、没有买入（内部人买入人数为 0）时，卖出多为计划内交易，只如实描述净卖出金额，
+  不能写成"信心不足""缺乏信心""信心下降""不看好""看淡"。
 - 读数是标准口径；不同意时必须说明依据。
 - Scout 规则分析（context.scout_view）里的趋势结论是确定性计算，不能与之相反地描述趋势方向。
 - 不编造新闻、财报或任何证据里没有的事实；写"没有新闻/没有利好"之前先核对 context.news。
@@ -475,7 +479,7 @@ def validate_lenses(views: list[LensView], pack: dict, python_trend_tone: str, f
     issues = []
     bad = unsupported_numbers("\n".join(p for lv in views for p in lv.points), allowed_numbers(pack))
     if bad:
-        issues.append(f"以下数字不在证据包中：{', '.join(sorted(set(bad)))}")
+        issues.append(f"以下数字不在证据包中：{', '.join(sorted(set(bad)))}（删掉，或改为原样引用证据里的数值，不要自己计算）")
     unknown = sorted({k for lv in views for k in lv.evidence} - evidence_keys(pack))
     if unknown:
         issues.append(f"引用了不存在的证据 key：{', '.join(unknown)}")
