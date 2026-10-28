@@ -342,7 +342,7 @@ async def universe_sec(asof: date, limit: int | None = None) -> dict:
                 stats["facts"] += r["facts"]
             except Exception as exc:
                 stats["failed"] += 1
-                logger.warning("SEC %s failed: %s", t, exc)
+                logger.warning("SEC %s failed: %r", t, exc)
 
     await asyncio.gather(*(one(t, cik) for t, cik in ciks.items()))
     return stats

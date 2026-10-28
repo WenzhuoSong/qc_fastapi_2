@@ -12,6 +12,7 @@ from scout import db
 
 def run(job: str, fn: Callable[[], Awaitable[dict]], alert: bool = True) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)       # request URLs can carry tokens
 
     async def _main() -> None:
         await db.apply_migrations()
