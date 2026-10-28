@@ -316,3 +316,64 @@ async def status() -> dict:
     return {"snapshots": snaps, "financials": fin, "filings": fil, "actions": act, "macro": mac, "issues": issues,
             "runs": runs, "pool": len(await universe.research_pool()),
             "storage": {"used_gb": round(size["b"] / 1e9, 2), "volume_gb": get_scout_settings().scout_db_volume_gb}}
+
+
+# ── the whole universe (v3 multi-angle data) ──
+
+INSIDER_START = date(2014, 1, 1)          # the price history starts in 2014-10; a few months more for look-back windows
+SEC_CONCURRENCY = 6
+INSIDER_REFRESH = 2                       # the latest quarters are reloaded (late filings, amendments)
+
+
+async def universe_sec(asof: date, limit: int | None = None) -> dict:
+    """SEC filings and XBRL financials for every stock in the scan universe (the research pool only
+    covers about 115). Facts are re-read only when a new 10-Q/10-K appeared."""
+    stocks = [r["ticker"] for r in await db.fetch_all(
+        "SELECT ticker FROM scout.instruments WHERE kind = 'stock' AND in_scan ORDER BY ticker")][:limit]
+    ciks = await _ensure_ciks(stocks)
+    stats = {"stocks": len(stocks), "with_cik": len(ciks), "filings": 0, "facts": 0, "failed": 0}
+    sem = asyncio.Semaphore(SEC_CONCURRENCY)            # downloads and inserts overlap; EDGAR pacing stays global in sec._get
+
+    async def one(t: str, cik: str) -> None:
+        async with sem:
+            try:
+                r = await sec_company(t, cik, asof)
+                stats["filings"] += r["filings"]
+                stats["facts"] += r["facts"]
+            except Exception as exc:
+                stats["failed"] += 1
+                logger.warning("SEC %s failed: %s", t, exc)
+
+    await asyncio.gather(*(one(t, cik) for t, cik in ciks.items()))
+    return stats
+
+
+async def insiders(asof: date, full: bool = False) -> dict:
+    """Open-market insider trades from the SEC quarterly data sets: every missing quarter, and the latest
+    INSIDER_REFRESH published ones again."""
+    from scout.data import sec_insiders
+
+    cik_to_ticker = {r["cik"]: r["ticker"] for r in await db.fetch_all("SELECT ticker, cik FROM scout.sec_companies")}
+    loaded = {r["period"] for r in await db.fetch_all("SELECT period FROM scout.data_loads WHERE source = 'sec_insiders'")}
+    todo = sec_insiders.periods(INSIDER_START, asof)
+    published_recent = [p for p in todo if p in loaded][-INSIDER_REFRESH:]
+    out = {"loaded": 0, "rows": 0, "unpublished": []}
+    for p in todo:
+        if p in loaded and p not in published_recent and not full:
+            continue
+        rows = await sec_insiders.fetch(p, cik_to_ticker)
+        if rows is None:
+            out["unpublished"].append(p)
+            continue
+        n = await db.execute_many(
+            "INSERT INTO scout.insider_trades (accession, trans_sk, ticker, issuer_cik, filed, trans_date, code, security, common, shares, "
+            "price, value, owner_cik, owner_name, relationship, title, plan_10b5_1) VALUES (:accession, :trans_sk, :ticker, :issuer_cik, "
+            ":filed, :trans_date, :code, :security, :common, :shares, :price, :value, :owner_cik, :owner_name, :relationship, :title, "
+            ":plan_10b5_1) "
+            "ON CONFLICT (accession, trans_sk) DO NOTHING", rows, atomic=False) if rows else 0
+        await db.execute("INSERT INTO scout.data_loads (source, period, rows) VALUES ('sec_insiders', :p, :n) "
+                         "ON CONFLICT (source, period) DO UPDATE SET rows = EXCLUDED.rows, loaded_at = now()", {"p": p, "n": len(rows)})
+        out["loaded"] += 1
+        out["rows"] += len(rows)
+        logger.info("insiders %s: %d trades", p, len(rows))
+    return out

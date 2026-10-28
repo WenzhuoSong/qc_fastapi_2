@@ -186,7 +186,7 @@ def backtest(p, det: Detector, m: Market, draws: int = DRAWS) -> list[dict]:
     return rows
 
 
-def rank_backtest(p, spec: dict, m: Market) -> list[dict]:
+def rank_backtest(p, spec: dict, m: Market, angle: dict | None = None) -> list[dict]:
     """Ranking mode: every `every` sessions take the ranker's picks, buy at the next open, sell at the
     close `hold` sessions later. Selection control = the mean holding return of every other stock in
     the universe that day (the expectation of a same-day random stock); timing control = the same
@@ -194,10 +194,11 @@ def rank_backtest(p, spec: dict, m: Market) -> list[dict]:
     from scout import rankers
 
     a, stocks = rankers.arrays(p)
+    a["angle"] = angle or {}
     fn, hold, every, frac = rankers.RANKERS[spec["ranker"]], int(spec["hold"]), int(spec["every"]), float(spec.get("top_frac", 0.1))
     o, c, n = a["open"], a["close"], len(p.dates)
     rng = np.random.default_rng([SEED, zlib.crc32(spec["key"].encode())])
-    dates = list(range(rankers.YEAR + rankers.MONTH, n - hold - 1, every))
+    dates = rankers.rebalance_dates(n, spec)
     picks, rets, mean_ret, members = {}, {}, {}, {}
     for i in dates:
         uni = rankers._universe(a, i)
@@ -464,7 +465,12 @@ async def run(key: str, p=None) -> dict:
     det = None if spec.get("type") == "rank" else next(d for d in registry(include_candidates=True) if d.name == spec["detector"])
     p = p if p is not None else await load_panel(lookback_days=None)
     m = Market(p)
-    rows = rank_backtest(p, spec, m) if det is None else backtest(p, det, m)
+    if det is None:
+        from scout import rankers
+
+        rows = rank_backtest(p, spec, m, await rankers.prepare(spec, p, rankers.arrays(p)[1]))
+    else:
+        rows = backtest(p, det, m)
     summary = summarize(rows)
     entries = await learned.current()
     passed_rules = {learned.rule_of(en) for en in entries if en["key"] != key and en["polarity"] == "positive"

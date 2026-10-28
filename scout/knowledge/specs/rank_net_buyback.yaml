@@ -1,0 +1,14 @@
+key: rank_net_buyback
+family: net_buyback
+type: rank
+ranker: net_buyback
+top_frac: 0.1
+hold: 63
+every: 21
+primary_control: select
+title: 净回购：股本减少最多的公司
+claim: 按稀释后股本同比排名，股本减少最多（净回购最多）的 10% 在随后一个季度跑赢同一天的其他股票。
+mechanism: 管理层在股价被低估时回购、被高估时增发，市场对这一信号反应不足（Pontiff、Woodgate 2008）。
+expected_failure: 大盘股普遍回购，信号区分度可能不高；回购也可能只是在抵消股权激励。
+deviations: 用稀释后股本代替流通股本；每 21 个交易日重排一次，持有 63 个交易日；只做多最低的 10%。
+registered_on: 2026-10-28

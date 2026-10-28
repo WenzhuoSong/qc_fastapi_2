@@ -1,0 +1,14 @@
+key: rank_low_accruals
+family: low_accruals
+type: rank
+ranker: low_accruals
+top_frac: 0.1
+hold: 63
+every: 21
+primary_control: select
+title: 利润质量：应计比例最低的公司
+claim: 按（近四季净利润 − 经营现金流）/ 平均总资产排名，最低的 10% 在随后一个季度跑赢同一天的其他股票。
+mechanism: 投资者把利润当整体看，忽视其中靠会计估计的部分；现金支撑的利润更持久（Sloan 1996）。
+expected_failure: 应计异象在 2000 年后明显减弱（被广泛套利）；原文是年度数据。
+deviations: 每 21 个交易日按申报时点重排一次，持有 63 个交易日；只做多最低的 10%。
+registered_on: 2026-10-28

@@ -1,7 +1,7 @@
 ---
 id: earnings
 title: 财报事件
-fields: [earn_days_since, earn_days_to_next, earn_eps_surprise, earn_rev_surprise, earn_last_move, earn_avg_abs_move, earn_reactions_n, earn_implied_vs_hist]
+fields: [earn_days_since, earn_days_to_next, earn_eps_surprise, earn_rev_surprise, earn_last_move, earn_avg_abs_move, earn_reactions_n, earn_implied_vs_hist, ang_ear, ang_ear_sessions_ago]
 sources:
   - 财报后漂移 PEAD（Bernard & Thomas 1989）
   - 期权隐含的财报波动 vs 历史实现波动
@@ -18,3 +18,4 @@ sources:
 **矛盾**：超预期但股价下跌（指引差或利好已被定价）。
 
 **常见陷阱**：只看 EPS 不看营收和指引；用一次财报反应代表常态；忽略财报日期的不确定性。
+- 财报公告反应（ang_ear）：公告前后 3 日相对 SPY 的涨跌，文献上之后会同向漂移；看它和异动后至今的走势是否一致。

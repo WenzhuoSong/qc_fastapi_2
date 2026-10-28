@@ -1,0 +1,14 @@
+key: rank_low_asset_growth
+family: low_asset_growth
+type: rank
+ranker: low_asset_growth
+top_frac: 0.1
+hold: 63
+every: 21
+primary_control: select
+title: 资产增长：总资产扩张最慢的公司
+claim: 按总资产同比排名，增长最慢的 10% 在随后一个季度跑赢同一天的其他股票。
+mechanism: 大幅扩张（并购、融资）的公司往往投资回报下降，市场对扩张过于乐观（Cooper、Gulen、Schill 2008；q 因子模型的投资因子）。
+expected_failure: 效果在大盘股中弱于小盘股；资产增长最慢的里面可能混有衰退中的公司。
+deviations: 每 21 个交易日按申报时点重排一次，持有 63 个交易日；只做多最低的 10%。
+registered_on: 2026-10-28

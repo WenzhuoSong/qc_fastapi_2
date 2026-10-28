@@ -959,3 +959,54 @@ macro_oil_t:
     - {max: -2, text: 显著（负向）}
     - {max: 2, text: 不显著}
     - {min: 2, text: 显著（正向）}
+ang_gross_profitability:
+  zh: 毛利 / 总资产
+  unit: pct_mag
+  definition: 近四季毛利（没有毛利时用收入减营业成本）除以最新总资产，按 SEC 申报时点。毛利能力高的公司长期回报较好（Novy-Marx 2013）。
+  readings:
+    - {min: 0.4, text: 毛利能力很强}
+    - {min: 0.2, max: 0.4, text: 毛利能力中等}
+    - {max: 0.2, text: 毛利能力偏弱（或资产很重）}
+ang_accruals:
+  zh: 应计比例
+  unit: pct
+  definition: （近四季净利润 − 经营现金流）/ 平均总资产。为负说明利润有现金支撑；偏高说明利润更多来自会计估计，质量较低（Sloan 1996）。
+  readings:
+    - {max: -0.05, text: 利润有充足现金支撑}
+    - {min: -0.05, max: 0.05, text: 利润与现金流大致匹配}
+    - {min: 0.05, text: 利润明显高于现金流，质量偏低}
+ang_asset_growth:
+  zh: 总资产同比
+  unit: pct
+  definition: 最新总资产相对一年前的变化。资产扩张过快的公司随后往往表现偏弱（Cooper、Gulen、Schill 2008），常见于大额并购或融资扩张。
+  readings:
+    - {min: 0.3, text: 资产扩张很快（并购或大额融资？）}
+    - {max: 0.3, text: 资产增长正常}
+ang_net_issuance:
+  zh: 股本同比
+  unit: pct
+  definition: 稀释后股本相对一年前的变化。为负 = 净回购；为正 = 增发或股权激励稀释（Pontiff、Woodgate 2008）。
+  readings:
+    - {max: -0.02, text: 净回购}
+    - {min: -0.02, max: 0.02, text: 股本基本不变}
+    - {min: 0.02, text: 股本稀释}
+ang_revenue_growth:
+  zh: 收入同比（SEC）
+  unit: pct
+  definition: 最近一季收入相对去年同季的变化，按 SEC 申报时点。
+ang_ear:
+  zh: 财报公告反应
+  unit: pct
+  definition: 最近一次财报（SEC 8-K 2.02 项）申报日前后 3 个交易日的涨跌减去 SPY 同期涨跌。公告反应会在之后继续同向漂移，是文献里较稳定的规律之一（Brandt 等 2008），Scout 的检验结果见知识库。
+ang_ear_sessions_ago:
+  zh: 距最近财报公告（交易日）
+  unit: count
+  definition: 最近一次财报公告反应窗口结束后过了多少个交易日。
+ang_insider_officer_buyers:
+  zh: 高管 / 董事买入人数（SEC，90 日）
+  unit: count
+  definition: 最近 90 天在公开市场买入本公司普通股的高管和董事人数（SEC Form 4，剔除 10b5-1 计划交易）。两人以上集中买入的信息含量较高（Lakonishok、Lee 2001）。数据来自 SEC 季度数据集，最新一个季度在季度结束后才发布，见 ang_insider_data_through。
+ang_insider_data_through:
+  zh: 内部人数据截至
+  unit: text
+  definition: SEC 内部人季度数据覆盖到的最后申报日期；之后的买入还没有计入。

@@ -1,0 +1,13 @@
+key: rank_insider_cluster
+family: insider_cluster
+type: rank
+ranker: insider_cluster
+hold: 63
+every: 21
+primary_control: select
+title: 内部人集中买入：至少两位高管或董事在公开市场买入
+claim: 最近 90 天至少两位高管或董事在公开市场买入本公司普通股（剔除 10b5-1 计划）的股票，在随后一个季度跑赢同一天的其他股票。
+mechanism: 内部人最了解公司，主动用自己的钱买入是强信号，多人同时买入的信息含量更高；卖出多为计划性交易，信息含量低（Lakonishok、Lee 2001；Cohen、Malloy、Pomorski 2012）。
+expected_failure: 大盘股里集中买入很少，样本可能不足；10b5-1 标记 2023 年前不全，早期样本里混有计划交易。
+deviations: 只用 SEC 季度数据集里的第一位申报人身份；每 21 个交易日检查一次，持有 63 个交易日；不区分买入金额。
+registered_on: 2026-10-28

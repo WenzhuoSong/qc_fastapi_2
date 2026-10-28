@@ -163,6 +163,13 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
 
     transitions = await tracker.update_all()
     summary["transitions"] = [t.__dict__ for t in transitions]
+    try:                               # multi-angle features (financials, events, insiders), point in time
+        from scout import angles
+
+        summary["angles"] = await angles.snapshot(p, asof)
+    except Exception as exc:
+        logger.warning("angle features failed: %s", exc)
+        summary["angles"] = f"failed: {type(exc).__name__}"
     try:                               # the user's B0 ranking on Scout's data (information only)
         from scout import b0
 
@@ -315,6 +322,14 @@ async def run_weekly(push: bool = True) -> dict:
     summary: dict = {"prepare": await prepare(full_backfill=True)}
     rates = await ensure_base_rates(force=True)
     summary["base_rates"] = {d: b.get("all", {}).get("n", 0) for d, b in rates.items()}
+    try:                               # multi-angle data for the whole universe: SEC filings, financials, insider trades
+        from scout import research_data
+
+        summary["sec_universe"] = await research_data.universe_sec(date.today())
+        summary["insiders"] = await research_data.insiders(date.today())
+    except Exception as exc:
+        logger.warning("universe SEC refresh failed: %s", exc)
+        summary["sec_universe"] = f"failed: {type(exc).__name__}"
     try:                               # industry outlook (v3 P4): drivers + at most three theses
         from scout import outlook
 

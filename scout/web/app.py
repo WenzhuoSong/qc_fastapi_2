@@ -567,8 +567,17 @@ async def screens_page(s: str = "", _: str = Depends(require_auth)) -> str:
     nav += (f"<div style='margin:4px 0'><span class='small muted'>我的策略：</span><a class='chip' "
             f"style='{'background:var(--accent);color:#fff' if on else ''}' href='/screens?s=b0'>B0 动量打分 "
             f"{len((b0_rank or {}).get('rows') or [])}</a></div>")
+    angle_asof, angle_rows = await sc.angle_snapshot()
+    nav += ("<div style='margin:4px 0'><span class='small muted'>基本面与事件：</span>" + "".join(
+        f"<a class='chip' style='{'background:var(--accent);color:#fff' if x.id == s else ''}' href='/screens?s={e(x.id)}'>"
+        f"{e(x.title)} {len(sc.run_angle(x, angle_rows))}</a>" for x in sc.ANGLE_SCREENS) + "</div>")
     if on:
         return layout("策略筛选", "screens", f"<h2>策略筛选</h2>{nav}" + views.b0_rank_panel(b0_rank))
+    angle = next((x for x in sc.ANGLE_SCREENS if x.id == s), None)
+    if angle:
+        entry = await learned.get(angle.strategy)
+        return layout("策略筛选", "screens", f"<h2>策略筛选</h2>{nav}"
+                      + views.angle_screen_panel(angle, sc.run_angle(angle, angle_rows), angle_asof, entry))
     found = await sc.run(current, asof, rows)
 
     crit = "".join(f"<li>{e(c)}</li>" for c in current.criteria)
@@ -835,6 +844,38 @@ async def trades_delete(trade_id: int, _: str = Depends(require_auth)):
     return RedirectResponse("/trades", status_code=303)
 
 
+async def _angles_overview() -> str:
+    """Each analysis angle: source, how far back it goes, the point-in-time rule, how it is validated and the verdict so far."""
+    from scout import angles, ledger
+    from scout.detectors import registry
+    from scout.insight import LENS_TITLES
+
+    entries = {en["key"]: en for en in await learned.current()}
+    rules = {learned.rule_of(en): en for en in entries.values() if learned.rule_of(en)}
+    cal = {}
+    for r in await ledger.calibration(20):
+        if r["kind"] == "insight_lens":
+            cal[r["lens"]] = cal.get(r["lens"], 0) + r["n"]
+    rows = []
+    for a in angles.ANGLES:
+        table_name, col = a["history"]
+        h = await db.fetch_one(f"SELECT min({col}) AS lo, max({col}) AS hi, count(*) AS n FROM {table_name}")
+        depth = f"{h['lo']} 至 {h['hi']}（{h['n']:,} 行）" if h and h["lo"] else "—"
+        if a["strategies"] == "rule":
+            tested = [(d.label, rules.get(d.name)) for d in registry()]
+        else:
+            tested = [((entries.get(k) or {}).get("title", k), entries.get(k)) for k in a["strategies"]]
+        verdicts = "<br>".join(f"{e(name)}：<b>{e(learned.STATUS_ZH.get(en['status'], en['status']) if en else '未检验')}</b>"
+                               for name, en in tested) or "—"
+        fwd = "；".join(f"{e(LENS_TITLES.get(l, l))} {cal.get(l, 0)} 个" for l in a["lenses"]) or "—"
+        rows.append([f"<b>{e(a['name'])}</b>", e(a["source"]), e(depth), e(a["pit"]),
+                     "回测（检验关）+ 前向" if a["path"] == "backtest" else "只能前向记录", verdicts, fwd])
+    return ("<h2>分析角度</h2><p class='small muted'>每个角度的数据来源、历史深度、按时点使用的规则、验证方式和目前的结论。"
+            "有干净历史的走检验关（和同一天随机选的股票比，前后两半都赢、t ≥ 3），再前向验证；"
+            "没有历史的（期权、新闻、AI 判断）从现在起记入判断台账，满 30 个样本后看校准。</p>"
+            + table(["角度", "来源", "历史", "按时点规则", "验证方式", "选股规则的检验结论", "AI 视角已打分样本（20 日）"], rows))
+
+
 @app.get("/data", response_class=HTMLResponse)
 async def data_page(_: str = Depends(require_auth)) -> str:
     """Health of the research data: coverage, freshness, quality findings, storage."""
@@ -850,7 +891,8 @@ async def data_page(_: str = Depends(require_auth)) -> str:
     issue_rows = [[e(i["asof"]), e(i["check_name"]), str(i["n"]), e(", ".join((i["tickers"] or [])[:12]))] for i in st["issues"]]
     run_rows = [[e(r["job"]), e(r["status"]), e(str(r["started_at"])[:16]),
                  e(json.dumps(r["summary"], ensure_ascii=False, default=str)[:180])] for r in st["runs"]]
-    body = (f"<h2>数据状态</h2><p class='small muted'>研究池 {st['pool']} 只（持仓 ∪ 活跃机会 ∪ 自选 ∪ 成交额前 100）。"
+    angles_html = await _angles_overview()
+    body = (angles_html + f"<h2>数据状态</h2><p class='small muted'>研究池 {st['pool']} 只（持仓 ∪ 活跃机会 ∪ 自选 ∪ 成交额前 100）。"
             f"所有快照按日期追加保存，不覆盖历史。</p>"
             f"<p class='small'>数据库已用 <b>{used:.2f} GB</b> / {cap:g} GB（{used / cap:.0%}），超过 80% 会推送扩容提醒。</p>"
             + table(["数据", "最近", "覆盖股票", "累计行数"], rows)

@@ -1220,3 +1220,33 @@ def scoreboard_page(rows: list[dict], fair_asof, legacy_computed) -> str:
         + "</details>"
         + "<h3>规则说明</h3><ul>" + "".join(f"<li><b>{e(r['det'].label)}</b>：{e(r['det'].description)}</li>" for r in rows) + "</ul>")
     return layout("记分板", "scoreboard", body)
+
+
+def angle_screen_panel(screen, rows: list[dict], asof, entry: dict | None) -> str:
+    """A financials / events / insiders screen with its strategy's verdict from the knowledge base."""
+    from scout import learned
+    from scout.universe import SECTOR_ZH
+
+    if entry:
+        status = learned.STATUS_ZH.get(entry["status"], entry["status"])
+        verdict = (f"<p class='small'><b>检验结论：{e(status)}</b>（<a href='/knowledge#{e(entry['key'])}'>知识库</a>）"
+                   + ("：只说明「现在符合什么条件」，按这个排名选股没有通过公平检验。" if entry["status"] in ("rejected", "retired") else "") + "</p>")
+    else:
+        verdict = "<p class='small muted'>还没有检验：只说明「现在符合什么条件」。</p>"
+    crit = "".join(f"<li>{e(c)}</li>" for c in screen.criteria)
+    through = next((r.get("ang_insider_data_through") for r in rows if r.get("ang_insider_data_through")), None)
+    def val(r: dict) -> str:
+        v = r.get(screen.key)
+        if v is None:
+            return "—"
+        return f"{v:.0f} 人" if screen.key == "ang_insider_officer_buyers" else signed(v) if screen.key in ("ang_ear", "ang_net_issuance", "ang_asset_growth", "ang_accruals") else pct(v, 1)
+    body_rows = [[tlink(r["ticker"]), e((r.get("name") or "")[:22]), e(SECTOR_ZH.get(r.get("sector") or "", r.get("sector") or "")),
+                  f"{r['close']:.2f}" if r.get("close") else "—", signed(r.get("ret_20d")), val(r),
+                  pct(r.get("ang_gross_profitability"), 0), signed(r.get("ang_accruals")), signed(r.get("ang_asset_growth")),
+                  signed(r.get("ang_net_issuance"))] for r in rows]
+    return (f"<div class='card' style='margin-top:12px'><h3>{e(screen.title)}</h3><ul class='tight'>{crit}</ul>{verdict}"
+            f"<p class='small muted'>数据日期 {e(asof)} · 财报按 SEC 申报时点"
+            + (f" · 内部人数据截至 {e(through)}（SEC 季度数据，最新季度在季度结束后发布）" if screen.key == "ang_insider_officer_buyers" and through else "")
+            + "</p></div>"
+            + (table(["代码", "名称", "行业", "收盘", "20 日", "排序值", "毛利/资产", "应计", "资产同比", "股本同比"], body_rows)
+               if body_rows else "<p class='muted'>现在没有符合条件的股票。</p>"))

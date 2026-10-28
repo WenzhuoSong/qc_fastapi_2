@@ -1,0 +1,14 @@
+key: rank_gross_profitability
+family: gross_profitability
+type: rank
+ranker: gross_profitability
+top_frac: 0.1
+hold: 63
+every: 21
+primary_control: select
+title: 毛利能力：毛利 / 总资产最高的公司
+claim: 按近四季毛利除以总资产排名，前 10% 的公司在随后一个季度跑赢同一天的其他股票。
+mechanism: 毛利是最接近真实经济利润的会计量，毛利能力高的公司被市场低估（Novy-Marx 2013），是复现得较好的质量因子之一。
+expected_failure: 原文按年调仓、持有一年，效果主要体现在长周期；一个季度的持有期可能太短。
+deviations: 每 21 个交易日按申报时点重排一次，持有 63 个交易日；只做多前 10%；股票池是当前指数成分股中流动性足够的股票。
+registered_on: 2026-10-28

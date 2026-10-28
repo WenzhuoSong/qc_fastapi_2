@@ -110,3 +110,99 @@ def arrays(p) -> tuple[dict, list[str]]:
     a["spy"] = p["close"]["SPY"].to_numpy(dtype=float)
     a["spy_open"] = p["open"]["SPY"].to_numpy(dtype=float)
     return a, stocks
+
+
+# ── rankers on other angles (scout.angles): events, financials, insiders ──
+# Their inputs are prepared once per backtest by `prepare` and stored as a["angle"][i] = {column: value}.
+
+def rebalance_dates(n: int, spec: dict) -> list[int]:
+    return list(range(YEAR + MONTH, n - int(spec["hold"]) - 1, int(spec["every"])))
+
+
+def _from_angle(a: dict, i: int, frac: float, sign: float = 1.0, of_universe: bool = True) -> list[int]:
+    vals = a["angle"].get(i) or {}
+    uni = set(_universe(a, i).tolist())
+    cols = np.array([c for c in vals if c in uni], dtype=int)
+    if not len(cols):
+        return []
+    score = np.array([sign * vals[c] for c in cols], dtype=float)
+    k = max(1, int(round((len(uni) if of_universe else len(cols)) * frac)))
+    ok = np.isfinite(score)
+    cols, score = cols[ok], score[ok]
+    return [int(c) for c in cols[np.argsort(-score, kind="stable")[:k]]]
+
+
+def ear_drift(a: dict, i: int, frac: float) -> list[int]:
+    """Brandt et al. (2008): stocks whose 3-day earnings announcement return (vs SPY) became known in the
+    last `every` sessions, the top `frac` of those announcers by that return."""
+    return _from_angle(a, i, frac, of_universe=False)
+
+
+def gross_profitability(a: dict, i: int, frac: float) -> list[int]:
+    """Novy-Marx (2013): highest gross profit / total assets."""
+    return _from_angle(a, i, frac)
+
+
+def low_accruals(a: dict, i: int, frac: float) -> list[int]:
+    """Sloan (1996): lowest accruals (earnings backed by cash flow)."""
+    return _from_angle(a, i, frac, sign=-1.0)
+
+
+def low_asset_growth(a: dict, i: int, frac: float) -> list[int]:
+    """Cooper, Gulen & Schill (2008): lowest total-asset growth over a year."""
+    return _from_angle(a, i, frac, sign=-1.0)
+
+
+def net_buyback(a: dict, i: int, frac: float) -> list[int]:
+    """Pontiff & Woodgate (2008): lowest net share issuance (largest buybacks)."""
+    return _from_angle(a, i, frac, sign=-1.0)
+
+
+def insider_cluster(a: dict, i: int, frac: float) -> list[int]:
+    """Cluster buying: every stock where at least two officers / directors bought common stock on the
+    open market (not under a 10b5-1 plan) in the last 90 days (`frac` unused)."""
+    vals = a["angle"].get(i) or {}
+    uni = set(_universe(a, i).tolist())
+    return [c for c, v in vals.items() if c in uni and v >= 2]
+
+
+ANGLE_RANKERS = {"ear_drift": "earnings", "gross_profitability": "gross_profitability", "low_accruals": "accruals",
+                 "low_asset_growth": "asset_growth", "net_buyback": "net_issuance", "insider_cluster": "insiders"}
+RANKERS.update({"ear_drift": ear_drift, "gross_profitability": gross_profitability, "low_accruals": low_accruals,
+                "low_asset_growth": low_asset_growth, "net_buyback": net_buyback, "insider_cluster": insider_cluster})
+
+
+async def prepare(spec: dict, p, stocks: list[str]) -> dict[int, dict[int, float]]:
+    """The angle input of a ranker on each rebalance day, point in time."""
+    from scout import angles
+
+    need = ANGLE_RANKERS.get(spec["ranker"])
+    if need is None:
+        return {}
+    col = {t: j for j, t in enumerate(stocks)}
+    days = rebalance_dates(len(p.dates), spec)
+    out: dict[int, dict[int, float]] = {i: {} for i in days}
+    if need == "earnings":
+        every = int(spec["every"])
+        for ev in angles.announcement_returns(await angles.load_earnings(), p):
+            if ev["ticker"] not in col:
+                continue
+            for i in days:                       # known after the close of session `known`, within the last `every` sessions
+                if i - every < ev["known"] <= i:
+                    out[i][col[ev["ticker"]]] = ev["ear"]
+        return out
+    if need == "insiders":
+        trades = await angles.load_insider_buys()
+        for i in days:
+            for t, v in angles.insider_buying(trades, p.dates[i]).items():
+                if t in col:
+                    out[i][col[t]] = float(v["buyers"])
+        return out
+    pit = await angles.load_financials(stocks)
+    for i in days:
+        pit.advance(p.dates[i])
+        for t, j in col.items():
+            v = angles.fundamentals_now(pit, t, p.dates[i]).get(need)
+            if v is not None and np.isfinite(v):
+                out[i][j] = v
+    return out

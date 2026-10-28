@@ -192,10 +192,18 @@ async def gather(ticker: str) -> dict | None:
         research_facts = {"values": {}, "context": {}, "unit": "USD"}
     past = await ledger.history(t, asof)
     reliability = await ledger.lens_reliability()
+    try:                               # financials / events / insiders from SEC, point in time (scout.angles)
+        from scout import angles
+
+        angle_values = await angles.latest(t)
+    except Exception as exc:
+        logger.warning("angle features for %s failed: %s", t, exc)
+        angle_values = {}
     learned_entries = await learned.for_insight(
         (opp or {}).get("primary_detector"), {lens.id for lens in knowledge.lenses()}, {"kind": inst.get("kind") or "stock"})
     return {
         "knowledge": learned_entries,
+        "angles": angle_values,
         "research": research_facts,
         "history": past,
         "reliability": reliability,
@@ -290,7 +298,7 @@ def build_pack(facts: dict) -> dict:
     above_200 = (feat["close"] > feat["sma200"]) if feat.get("close") and feat.get("sma200") else None
     top = key_event(facts.get("events") or [])
     rs = facts.get("research") or {}
-    values = {**feat, **facts["structure"], **(facts.get("fundamentals") or {}), **(rs.get("values") or {}),
+    values = {**feat, **facts["structure"], **(facts.get("fundamentals") or {}), **(rs.get("values") or {}), **(facts.get("angles") or {}),
               **event_values(top, facts.get("event_rates") or {}, above_200)}
     is_stock = (facts["instrument"].get("kind") or "stock") == "stock"
     lens_blocks = []

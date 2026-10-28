@@ -12,7 +12,7 @@ def _arrays(n_days=900, n=50, seed=3):
     close = 100 * np.cumprod(1 + r, axis=0)
     a = {"close": close, "open": close * 0.999, "high": close * 1.01, "low": close * 0.99,
          "rs_pct": np.tile(np.linspace(0, 1, n), (n_days, 1)), "liquid": np.ones((n_days, n), dtype=bool),
-         "spy": 100 * np.cumprod(1 + rng.normal(0.0003, 0.008, n_days)), "spy_open": None}
+         "spy": 100 * np.cumprod(1 + rng.normal(0.0003, 0.008, n_days)), "spy_open": None, "angle": {}}
     return a
 
 
@@ -35,7 +35,7 @@ class RankerTests(unittest.TestCase):
 
     def test_strong_trends_are_picked(self):
         a = _arrays()
-        for name in ("high_52w", "frog_in_pan", "residual_momentum"):
+        for name in ("high_52w", "frog_in_pan", "residual_momentum"):  # price rankers; angle rankers are tested in test_scout_angles
             picks = rankers.RANKERS[name](a, 800, 0.1)
             self.assertEqual(len(picks), 5, name)
             self.assertGreater(np.mean(picks), 25, name)       # mostly from the upward-drifting half

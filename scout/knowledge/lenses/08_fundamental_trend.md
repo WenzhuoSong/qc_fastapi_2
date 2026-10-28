@@ -1,7 +1,7 @@
 ---
 id: fundamental_trend
 title: 基本面趋势
-fields: [fin_period, fin_rev_yoy, fin_rev_accel, fin_gross_margin, fin_gross_margin_chg, fin_op_margin, fin_op_margin_chg, fin_fcf_margin, fin_fcf_ttm, fin_net_cash, fin_share_change, current_ratio, debt_equity]
+fields: [fin_period, fin_rev_yoy, fin_rev_accel, fin_gross_margin, fin_gross_margin_chg, fin_op_margin, fin_op_margin_chg, fin_fcf_margin, fin_fcf_ttm, fin_net_cash, fin_share_change, current_ratio, debt_equity, ang_gross_profitability, ang_accruals, ang_asset_growth, ang_net_issuance]
 sources:
   - 卖方研究的"增长 — 利润率 — 现金流 — 资产负债表"框架
   - 二阶导：增速的变化往往比增速本身更影响股价（预期差）
@@ -20,3 +20,4 @@ sources:
 **矛盾**：股价强势但基本面在恶化（增速放缓、利润率收缩），或者基本面改善但股价不涨。
 
 **常见陷阱**：用一个季度下结论；忽略季节性（必须看同比）；外国公司只有年度数据，时效较差，要注明。
+- 质量与资本配置（SEC，按申报时点）：毛利 / 总资产高、应计比例低（利润有现金支撑）、资产没有扩张过快、股本在净回购，都是学术上复现得较好的方向；单独不构成买卖理由，Scout 的检验结论见知识库。

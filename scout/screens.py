@@ -144,3 +144,59 @@ def rule_stats(rates: dict, detector: str) -> dict:
         "all": buckets.get("all") or {},
         "positions": [(label, buckets.get(f"pos_{key}") or {}) for key, label, _, _ in base_rates.POSITION_BUCKETS],
     }
+
+
+# ── other angles: financials, events, insiders (scout.angles) ──
+
+@dataclass(frozen=True)
+class AngleScreen:
+    id: str
+    title: str
+    key: str                      # angle feature in the snapshot
+    descending: bool
+    criteria: tuple[str, ...]
+    strategy: str                 # the gate spec / knowledge key that tests it
+    keep: Callable[[dict], bool] | None = None
+
+
+ANGLE_SCREENS: tuple[AngleScreen, ...] = (
+    AngleScreen("ang_gp", "毛利能力最高", "ang_gross_profitability", True,
+                ("近四季毛利 / 总资产，从高到低（Novy-Marx 2013）",), "rank_gross_profitability"),
+    AngleScreen("ang_accruals", "利润质量最高", "ang_accruals", False,
+                ("应计比例 =（净利润 − 经营现金流）/ 平均总资产，从低到高（Sloan 1996）",), "rank_low_accruals"),
+    AngleScreen("ang_asset", "资产扩张最慢", "ang_asset_growth", False,
+                ("总资产同比，从低到高（Cooper、Gulen、Schill 2008）",), "rank_low_asset_growth"),
+    AngleScreen("ang_buyback", "净回购最多", "ang_net_issuance", False,
+                ("稀释后股本同比，从低到高（Pontiff、Woodgate 2008）",), "rank_net_buyback"),
+    AngleScreen("ang_ear", "财报反应最强", "ang_ear", True,
+                ("最近 5 个交易日内结束的财报公告窗口", "公告前后 3 日相对 SPY 的涨跌，从高到低（Brandt 等 2008）"), "rank_ear_drift",
+                keep=lambda r: (r.get("ang_ear_sessions_ago") is not None and r["ang_ear_sessions_ago"] <= 5)),
+    AngleScreen("ang_insider", "高管 / 董事集中买入", "ang_insider_officer_buyers", True,
+                ("最近 90 天至少 2 位高管或董事在公开市场买入普通股（SEC Form 4，剔除 10b5-1 计划）",), "rank_insider_cluster",
+                keep=lambda r: (r.get("ang_insider_officer_buyers") or 0) >= 2),
+)
+
+
+async def angle_snapshot() -> tuple[object, list[dict]]:
+    """The latest angle features of liquid stocks, with name, sector and price."""
+    row = await db.fetch_one("SELECT max(asof) AS d FROM scout.angle_features")
+    asof = (row or {}).get("d")
+    if asof is None:
+        return None, []
+    rows = await db.fetch_all(
+        "SELECT a.ticker, a.payload, i.name, i.sector, f.payload->>'close' AS close, f.payload->>'ret_20d' AS ret_20d, "
+        "f.payload->>'dollar_vol20' AS dv FROM scout.angle_features a JOIN scout.instruments i USING (ticker) "
+        "LEFT JOIN scout.features_daily f ON f.ticker = a.ticker AND f.date = a.asof WHERE a.asof = :d", {"d": asof})
+    out = []
+    for r in rows:
+        dv = float(r["dv"]) if r["dv"] else 0.0
+        if dv < MIN_DOLLAR_VOLUME:
+            continue
+        out.append({"ticker": r["ticker"], "name": r["name"], "sector": r["sector"], "close": float(r["close"]) if r["close"] else None,
+                    "ret_20d": float(r["ret_20d"]) if r["ret_20d"] else None, **(r["payload"] or {})})
+    return asof, out
+
+
+def run_angle(screen: AngleScreen, rows: list[dict]) -> list[dict]:
+    found = [r for r in rows if r.get(screen.key) is not None and (screen.keep is None or screen.keep(r))]
+    return sorted(found, key=lambda r: r[screen.key], reverse=screen.descending)[:MAX_ROWS]

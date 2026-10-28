@@ -1,7 +1,7 @@
 ---
 id: ownership
 title: 持仓与资金
-fields: [own_inst_pct, own_insider_pct, own_short_float, own_short_days, own_short_change, own_top_holder_change, insider_net_value_90d, insider_buyers_90d, insider_sellers_90d]
+fields: [own_inst_pct, own_insider_pct, own_short_float, own_short_days, own_short_change, own_top_holder_change, insider_net_value_90d, insider_buyers_90d, insider_sellers_90d, ang_insider_officer_buyers, ang_insider_data_through]
 sources:
   - 内部人交易的信息含量：集中买入强于卖出（Lakonishok & Lee 2001）
   - 做空比例与轧空风险（Asquith, Pathak & Ritter 2005）
@@ -18,3 +18,4 @@ sources:
 **矛盾**：股价强势但内部人集中卖出、空头持续增加。
 
 **常见陷阱**：把计划内的内部人卖出当成利空；忽略 13F 的滞后；做空比例高不等于一定会轧空。
+- 高管 / 董事集中买入（SEC Form 4，剔除 10b5-1 计划）比单纯的卖出更有信息量；注意数据截至日期（ang_insider_data_through）。
