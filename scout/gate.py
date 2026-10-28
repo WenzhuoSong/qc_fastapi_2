@@ -50,7 +50,10 @@ MAX_CORR = 0.5            # monthly-return correlation with a passed rule above 
 OVERLAP_DAYS = 5          # a fill within this many sessions of another rule's fill on the same stock is shared
 CONTROLS = ("timing", "select")
 BENCHMARKS = ("spy", "ew")
-LABEL_ZH = {"spy": "同期 SPY", "ew": "同期等权股票池", "timing": "时机对照（同股随机日）", "select": "选股对照（同日随机股）"}
+LABEL_ZH = {"spy": "同期 SPY", "ew": "同期等权股票池", "timing": "时机对照（同股随机日）", "select": "选股对照（同日随机股）",
+            "peers": "同行业对照（同日同行业其他股）"}
+REPORTED = ("peers",)    # ranking mode only: shown in the report, not part of the verdict (the pass rule is the user's)
+MIN_SECTOR_PEERS = 5
 FORWARD_MIN_MONTHS = 6    # G3 (P3)
 FORWARD_MIN_SAMPLES = 30
 RECHECK_MONTHS = 6
@@ -242,13 +245,17 @@ def rank_backtest(p, spec: dict, m: Market, angle: dict | None = None) -> list[d
     o, c, n = a["open"], a["close"], len(p.dates)
     rng = np.random.default_rng([SEED, zlib.crc32(spec["key"].encode())])
     dates = rankers.rebalance_dates(n, spec)
-    picks, rets, mean_ret, members = {}, {}, {}, {}
+    picks, rets, mean_ret, members, sector_sum = {}, {}, {}, {}, {}
     for i in dates:
         uni = rankers._universe(a, i)
         r = c[i + hold, uni] / o[i + 1, uni] - 1
         ok = np.isfinite(r)
         rets[i] = dict(zip(uni[ok].tolist(), r[ok].tolist()))
         mean_ret[i] = (float(r[ok].sum()), int(ok.sum()))
+        by_sector: dict = {}
+        for j, x in rets[i].items():
+            by_sector.setdefault(m.sector.get(stocks[j]), []).append(x)
+        sector_sum[i] = {g: (sum(xs), len(xs)) for g, xs in by_sector.items() if g}
         picks[i] = [j for j in fn(a, i, frac) if j in rets[i]]
         for j in rets[i]:
             members.setdefault(j, []).append(i)
@@ -264,8 +271,16 @@ def rank_backtest(p, spec: dict, m: Market, angle: dict | None = None) -> list[d
                          "vol": m.vol[i], "sector": m.sector.get(stocks[j]),
                          "spy": float(m.spy_close[b] / m.spy_open[i + 1] - 1), "ew": float(m.ew_cum[b + 1] / m.ew_cum[i + 1] - 1),
                          "timing": float(np.mean(timing)) if timing else None,
-                         "select": (total - r) / (cnt - 1) if cnt > 1 else None})
+                         "select": (total - r) / (cnt - 1) if cnt > 1 else None,
+                         "peers": _peers(sector_sum[i].get(m.sector.get(stocks[j])), r)})
     return rows
+
+
+def _peers(sec: tuple[float, int] | None, r: float) -> float | None:
+    """Mean of the other stocks of the pick's sector that day (None with fewer than MIN_SECTOR_PEERS)."""
+    if not sec or sec[1] - 1 < MIN_SECTOR_PEERS:
+        return None
+    return (sec[0] - r) / (sec[1] - 1)
 
 
 def _edge(rows: list[dict], key: str) -> dict:
@@ -284,7 +299,7 @@ def summarize(rows: list[dict]) -> dict:
     net = np.array([r["ret"] for r in rows]) - ROUND_TRIP_COST
     out = {"n": len(rows), "first": str(dates[0]), "split": str(mid), "last": str(dates[-1]),
            "avg_net": round(float(net.mean()), 5), "win_rate_net": round(float((net > 0).mean()), 3)}
-    for k in (*BENCHMARKS, *CONTROLS):
+    for k in (*BENCHMARKS, *CONTROLS, *(k for k in REPORTED if any(k in r for r in rows))):
         out[f"vs_{k}"] = _edge(rows, k)
         for h, rs in halves.items():
             out[f"vs_{k}_{h}"] = _edge(rs, k)
@@ -391,6 +406,9 @@ def critique_facts(spec: dict, trials: int, det: Detector | None, rule_status: d
         **({"检验方式": f"排名：每 {spec['every']} 个交易日取排名靠前的股票，次日开盘买入，持有 {spec['hold']} 个交易日后按收盘卖出；"
                     "选股对照 = 当天股票池里其他所有股票的平均持有收益"} if det is None else {}),
         **({"适用条件": f"只统计这些情境下的信号：{when_zh(spec)}"} if spec.get("when") else {}),
+        "市场状态最小样本": MIN_REGIME_N,
+        **({"同行业对照": "report 里的 vs_peers = 选中股票减去同一天同行业其他股票的平均收益，用来看优势是不是来自行业偏向；仅供参考，不参与判定"}
+           if det is None else {}),
         "情境拆分": "report 里的 vol（市场波动高 / 低）和 sectors（行业）拆分是探索性的，没有做多重检验校正，"
                 "不能单独作为通过或不通过的依据；只用于指出优势可能集中在哪里",
         "事先登记日期": spec.get("registered_on"),
@@ -578,8 +596,9 @@ def report_text(res: dict) -> str:
              *([f"适用条件：{when_zh(res['spec'])}"] if (res.get("spec") or {}).get("when") else []),
              f"样本 {s['first']} 至 {s['last']}，{s['n']} 笔成交，按 {s['split']} 分前后两半；本族第 {rep['trials']} 次检验，t 门槛 {rep['required_t']}",
              "对照 | 全样本 | 前半 | 后半"]
-    for k in (*BENCHMARKS, *CONTROLS):
-        lines.append(f"{LABEL_ZH[k]} | {_fmt(s[f'vs_{k}'])} | {_fmt(s[f'vs_{k}_first'])} | {_fmt(s[f'vs_{k}_second'])}")
+    for k in (*BENCHMARKS, *CONTROLS, *(k for k in REPORTED if f"vs_{k}" in s)):
+        lines.append(f"{LABEL_ZH[k]}{'（仅参考）' if k in REPORTED else ''} | {_fmt(s[f'vs_{k}'])} | {_fmt(s[f'vs_{k}_first'])} | "
+                     f"{_fmt(s[f'vs_{k}_second'])}")
     lines.append("市场状态（时机 / 选股对照）：" + "；".join(
         f"{g} {v['n']} 笔 {_fmt(v['vs_timing'])} / {_fmt(v['vs_select'])}" for g, v in s["regimes"].items()))
     lines.append("波动环境（探索性）：" + "；".join(

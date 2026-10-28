@@ -162,3 +162,19 @@ class ContextTests(unittest.TestCase):
         self.assertTrue((base[:400] == gate.vol_states(later)[:400]).all())
         self.assertEqual(base[0], "")
         self.assertTrue(set(base[300:]) <= {"high", "low"})
+
+
+class PeerControlTests(unittest.TestCase):
+    def test_peers_exclude_the_pick_and_need_enough_of_them(self):
+        self.assertAlmostEqual(gate._peers((0.10 + 0.5, 7), 0.10), 0.5 / 6)
+        self.assertIsNone(gate._peers((1.0, gate.MIN_SECTOR_PEERS), 0.1))
+        self.assertIsNone(gate._peers(None, 0.1))
+
+    def test_reported_control_is_summarised_but_not_a_criterion(self):
+        from datetime import date
+
+        rows = [{"date": date(2020, 1 + k % 12, 1 + k // 12), "ret": 0.02, "spy": 0.0, "ew": 0.0, "timing": 0.0, "select": 0.0,
+                 "peers": 0.01, "regime": "uptrend", "vol": "low", "sector": "Energy"} for k in range(48)]
+        s = gate.summarize(rows)
+        self.assertAlmostEqual(s["vs_peers"]["edge"], 0.01)
+        self.assertNotIn("peers", [c["name"] for c in gate.criteria(s, {"primary_control": "select"}, 1, {}, set())])
