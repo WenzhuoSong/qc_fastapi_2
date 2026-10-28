@@ -167,3 +167,25 @@ class ValidationLeniencyTests(unittest.TestCase):
         ok = LensView(lens="ownership", verdict="中性", points=["内部人 90 日净卖出 -$53.9M"], evidence=["insider_net_value_90d"])
         self.assertTrue(insider_overreach([bad], self.pack()))
         self.assertEqual(insider_overreach([ok], self.pack()), [])
+
+    def test_amounts_in_chinese_units_match_the_evidence(self):
+        from scout.thesis import allowed_numbers, unsupported_numbers
+
+        allowed = allowed_numbers({"v": ["$4.5B", "$480.5B", "-$53.9M", "-$12.3B"], "成交量": 12000})
+        text = "自由现金流 45 亿美元，市值约 4805 亿（0.48 万亿），内部人净卖出 5390 万美元，净负债 123 亿，成交 1.2 万手"
+        self.assertEqual(unsupported_numbers(text, allowed), [])
+
+    def test_amounts_in_chinese_units_are_still_checked(self):
+        from scout.thesis import allowed_numbers, unsupported_numbers
+
+        allowed = allowed_numbers({"v": ["$4.5B", "-$53.9M"]})
+        self.assertEqual(unsupported_numbers("营收 900 亿，市值 5 万亿，回购 3 亿", allowed), ["900亿", "5万亿", "3亿"])
+        self.assertEqual(unsupported_numbers("自由现金流率 4.2", allowed), ["4.2"])
+
+    def test_lens_prompt_states_the_insider_rule_and_no_arithmetic(self):
+        from scout.insight import _CONFIDENCE_CLAIMS, LENS_PROMPT
+
+        for claim in _CONFIDENCE_CLAIMS:
+            self.assertIn(claim, LENS_PROMPT)
+        self.assertIn("不要改写成", LENS_PROMPT)
+        self.assertIn("不算差值", LENS_PROMPT)

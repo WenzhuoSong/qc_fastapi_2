@@ -123,15 +123,33 @@ def allowed_numbers(evidence: dict) -> list[float]:
     return sorted(out)
 
 
+# Amounts in Chinese units: "45 亿美元" is $4.5B, "850 万" is $8.5M (also matched as a raw count).
+_CN_AMOUNT_RE = re.compile(r"(?<![A-Za-z\d.])([-+]?\d+(?:\.\d+)?)\s*(万亿|亿|万)")
+_CN_SCALE = {"万亿": 1e12, "亿": 1e8, "万": 1e4}
+
+
+def _supported(x: float, tol_abs: float, allowed: list[float]) -> bool:
+    return any(abs(abs(x) - y) <= max(tol_abs, 0.01 * y) for y in allowed if y >= 0)
+
+
 def unsupported_numbers(text: str, allowed: list[float]) -> list[str]:
     bad = []
-    for token in _NUM_RE.findall(_TERM_RE.sub(" ", _DATE_RE.sub(" ", text))):
+    text = _TERM_RE.sub(" ", _DATE_RE.sub(" ", text))
+    for m in _CN_AMOUNT_RE.finditer(text):
+        token, scale = m.group(1), _CN_SCALE[m.group(2)]
+        decimals = len(token.split(".")[1]) if "." in token else 0
+        raw = float(token) * scale
+        # Rounding of the written figure, but "5 万亿" is not ±10 %: at most 5 % of the amount.
+        tol = min((0.5 * 10 ** (-decimals) + 1e-9) * scale, 0.05 * abs(raw))
+        # The evidence shows amounts as raw values, in billions ($4.5B) or in millions ($8.5M).
+        if not any(_supported(raw / div, tol / div, allowed) for div in (1, 1e9, 1e6)):
+            bad.append(m.group(0).replace(" ", ""))
+    for token in _NUM_RE.findall(_CN_AMOUNT_RE.sub(" ", text)):
         x = float(token)
         if float(x).is_integer() and abs(x) <= _SMALL_INT_OK:
             continue
         decimals = len(token.split(".")[1]) if "." in token else 0
-        tol_abs = 0.5 * 10 ** (-decimals) + 1e-9
-        if not any(abs(abs(x) - y) <= max(tol_abs, 0.01 * y) for y in allowed if y >= 0):
+        if not _supported(x, 0.5 * 10 ** (-decimals) + 1e-9, allowed):
             bad.append(token)
     return bad
 
