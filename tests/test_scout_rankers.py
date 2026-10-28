@@ -27,11 +27,11 @@ class RankerTests(unittest.TestCase):
         a = _arrays()
         i = 800
         for name, fn in rankers.RANKERS.items():
-            base = fn(a, i, 0.1)
+            a = _arrays()                                       # fresh arrays: no cache carried between calls
             future = {k: (v.copy() if isinstance(v, np.ndarray) else v) for k, v in a.items()}
             for k in ("close", "open", "high", "low"):
                 future[k][i + 1:] *= 5                          # anything after day i must not matter
-            self.assertEqual(base, fn(future, i, 0.1), name)
+            self.assertEqual(fn(a, i, 0.1), fn(future, i, 0.1), name)
 
     def test_strong_trends_are_picked(self):
         a = _arrays()
@@ -47,3 +47,19 @@ class RankerTests(unittest.TestCase):
 
     def test_residual_momentum_needs_three_years(self):
         self.assertEqual(rankers.residual_momentum(_arrays(), 36 * rankers.MONTH - 1, 0.1), [])
+
+
+class NewRankerTests(unittest.TestCase):
+    def test_reversal_picks_last_months_losers(self):
+        a = _arrays()
+        a["close"][800, :5] = a["close"][800 - rankers.MONTH, :5] * 0.7     # five stocks fell 30 % in a month
+        self.assertEqual(sorted(rankers.short_term_reversal(a, 800, 0.1)), [0, 1, 2, 3, 4])
+
+    def test_macd_cross_is_the_day_the_histogram_turns_positive(self):
+        from scout.features import macd
+        import pandas as pd
+
+        a = _arrays()
+        h = macd(pd.DataFrame(a["close"]))[1].to_numpy()
+        picks = rankers.macd_cross(a, 800, 0.1)
+        self.assertEqual(picks, [j for j in range(50) if h[800, j] > 0 and h[799, j] <= 0])

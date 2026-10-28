@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field
 from scout import base_rates, db, learned
 from scout.detectors import Detector, registry
 from scout.simulate import ROUND_TRIP_COST, simulate
-from scout.universe import BENCHMARK
+from scout.universe import BENCHMARK, SECTOR_ETFS
 
 logger = logging.getLogger("scout.gate")
 
@@ -54,6 +54,10 @@ LABEL_ZH = {"spy": "同期 SPY", "ew": "同期等权股票池", "timing": "时�
 FORWARD_MIN_MONTHS = 6    # G3 (P3)
 FORWARD_MIN_SAMPLES = 30
 RECHECK_MONTHS = 6
+REGIMES = ("uptrend", "mixed", "downtrend")
+VOL_STATES = ("high", "low")
+VOL_ZH = {"high": "高波动", "low": "低波动"}
+WHEN_KEYS = ("regime", "vol", "sectors")     # a spec's `when`: the contexts the claim is about (rows outside are dropped)
 
 
 # ── G0: the spec ────────────────────────────────────────────────────────
@@ -74,6 +78,12 @@ def validate_spec(spec: dict) -> list[str]:
     issues = [f"规格缺少 {f}" for f in SPEC_FIELDS if not spec.get(f)]
     if spec.get("primary_control") and spec["primary_control"] not in CONTROLS:
         issues.append(f"主对照必须是 {'/'.join(CONTROLS)}")
+    when = spec.get("when") or {}
+    if set(when) - set(WHEN_KEYS):
+        issues.append(f"when 只能包含 {'/'.join(WHEN_KEYS)}")
+    for k, allowed in (("regime", REGIMES), ("vol", VOL_STATES), ("sectors", tuple(SECTOR_ETFS))):
+        if k in when and (not isinstance(when[k], list) or not when[k] or set(when[k]) - set(allowed)):
+            issues.append(f"when.{k} 必须是非空列表，取值 {'/'.join(allowed)}")
     if spec.get("type") == "rank":
         issues += [f"排名规格缺少 {f}" for f in RANK_FIELDS if not spec.get(f)]
         if spec.get("ranker") and spec["ranker"] not in rankers.RANKERS:
@@ -83,6 +93,36 @@ def validate_spec(spec: dict) -> list[str]:
     elif spec["detector"] not in {d.name for d in registry(include_candidates=True)}:
         issues.append(f"规则 {spec['detector']} 不存在（先在 rules.DETECTORS 里加为候选）")
     return issues
+
+
+def applies(spec: dict, regime: str | None, vol: str | None, sector: str | None) -> bool:
+    """Whether a signal's context is inside the spec's `when` (no `when` = every context)."""
+    when = spec.get("when") or {}
+    return ((not when.get("regime") or regime in when["regime"]) and (not when.get("vol") or vol in when["vol"])
+            and (not when.get("sectors") or sector in when["sectors"]))
+
+
+def when_zh(spec: dict) -> str | None:
+    from scout.universe import SECTOR_ZH
+
+    when = spec.get("when") or {}
+    parts = []
+    if when.get("regime"):
+        parts.append("市场状态 " + "/".join(when["regime"]))
+    if when.get("vol"):
+        parts.append("波动环境 " + "/".join(VOL_ZH[v] for v in when["vol"]))
+    if when.get("sectors"):
+        parts.append("行业 " + "/".join(SECTOR_ZH.get(x, x) for x in when["sectors"]))
+    return "；".join(parts) or None
+
+
+def vol_states(spy_close: np.ndarray) -> np.ndarray:
+    """Market volatility per day, known at its close: SPY's 20-day realised volatility above its own
+    trailing one-year median = high, else low ('' before there is a year of history)."""
+    r = pd.Series(spy_close).pct_change()
+    v = r.rolling(20, min_periods=20).std()
+    med = v.rolling(252, min_periods=126).median()
+    return np.where(med.isna() | v.isna(), "", np.where(v > med, "high", "low"))
 
 
 def required_t(trials: int) -> float:
@@ -130,6 +170,8 @@ class Market:
         self.spy_open, self.spy_close = p["open"][BENCHMARK].to_numpy(), p["close"][BENCHMARK].to_numpy()
         self.col = {t: j for j, t in enumerate(self.stocks)}
         self.regime = p.regime.reindex(p.dates).astype(str).to_numpy()
+        self.vol = vol_states(self.spy_close)
+        self.sector = {t: (getattr(p, "sectors", None) or {}).get(t) for t in self.stocks}
 
 
 def rng_for(det: Detector) -> np.random.Generator:
@@ -148,7 +190,8 @@ def fills(p, det: Detector, m: Market) -> list[dict]:
         got = trade(p, det, ticker, i, span)
         if got:
             ret, a, b = got
-            out.append({"ticker": ticker, "i": i, "date": p.dates[i], "ret": ret, "a": a, "b": b, "regime": m.regime[i]})
+            out.append({"ticker": ticker, "i": i, "date": p.dates[i], "ret": ret, "a": a, "b": b, "regime": m.regime[i],
+                        "vol": m.vol[i], "sector": m.sector.get(ticker)})
     return out
 
 
@@ -218,6 +261,7 @@ def rank_backtest(p, spec: dict, m: Market, angle: dict | None = None) -> list[d
             timing = [rets[d][j] for d in rng.choice(others, size=min(DRAWS, len(others)), replace=False)] if others else []
             b = i + hold
             rows.append({"ticker": stocks[j], "i": i, "date": p.dates[i], "ret": r, "a": i + 1, "b": b, "regime": m.regime[i],
+                         "vol": m.vol[i], "sector": m.sector.get(stocks[j]),
                          "spy": float(m.spy_close[b] / m.spy_open[i + 1] - 1), "ew": float(m.ew_cum[b + 1] / m.ew_cum[i + 1] - 1),
                          "timing": float(np.mean(timing)) if timing else None,
                          "select": (total - r) / (cnt - 1) if cnt > 1 else None})
@@ -244,8 +288,18 @@ def summarize(rows: list[dict]) -> dict:
         out[f"vs_{k}"] = _edge(rows, k)
         for h, rs in halves.items():
             out[f"vs_{k}_{h}"] = _edge(rs, k)
-    out["regimes"] = {g: {**{f"vs_{k}": _edge([r for r in rows if r["regime"] == g], k) for k in CONTROLS},
-                          "n": sum(r["regime"] == g for r in rows)} for g in ("uptrend", "mixed", "downtrend")}
+    out["regimes"] = _split(rows, "regime", REGIMES)
+    # Exploratory context splits (not part of the verdict): market volatility and sector.
+    out["vol"] = _split(rows, "vol", VOL_STATES)
+    out["sectors"] = _split(rows, "sector", sorted({r.get("sector") for r in rows} - {None, ""}))
+    return out
+
+
+def _split(rows: list[dict], field: str, values) -> dict:
+    out = {}
+    for g in values:
+        rs = [r for r in rows if r.get(field) == g]
+        out[g] = {**{f"vs_{k}": _edge(rs, k) for k in CONTROLS}, "n": len(rs)}
     return out
 
 
@@ -336,6 +390,9 @@ def critique_facts(spec: dict, trials: int, det: Detector | None, rule_status: d
         "持有期上限（交易日）": hold,
         **({"检验方式": f"排名：每 {spec['every']} 个交易日取排名靠前的股票，次日开盘买入，持有 {spec['hold']} 个交易日后按收盘卖出；"
                     "选股对照 = 当天股票池里其他所有股票的平均持有收益"} if det is None else {}),
+        **({"适用条件": f"只统计这些情境下的信号：{when_zh(spec)}"} if spec.get("when") else {}),
+        "情境拆分": "report 里的 vol（市场波动高 / 低）和 sectors（行业）拆分是探索性的，没有做多重检验校正，"
+                "不能单独作为通过或不通过的依据；只用于指出优势可能集中在哪里",
         "事先登记日期": spec.get("registered_on"),
         **({"登记说明": spec["registration_note"]} if spec.get("registration_note") else {}),
     }
@@ -471,6 +528,7 @@ async def run(key: str, p=None) -> dict:
         rows = rank_backtest(p, spec, m, await rankers.prepare(spec, p, rankers.arrays(p)[1]))
     else:
         rows = backtest(p, det, m)
+    rows = [r for r in rows if applies(spec, r["regime"], r["vol"], r["sector"])]
     summary = summarize(rows)
     entries = await learned.current()
     passed_rules = {learned.rule_of(en) for en in entries if en["key"] != key and en["polarity"] == "positive"
@@ -511,18 +569,25 @@ async def run(key: str, p=None) -> dict:
     elif passed:
         update["polarity"] = "positive"
     await learned.write(update, "system", note[:900])
-    return {"key": key, "passed": passed, "g1": g1, "g2": g2, "status": status, "report": report, "critique": review, "note": note}
+    return {"key": key, "spec": spec, "passed": passed, "g1": g1, "g2": g2, "status": status, "report": report, "critique": review, "note": note}
 
 
 def report_text(res: dict) -> str:
     s, rep = res["report"]["summary"], res["report"]
     lines = [f"检验关：{res['key']} → {'通过' if res['passed'] else '未通过'}（状态 {learned.STATUS_ZH[res['status']]}）",
+             *([f"适用条件：{when_zh(res['spec'])}"] if (res.get("spec") or {}).get("when") else []),
              f"样本 {s['first']} 至 {s['last']}，{s['n']} 笔成交，按 {s['split']} 分前后两半；本族第 {rep['trials']} 次检验，t 门槛 {rep['required_t']}",
              "对照 | 全样本 | 前半 | 后半"]
     for k in (*BENCHMARKS, *CONTROLS):
         lines.append(f"{LABEL_ZH[k]} | {_fmt(s[f'vs_{k}'])} | {_fmt(s[f'vs_{k}_first'])} | {_fmt(s[f'vs_{k}_second'])}")
     lines.append("市场状态（时机 / 选股对照）：" + "；".join(
         f"{g} {v['n']} 笔 {_fmt(v['vs_timing'])} / {_fmt(v['vs_select'])}" for g, v in s["regimes"].items()))
+    lines.append("波动环境（探索性）：" + "；".join(
+        f"{VOL_ZH[g]} {v['n']} 笔 {_fmt(v['vs_timing'])} / {_fmt(v['vs_select'])}" for g, v in (s.get("vol") or {}).items()))
+    from scout.universe import SECTOR_ZH
+
+    lines.append("行业（探索性，选股对照）：" + "；".join(
+        f"{SECTOR_ZH.get(g, g)} {v['n']} 笔 {_fmt(v['vs_select'])}" for g, v in (s.get("sectors") or {}).items() if v["n"]))
     lines.append("与其他规则：" + "；".join(f"{k} 重合 {o['shared'] * 100:.0f}% 相关 {o['corr']}" for k, o in rep["overlaps"].items()
                                        if o.get("shared") is not None))
     lines += [f"{'✓' if c['ok'] else '✗'} {c['name']}：{c['value']}（要求 {c['bar']}）" for c in rep["criteria"]]

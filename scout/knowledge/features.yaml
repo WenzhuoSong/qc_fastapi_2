@@ -105,6 +105,29 @@ rsi14:
     - {max: 70, text: 偏强}
     - {min: 70, text: 超买区（≥ 70）；强趋势中可以长时间停留在这里}
 
+macd_pct:
+  zh: MACD 线（占股价）
+  unit: pct2
+  definition: Appel 的 MACD，标准参数 12/26/9：12 日指数均线 − 26 日指数均线，除以股价以便跨股票比较。大于 0 表示短期均线在长期均线上方，偏多。
+  readings:
+    - {max: 0.0, text: 零轴下方（短期均线在长期均线下方，偏空）}
+    - {min: 0.0, text: 零轴上方（短期均线在长期均线上方，偏多）}
+  caveat: 这是对价格趋势的描述，不是买卖信号；检验关里 MACD 金叉作为选股规则另行检验。
+macd_hist_pct:
+  zh: MACD 柱（占股价）
+  unit: pct2
+  definition: MACD 线 − 信号线（MACD 的 9 日指数均线），除以股价。由负转正称为金叉，由正转负称为死叉；柱子变长说明动能在加强。
+  readings:
+    - {max: 0.0, text: 信号线下方（动能偏弱）}
+    - {min: 0.0, text: 信号线上方（动能偏强）}
+macd_cross_days:
+  zh: 距 MACD 上次交叉（交易日）
+  unit: count
+  definition: MACD 柱上次变号以来的交易日数，正数表示金叉之后，负数表示死叉之后。例如 3 = 三个交易日前金叉，−10 = 十个交易日前死叉。
+  readings:
+    - {max: -1, text: 死叉之后}
+    - {min: 1, text: 金叉之后}
+
 gap_pct:
   zh: 开盘跳空
   unit: pct

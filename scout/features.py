@@ -14,6 +14,7 @@ from scout.universe import BENCHMARK, SECTOR_ETFS
 SNAPSHOT_FEATURES = (
     "close", "ret_1d", "ret_5d", "ret_20d", "ret_63d", "ret_252d", "sma20", "sma50", "sma200",
     "atr14", "atr_pct", "vol_ratio", "dollar_vol20", "dist_52w_high", "rsi2", "rsi14",
+    "macd_pct", "macd_hist_pct", "macd_cross_days",
     "gap_pct", "close_loc", "rs_pct", "sector_rs_pct", "sector_rel_20",
     "beta_60", "corr_60", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d", "market_ret_20d",
     "zscore_20", "bb_pct", "vol_20", "max_dd_60",
@@ -58,6 +59,21 @@ def rsi(close: pd.DataFrame, n: int) -> pd.DataFrame:
     rs = gain / loss.replace(0, np.nan)
     out = 100 - 100 / (1 + rs)
     return out.where(loss != 0, 100.0).where(gain.notna())
+
+
+def macd(close: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Appel's MACD with the standard 12/26/9: (MACD line, histogram = line − signal line), in price units."""
+    line = close.ewm(span=fast, adjust=False, min_periods=slow).mean() - close.ewm(span=slow, adjust=False, min_periods=slow).mean()
+    return line, line - line.ewm(span=signal, adjust=False, min_periods=signal).mean()
+
+
+def cross_days(hist: pd.DataFrame) -> pd.DataFrame:
+    """Sessions since the histogram last changed sign: +k = k sessions above the signal line, −k = below."""
+    sign = np.sign(hist)
+    changed = (sign != sign.shift(1)) & sign.notna()
+    pos = np.arange(len(hist), dtype=float)[:, None]
+    since = pd.DataFrame(np.where(changed, pos, np.nan), index=hist.index, columns=hist.columns).ffill()
+    return ((pos - since) + 1).mul(sign).where(sign != 0)
 
 
 def market_regime(close: pd.Series) -> pd.Series:
@@ -121,6 +137,10 @@ def build_panel(
     f["max_dd_60"] = drawdown.rolling(60, min_periods=20).min()
     f["rsi2"] = rsi(c, 2)
     f["rsi14"] = rsi(c, 14)
+    line, hist = macd(c)
+    f["macd_pct"] = line / c
+    f["macd_hist_pct"] = hist / c
+    f["macd_cross_days"] = cross_days(hist)
 
     # Is it the stock or the market? 60-day beta/correlation to SPY; the move is
     # split into the market part (yesterday's beta × SPY return) and the rest.

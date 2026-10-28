@@ -1,11 +1,12 @@
 ---
 id: momentum_rs
 title: 动量与相对强度
-fields: [rs_pct, sector_rs_pct, ret_20d, ret_63d, ret_252d, rsi14, dist_52w_high, sma50, sma200]
+fields: [rs_pct, sector_rs_pct, ret_20d, ret_63d, ret_252d, rsi14, macd_pct, macd_hist_pct, macd_cross_days, dist_52w_high, sma50, sma200]
 sources:
   - Jegadeesh & Titman (1993) 中期动量效应
   - William O'Neil《笑傲股市》（CAN SLIM）相对强度
   - Mark Minervini 趋势模板
+  - Gerald Appel MACD（12/26/9）
 ---
 **看什么**：它是不是市场里的领涨股，动量能否延续。
 
@@ -14,6 +15,7 @@ sources:
 2. 相对强度：全市场前 20%（rs_pct ≥ 0.8）是强势股；行业内也领先（sector_rs_pct ≥ 0.85），说明是行业龙头而不只是跟随板块上涨。
 3. 趋势模板的近似检验：价格 > 50 日线 > 200 日线，距 52 周高点在 25% 以内。全部满足的是处在第二阶段上升期的领涨股形态。
 4. RSI(14) 在 50 以上代表动量偏多；强趋势中 RSI 可以长时间停留在 70 以上，单凭超买不构成卖出理由。
+5. MACD（12/26/9）描述短期动能：零轴上方偏多；柱子由负转正（金叉）说明短期动能转强，由正转负（死叉）说明转弱。它是滞后指标，只用来描述动能变化，不单独作为买卖理由；MACD 金叉作为选股规则的检验结论以知识库为准。
 
 **确认**：全市场和行业内相对强度都领先，且满足趋势模板。
 **矛盾**：价格创新高但相对强度没有跟上（跑输大盘的上涨），或者 RS 高但已经远离 52 周高点。

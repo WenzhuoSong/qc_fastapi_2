@@ -132,3 +132,33 @@ class RegisterTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContextTests(unittest.TestCase):
+    def test_when_filters_by_market_and_sector(self):
+        spec = {"when": {"regime": ["uptrend"], "vol": ["low"], "sectors": ["Energy"]}}
+        self.assertTrue(gate.applies(spec, "uptrend", "low", "Energy"))
+        self.assertFalse(gate.applies(spec, "uptrend", "high", "Energy"))
+        self.assertFalse(gate.applies(spec, "downtrend", "low", "Energy"))
+        self.assertFalse(gate.applies(spec, "uptrend", "low", "Utilities"))
+        self.assertTrue(gate.applies({}, "downtrend", "high", None))
+        self.assertIn("低波动", gate.when_zh(spec))
+
+    def test_when_is_validated(self):
+        base = gate.load_spec(next(gate.SPECS.glob("rank_*.yaml")))
+        self.assertEqual(gate.validate_spec({**base, "when": {"vol": ["high"]}}), [])
+        self.assertTrue(gate.validate_spec({**base, "when": {"vol": ["extreme"]}}))
+        self.assertTrue(gate.validate_spec({**base, "when": {"weekday": ["mon"]}}))
+        self.assertTrue(gate.validate_spec({**base, "when": {"sectors": ["Crypto"]}}))
+
+    def test_volatility_state_uses_no_future_data(self):
+        import numpy as np
+
+        rng = np.random.default_rng(1)
+        spy = 100 * np.cumprod(1 + rng.normal(0, 0.01, 600))
+        base = gate.vol_states(spy)
+        later = spy.copy()
+        later[400:] *= np.cumprod(1 + rng.normal(0, 0.05, 200))
+        self.assertTrue((base[:400] == gate.vol_states(later)[:400]).all())
+        self.assertEqual(base[0], "")
+        self.assertTrue(set(base[300:]) <= {"high", "low"})

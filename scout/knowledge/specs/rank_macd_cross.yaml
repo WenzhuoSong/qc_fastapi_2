@@ -1,0 +1,14 @@
+# Pre-registration (G0), written 2026-10-28 before any run. Never edited after a run.
+key: rank_macd_cross
+family: macd_cross
+type: rank
+ranker: macd_cross
+hold: 20
+every: 1
+primary_control: select
+title: MACD 金叉（12/26/9）
+claim: 当天 MACD 柱由负转正（MACD 线上穿信号线）的股票，次日开盘买入、持有 20 个交易日，跑赢同一天的其他股票。
+mechanism: MACD 是两条指数均线之差，金叉表示短期动能转强；如果投资者对新信息反应不足，动能转强之后价格会延续一段（Appel 1979；技术分析常用）。
+expected_failure: 控制数据挖掘后的研究普遍发现这类技术规则不赚钱（Sullivan、Timmermann、White 1999；Park、Irwin 2007）；金叉在震荡市里频繁来回，假信号多。
+deviations: 原始用法在死叉时卖出，这里固定持有 20 个交易日，以便和对照用同样的持有期；参数用标准 12/26/9，不做调整；不做空死叉。
+registered_on: 2026-10-28

@@ -74,10 +74,11 @@ def new_rows(p, entry: dict, asof: date, recent: set[str]) -> list[dict]:
     today = mask.loc[asof].fillna(False)
     m = gate.Market(p)
     i = p.dates.get_loc(asof)
+    spec = entry["spec"]
     pool = [m.stocks[k] for k in np.flatnonzero(m.valid[i])]
     rows = []
     for ticker in sorted(today[today].index):
-        if ticker in recent or ticker not in m.col:
+        if ticker in recent or ticker not in m.col or not gate.applies(spec, m.regime[i], m.vol[i], m.sector.get(ticker)):
             continue
         lv = _levels(det, p, ticker, asof)
         if not lv:
@@ -145,8 +146,15 @@ async def rank_rows(p, entry: dict, asof: date) -> list[dict]:
     a["angle"] = await rankers.prepare(spec, p, stocks, days=[i])
     pool = rankers._universe(a, i)
     picks = set(rankers.RANKERS[spec["ranker"]](a, i, float(spec.get("top_frac", 0.1))))
-    return [{"key": entry["key"], "d": asof, "t": stocks[j], "role": "pick" if j in picks else "pool", "hold": int(spec["hold"])}
+    regime, vol = context(p, i)
+    return [{"key": entry["key"], "d": asof, "t": stocks[j], "role": "pick" if j in picks else "pool", "hold": int(spec["hold"]),
+             "counted": j not in picks or gate.applies(spec, regime, vol, (p.sectors or {}).get(stocks[j]))}
             for j in pool.tolist()]
+
+
+def context(p, i: int) -> tuple[str, str]:
+    """Market regime and volatility state after the close of day i, as the backtest sees them."""
+    return str(p.regime.reindex(p.dates).iloc[i]), str(gate.vol_states(p["close"][BENCHMARK].to_numpy())[i])
 
 
 async def record_rank(p, entry: dict, asof: date) -> int:
@@ -160,9 +168,9 @@ async def record_rank(p, entry: dict, asof: date) -> int:
     rows = await rank_rows(p, entry, asof)
     if rows:
         await db.execute_many(
-            "INSERT INTO scout.forward_ranks (key, asof, ticker, role, hold) VALUES (:key, :d, :t, :role, :hold) "
+            "INSERT INTO scout.forward_ranks (key, asof, ticker, role, hold, counted) VALUES (:key, :d, :t, :role, :hold, :counted) "
             "ON CONFLICT (key, asof, ticker) DO NOTHING", rows)
-    return sum(r["role"] == "pick" for r in rows)
+    return sum(r["role"] == "pick" and r["counted"] for r in rows)
 
 
 def resolve_rank(p, r: dict) -> dict | None:
@@ -206,7 +214,7 @@ def rank_pairs(rows: list[dict]) -> list[dict]:
             continue
         total, n = sum(r["ret"] for r in rs), len(rs)
         for r in rs:
-            if r["role"] == "pick" and n > 1:
+            if r["role"] == "pick" and r.get("counted", True) and n > 1:
                 control = (total - r["ret"]) / (n - 1)
                 out.append({"date": d, "ticker": r["ticker"], "ret": r["ret"], "select": control, "diff": r["ret"] - control,
                             "spy": r["spy_ret"]})
@@ -317,8 +325,8 @@ async def report(entry: dict, today: date) -> dict:
     if is_rank(entry):
         rows = await db.fetch_all("SELECT * FROM scout.forward_ranks WHERE key = :k", {"k": entry["key"]})
         out = evaluate(rank_pairs(rows), await started_on(entry["key"], "forward_ranks"), today, await backtest_edge(entry))
-        out["signals"] = sum(r["role"] == "pick" for r in rows)
-        out["open_signals"] = sum(r["role"] == "pick" and r["state"] == "pending" for r in rows)
+        out["signals"] = sum(r["role"] == "pick" and r.get("counted", True) for r in rows)
+        out["open_signals"] = sum(r["role"] == "pick" and r.get("counted", True) and r["state"] == "pending" for r in rows)
         return out
     rows = await db.fetch_all("SELECT * FROM scout.forward_trades WHERE key = :k", {"k": entry["key"]})
     out = evaluate(pairs(rows), await started_on(entry["key"]), today, await backtest_edge(entry))

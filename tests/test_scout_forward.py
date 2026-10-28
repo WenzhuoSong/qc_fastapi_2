@@ -126,7 +126,7 @@ class RankForwardTests(unittest.TestCase):
                                                               "primary_control": "select"}}
         p, idx = _rank_panel()
         with patch.object(forward.db, "fetch_one", AsyncMock(return_value={"d": idx[5]})), \
-                patch.object(forward, "rank_rows", AsyncMock(return_value=[{"role": "pick"}])) as rr, \
+                patch.object(forward, "rank_rows", AsyncMock(return_value=[{"role": "pick", "counted": True}])) as rr, \
                 patch.object(forward.db, "execute_many", AsyncMock()):
             import asyncio
 
@@ -134,3 +134,14 @@ class RankForwardTests(unittest.TestCase):
             self.assertEqual(asyncio.run(forward.record_rank(p, en, idx[8])), 1)      # 3 sessions: rebalance
         self.assertEqual(rr.await_count, 1)
         self.assertIn(en, forward.under_test([en]))
+
+
+class ConditionalForwardTests(unittest.TestCase):
+    def test_uncounted_picks_are_kept_but_not_scored_and_still_in_the_control(self):
+        d = date(2026, 11, 2)
+        rows = [{"asof": d, "ticker": "A", "role": "pick", "ret": 0.10, "state": "closed", "spy_ret": 0.0, "counted": True},
+                {"asof": d, "ticker": "B", "role": "pick", "ret": 0.20, "state": "closed", "spy_ret": 0.0, "counted": False},
+                {"asof": d, "ticker": "C", "role": "pool", "ret": 0.00, "state": "closed", "spy_ret": 0.0, "counted": True}]
+        (pick,) = forward.rank_pairs(rows)
+        self.assertEqual(pick["ticker"], "A")
+        self.assertAlmostEqual(pick["select"], 0.10)            # B and C both in the control

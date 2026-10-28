@@ -1,0 +1,16 @@
+# Pre-registration (G0), written 2026-10-28 before any run. Never edited after a run.
+key: rank_short_term_reversal
+family: short_term_reversal
+type: rank
+ranker: short_term_reversal
+top_frac: 0.1
+hold: 21
+every: 21
+primary_control: select
+title: 短期反转：上个月跌得最多的股票
+claim: 按过去 21 个交易日的收益排名，跌得最多的 10% 在随后 1 个月跑赢同一天的其他股票。
+mechanism: 短期的大幅下跌里有一部分是流动性冲击和过度反应（有人被迫卖出），提供流动性的一方会在随后的反弹中得到补偿（Jegadeesh 1990；Lehmann 1990；Nagel 2012）。
+expected_failure: 大盘股里效果弱于小盘股，2010 年后有所减弱；跌得多的股票里混有真正出了坏消息的公司（基本面下跌不会反弹）；成本侵蚀明显。
+deviations: 只做多跌幅最大的 10%，不做空涨幅最大的；没有按换手率分组（Medhat、Schmeling 2022 发现反转主要来自低换手股票，Scout 没有可靠的流通股数据）；没有做行业调整；股票池是当前指数成分股中流动性足够的股票。
+registration_note: 与已否定的"z 分数超跌"和"强势回调"（RSI(2) ≤ 10）机制相近，都是短期均值回归。这条是学术文献的标准横截面版本，单独成族；已否定的两条不改、不重测。
+registered_on: 2026-10-28

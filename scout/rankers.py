@@ -98,8 +98,31 @@ def trend_template(a: dict, i: int, frac: float) -> list[int]:
     return [int(x) for x in cols[ok]]
 
 
+def short_term_reversal(a: dict, i: int, frac: float) -> list[int]:
+    """Jegadeesh (1990), Lehmann (1990): last month's biggest losers (lowest 21-session return)."""
+    cols = _universe(a, i)
+    score = -(a["close"][i, cols] / a["close"][i - MONTH, cols] - 1)
+    return _top(cols, score, frac)
+
+
+def _macd_hist(a: dict) -> np.ndarray:
+    if "macd_hist" not in a:                       # causal EMAs over the whole array, computed once per backtest
+        from scout.features import macd
+
+        a["macd_hist"] = macd(pd.DataFrame(a["close"]))[1].to_numpy()
+    return a["macd_hist"]
+
+
+def macd_cross(a: dict, i: int, frac: float) -> list[int]:
+    """Appel's MACD (12/26/9) bullish crossover: every stock whose histogram turned positive at day i (`frac` unused)."""
+    h = _macd_hist(a)
+    cols = _universe(a, i)
+    ok = (h[i, cols] > 0) & (h[i - 1, cols] <= 0)
+    return [int(x) for x in cols[ok]]
+
+
 RANKERS = {"residual_momentum": residual_momentum, "high_52w": high_52w, "frog_in_pan": frog_in_pan,
-           "trend_template": trend_template}
+           "trend_template": trend_template, "short_term_reversal": short_term_reversal, "macd_cross": macd_cross}
 
 
 def arrays(p) -> tuple[dict, list[str]]:
