@@ -1,0 +1,15 @@
+# Pre-registration (G0), written 2026-10-28 before any run. Never edited after a run.
+key: rank_residual_momentum
+family: residual_momentum
+type: rank
+ranker: residual_momentum
+top_frac: 0.1
+hold: 21
+every: 21
+primary_control: select
+title: 残差动量：扣除大盘影响后的 12 个月动量
+claim: 按过去 12 个月（不含最近 1 个月）扣除大盘影响后的残差收益（除以其波动）排名，前 10% 的股票在随后 1 个月跑赢同一天的其他股票。
+mechanism: 普通动量里混着大盘和风格的影响，残差动量只保留个股自身的信息；投资者对公司层面的信息反应不足，所以会延续（Blitz、Huij、Martens 2011）。
+expected_failure: 原文用 Fama-French 三因子回归，这里只用 SPY 做市场模型，可能削弱效果；动量在急速反转的行情（如 2020 年 4 月、2022 年底）会失效。
+deviations: 市场模型只用 SPY（没有 Fama-French 因子数据）；只做多前 10%，不做空；股票池是当前指数成分股中流动性足够的股票。
+registered_on: 2026-10-28

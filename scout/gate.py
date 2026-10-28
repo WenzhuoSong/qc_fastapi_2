@@ -58,7 +58,8 @@ RECHECK_MONTHS = 6
 
 # ── G0: the spec ────────────────────────────────────────────────────────
 
-SPEC_FIELDS = ("key", "family", "title", "claim", "mechanism", "detector", "primary_control", "expected_failure", "registered_on")
+SPEC_FIELDS = ("key", "family", "title", "claim", "mechanism", "primary_control", "expected_failure", "registered_on")
+RANK_FIELDS = ("ranker", "hold", "every")        # ranking mode: hold the ranker's picks for `hold` sessions, every `every` sessions
 
 
 def load_spec(path: Path | str) -> dict:
@@ -68,10 +69,18 @@ def load_spec(path: Path | str) -> dict:
 
 
 def validate_spec(spec: dict) -> list[str]:
+    from scout import rankers
+
     issues = [f"规格缺少 {f}" for f in SPEC_FIELDS if not spec.get(f)]
     if spec.get("primary_control") and spec["primary_control"] not in CONTROLS:
         issues.append(f"主对照必须是 {'/'.join(CONTROLS)}")
-    if spec.get("detector") and spec["detector"] not in {d.name for d in registry(include_candidates=True)}:
+    if spec.get("type") == "rank":
+        issues += [f"排名规格缺少 {f}" for f in RANK_FIELDS if not spec.get(f)]
+        if spec.get("ranker") and spec["ranker"] not in rankers.RANKERS:
+            issues.append(f"排名方法 {spec['ranker']} 不存在（先在 scout.rankers 里实现）")
+    elif not spec.get("detector"):
+        issues.append("规格缺少 detector")
+    elif spec["detector"] not in {d.name for d in registry(include_candidates=True)}:
         issues.append(f"规则 {spec['detector']} 不存在（先在 rules.DETECTORS 里加为候选）")
     return issues
 
@@ -177,6 +186,43 @@ def backtest(p, det: Detector, m: Market, draws: int = DRAWS) -> list[dict]:
     return rows
 
 
+def rank_backtest(p, spec: dict, m: Market) -> list[dict]:
+    """Ranking mode: every `every` sessions take the ranker's picks, buy at the next open, sell at the
+    close `hold` sessions later. Selection control = the mean holding return of every other stock in
+    the universe that day (the expectation of a same-day random stock); timing control = the same
+    stock held from random other rebalance days (at least `hold` sessions away)."""
+    from scout import rankers
+
+    a, stocks = rankers.arrays(p)
+    fn, hold, every, frac = rankers.RANKERS[spec["ranker"]], int(spec["hold"]), int(spec["every"]), float(spec.get("top_frac", 0.1))
+    o, c, n = a["open"], a["close"], len(p.dates)
+    rng = np.random.default_rng([SEED, zlib.crc32(spec["key"].encode())])
+    dates = list(range(rankers.YEAR + rankers.MONTH, n - hold - 1, every))
+    picks, rets, mean_ret, members = {}, {}, {}, {}
+    for i in dates:
+        uni = rankers._universe(a, i)
+        r = c[i + hold, uni] / o[i + 1, uni] - 1
+        ok = np.isfinite(r)
+        rets[i] = dict(zip(uni[ok].tolist(), r[ok].tolist()))
+        mean_ret[i] = (float(r[ok].sum()), int(ok.sum()))
+        picks[i] = [j for j in fn(a, i, frac) if j in rets[i]]
+        for j in rets[i]:
+            members.setdefault(j, []).append(i)
+    rows = []
+    for i in dates:
+        total, cnt = mean_ret[i]
+        for j in picks[i]:
+            r = rets[i][j]
+            others = [d for d in members.get(j, []) if abs(d - i) >= hold]
+            timing = [rets[d][j] for d in rng.choice(others, size=min(DRAWS, len(others)), replace=False)] if others else []
+            b = i + hold
+            rows.append({"ticker": stocks[j], "i": i, "date": p.dates[i], "ret": r, "a": i + 1, "b": b, "regime": m.regime[i],
+                         "spy": float(m.spy_close[b] / m.spy_open[i + 1] - 1), "ew": float(m.ew_cum[b + 1] / m.ew_cum[i + 1] - 1),
+                         "timing": float(np.mean(timing)) if timing else None,
+                         "select": (total - r) / (cnt - 1) if cnt > 1 else None})
+    return rows
+
+
 def _edge(rows: list[dict], key: str) -> dict:
     rs = [r for r in rows if r[key] is not None]
     mean, t, months = monthly_t([r["date"] for r in rs], [r["ret"] - r[key] for r in rs])
@@ -275,8 +321,9 @@ CRITIQUE_PROMPT = """你是一名严格的量化研究审稿人，任务是挑�
 硬性规则：数字只能原样引用 report 或 facts 里的数字，不要自己计算；不编造检验之外的事实；中文、简洁。"""
 
 
-def critique_facts(spec: dict, trials: int, det: Detector, rule_status: dict[str, str] | None = None) -> dict:
+def critique_facts(spec: dict, trials: int, det: Detector | None, rule_status: dict[str, str] | None = None) -> dict:
     rule_status = rule_status or {}
+    hold = det.exit.holding_limit(det.horizon_days) if det else int(spec["hold"])
     return {
         "主对照": f"{spec['primary_control']}（{LABEL_ZH[spec['primary_control']]}）",
         "已通过的规则": [k for k, v in rule_status.items() if v == "passed"] or "无",
@@ -285,7 +332,9 @@ def critique_facts(spec: dict, trials: int, det: Detector, rule_status: dict[str
         "数据": "Yahoo 日线，复权价；信号用当日收盘后可得的特征，次日起才能成交",
         "成本": f"每笔往返成本 {ROUND_TRIP_COST * 100:.1f}%（对照同样扣除）",
         "本族检验次数": trials,
-        "持有期上限（交易日）": det.exit.holding_limit(det.horizon_days),
+        "持有期上限（交易日）": hold,
+        **({"检验方式": f"排名：每 {spec['every']} 个交易日取排名靠前的股票，次日开盘买入，持有 {spec['hold']} 个交易日后按收盘卖出；"
+                    "选股对照 = 当天股票池里其他所有股票的平均持有收益"} if det is None else {}),
         "事先登记日期": spec.get("registered_on"),
         **({"登记说明": spec["registration_note"]} if spec.get("registration_note") else {}),
     }
@@ -390,13 +439,13 @@ async def register(spec: dict) -> dict:
     old = await learned.get(spec["key"])
     if old and old.get("spec"):
         raise learned.KnowledgeError("这条知识已经登记过规格；改规格要换一个 key（并放进同一族）")
-    det = next(d for d in registry(include_candidates=True) if d.name == spec["detector"])
     base = {"key": spec["key"], "spec": spec}
     if old:                                     # attaching a spec to an existing entry (registered after its results)
         return await learned.write(base, "system", "补登规格")
+    applies = {"rankers": [spec["ranker"]]} if spec.get("type") == "rank" else {"detectors": [spec["detector"]]}
     return await learned.write({**base, "kind": "rule", "polarity": "positive", "status": "hypothesis", "title": spec["title"],
                                 "claim": spec["claim"], "mechanism": spec["mechanism"], "context": {"kind": ["stock"]},
-                                "applies": {"detectors": [det.name]}, "evidence": []}, "system", "预登记")
+                                "applies": applies, "evidence": []}, "system", "预登记")
 
 
 async def trials_in(family: str) -> int:
@@ -412,19 +461,19 @@ async def run(key: str, p=None) -> dict:
     if not entry or not entry.get("spec"):
         raise learned.KnowledgeError(f"{key} 没有登记规格，先 register")
     spec = entry["spec"]
-    det = next(d for d in registry(include_candidates=True) if d.name == spec["detector"])
+    det = None if spec.get("type") == "rank" else next(d for d in registry(include_candidates=True) if d.name == spec["detector"])
     p = p if p is not None else await load_panel(lookback_days=None)
     m = Market(p)
-    rows = backtest(p, det, m)
+    rows = rank_backtest(p, spec, m) if det is None else backtest(p, det, m)
     summary = summarize(rows)
     entries = await learned.current()
     passed_rules = {learned.rule_of(en) for en in entries if en["key"] != key and en["polarity"] == "positive"
                     and en["status"] in ("backtested", "forward", "confirmed")} - {None}
-    overlaps = {d.name: overlap(rows, fills(p, d, m)) for d in registry(include_candidates=True) if d.name != det.name}
+    overlaps = {d.name: overlap(rows, fills(p, d, m)) for d in registry(include_candidates=True) if det is None or d.name != det.name}
     rule_status = {}
     for en in entries:
         rule = learned.rule_of(en)
-        if rule and rule != det.name:
+        if rule and (det is None or rule != det.name):
             rule_status[rule] = "passed" if rule in passed_rules else "rejected" if en["status"] == "rejected" else "open"
     trials = await trials_in(spec["family"]) + 1
     crit = criteria(summary, spec, trials, overlaps, passed_rules)

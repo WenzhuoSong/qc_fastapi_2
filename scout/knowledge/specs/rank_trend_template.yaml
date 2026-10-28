@@ -1,0 +1,13 @@
+key: rank_trend_template
+family: trend_template
+type: rank
+ranker: trend_template
+hold: 21
+every: 21
+primary_control: select
+title: Minervini 趋势模板：TradingView 上最常见的趋势选股
+claim: 同时满足 Minervini 趋势模板 8 项条件的股票，在随后 1 个月跑赢同一天的其他股票。
+mechanism: 只买处于第二阶段上升趋势、相对强度靠前、接近高点的股票，顺着机构资金的方向（Minervini《股票魔法师》）。
+expected_failure: 这是实践派的筛选条件，没有公开的严格回测；在趋势末期和急速反转时，满足条件的股票集中在同一批强势股上，可能一起回撤。
+deviations: 原方法还要求等待波动收缩后的突破买点和止损，这里只检验筛选条件本身，按固定 1 个月持有；相对强度用 Scout 的全市场分位。
+registered_on: 2026-10-28

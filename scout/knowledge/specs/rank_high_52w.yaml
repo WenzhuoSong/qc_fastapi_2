@@ -1,0 +1,14 @@
+key: rank_high_52w
+family: high_52w
+type: rank
+ranker: high_52w
+top_frac: 0.1
+hold: 21
+every: 21
+primary_control: select
+title: 52 周高点接近度：离一年高点越近越强
+claim: 按收盘价除以过去 52 周最高价排名，前 10% 的股票在随后 1 个月跑赢同一天的其他股票。
+mechanism: 投资者把 52 周高点当作锚，好消息把股价推近高点时，他们不敢追，信息被慢慢消化（George、Hwang 2004）。
+expected_failure: 有研究发现部分市场 2001 年后这个效应转负；在下跌市里接近高点的多是防御股，可能跑输。
+deviations: 原文持有 6 个月，这里持有 1 个月（Scout 的使用周期）；只做多前 10%。
+registered_on: 2026-10-28

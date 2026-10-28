@@ -1,0 +1,14 @@
+key: rank_frog_in_pan
+family: frog_in_pan
+type: rank
+ranker: frog_in_pan
+top_frac: 0.1
+hold: 21
+every: 21
+primary_control: select
+title: 平滑动量（"温水煮青蛙"）：由很多小涨日积累的动量
+claim: 在过去 12 个月（不含最近 1 个月）涨幅前 20% 的股票里，选上涨日占比最高、涨势最平滑的一半（占股票池 10%），它们在随后 1 个月跑赢同一天的其他股票。
+mechanism: 投资者对持续、细小的信息不敏感，对一次性的大消息反应充分；由很多小涨日积累的动量更少被定价，延续更久（Da、Gurun、Warachka 2014）。
+expected_failure: 没有找到公开的复现；和普通动量高度重合，动量崩溃时一起失效。
+deviations: 原文按动量和信息离散度双重排序、持有 1–6 个月；这里取动量前 20% 中信息离散度最低的、占股票池 10% 的股票，持有 1 个月。
+registered_on: 2026-10-28
