@@ -1111,3 +1111,46 @@ def outlook_page(rec: dict | None, theses: list[dict]) -> str:
             + (f"<div class='grid'>{''.join(cards)}</div>" if cards else
                f"<p class='muted'>还没有判断。{e((o or {}).get('no_thesis_reason') or '')}</p>"))
     return layout("行业前景", "outlook", body)
+
+
+# ── the user's B0 ranking ───────────────────────────────────────────────
+
+def b0_rank_panel(rk: dict | None) -> str:
+    from scout.universe import SECTOR_ZH
+
+    if not rk:
+        return ("<p class='muted'>B0 动量打分未开启或还没有数据：需要在 Railway 设置 <code>SCOUT_B0_SCORE</code>"
+                "（B0 的打分参数），之后每天收盘扫描时计算。</p>")
+    g = rk["gate"]
+
+    def gate_chip(t: str, v: dict | None) -> str:
+        if not v:
+            return f"<span class='chip'>{e(t)} 数据不足</span>"
+        tone = "var(--up)" if v["above"] else "var(--down)"
+        return (f"<span class='chip' style='background:{tone};color:#fff'>{e(t)} {v['close']:.2f} "
+                f"{'高于' if v['above'] else '低于'} {g['sma']} 日线 {v['sma']:.2f}（{v['gap'] * 100:+.1f}%）</span>")
+
+    names = "、".join(g["tickers"])
+    state = (f"<b class='up'>大盘过滤通过</b>：{e(names)} 都在 {g['sma']} 日线上方，B0 按排名持仓。" if g["risk_on"] else
+             f"<b class='down'>大盘过滤未通过</b>：{e(names)} 有在 {g['sma']} 日线下方的，B0 此时不持有股票仓位。")
+    horizons = [n for n, _ in rk["weights"]]
+    w = " ".join(f"{'+' if x >= 0 else '−'} {abs(x):.2f} × {n} 日" for n, x in rk["weights"]).lstrip("+ ")
+    idx = {"sp500": "S&amp;P 500", "ndx": "Nasdaq-100", "sp400": "S&amp;P 400"}
+    rows = []
+    for r in rk["rows"]:
+        top = r["rank"] <= rk["target_holdings"]
+        rows.append([f"<b>{r['rank']}</b>" if top else str(r["rank"]), tlink(r["ticker"]), e((r.get("name") or "")[:22]),
+                     e(SECTOR_ZH.get(r.get("sector") or "", r.get("sector") or "")), f"{r['score']:.3f}"]
+                    + [signed(r["returns"].get(str(n))) for n in horizons]
+                    + [f"${r['dollar_volume'] / 1e9:.1f}B" if r["dollar_volume"] >= 1e9 else f"${r['dollar_volume'] / 1e6:.0f}M",
+                       " / ".join(idx.get(i, e(i)) for i in r.get("indexes") or [])])
+    return (f"<div class='card' style='margin-top:12px'><h3>B0 动量打分（Scout 按 B0 的参数近似计算）</h3>"
+            f"<p>{' '.join(gate_chip(t, v) for t, v in g['tickers'].items())}</p><p class='small'>{state}</p>"
+            "<ul class='tight small'>"
+            f"<li>分数 = {e(w)}的对数收益；{rk['trend_horizon']} 日收益须为正，20 日平均成交额 ≥ ${rk['min_dollar_volume'] / 1e6:.0f}M。</li>"
+            f"<li>股票池：{'、'.join(idx.get(i, e(i)) for i in rk['indexes'])} 各取 20 日成交额最大的 {rk['per_index']} 只，近似 B0 按 ETF 权重取的成分股"
+            f"（本次 {rk['universe']} 只，{rk['scored']} 只通过趋势过滤）；排名可能和 B0 实际看到的略有不同。</li>"
+            f"<li>B0 设计持有前 {rk['target_holdings']} 名，另有自己的仓位、缓冲、止损和冷却规则。"
+            "<b>这个列表是排名，不是 B0 的持仓，也不是 Scout 的推荐</b>：B0 的回测收益来自整套组合规则（见知识库里的 B0 条目）。</li>"
+            f"</ul><p class='small muted'>数据日期 {e(rk['asof'])}</p></div>"
+            + table(["排名", "代码", "名称", "行业", "分数", *[f"{n} 日" for n in horizons], "20 日成交额", "指数"], rows))

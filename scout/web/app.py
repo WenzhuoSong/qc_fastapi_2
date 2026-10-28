@@ -560,6 +560,15 @@ async def screens_page(s: str = "", _: str = Depends(require_auth)) -> str:
             f"href='/screens?s={e(x.id)}'>{e(x.title)} {count_of(x)}</a>"
             for x in screens if x.group == group)
         nav += f"<div style='margin:4px 0'><span class='small muted'>{group}：</span>{chips}</div>"
+    from scout import b0
+
+    b0_rank = await b0.latest_b0_rank()
+    on = s == "b0"
+    nav += (f"<div style='margin:4px 0'><span class='small muted'>我的策略：</span><a class='chip' "
+            f"style='{'background:var(--accent);color:#fff' if on else ''}' href='/screens?s=b0'>B0 动量打分 "
+            f"{len((b0_rank or {}).get('rows') or [])}</a></div>")
+    if on:
+        return layout("策略筛选", "screens", f"<h2>策略筛选</h2>{nav}" + views.b0_rank_panel(b0_rank))
     found = await sc.run(current, asof, rows)
 
     crit = "".join(f"<li>{e(c)}</li>" for c in current.criteria)

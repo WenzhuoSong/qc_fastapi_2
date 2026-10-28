@@ -163,6 +163,13 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
 
     transitions = await tracker.update_all()
     summary["transitions"] = [t.__dict__ for t in transitions]
+    try:                               # the user's B0 ranking on Scout's data (information only)
+        from scout import b0
+
+        summary["b0_rank"] = await b0.store_b0_rank(p, asof)
+    except Exception as exc:
+        logger.warning("b0 ranking failed: %s", exc)
+        summary["b0_rank"] = f"failed: {type(exc).__name__}"
     try:                               # forward test of gated rules (G3); never blocks the scan
         from scout import forward
 

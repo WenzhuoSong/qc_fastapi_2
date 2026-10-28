@@ -43,6 +43,8 @@ class ScoutSettings(BaseSettings):
     scout_db_volume_gb: float = 4.9
     # Per-statement timeout; full-history replays run from a laptop may need longer.
     scout_db_command_timeout: float = 120.0
+    # The user's B0 momentum score as JSON (scout.b0.MomentumScore); unset = the B0 ranking is off.
+    scout_b0_score: str = ""
 
     @property
     def bot_token(self) -> str:

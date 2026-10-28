@@ -23,6 +23,7 @@ import csv
 import inspect
 import json
 import logging
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
@@ -249,3 +250,134 @@ async def import_entries(items: list[dict], note: str) -> list[dict]:
         en = await learned.write(it, "import", note)
         out.append({"key": en["key"], "version": en["version"], "status": en["status"]})
     return out
+
+
+# ── B0's ranking, recomputed by Scout (information only) ────────────────
+# The user's B0 ranks stocks by a multi-horizon momentum score inside the largest members of
+# two indexes, and holds stocks only while a market filter is on. The parameters are B0's and stay
+# out of this repository: they come from the environment (SCOUT_B0_SCORE, JSON, see
+# `MomentumScore.from_json`); without it the ranking is off. Scout has no ETF weights, so index
+# size is approximated by 20-day dollar volume. B0's results come from its whole portfolio process,
+# not from this list.
+
+@dataclass(frozen=True)
+class MomentumScore:
+    weights: tuple[tuple[int, float], ...]   # (horizon in sessions, weight) on log returns
+    trend_horizon: int                       # this horizon's log return must be > 0
+    min_dollar_volume: float                 # 20-day average dollar volume floor
+    per_index: int                           # largest members taken from each index
+    indexes: tuple[str, ...]                 # instrument source tags, e.g. sp500, ndx
+    gate: tuple[str, ...]                    # tickers that must close above their moving average
+    gate_sma: int
+    target_holdings: int
+    show: int = 30
+
+    @classmethod
+    def from_json(cls, text: str) -> "MomentumScore | None":
+        """{"weights": {"<sessions>": w, ...}, "trend_horizon": n, "min_dollar_volume": x, "per_index": n,
+        "indexes": [...], "gate": [...], "gate_sma": n, "target_holdings": n}; None when unset."""
+        if not (text or "").strip():
+            return None
+        d = json.loads(text)
+        weights = tuple(sorted(((int(k), float(v)) for k, v in d["weights"].items()), key=lambda x: -x[0]))
+        cfg = cls(weights, int(d["trend_horizon"]), float(d["min_dollar_volume"]), int(d["per_index"]),
+                  tuple(d["indexes"]), tuple(d["gate"]), int(d["gate_sma"]), int(d["target_holdings"]), int(d.get("show", 30)))
+        if not weights or cfg.trend_horizon not in dict(weights) or cfg.per_index <= 0 or not cfg.indexes:
+            raise ValueError("SCOUT_B0_SCORE: weights must include trend_horizon; per_index and indexes are required")
+        return cfg
+
+    @property
+    def longest(self) -> int:
+        return max(n for n, _ in self.weights)
+
+
+def score_config() -> MomentumScore | None:
+    from scout.config import get_scout_settings
+
+    return MomentumScore.from_json(get_scout_settings().scout_b0_score)
+
+
+def b0_universe(close, volume, members: dict[str, list[str]], cfg: MomentumScore) -> dict[str, list[str]]:
+    """ticker → the indexes whose largest `per_index` members (by 20-day dollar volume, the weight proxy) it is in."""
+    dv = (close * volume).iloc[-20:].mean()
+    out: dict[str, list[str]] = {}
+    for index in cfg.indexes:
+        names = [t for t, src in members.items() if index in src and t in dv.index and dv[t] == dv[t]]
+        for t in sorted(names, key=lambda t: -dv[t])[: cfg.per_index]:
+            out.setdefault(t, []).append(index)
+    return out
+
+
+def b0_scores(close, volume, universe, cfg: MomentumScore) -> list[dict]:
+    """The weighted sum of log returns over the configured horizons, with the trend filter and the
+    dollar-volume floor; highest first."""
+    import numpy as np
+
+    rows = []
+    for t in universe:
+        if t not in close.columns:
+            continue
+        c = close[t].dropna()
+        if len(c) < cfg.longest + 1:
+            continue
+        dv = float(volume[t].dropna().tail(20).mean() * c.iloc[-1]) if t in volume.columns else 0.0
+        if dv < cfg.min_dollar_volume:
+            continue
+        p_now = float(c.iloc[-1])
+        past = {n: float(c.iloc[-1 - n]) for n, _ in cfg.weights}
+        if min(p_now, *past.values()) <= 0:
+            continue
+        r = {n: float(np.log(p_now / past[n])) for n in past}
+        if r[cfg.trend_horizon] <= 0:
+            continue
+        rows.append({"ticker": t, "score": sum(w * r[n] for n, w in cfg.weights), "dollar_volume": dv,
+                     "returns": {str(n): r[n] for n in r}})
+    rows.sort(key=lambda x: -x["score"])
+    for i, x in enumerate(rows, 1):
+        x["rank"] = i
+    return rows
+
+
+def b0_gate(close, cfg: MomentumScore) -> dict:
+    """The market filter: every gate ticker above its moving average."""
+    out = {"tickers": {}}
+    for t in cfg.gate:
+        c = close[t].dropna() if t in close.columns else None
+        if c is None or len(c) < cfg.gate_sma:
+            out["tickers"][t] = None
+            continue
+        sma = float(c.iloc[-cfg.gate_sma:].mean())
+        out["tickers"][t] = {"close": float(c.iloc[-1]), "sma": sma, "above": bool(c.iloc[-1] > sma), "gap": float(c.iloc[-1] / sma - 1)}
+    out["risk_on"] = bool(out["tickers"]) and all(v and v["above"] for v in out["tickers"].values())
+    out["sma"] = cfg.gate_sma
+    return out
+
+
+async def store_b0_rank(p, asof) -> dict:
+    """After the close: B0's ranking and market filter on Scout's data (brief `b0_rank`)."""
+    cfg = score_config()
+    if cfg is None:
+        return {"skipped": "SCOUT_B0_SCORE not set"}
+    inst = await db.fetch_all("SELECT ticker, name, sector, sources FROM scout.instruments WHERE kind = 'stock'")
+    members = {r["ticker"]: list(r["sources"] or []) for r in inst}
+    meta = {r["ticker"]: r for r in inst}
+    close, volume = p["close"], p["volume"]
+    uni = b0_universe(close, volume, members, cfg)
+    rows = b0_scores(close, volume, uni, cfg)
+    gate_ = b0_gate(close, cfg)
+    top = [{**x, "indexes": uni.get(x["ticker"], []), "name": (meta.get(x["ticker"]) or {}).get("name"),
+            "sector": (meta.get(x["ticker"]) or {}).get("sector")} for x in rows[: cfg.show]]
+    payload = {"asof": str(asof), "gate": gate_, "universe": len(uni), "scored": len(rows), "rows": top,
+               "weights": [list(w) for w in cfg.weights], "trend_horizon": cfg.trend_horizon,
+               "min_dollar_volume": cfg.min_dollar_volume, "per_index": cfg.per_index, "indexes": list(cfg.indexes),
+               "target_holdings": cfg.target_holdings}
+    await db.execute("INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('b0_rank', :d, :c, CAST(:p AS JSONB))",
+                     {"d": asof, "c": "B0 动量打分：" + "、".join(x["ticker"] for x in top[:10]), "p": db.jsonb(payload)})
+    return {"universe": len(uni), "scored": len(rows), "risk_on": gate_["risk_on"], "top3": [x["ticker"] for x in top[:3]]}
+
+
+async def latest_b0_rank() -> dict | None:
+    if score_config() is None:
+        return None
+    row = await db.fetch_one("SELECT payload FROM scout.briefs WHERE kind = 'b0_rank' ORDER BY id DESC LIMIT 1")
+    return row["payload"] if row and "tickers" in (row["payload"].get("gate") or {}) else None
