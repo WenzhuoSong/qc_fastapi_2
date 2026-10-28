@@ -1154,3 +1154,69 @@ def b0_rank_panel(rk: dict | None) -> str:
             "<b>这个列表是排名，不是 B0 的持仓，也不是 Scout 的推荐</b>：B0 的回测收益来自整套组合规则（见知识库里的 B0 条目）。</li>"
             f"</ul><p class='small muted'>数据日期 {e(rk['asof'])}</p></div>"
             + table(["排名", "代码", "名称", "行业", "分数", *[f"{n} 日" for n in horizons], "20 日成交额", "指数"], rows))
+
+
+# ── rule scoreboard ─────────────────────────────────────────────────────
+
+def _edge_txt(x: dict | None, t: bool = True) -> str:
+    if not x or x.get("edge") is None:
+        return "—"
+    out = signed(x["edge"], 2)
+    return out + (f"<span class='small muted'>（t {x['t']:.1f}）</span>" if t and x.get("t") is not None else "")
+
+
+def scoreboard_page(rows: list[dict], fair_asof, legacy_computed) -> str:
+    """One row per rule: the knowledge-base verdict and push state, the fair-benchmark test, by
+    market regime, and what happened since (live cards, or the forward record)."""
+    from scout import learned
+
+    main, legacy = [], []
+    for r in rows:
+        d, en, f = r["det"], r["entry"], r["fair"] or {}
+        status = learned.STATUS_ZH.get(en["status"], en["status"]) if en else "未检验"
+        tone = ("up" if en and en["polarity"] == "positive" and en["status"] in ("backtested", "forward", "confirmed")
+                else "down" if en and en["status"] in ("rejected", "retired") else "")
+        push = ("推送中" if d.live and not r["held_back"] else "只记录，不推送" if d.live else "候选：不扫描、不推送")
+        verdict = (f"<b class='{tone}'>{e(status)}</b><br><span class='small'>{push}</span>"
+                   + (f"<br><a class='small' href='/knowledge#{e(en['key'])}'>知识库</a>" if en else ""))
+        fair = ("—" if not f.get("n") else
+                f"前半 {_edge_txt(f.get('vs_select_first'))}<br>后半 {_edge_txt(f.get('vs_select_second'))}<br>"
+                f"全样本 {_edge_txt(f.get('vs_select'))}<br><span class='small muted'>{f['n']} 笔 · 扣费后平均 {pct(f.get('avg_net'), 2, True)}</span>")
+        other = ("—" if not f.get("n") else
+                 f"同股随机日 {_edge_txt(f.get('vs_timing'))}<br>SPY {_edge_txt(f.get('vs_spy'))}<br>等权股票池 {_edge_txt(f.get('vs_ew'))}")
+        regimes = f.get("regimes") or {}
+        reg = ("<br>".join(f"{lbl} {_edge_txt((regimes.get(g) or {}).get('vs_select'))} <span class='small muted'>{(regimes.get(g) or {}).get('n', 0)} 笔</span>"
+                           for g, lbl in (("uptrend", "上升"), ("mixed", "震荡"), ("downtrend", "下降")))
+               if regimes else "<span class='small muted'>—</span>")
+        lv, fw = r["live"] or {}, r["forward"]
+        if fw:
+            after = (f"<b>前向验证</b> {e(fw['started'] or '未开始')} 起<br>{fw['signals']} 个信号，{fw['n']} 个已完成"
+                     + (f"<br>相对选股对照 {signed(fw['edge'], 2)}" if fw.get("edge") is not None else "")
+                     + f"<br><span class='small muted'>满 6 个月且 30 个样本后由你确认</span>")
+        elif lv.get("total"):
+            after = (f"实盘卡 {lv['total']} 张（活跃 {lv.get('active', 0)}，结束 {lv.get('closed', 0)}）<br>"
+                     f"扣费胜率 {pct(lv.get('win_rate_net'), 0)} · 相对 SPY {signed(lv.get('avg_net_excess'))}<br>"
+                     f"<span class='small'>👍 {lv.get('thumbs_up', 0)} 👎 {lv.get('thumbs_down', 0)}</span>")
+        else:
+            after = "<span class='small muted'>没有实盘记录</span>"
+        main.append([f"<b>{e(d.label)}</b><br><span class='small muted'>{e(d.name)} · 持有 {d.horizon_days} 日</span>",
+                     verdict, fair, other, reg, after])
+        for regime, lbl in (("all", "全部"), ("uptrend", "上升"), ("mixed", "震荡"), ("downtrend", "下降")):
+            s = r["legacy"].get(regime) or {}
+            if s.get("n"):
+                legacy.append([e(d.label), lbl, str(s["n"]), pct(s.get("win_rate_net", s.get("win_rate")), 0), signed(s.get("avg_edge_vs_hold")),
+                               pct(s.get("avg_net_excess"), 1, True), pct(s.get("target_rate"), 0), pct(s.get("stop_rate"), 0)])
+    body = (
+        "<h2>规则记分板</h2>"
+        "<p class='small muted'>每条规则的结论来自知识库；检验用 12 年日线回放，信号、成交和出场与规则完全相同。"
+        "<b>主对照</b> = 同一天随机选的股票，用同样的价位公式和出场（选股是否有价值），逐个信号配对，t 值按月度均值计算；"
+        "通过检验关要求前后两半都为正、全样本 t ≥ 3。股票池是当前指数成分股，有幸存者偏差；对照来自同一池子，偏差在配对差值里基本抵消。"
+        f"{'检验于 ' + e(fair_asof) + '。' if fair_asof else ''}</p>"
+        + table(["规则", "结论", "公平检验：相对同日随机股", "其他对照", "分市场状态（相对同日随机股）", "实盘 / 前向"], main)
+        + "<details class='card' style='margin-top:12px'><summary>旧指标：相对持有（有偏差，仅作参考）</summary>"
+          "<p class='small muted'>“相对持有”= 扣费收益 − 同期按该股整段历史的平均涨幅一直持有的收益。它用到了未来数据，又建立在当前成分股（过去的赢家）之上，"
+          f"对规则是偏高的门槛，知识库里已标为否定。计算于 {e(legacy_computed)}。</p>"
+        + table(["规则", "市场状态", "样本", "扣费胜率", "相对持有", "相对 SPY（扣费）", "达标", "止损"], legacy)
+        + "</details>"
+        + "<h3>规则说明</h3><ul>" + "".join(f"<li><b>{e(r['det'].label)}</b>：{e(r['det'].description)}</li>" for r in rows) + "</ul>")
+    return layout("记分板", "scoreboard", body)

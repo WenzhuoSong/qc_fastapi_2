@@ -166,3 +166,29 @@ class PushTests(unittest.TestCase):
     def test_all_three_live_rules_are_held_back_by_the_seeds(self):
         live = {d.name for d in registry(include_candidates=False)}
         self.assertEqual(learned.held_back(learned.seed_entries()) & live, live)
+
+
+class ScoreboardTests(unittest.TestCase):
+    def test_page_shows_verdict_fair_test_and_legacy_folded(self):
+        from scout import gate
+        from scout.web import views
+
+        dets = {d.name: d for d in registry(include_candidates=True)}
+        e1 = {"key": "breakout_retest_selection", "status": "forward", "polarity": "positive"}
+        e2 = {"key": "pullback_in_uptrend_decay", "status": "rejected", "polarity": "negative"}
+        fair = {"n": 2313, "avg_net": 0.0026, "vs_select": {"edge": 0.0083, "t": 5.02}, "vs_select_first": {"edge": 0.0074, "t": 3.63},
+                "vs_select_second": {"edge": 0.0092, "t": 3.5}, "vs_timing": {"edge": 0.0066, "t": 2.76},
+                "vs_spy": {"edge": 0.0029, "t": 1.85}, "vs_ew": {"edge": 0.0018, "t": 1.5},
+                "regimes": {"uptrend": {"vs_select": {"edge": 0.0078, "t": 4.36}, "n": 1953}}}
+        rows = [{"det": dets["breakout_retest"], "entry": e1, "held_back": False, "fair": fair, "live": None,
+                 "forward": {"started": "2026-10-27", "signals": 3, "n": 0, "edge": None}, "legacy": {}},
+                {"det": dets["pullback_in_uptrend"], "entry": e2, "held_back": True, "fair": None,
+                 "live": {"total": 5, "active": 2, "closed": 3, "win_rate_net": 0.33, "avg_net_excess": -0.01}, "forward": None, "legacy":
+                 {"all": {"n": 4808, "win_rate_net": 0.4, "avg_edge_vs_hold": 0.002}}}]
+        html = views.scoreboard_page(rows, "2026-10-28", "2026-10-27")
+        self.assertIn("前向验证中", html)
+        self.assertIn("候选：不扫描、不推送", html)
+        self.assertIn("只记录，不推送", html)
+        self.assertIn("+0.83%", html)
+        self.assertIn("旧指标", html)
+        self.assertLess(html.index("公平检验"), html.index("旧指标"))
