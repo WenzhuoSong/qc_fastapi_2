@@ -163,6 +163,13 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
 
     transitions = await tracker.update_all()
     summary["transitions"] = [t.__dict__ for t in transitions]
+    try:                               # forward test of gated rules (G3); never blocks the scan
+        from scout import forward
+
+        summary["forward"] = {"recorded": await forward.record(p, asof), "updated": await forward.update()}
+    except Exception as exc:
+        logger.warning("forward record failed: %s", exc)
+        summary["forward"] = f"failed: {type(exc).__name__}"
     try:                               # the user's holdings: system stop / target after this close
         managed = await portfolio.manage_open_trades()
         summary["trades_managed"] = managed

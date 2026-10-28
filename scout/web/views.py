@@ -993,7 +993,19 @@ def _kb_gate(run: dict) -> str:
             f"<div><b>回测</b></div><ul class='tight'>{crit}</ul><div><b>批判</b></div><ul class='tight'>{checks}</ul></details>")
 
 
-def knowledge_card(en: dict, versions: list[dict], today: date, run: dict | None = None) -> str:
+def _kb_forward(rep: dict) -> str:
+    def value(c: dict) -> str:
+        if c["value"] is None:
+            return "—"
+        return signed(c["value"], 2) if c["name"].startswith("相对") else e(c["value"])
+
+    crit = "".join(f"<li>{'✓' if c['ok'] else '…'} {e(c['name'])}：{value(c)}（要求 {e(c['bar'])}）</li>" for c in rep["criteria"])
+    head = (f"前向验证：{rep['started'] or '尚未开始'} 起，{rep['signals']} 个信号（{rep['open_signals']} 个未结束），"
+            f"{rep['n']} 个已完成" + ("，<b>已达标，可以确认</b>" if rep["ready"] else ""))
+    return f"<div class='small' style='margin-top:8px'><b>{head}</b><ul class='tight'>{crit}</ul></div>"
+
+
+def knowledge_card(en: dict, versions: list[dict], today: date, run: dict | None = None, fwd: dict | None = None) -> str:
     from scout import learned
 
     overdue = en.get("recheck_on") and en["status"] in (*learned.OPEN, "confirmed") and en["recheck_on"] <= today
@@ -1020,6 +1032,7 @@ def knowledge_card(en: dict, versions: list[dict], today: date, run: dict | None
             + (f"<div class='small'><b>失效条件</b>：{e(en['invalidation'])}</div>" if en.get("invalidation") else "")
             + (f"<div class='small {'warn' if overdue else 'muted'}'>复查日期 {e(en['recheck_on'])}{'（已到期）' if overdue else ''}</div>"
                if en.get("recheck_on") else "")
+            + (_kb_forward(fwd) if fwd else "")
             + acts
             + (_kb_spec(en["spec"]) if en.get("spec") else "")
             + (_kb_gate(run) if run else "")
@@ -1028,7 +1041,8 @@ def knowledge_card(en: dict, versions: list[dict], today: date, run: dict | None
             + "</div>")
 
 
-def knowledge_page(entries: list[dict], versions: dict[str, list[dict]], today: date, runs: dict[str, dict] | None = None) -> str:
+def knowledge_page(entries: list[dict], versions: dict[str, list[dict]], today: date, runs: dict[str, dict] | None = None,
+                   fwd: dict[str, dict] | None = None) -> str:
     from scout import learned
 
     counts = {s: sum(en["status"] == s for en in entries) for s, _ in KB_SECTIONS}
@@ -1043,7 +1057,8 @@ def knowledge_page(entries: list[dict], versions: dict[str, list[dict]], today: 
         group = [en for en in entries if en["status"] == status]
         if group:
             body += (f"<h2 id='s-{status}'>{label}</h2><div class='grid'>"
-                     + "".join(knowledge_card(en, versions.get(en["key"], []), today, (runs or {}).get(en["key"])) for en in group) + "</div>")
+                     + "".join(knowledge_card(en, versions.get(en["key"], []), today, (runs or {}).get(en["key"]), (fwd or {}).get(en["key"]))
+                             for en in group) + "</div>")
     if not entries:
         body += "<p class='muted'>知识库还是空的。</p>"
     return layout("知识库", "knowledge", body)

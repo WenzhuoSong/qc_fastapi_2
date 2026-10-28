@@ -923,13 +923,24 @@ async def knowledge_page(_: str = Depends(require_auth)) -> str:
         versions.setdefault(r["key"], []).append(r)
     runs = {r["key"]: r for r in await db.fetch_all(
         "SELECT DISTINCT ON (key) key, backtest, critique, passed, ran_at FROM scout.gate_runs ORDER BY key, id DESC")}
-    return views.knowledge_page(entries, versions, date.today(), runs)
+    from scout import forward
+
+    fwd = {en["key"]: await forward.report(en, date.today()) for en in entries if en["status"] in ("forward", "confirmed")}
+    return views.knowledge_page(entries, versions, date.today(), runs, fwd)
 
 
 @app.post("/knowledge/{key}/status")
 async def knowledge_status(key: str, status_: str = Form(..., alias="status"), note: str = Form(""),
                            _: str = Depends(require_auth)):
     """The user moves an entry along the gate (the only way to `confirmed`)."""
+    if status_ == "confirmed":            # G4 only after the forward record meets the agreed bar
+        from scout import forward
+
+        entry = await learned.get(key)
+        rep = await forward.report(entry, date.today()) if entry else {"ready": False, "criteria": []}
+        if not rep["ready"]:
+            missing = "；".join(f"{c['name']} {c['value']}（要求 {c['bar']}）" for c in rep["criteria"] if not c["ok"])
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"前向验证还没有达标，不能确认：{missing}")
     try:
         await learned.move(key, status_, "user", note)
     except learned.KnowledgeError as exc:
