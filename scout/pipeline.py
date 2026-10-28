@@ -298,6 +298,13 @@ async def run_weekly(push: bool = True) -> dict:
     summary: dict = {"prepare": await prepare(full_backfill=True)}
     rates = await ensure_base_rates(force=True)
     summary["base_rates"] = {d: b.get("all", {}).get("n", 0) for d, b in rates.items()}
+    try:                               # industry outlook (v3 P4): drivers + at most three theses
+        from scout import outlook
+
+        summary["outlook"] = await outlook.generate()
+    except Exception as exc:
+        logger.warning("sector outlook failed: %s", exc)
+        summary["outlook"] = f"failed: {type(exc).__name__}"
     report = await render_weekly_report()
     await db.execute(
         "INSERT INTO scout.briefs (kind, asof, content) VALUES ('weekly', :d, :c)", {"d": date.today(), "c": report}
@@ -326,6 +333,11 @@ async def render_weekly_report() -> str:
     rotation = sectors.rotation_line(sector_rows)
     if rotation:
         lines.append(f"\n本周{rotation}")
+    from scout import outlook
+
+    ol = await outlook.latest()
+    if ol and ol["asof"] >= str(since):
+        lines.append("\n<b>行业前景</b>\n" + telegram.esc("\n".join(outlook.render_text(ol).split("\n")[1:])))
     cal = [r for r in await ledger.calibration(20) if r["enough"] and r["kind"] in ("insight", "insight_lens", "sector_heat")]
     if cal:
         from scout.insight import LENS_TITLES

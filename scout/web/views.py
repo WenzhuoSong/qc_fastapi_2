@@ -59,7 +59,7 @@ ul.rrgread{list-style:none;padding:0;margin:6px 0}ul.rrgread li{padding:2px 0}
 
 def layout(title: str, active: str, body: str, head: str = "") -> str:
     nav = [("/", "today", "今日"), ("/market", "market", "市场全景"), ("/ideas", "ideas", "机会看板"), ("/screens", "screens", "策略筛选"), ("/scoreboard", "scoreboard", "记分板"),
-           ("/watchlist", "watchlist", "Watchlist"), ("/trades", "trades", "我的交易"), ("/ledger", "ledger", "判断台账"), ("/knowledge", "knowledge", "知识库"), ("/chat", "chat", "问答"), ("/data", "data", "数据")]
+           ("/watchlist", "watchlist", "Watchlist"), ("/trades", "trades", "我的交易"), ("/outlook", "outlook", "行业前景"), ("/ledger", "ledger", "判断台账"), ("/knowledge", "knowledge", "知识库"), ("/chat", "chat", "问答"), ("/data", "data", "数据")]
     links = "".join(f'<a href="{h}" class="{"on" if k == active else ""}">{t}</a>' for h, k, t in nav)
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title)} · Scout</title>
@@ -1062,3 +1062,48 @@ def knowledge_page(entries: list[dict], versions: dict[str, list[dict]], today: 
     if not entries:
         body += "<p class='muted'>知识库还是空的。</p>"
     return layout("知识库", "knowledge", body)
+
+
+# ── industry outlook ────────────────────────────────────────────────────
+
+def outlook_page(rec: dict | None, theses: list[dict]) -> str:
+    from scout import outlook as ol
+
+    if not rec:
+        return layout("行业前景", "outlook", "<p class='muted'>还没有行业前景：每周六的周报任务会生成。</p>")
+    drv = rec["drivers"]
+    rows = []
+    for etf in ol.TARGETS:
+        v = drv["etfs"].get(etf)
+        if v:
+            rows.append([f"<a href='/ticker/{e(etf)}'>{e(etf)}</a> {e(ol.ETF_ZH.get(etf, ''))}"]
+                        + [signed(v.get(f"rel_{w}")) for w in ol.WINDOWS])
+    styles = [[e(label)] + [signed((drv["styles"].get(str(w)) or drv["styles"].get(w) or {}).get(k)) for w in ol.WINDOWS]
+              for k, label in ol.STYLE_ZH.items()]
+    b = drv["breadth"]
+    o = rec.get("outlook")
+    head = ("<h2>市场由谁推动</h2><p class='small muted'>Python 计算，只描述不预测。风格是股票池内的多空组合收益，组合在每个窗口开始时构建；"
+            f"数据日期 {e(rec['asof'])}。</p>"
+            + (f"<p>{e(o['drivers'])}</p>" if o else "")
+            + f"<p class='small'>宽度：站上 50 日线 {b['above_50'] * 100:.0f}%，站上 200 日线 {b['above_200'] * 100:.0f}%，"
+              f"距 52 周高点 5% 以内 {b['near_high'] * 100:.0f}%（{b['n']} 只）</p>"
+            + "<div class='duo'><div>" + table(["行业 / 主题", "5 日相对 SPY", "20 日", "60 日"], rows) + "</div><div>"
+            + table(["风格", "5 日", "20 日", "60 日"], styles) + "</div></div>")
+    cards = []
+    for t in theses:
+        p = t["payload"] or {}
+        outs = " · ".join(f"{h} 日 {signed(t.get(f'x{h}'))}" + (" ✓" if t.get(f"hit{h}") else " ✗" if t.get(f"hit{h}") is False else "")
+                          for h in (20, 60, 120) if t.get(f"x{h}") is not None) or "未到期"
+        cards.append(f"<div class='card'><h3>{e(t['ticker'])} {e(ol.ETF_ZH.get(t['ticker'], ''))} · {e(p.get('stance'))} · "
+                     f"{e(p.get('horizon'))} 个交易日</h3><div class='small muted'>{e(t['asof'])} · 方法：{e(t.get('method_title') or t['lens'])}"
+                     f"（{e(t.get('method_status') or '')}）· 置信度 {e(p.get('confidence'))}</div>"
+                     f"<p><b>{e(p.get('title'))}</b>：{e(p.get('mechanism'))}</p>"
+                     f"<div class='small'><b>证伪条件</b>：{e('；'.join(p.get('falsification') or []))}</div>"
+                     f"<div class='small'><b>引用</b>：{e('、'.join(p.get('evidence') or []))}</div>"
+                     f"<div class='small'>相对 SPY：{outs}</div></div>")
+    body = (head + "<h2>行业判断</h2><p class='small muted'>AI 每周最多写 3 条，每条必须引用至少一条非价格证据（收入、资本开支、预期修正、"
+            "评级、新闻或宏观），并写明证伪条件。判断记入判断台账，20 / 60 / 120 个交易日后对照 SPY 和等权 S&amp;P 500 打分；"
+            "判断方法在知识库里前向验证，满 30 个样本前都是未验证。</p>"
+            + (f"<div class='grid'>{''.join(cards)}</div>" if cards else
+               f"<p class='muted'>还没有判断。{e((o or {}).get('no_thesis_reason') or '')}</p>"))
+    return layout("行业前景", "outlook", body)

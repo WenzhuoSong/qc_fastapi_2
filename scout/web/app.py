@@ -868,9 +868,10 @@ async def ledger_page(h: int = 20, kind: str = "", _: str = Depends(require_auth
     h = h if h in ledger.HORIZONS else 20
     tabs = " ".join(f"<a class='chip' style='{'background:var(--accent);color:#fff' if x == h else ''}' href='/ledger?h={x}'>{x} 日</a>"
                     for x in ledger.HORIZONS)
+    titles = {**{en["key"]: en["title"] for en in await learned.current()}, **LENS_TITLES}     # lens or thesis method
     cal_rows = []
     for r in await ledger.calibration(h):
-        name = LENS_TITLES.get(r["lens"], r["lens"]) if r["kind"] == "insight_lens" else (r["lens"] or "—")
+        name = titles.get(r["lens"], r["lens"] or "—")
         enough = r["enough"]
         cal_rows.append([e(ledger.KIND_ZH.get(r["kind"], r["kind"])), e(name), e(ledger.STANCE_ZH[r["stance"]]), str(r["n"]),
                          f"{r['hit_rate'] * 100:.0f}%" if enough else f"<span class='muted'>{r['hit_rate'] * 100:.0f}%（样本不足）</span>",
@@ -885,7 +886,7 @@ async def ledger_page(h: int = 20, kind: str = "", _: str = Depends(require_auth
     for j in recent:
         p = j["payload"] or {}
         what = p.get("headline") or ("；".join(p.get("points") or [])[:80]) or (f"热度 {p.get('heat')}" if j["kind"] == "sector_heat" else "")
-        lens = LENS_TITLES.get(j["lens"], j["lens"]) if j["kind"] == "insight_lens" else j["lens"]
+        lens = titles.get(j["lens"], j["lens"])
         rating = {1: "👍", -1: "👎"}.get(j["human_rating"], "")
         form = (f"<form method='post' action='/ledger/{j['id']}/rate' style='display:inline'>"
                 f"<button name='r' value='1' style='padding:0 6px'>👍</button><button name='r' value='-1' style='padding:0 6px;background:var(--down)'>👎</button></form>")
@@ -946,3 +947,22 @@ async def knowledge_status(key: str, status_: str = Form(..., alias="status"), n
     except learned.KnowledgeError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return RedirectResponse(f"/knowledge#{key}", status_code=303)
+
+
+
+@app.get("/outlook", response_class=HTMLResponse)
+async def outlook_page(_: str = Depends(require_auth)) -> str:
+    from scout import outlook
+
+    rec = await outlook.latest()
+    methods = {en["key"]: en for en in await learned.current()}
+    rows = await db.fetch_all(
+        "SELECT j.*, o20.excess_spy AS x20, o20.hit AS hit20, o60.excess_spy AS x60, o60.hit AS hit60, "
+        "o120.excess_spy AS x120, o120.hit AS hit120 FROM scout.judgments j "
+        "LEFT JOIN scout.judgment_outcomes o20 ON o20.judgment_id = j.id AND o20.horizon = 20 "
+        "LEFT JOIN scout.judgment_outcomes o60 ON o60.judgment_id = j.id AND o60.horizon = 60 "
+        "LEFT JOIN scout.judgment_outcomes o120 ON o120.judgment_id = j.id AND o120.horizon = 120 "
+        "WHERE j.kind = 'sector_thesis' ORDER BY j.asof DESC, j.id DESC LIMIT 30")
+    theses = [{**r, "method_title": (methods.get(r["lens"]) or {}).get("title"),
+               "method_status": learned.STATUS_ZH.get((methods.get(r["lens"]) or {}).get("status"), "")} for r in rows]
+    return views.outlook_page(rec, theses)

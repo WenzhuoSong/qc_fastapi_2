@@ -195,3 +195,71 @@
       summary: 放量异动按原基准只比持有多 +0.05%，按公平对照前后两半方向不一致；突破回踩按公平对照相对同日随机股票 +0.89%（t 4.97）。
   invalidation: —
   recheck_on: 2027-10-28
+
+# ── P4: methods for industry theses (kind judgment). AI judgments are validated forward only:
+#    each starts as a hypothesis and moves to forward on first use (scout.outlook).
+
+- key: method_estimate_revisions
+  kind: judgment
+  polarity: positive
+  status: hypothesis
+  title: 行业盈利预期修正面
+  claim: 一个行业里多数公司的盈利预期在被上调（或下调），上调面持续扩大的行业，未来 60–120 个交易日倾向跑赢大盘；反之跑输。
+  mechanism: 分析师修正有惯性，信息逐步进入预期和价格（盈利动量，Chan、Jegadeesh 与 Lakonishok 1996）。
+  context: {}
+  applies: {topics: [sector_thesis]}
+  evidence: []
+  invalidation: 30 个以上样本后，按此方法的判断 60 日命中率不高于 50%。
+  recheck_on: 2027-10-28
+
+- key: method_capex_cycle
+  kind: judgment
+  polarity: positive
+  status: hypothesis
+  title: 资本开支周期传导
+  claim: 下游多家公司同时大幅增加资本开支时，上游设备、材料和供应商行业的收入随后加速；资本开支收缩时相反。
+  mechanism: 资本开支就是上游的订单，从下游财报披露到上游收入确认有一到几个季度的时滞。
+  context: {}
+  applies: {topics: [sector_thesis]}
+  evidence: []
+  invalidation: 30 个以上样本后，按此方法的判断 60 日命中率不高于 50%。
+  recheck_on: 2027-10-28
+
+- key: method_revenue_acceleration
+  kind: judgment
+  polarity: positive
+  status: hypothesis
+  title: 行业收入增速拐点
+  claim: 一个行业里收入增速加快的公司占多数、且中位数增速上行时，基本面拐点尚未被完全定价。
+  mechanism: 投资者对增速变化反应不足，财报一个季度一个季度地确认趋势（盈利公告后漂移的行业层面版本）。
+  context: {}
+  applies: {topics: [sector_thesis]}
+  evidence: []
+  invalidation: 30 个以上样本后，按此方法的判断 60 日命中率不高于 50%。
+  recheck_on: 2027-10-28
+
+- key: method_policy_regulation
+  kind: judgment
+  polarity: positive
+  status: hypothesis
+  title: 政策与监管走向
+  claim: 已经公布、但要几个季度才落实到盈利的政策或监管变化（补贴、关税、审批、价格管制），其影响会逐步反映在行业表现上。
+  mechanism: 政策从公布到影响收入和成本有时滞，市场对二阶影响的定价不充分。
+  context: {}
+  applies: {topics: [sector_thesis]}
+  evidence: []
+  invalidation: 30 个以上样本后，按此方法的判断 60 日命中率不高于 50%。
+  recheck_on: 2027-10-28
+
+- key: method_macro_transmission
+  kind: judgment
+  polarity: positive
+  status: hypothesis
+  title: 宏观变量传导
+  claim: 利率、美元、油价或信用利差出现持续变化时，对这些变量敏感的行业（银行、地产、能源、公用事业等）的盈利和估值会随之调整。
+  mechanism: 宏观变量通过融资成本、商品价格和贴现率影响行业盈利，分析师预期调整滞后。
+  context: {}
+  applies: {topics: [sector_thesis]}
+  evidence: []
+  invalidation: 30 个以上样本后，按此方法的判断 60 日命中率不高于 50%。
+  recheck_on: 2027-10-28
