@@ -52,7 +52,7 @@ def get_engine() -> AsyncEngine:
         max_overflow=5,
         pool_pre_ping=True,
         pool_recycle=300,
-        connect_args={"timeout": 10, "command_timeout": 120},
+        connect_args={"timeout": 10, "command_timeout": get_scout_settings().scout_db_command_timeout},
     )
 
 

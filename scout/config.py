@@ -41,6 +41,8 @@ class ScoutSettings(BaseSettings):
     scout_history_years: int = 12      # covers the 2015–16, 2018, 2020 and 2022 drawdowns, so replays are not bull-market only
     # Size of the Railway Postgres volume; the daily research job warns at 80 %.
     scout_db_volume_gb: float = 4.9
+    # Per-statement timeout; full-history replays run from a laptop may need longer.
+    scout_db_command_timeout: float = 120.0
 
     @property
     def bot_token(self) -> str:

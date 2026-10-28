@@ -57,7 +57,7 @@ Archived, not in this tree: the QC observer (git tag `qc-observer-final`, local 
 | `scout/portfolio.py` | User side: account settings, position sizing, trade journal (ticker, date, fill, shares; partial sells in `scout.trade_sells`, web or Telegram `/sell`), concentration; the system sets each open trade's stop / target (`manage_trade`: plan from the pre-buy price map, chandelier stop only rising; a third at target 1, the rest trails, per the exit study, via `levels.exit_plan`) after every close |
 | `scout/intraday.py` | Session monitor: price levels of trades / opportunities and direct news, each alert sent once (`scout.alerts`) |
 | `scout/exit_study.py` | Trailing-stop study for the holdings plan (scale out in thirds, the rest trailing): policies replayed over every rule signal, net of cost, vs holding, per half; run `python -m scout.jobs.eval_exits` (stored as brief `exit_study`) |
-| `scout/jobs/` | `premarket`, `intraday`, `options`, `eod`, `research`, `weekly`, `backfill`, `eval_insight`, `eval_exits` entrypoints (`python -m scout.jobs.<name>`) |
+| `scout/jobs/` | `premarket`, `intraday`, `options`, `eod`, `research`, `weekly`, `backfill`, `eval_insight`, `eval_exits`, `eval_levels`, `eval_rules` (fair benchmarks: SPY, equal weight, random-date and random-stock controls) entrypoints (`python -m scout.jobs.<name>`) |
 
 Reusable pieces of the removed trading system are catalogued in `docs/legacy_reusable_catalog_zh.md`; retrieve and adapt them rather than rewriting from scratch.
 
