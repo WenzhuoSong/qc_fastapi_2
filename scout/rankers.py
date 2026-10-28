@@ -121,8 +121,42 @@ def macd_cross(a: dict, i: int, frac: float) -> list[int]:
     return [int(x) for x in cols[ok]]
 
 
+def _weekly(a: dict) -> dict:
+    if "weekly" not in a:                          # completed weekly bars only (scout.features.weekly), once per backtest
+        from scout.features import weekly
+
+        idx = pd.Index(a["dates"])
+        a["weekly"] = {k: v.to_numpy() for k, v in weekly(pd.DataFrame(a["close"], index=idx), pd.DataFrame(a["volume"], index=idx)).items()}
+        c = pd.DataFrame(a["close"])
+        a["weekly"]["force_index_2"] = ((c - c.shift(1)) * pd.DataFrame(a["volume"])).ewm(span=2, adjust=False, min_periods=2).mean().to_numpy()
+    return a["weekly"]
+
+
+def elder_triple_screen(a: dict, i: int, frac: float) -> list[int]:
+    """Elder (1986, 1993) triple screen, long side: the weekly MACD histogram rose in the last completed week
+    (screen 1, the tide) and the daily 2-day force index turned negative today (screen 2, a pullback against
+    it). Every stock that qualifies is held (`frac` unused)."""
+    w = _weekly(a)
+    cols = _universe(a, i)
+    fi = w["force_index_2"]
+    ok = (w["wk_macd_hist_chg"][i, cols] > 0) & (fi[i, cols] < 0) & (fi[i - 1, cols] >= 0)
+    return [int(x) for x in cols[ok]]
+
+
+def weinstein_stage2(a: dict, i: int, frac: float) -> list[int]:
+    """Weinstein (1988) stage-2 breakout: in the week completed today, the weekly close crossed above the
+    30-week average (the week before it closed at or below), the average is not falling, and the week's
+    volume is at least twice the average of the 4 weeks before. Every stock that qualifies is held."""
+    w = _weekly(a)
+    cols = _universe(a, i)
+    ok = (w["wk_new"][i, cols] & (w["wk_dist_sma30"][i, cols] > 0) & (w["wk_dist_sma30_prev"][i, cols] <= 0)
+          & (w["wk_sma30_slope_4w"][i, cols] >= 0) & (w["wk_vol_ratio"][i, cols] >= 2))
+    return [int(x) for x in cols[ok]]
+
+
 RANKERS = {"residual_momentum": residual_momentum, "high_52w": high_52w, "frog_in_pan": frog_in_pan,
-           "trend_template": trend_template, "short_term_reversal": short_term_reversal, "macd_cross": macd_cross}
+           "trend_template": trend_template, "short_term_reversal": short_term_reversal, "macd_cross": macd_cross,
+           "elder_triple_screen": elder_triple_screen, "weinstein_stage2": weinstein_stage2}
 
 
 def arrays(p) -> tuple[dict, list[str]]:
@@ -130,6 +164,8 @@ def arrays(p) -> tuple[dict, list[str]]:
     stocks = [t for t in p.stocks if t in p["close"].columns]
     a = {k: p[k][stocks].to_numpy(dtype=float) for k in ("open", "high", "low", "close", "rs_pct")}
     a["liquid"] = p["liquid"][stocks].fillna(False).to_numpy(dtype=bool)
+    a["volume"] = p["volume"][stocks].to_numpy(dtype=float)
+    a["dates"] = list(p.dates)
     a["spy"] = p["close"]["SPY"].to_numpy(dtype=float)
     a["spy_open"] = p["open"]["SPY"].to_numpy(dtype=float)
     return a, stocks

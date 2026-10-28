@@ -128,6 +128,57 @@ macd_cross_days:
     - {max: -1, text: 死叉之后}
     - {min: 1, text: 金叉之后}
 
+wk_dist_sma30:
+  zh: 周线相对 30 周均线
+  unit: pct
+  definition: 最近一根已完成周线（一周最后一个交易日收盘后才算完成）的收盘价 / 30 周均线 − 1。Weinstein 阶段分析的核心：周线收在上升的 30 周均线上方是第二阶段（上升期）。
+  readings:
+    - {max: -0.10, text: 远在 30 周均线下方}
+    - {max: 0.0, text: 30 周均线下方}
+    - {max: 0.10, text: 30 周均线上方}
+    - {min: 0.10, text: 远在 30 周均线上方}
+  caveat: 当周还没收完时，用的是上一根完整周线，所以周中的价格变化不会反映在这里。
+wk_sma30_slope_4w:
+  zh: 30 周均线 4 周变化
+  unit: pct
+  definition: 30 周均线相对 4 周前的变化。向上表示长期趋势在抬升，走平表示阶段转换（第一或第三阶段），向下是第四阶段（下降期）的特征。
+  readings:
+    - {max: -0.01, text: 30 周均线向下}
+    - {max: 0.01, text: 30 周均线走平}
+    - {min: 0.01, text: 30 周均线向上}
+wk_rsi14:
+  zh: 周线 RSI(14)
+  unit: rsi
+  definition: 用已完成周线算的 14 周 RSI，比日线 RSI 慢得多，反映数月尺度的动能。
+  readings:
+    - {max: 30, text: 周线超卖}
+    - {max: 50, text: 周线偏弱}
+    - {max: 70, text: 周线偏强}
+    - {min: 70, text: 周线超买；强趋势中可以长期停留}
+wk_macd_hist_pct:
+  zh: 周线 MACD 柱（占股价）
+  unit: pct2
+  definition: 周线 MACD（12/26/9 周）的柱子，除以周收盘价。大于 0 表示周线动能偏多。
+  readings:
+    - {max: 0.0, text: 周线动能偏弱}
+    - {min: 0.0, text: 周线动能偏强}
+wk_macd_hist_chg:
+  zh: 周线 MACD 柱变化
+  unit: pct2
+  definition: 本周（最近一根完整周线）MACD 柱减上周，除以周收盘价。Elder 三重滤网的第一层：柱子上升表示周线趋势转强，只考虑做多。
+  readings:
+    - {max: 0.0, text: 周线柱下降（周线动能在减弱）}
+    - {min: 0.0, text: 周线柱上升（周线动能在增强）}
+wk_vol_ratio:
+  zh: 周成交量 / 前 4 周均量
+  unit: ratio
+  definition: 最近一根完整周线的成交量，除以之前 4 周的平均周成交量。Weinstein 要求突破 30 周均线时成交量至少是前几周平均的 2 倍。
+  readings:
+    - {max: 0.8, text: 缩量}
+    - {max: 1.5, text: 量能正常}
+    - {max: 2.0, text: 放量}
+    - {min: 2.0, text: 显著放量（≥ 2 倍）}
+
 gap_pct:
   zh: 开盘跳空
   unit: pct

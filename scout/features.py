@@ -3,7 +3,7 @@ scanning and historical base-rate replay so both see identical inputs."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -15,6 +15,7 @@ SNAPSHOT_FEATURES = (
     "close", "ret_1d", "ret_5d", "ret_20d", "ret_63d", "ret_252d", "sma20", "sma50", "sma200",
     "atr14", "atr_pct", "vol_ratio", "dollar_vol20", "dist_52w_high", "rsi2", "rsi14",
     "macd_pct", "macd_hist_pct", "macd_cross_days",
+    "wk_dist_sma30", "wk_sma30_slope_4w", "wk_rsi14", "wk_macd_hist_pct", "wk_macd_hist_chg", "wk_vol_ratio",
     "gap_pct", "close_loc", "rs_pct", "sector_rs_pct", "sector_rel_20",
     "beta_60", "corr_60", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d", "market_ret_20d",
     "zscore_20", "bb_pct", "vol_20", "max_dd_60",
@@ -74,6 +75,43 @@ def cross_days(hist: pd.DataFrame) -> pd.DataFrame:
     pos = np.arange(len(hist), dtype=float)[:, None]
     since = pd.DataFrame(np.where(changed, pos, np.nan), index=hist.index, columns=hist.columns).ffill()
     return ((pos - since) + 1).mul(sign).where(sign != 0)
+
+
+def week_ends(idx) -> np.ndarray:
+    """True on the last US trading session of each calendar week: that week's bar is complete at this close.
+    A session with a later trading day in the same week (e.g. today, a Wednesday) is not a week end."""
+    from scout.market_calendar import is_us_equity_trading_day
+
+    days = [d.date() if hasattr(d, "date") else d for d in pd.to_datetime(idx)]
+    return np.array([not any(is_us_equity_trading_day(d + timedelta(days=k)) for k in range(1, 5 - d.weekday())) for d in days])
+
+
+WEEKLY_FEATURES = ("wk_dist_sma30", "wk_dist_sma30_prev", "wk_sma30_slope_4w", "wk_rsi14", "wk_macd_hist_pct", "wk_macd_hist_chg",
+                   "wk_vol_ratio", "wk_new")
+
+
+def weekly(close: pd.DataFrame, volume: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Indicators on completed weekly bars, aligned to the daily index: every session carries the values of
+    the latest week whose last session closed on or before it. `wk_new` marks the sessions that complete a week."""
+    end = week_ends(close.index)
+    wid = np.concatenate([[0], np.cumsum(end)[:-1]])            # week number of each session
+    done = wid < end.sum()                                      # sessions of completed weeks only
+    g_c, g_v = close[done].groupby(wid[done]), volume[done].groupby(wid[done])
+    wk_index = close.index[end]
+    wc = g_c.last().set_axis(wk_index)
+    wv = g_v.sum(min_count=1).set_axis(wk_index)
+    sma30 = wc.rolling(30, min_periods=30).mean()
+    line, hist = macd(wc)
+    w = {"wk_dist_sma30": wc / sma30 - 1,
+         "wk_sma30_slope_4w": sma30 / sma30.shift(4) - 1,
+         "wk_rsi14": rsi(wc, 14),
+         "wk_macd_hist_pct": hist / wc,
+         "wk_macd_hist_chg": (hist - hist.shift(1)) / wc,
+         "wk_vol_ratio": wv / wv.shift(1).rolling(4, min_periods=4).mean().replace(0, np.nan)}
+    w["wk_dist_sma30_prev"] = w["wk_dist_sma30"].shift(1)
+    out = {k: v.reindex(close.index).ffill() for k, v in w.items()}
+    out["wk_new"] = pd.DataFrame(np.repeat(end[:, None], close.shape[1], axis=1), index=close.index, columns=close.columns)
+    return out
 
 
 def market_regime(close: pd.Series) -> pd.Series:
@@ -141,6 +179,8 @@ def build_panel(
     f["macd_pct"] = line / c
     f["macd_hist_pct"] = hist / c
     f["macd_cross_days"] = cross_days(hist)
+    f.update(weekly(c, v))
+    f["force_index_2"] = ((c - prev_c) * v).ewm(span=2, adjust=False, min_periods=2).mean()   # Elder: 2-day EMA of Δclose × volume
 
     # Is it the stock or the market? 60-day beta/correlation to SPY; the move is
     # split into the market part (yesterday's beta × SPY return) and the rest.

@@ -1,0 +1,14 @@
+# Pre-registration (G0), written 2026-10-28 before any run. Never edited after a run.
+key: rank_weinstein_stage2
+family: weinstein_stage2
+type: rank
+ranker: weinstein_stage2
+hold: 63
+every: 1
+primary_control: select
+title: Weinstein 第二阶段突破（周线上穿 30 周均线 + 放量）
+claim: 一周收盘时周线从 30 周均线下方升到上方、30 周均线不再下行、当周成交量至少是前 4 周平均的 2 倍的股票，下周第一天开盘买入、持有 63 个交易日，跑赢同一天的其他股票。
+mechanism: 股票在长期均线下方筑底（第一阶段）之后，放量突破 30 周均线标志着进入上升期（第二阶段），机构资金进场，上升期通常持续数月（Weinstein 1988《Secrets for Profiting in Bull and Bear Markets》）。
+expected_failure: 突破后回落到均线下方的假突破多；大盘处于下降期时个股突破的成功率低（Weinstein 本人要求先看大盘阶段）；股票池是大中盘股，放量突破的含义可能弱于小盘股。
+deviations: 原法在周线收盘跌破 30 周均线时离场，这里固定持有 63 个交易日；"前几周平均量"取前 4 周；没有加大盘阶段和行业阶段的过滤（Weinstein 建议加，留给条件版另行登记）；只做多。
+registered_on: 2026-10-28

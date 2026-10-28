@@ -1,10 +1,11 @@
 ---
 id: trend_dow
 title: 道氏趋势
-fields: [swing_trend, swing_break, close, sma20, sma50, sma200, ret_63d, ret_252d, updown_vol_20]
+fields: [swing_trend, swing_break, close, sma20, sma50, sma200, ret_63d, ret_252d, updown_vol_20, wk_dist_sma30, wk_sma30_slope_4w, wk_vol_ratio]
 sources:
   - Edwards & Magee《股市趋势技术分析》第一部分：道氏理论
   - Dow / Hamilton / Rhea 的道氏理论原则
+  - Stan Weinstein《Secrets for Profiting in Bull and Bear Markets》阶段分析（30 周均线）
 ---
 **看什么**：主要趋势的方向、是否得到确认、是否出现反转信号。
 
@@ -15,6 +16,7 @@ sources:
    注意区分：swing_trend 是过去已确认的波段形态，swing_break 是正在发生的突破或跌破，两者可以方向相反（例如下降形态中刚刚突破前高）。
 4. 成交量应当顺着趋势放大：上升趋势中，上涨日的成交量应多于下跌日（updown_vol_20 > 1）。
 5. 主要上升趋势中的次级回调，常见回撤幅度是前一波涨幅的 1/3 到 2/3；回到 50 日线附近是常见位置。
+6. 周线定大方向（Weinstein 阶段）：收在向上的 30 周均线上方是第二阶段（上升期）；均线走平、价格围着它上下是第一阶段（筑底）或第三阶段（做头）；收在向下的 30 周均线下方是第四阶段（下降期）。日线信号和周线阶段方向相反时，以周线为准。周线只用已收完的一周。
 
 **确认**：波段结构和均线方向一致，且上涨日放量。
 **矛盾**：均线仍是多头排列，但波段已经跌破前低，或者下跌日成交更活跃。这通常是趋势转弱的早期迹象。
