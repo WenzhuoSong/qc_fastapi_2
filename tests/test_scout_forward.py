@@ -73,3 +73,64 @@ class SelectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _Panel:
+    """Just enough of a FeaturePanel for the ranking forward record."""
+
+    def __init__(self, frames):
+        self.f = frames
+
+    def __getitem__(self, name):
+        return self.f[name]
+
+    @property
+    def dates(self):
+        return self.f["close"].index
+
+
+def _rank_panel(n=10):
+    import pandas as pd
+
+    idx = pd.Index([date(2026, 11, 2) + timedelta(days=k) for k in range(n)])
+    op = pd.DataFrame({"AAA": [10.0 + k for k in range(n)], "SPY": [100.0] * n}, index=idx)
+    cl = pd.DataFrame({"AAA": [10.5 + k for k in range(n)], "SPY": [101.0] * n}, index=idx)
+    return _Panel({"open": op, "close": cl}), idx
+
+
+class RankForwardTests(unittest.TestCase):
+    def test_holding_runs_from_next_open_to_the_close_hold_sessions_later(self):
+        p, idx = _rank_panel()
+        r = forward.resolve_rank(p, {"id": 1, "asof": idx[2], "ticker": "AAA", "hold": 3})
+        self.assertEqual((r["ed"], r["xd"]), (idx[3], idx[5]))
+        self.assertAlmostEqual(r["ret"], 15.5 / 13.0 - 1)
+        self.assertAlmostEqual(r["spy"], 0.01)
+        self.assertIsNone(forward.resolve_rank(p, {"id": 1, "asof": idx[7], "ticker": "AAA", "hold": 3}))   # still running
+        self.assertEqual(forward.resolve_rank(p, {"id": 1, "asof": idx[2], "ticker": "ZZZ", "hold": 3})["s"], "missing")
+        self.assertIsNone(forward.resolve_rank(p, {"id": 1, "asof": idx[0] - timedelta(days=5), "ticker": "AAA", "hold": 3}))
+
+    def test_control_is_every_other_stock_of_the_day_and_waits_for_all(self):
+        d, d2 = date(2026, 11, 2), date(2026, 12, 1)
+        row = lambda t, role, ret, day=d, s="closed": {"asof": day, "ticker": t, "role": role, "ret": ret, "state": s, "spy_ret": 0.0}  # noqa: E731
+        rows = [row("A", "pick", 0.10), row("B", "pool", 0.02), row("C", "pool", 0.04), row("D", "pool", None, s="missing"),
+                row("E", "pick", 0.05, d2), row("F", "pool", None, d2, "pending")]
+        (pick,) = forward.rank_pairs(rows)
+        self.assertEqual(pick["ticker"], "A")
+        self.assertAlmostEqual(pick["select"], 0.03)
+        self.assertAlmostEqual(pick["diff"], 0.07)
+
+    def test_rank_entries_are_recorded_by_rebalance_not_by_detector(self):
+        from unittest.mock import AsyncMock, patch
+
+        en = {"key": "rank_x", "status": "forward", "spec": {"type": "rank", "ranker": "low_asset_growth", "every": 3, "hold": 5,
+                                                              "primary_control": "select"}}
+        p, idx = _rank_panel()
+        with patch.object(forward.db, "fetch_one", AsyncMock(return_value={"d": idx[5]})), \
+                patch.object(forward, "rank_rows", AsyncMock(return_value=[{"role": "pick"}])) as rr, \
+                patch.object(forward.db, "execute_many", AsyncMock()):
+            import asyncio
+
+            self.assertEqual(asyncio.run(forward.record_rank(p, en, idx[7])), 0)      # 2 sessions since: not yet
+            self.assertEqual(asyncio.run(forward.record_rank(p, en, idx[8])), 1)      # 3 sessions: rebalance
+        self.assertEqual(rr.await_count, 1)
+        self.assertIn(en, forward.under_test([en]))

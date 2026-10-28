@@ -9,6 +9,11 @@ After every close, each knowledge entry under test (a rule spec in status `backt
 Every row is resolved with `scout.simulate`, the replay's simulator; nothing stored is
 recomputed or tuned later. An entry moves to `forward` when its record starts.
 
+Ranking strategies (`spec.type: rank`) are recorded in `scout.forward_ranks` instead: on the
+record's first session and then every `every` sessions, the ranker's picks and every other
+eligible stock of that day, each held from the next open to the close `hold` sessions later
+(the backtest's rule). A pick's control is the mean of every other stock of its day.
+
 Report: per signal, its return minus its control; mean and t on monthly means. The entry is
 ready for the user's decision when the record spans ≥ 6 months, has ≥ 30 complete signals,
 the edge is positive, and it is not significantly below the backtest (t of forward − backtest
@@ -97,17 +102,114 @@ async def record(p, asof: date) -> dict:
     cooldown_from = p.dates[max(0, p.dates.get_loc(asof) - base_rates.COOLDOWN_SESSIONS + 1)]
     for en in entries:
         if en["status"] == "backtested":
-            en = await learned.move(en["key"], "forward", "system", f"开始前向验证（{asof} 收盘起每日记录信号和选股对照）")
-        recent = {r["ticker"] for r in await db.fetch_all(
-            "SELECT DISTINCT ticker FROM scout.forward_trades WHERE key = :k AND role = 'signal' AND asof >= :d AND asof < :t",
-            {"k": en["key"], "d": cooldown_from, "t": asof})}
-        rows = new_rows(p, en, asof, recent)
-        if rows:
-            await db.execute_many(
-                "INSERT INTO scout.forward_trades (key, detector, role, ticker, leg_ticker, draw, asof, entry_lo, entry_hi, stop, "
-                "target1, target2) VALUES (:key, :det, :role, :t, :leg, :draw, :d, :lo, :hi, :stop, :t1, :t2) "
-                "ON CONFLICT (key, role, ticker, asof, draw) DO NOTHING", rows)
-        out[en["key"]] = sum(r["role"] == "signal" for r in rows)
+            note = "每次调仓记录选中的股票和全部候选股" if is_rank(en) else "每日记录信号和选股对照"
+            en = await learned.move(en["key"], "forward", "system", f"开始前向验证（{asof} 收盘起{note}）")
+        try:
+            out[en["key"]] = await (record_rank(p, en, asof) if is_rank(en) else record_signals(p, en, asof, cooldown_from))
+        except Exception as exc:          # one entry must not stop the others' records
+            logger.warning("forward record %s failed: %r", en["key"], exc)
+            out[en["key"]] = f"failed: {type(exc).__name__}"
+    return out
+
+
+async def record_signals(p, en: dict, asof: date, cooldown_from: date) -> int:
+    """Today's signals of a detector rule and their control legs; returns the signals stored."""
+    recent = {r["ticker"] for r in await db.fetch_all(
+        "SELECT DISTINCT ticker FROM scout.forward_trades WHERE key = :k AND role = 'signal' AND asof >= :d AND asof < :t",
+        {"k": en["key"], "d": cooldown_from, "t": asof})}
+    rows = new_rows(p, en, asof, recent)
+    if rows:
+        await db.execute_many(
+            "INSERT INTO scout.forward_trades (key, detector, role, ticker, leg_ticker, draw, asof, entry_lo, entry_hi, stop, "
+            "target1, target2) VALUES (:key, :det, :role, :t, :leg, :draw, :d, :lo, :hi, :stop, :t1, :t2) "
+            "ON CONFLICT (key, role, ticker, asof, draw) DO NOTHING", rows)
+    return sum(r["role"] == "signal" for r in rows)
+
+
+def is_rank(entry: dict) -> bool:
+    return (entry.get("spec") or {}).get("type") == "rank"
+
+
+def sessions_since(p, last: date, asof: date) -> int:
+    ts = pd.to_datetime(p.dates)
+    return int(((ts > pd.Timestamp(last)) & (ts <= pd.Timestamp(asof))).sum())
+
+
+async def rank_rows(p, entry: dict, asof: date) -> list[dict]:
+    """The ranker's picks and the rest of the eligible pool after the close of `asof`."""
+    from scout import rankers
+
+    spec = entry["spec"]
+    a, stocks = rankers.arrays(p)
+    i = p.dates.get_loc(asof)
+    a["angle"] = await rankers.prepare(spec, p, stocks, days=[i])
+    pool = rankers._universe(a, i)
+    picks = set(rankers.RANKERS[spec["ranker"]](a, i, float(spec.get("top_frac", 0.1))))
+    return [{"key": entry["key"], "d": asof, "t": stocks[j], "role": "pick" if j in picks else "pool", "hold": int(spec["hold"])}
+            for j in pool.tolist()]
+
+
+async def record_rank(p, entry: dict, asof: date) -> int:
+    """Store a rebalance on the record's first session and every `every` sessions after; returns the picks stored."""
+    if asof not in p.dates:
+        return 0
+    row = await db.fetch_one("SELECT max(asof) AS d FROM scout.forward_ranks WHERE key = :k", {"k": entry["key"]})
+    last = (row or {}).get("d")
+    if last is not None and sessions_since(p, last, asof) < int(entry["spec"]["every"]):
+        return 0
+    rows = await rank_rows(p, entry, asof)
+    if rows:
+        await db.execute_many(
+            "INSERT INTO scout.forward_ranks (key, asof, ticker, role, hold) VALUES (:key, :d, :t, :role, :hold) "
+            "ON CONFLICT (key, asof, ticker) DO NOTHING", rows)
+    return sum(r["role"] == "pick" for r in rows)
+
+
+def resolve_rank(p, r: dict) -> dict | None:
+    """Next open → close `hold` sessions after the rebalance, from one price series; None while running."""
+    ts = pd.to_datetime(p.dates)
+    if pd.Timestamp(r["asof"]) < ts[0]:
+        return None                                   # older than the panel: wait for a longer one
+    after = np.flatnonzero(ts > pd.Timestamp(r["asof"]))
+    if len(after) < r["hold"]:
+        return None
+    a, b = after[0], after[r["hold"] - 1]
+    o, c, spy_o, spy_c = (p[f][col].iloc[k] if col in p[f].columns else np.nan
+                          for f, col, k in (("open", r["ticker"], a), ("close", r["ticker"], b), ("open", BENCHMARK, a), ("close", BENCHMARK, b)))
+    out = {"id": r["id"], "ed": p.dates[a], "xd": p.dates[b], "ret": None, "spy": None, "s": "missing"}
+    if np.isfinite(o) and np.isfinite(c) and o > 0:
+        out.update(ret=float(c / o - 1), s="closed")
+    if np.isfinite(spy_o) and np.isfinite(spy_c) and spy_o > 0:
+        out["spy"] = float(spy_c / spy_o - 1)
+    return out
+
+
+async def update_ranks(p) -> int:
+    rows = await db.fetch_all("SELECT id, asof, ticker, hold FROM scout.forward_ranks WHERE state = 'pending'")
+    done = [x for x in (resolve_rank(p, r) for r in rows) if x]
+    if done:
+        await db.execute_many("UPDATE scout.forward_ranks SET state = :s, entry_date = :ed, exit_date = :xd, ret = :ret, "
+                              "spy_ret = :spy WHERE id = :id", done)
+    return len(done)
+
+
+def rank_pairs(rows: list[dict]) -> list[dict]:
+    """Complete picks: closed, with the mean of every other closed stock of the same rebalance as control."""
+    by_day: dict[date, list[dict]] = {}
+    pending = {r["asof"] for r in rows if r["state"] == "pending"}
+    for r in rows:
+        if r["state"] == "closed" and r["ret"] is not None:
+            by_day.setdefault(r["asof"], []).append(r)
+    out = []
+    for d, rs in by_day.items():
+        if d in pending:
+            continue
+        total, n = sum(r["ret"] for r in rs), len(rs)
+        for r in rs:
+            if r["role"] == "pick" and n > 1:
+                control = (total - r["ret"]) / (n - 1)
+                out.append({"date": d, "ticker": r["ticker"], "ret": r["ret"], "select": control, "diff": r["ret"] - control,
+                            "spy": r["spy_ret"]})
     return out
 
 
@@ -199,8 +301,8 @@ def evaluate(complete: list[dict], started: date | None, today: date, backtest_e
             "ready": all(c["ok"] for c in crit)}
 
 
-async def started_on(key: str) -> date | None:
-    row = await db.fetch_one("SELECT min(asof) AS d FROM scout.forward_trades WHERE key = :k", {"k": key})
+async def started_on(key: str, table: str = "forward_trades") -> date | None:
+    row = await db.fetch_one(f"SELECT min(asof) AS d FROM scout.{table} WHERE key = :k", {"k": key})
     return (row or {}).get("d")
 
 
@@ -212,6 +314,12 @@ async def backtest_edge(entry: dict) -> float | None:
 
 
 async def report(entry: dict, today: date) -> dict:
+    if is_rank(entry):
+        rows = await db.fetch_all("SELECT * FROM scout.forward_ranks WHERE key = :k", {"k": entry["key"]})
+        out = evaluate(rank_pairs(rows), await started_on(entry["key"], "forward_ranks"), today, await backtest_edge(entry))
+        out["signals"] = sum(r["role"] == "pick" for r in rows)
+        out["open_signals"] = sum(r["role"] == "pick" and r["state"] == "pending" for r in rows)
+        return out
     rows = await db.fetch_all("SELECT * FROM scout.forward_trades WHERE key = :k", {"k": entry["key"]})
     out = evaluate(pairs(rows), await started_on(entry["key"]), today, await backtest_edge(entry))
     out["signals"] = sum(r["role"] == "signal" for r in rows)

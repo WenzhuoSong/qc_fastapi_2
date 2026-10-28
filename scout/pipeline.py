@@ -180,7 +180,8 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     try:                               # forward test of gated rules (G3); never blocks the scan
         from scout import forward
 
-        summary["forward"] = {"recorded": await forward.record(p, asof), "updated": await forward.update()}
+        summary["forward"] = {"recorded": await forward.record(p, asof), "updated": await forward.update(),
+                              "ranks_updated": await forward.update_ranks(p)}
     except Exception as exc:
         logger.warning("forward record failed: %s", exc)
         summary["forward"] = f"failed: {type(exc).__name__}"

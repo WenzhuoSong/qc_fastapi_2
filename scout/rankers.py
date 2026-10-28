@@ -172,15 +172,15 @@ RANKERS.update({"ear_drift": ear_drift, "gross_profitability": gross_profitabili
                 "low_asset_growth": low_asset_growth, "net_buyback": net_buyback, "insider_cluster": insider_cluster})
 
 
-async def prepare(spec: dict, p, stocks: list[str]) -> dict[int, dict[int, float]]:
-    """The angle input of a ranker on each rebalance day, point in time."""
+async def prepare(spec: dict, p, stocks: list[str], days: list[int] | None = None) -> dict[int, dict[int, float]]:
+    """The angle input of a ranker on each rebalance day (default: the backtest's), point in time."""
     from scout import angles
 
     need = ANGLE_RANKERS.get(spec["ranker"])
     if need is None:
         return {}
     col = {t: j for j, t in enumerate(stocks)}
-    days = rebalance_dates(len(p.dates), spec)
+    days = rebalance_dates(len(p.dates), spec) if days is None else days
     out: dict[int, dict[int, float]] = {i: {} for i in days}
     if need == "earnings":
         every = int(spec["every"])
