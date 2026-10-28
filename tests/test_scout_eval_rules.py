@@ -1,7 +1,7 @@
 import unittest
 from datetime import date
 
-from scout.jobs.eval_rules import monthly_t
+from scout.gate import monthly_t
 
 
 class MonthlyTTests(unittest.TestCase):

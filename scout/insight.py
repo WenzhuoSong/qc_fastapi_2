@@ -357,7 +357,7 @@ def build_pack(facts: dict) -> dict:
 def _rule_check(detector: str, block: list[dict], scope: dict[str, dict]) -> str:
     """The rule's verdict from the knowledge base, replacing the biased vs-hold base rate."""
     for item in block:
-        if detector in scope[item["key"]]["detectors"]:
+        if scope[item["key"]].get("rule") == detector:
             return f"{item['状态']}：{item['条目']}（见 {item['key']}）"
     return "尚未做公平基准检验"
 

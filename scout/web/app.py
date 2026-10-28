@@ -921,7 +921,9 @@ async def knowledge_page(_: str = Depends(require_auth)) -> str:
     versions: dict[str, list[dict]] = {}
     for r in rows:
         versions.setdefault(r["key"], []).append(r)
-    return views.knowledge_page(entries, versions, date.today())
+    runs = {r["key"]: r for r in await db.fetch_all(
+        "SELECT DISTINCT ON (key) key, backtest, critique, passed, ran_at FROM scout.gate_runs ORDER BY key, id DESC")}
+    return views.knowledge_page(entries, versions, date.today(), runs)
 
 
 @app.post("/knowledge/{key}/status")

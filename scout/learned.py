@@ -38,8 +38,8 @@ NEXT = {"hypothesis": ("backtested", "rejected"), "backtested": ("forward", "rej
 USER_ONLY = {"confirmed"}
 ACTORS = ("seed", "system", "user")
 FIELDS = ("kind", "polarity", "status", "title", "claim", "mechanism", "context", "applies", "evidence", "invalidation",
-          "recheck_on", "supersedes")
-JSON_FIELDS = ("context", "applies", "evidence")
+          "recheck_on", "supersedes", "spec")
+JSON_FIELDS = ("context", "applies", "evidence")          # never null; `spec` (the pre-registration, scout.gate) may be
 
 KIND_ZH = {"rule": "交易规则", "feature": "特征", "regularity": "市场规律", "method": "分析方法", "judgment": "AI 判断方法"}
 STATUS_ZH = {"hypothesis": "假设", "backtested": "回测通过（待前向验证）", "forward": "前向验证中", "confirmed": "已确认",
@@ -145,11 +145,12 @@ async def write(entry: dict, actor: str, note: str = "") -> dict:
               "recheck_on": date.fromisoformat(str(recheck)) if recheck else None}
     for f in JSON_FIELDS:
         params[f] = db.jsonb(new.get(f) or ({} if f != "evidence" else []))
+    params["spec"] = db.jsonb(new["spec"]) if new.get("spec") else None
     await db.execute(
         "INSERT INTO scout.knowledge (key, version, kind, polarity, status, title, claim, mechanism, context, applies, evidence, "
-        "invalidation, recheck_on, supersedes, changed_by, note) VALUES (:key, :version, :kind, :polarity, :status, :title, "
+        "invalidation, recheck_on, supersedes, spec, changed_by, note) VALUES (:key, :version, :kind, :polarity, :status, :title, "
         ":claim, :mechanism, CAST(:context AS JSONB), CAST(:applies AS JSONB), CAST(:evidence AS JSONB), :invalidation, "
-        ":recheck_on, :supersedes, :changed_by, :note)", params)
+        ":recheck_on, :supersedes, CAST(:spec AS JSONB), :changed_by, :note)", params)
     return {**new, "version": version}
 
 
@@ -222,7 +223,8 @@ def context_block(entries: list[dict]) -> tuple[list[dict], dict[str, dict]]:
                                                             for ev in en.get("evidence") or []),
                       **({"机制": en["mechanism"]} if en.get("mechanism") else {})})
         ap = en.get("applies") or {}
-        scope[key] = {"id": en["key"], "lenses": list(ap.get("lenses") or []), "detectors": list(ap.get("detectors") or [])}
+        scope[key] = {"id": en["key"], "lenses": list(ap.get("lenses") or []), "detectors": list(ap.get("detectors") or []),
+                      "rule": rule_of(en)}
     return block, scope
 
 
@@ -232,6 +234,14 @@ async def for_insight(detector: str | None, lenses: set[str], ctx: dict) -> list
     except Exception as exc:          # the interpretation must not fail on the knowledge base
         logger.warning("knowledge lookup failed: %s", exc)
         return []
+
+
+def rule_of(entry: dict) -> str | None:
+    """The rule an entry is the verdict on: its registered spec's, else the first rule it is about."""
+    if entry.get("spec") and entry["spec"].get("detector"):
+        return entry["spec"]["detector"]
+    detectors = (entry.get("applies") or {}).get("detectors") or []
+    return detectors[0] if entry["kind"] == "rule" and detectors else None
 
 
 def due(entries: list[dict], today: date) -> list[dict]:

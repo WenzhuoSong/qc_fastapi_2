@@ -971,7 +971,29 @@ def _kb_scope(en: dict) -> str:
     return "、".join(dict.fromkeys(parts)) + (f"<span class='muted'>（条件 {e(cond)}）</span>" if cond else "")
 
 
-def knowledge_card(en: dict, versions: list[dict], today: date) -> str:
+def _kb_spec(spec: dict) -> str:
+    rows = [("族", spec.get("family")), ("规则", spec.get("detector")), ("主对照", {"select": "选股对照（同日随机股）", "timing": "时机对照（同股随机日）"}.get(spec.get("primary_control"), spec.get("primary_control"))),
+            ("预期失效", spec.get("expected_failure")), ("登记日期", spec.get("registered_on")), ("说明", spec.get("registration_note"))]
+    return ("<details class='small' style='margin-top:6px'><summary>预登记规格</summary><ul class='tight'>"
+            + "".join(f"<li><b>{k}</b>：{e(v)}</li>" for k, v in rows if v) + "</ul></details>")
+
+
+def _kb_gate(run: dict) -> str:
+    from scout import gate
+
+    rep, cr = run.get("backtest") or {}, run.get("critique") or {}
+    crit = "".join(f"<li>{'✓' if c['ok'] else '✗'} {e(c['name'])}：{e(c['value'])}（要求 {e(c['bar'])}）</li>" for c in rep.get("criteria") or [])
+    checks = ""
+    if cr.get("source") == "llm":
+        checks = "".join(f"<li>{ {'通过': '✓', '有疑问': '？', '不通过': '✗'}[i['verdict']]} {e(gate.CHECKS[i['check']].split('：')[0])}：{e(i['reason'])}</li>"
+                         for i in cr["items"]) + f"<li><b>反方论证</b>：{e(cr.get('counter_argument'))}</li>"
+    else:
+        checks = f"<li>批判关未完成：{e('；'.join(cr.get('issues') or []))}</li>"
+    return (f"<details class='small' style='margin-top:6px'><summary>检验关 {e(run['ran_at'].date())}：{'通过' if run['passed'] else '未通过'}</summary>"
+            f"<div><b>回测</b></div><ul class='tight'>{crit}</ul><div><b>批判</b></div><ul class='tight'>{checks}</ul></details>")
+
+
+def knowledge_card(en: dict, versions: list[dict], today: date, run: dict | None = None) -> str:
     from scout import learned
 
     overdue = en.get("recheck_on") and en["status"] in (*learned.OPEN, "confirmed") and en["recheck_on"] <= today
@@ -999,12 +1021,14 @@ def knowledge_card(en: dict, versions: list[dict], today: date) -> str:
             + (f"<div class='small {'warn' if overdue else 'muted'}'>复查日期 {e(en['recheck_on'])}{'（已到期）' if overdue else ''}</div>"
                if en.get("recheck_on") else "")
             + acts
+            + (_kb_spec(en["spec"]) if en.get("spec") else "")
+            + (_kb_gate(run) if run else "")
             + f"<details class='small' style='margin-top:6px'><summary>版本记录（{len(versions)}）</summary>"
               f"<table><thead><tr><th>版本</th><th>日期</th><th>状态</th><th>修改者</th><th>理由</th></tr></thead><tbody>{hist}</tbody></table></details>"
             + "</div>")
 
 
-def knowledge_page(entries: list[dict], versions: dict[str, list[dict]], today: date) -> str:
+def knowledge_page(entries: list[dict], versions: dict[str, list[dict]], today: date, runs: dict[str, dict] | None = None) -> str:
     from scout import learned
 
     counts = {s: sum(en["status"] == s for en in entries) for s, _ in KB_SECTIONS}
@@ -1019,7 +1043,7 @@ def knowledge_page(entries: list[dict], versions: dict[str, list[dict]], today: 
         group = [en for en in entries if en["status"] == status]
         if group:
             body += (f"<h2 id='s-{status}'>{label}</h2><div class='grid'>"
-                     + "".join(knowledge_card(en, versions.get(en["key"], []), today) for en in group) + "</div>")
+                     + "".join(knowledge_card(en, versions.get(en["key"], []), today, (runs or {}).get(en["key"])) for en in group) + "</div>")
     if not entries:
         body += "<p class='muted'>知识库还是空的。</p>"
     return layout("知识库", "knowledge", body)

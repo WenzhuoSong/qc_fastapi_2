@@ -1,0 +1,12 @@
+# Pre-registration (G0). Written once, never edited after a run: a changed idea gets a
+# new key in the same family, so every variant tried is counted.
+key: breakout_retest_selection
+family: breakout_retest
+title: 突破回踩：选出的股票跑赢同日随机股票
+claim: 收盘突破 55 日高点后不追价、等 10 个交易日内回踩突破位再入场，这些股票在同样的止损止盈下跑赢同一天随机选的股票。
+mechanism: 突破说明有新的需求；回踩不破说明突破位从阻力变成支撑，短线获利盘已经离场。
+detector: breakout_retest
+primary_control: select
+expected_failure: 优势若来自少数行情（例如 2020 年反弹）或只在上升市成立，应在市场状态拆分里看到；策略广为人知后可能在后半段衰减。
+registered_on: 2026-10-28
+registration_note: 补登：这份规格写于 2026-10-28 的公平基准检验之后，不是事先登记；结论要靠前向验证确认。
