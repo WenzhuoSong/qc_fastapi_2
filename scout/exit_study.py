@@ -94,13 +94,14 @@ def trail_level(p: Path, pol: Policy, k: int, top_close: float) -> float | None:
     return None
 
 
-def manage(p: Path, entry: float, stop0: float, t1: float, t2: float, pol: Policy) -> tuple[float, int]:
+def manage(p: Path, entry: float, stop0: float, t1: float, t2: float, pol: Policy,
+           max_hold: int = MAX_HOLD) -> tuple[float, int]:
     """(gross return of the whole position, sessions held) for one filled trade."""
     left, proceeds, stop, trail = 1.0, 0.0, stop0, stop0
     t1_done = t2_done = False
     exit_next_open = False
     top_close = entry
-    end = min(p.start + MAX_HOLD, len(p.close))
+    end = min(p.start + max_hold, len(p.close))
     k = p.start
     for k in range(p.start, end):
         o, h, lo, c = p.open[k], p.high[k], p.low[k], p.close[k]

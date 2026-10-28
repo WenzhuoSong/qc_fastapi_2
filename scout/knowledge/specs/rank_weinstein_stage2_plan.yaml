@@ -1,0 +1,17 @@
+# Pre-registration (G0), written 2026-10-28 before any run. Never edited after a run.
+key: rank_weinstein_stage2_plan
+family: weinstein_stage2
+type: rank
+ranker: weinstein_stage2
+hold: 63
+every: 1
+exit: plan
+primary_control: select
+title: Weinstein 第二阶段突破（周线上穿 30 周均线 + 放量） · 持仓计划卖出
+claim: 一周收盘时周线从 30 周均线下方升到上方、30 周均线不再下行、当周成交量至少是前 4 周平均的 2 倍的股票，下周第一天开盘买入、持有 63 个交易日，跑赢同一天的其他股票；在同样的 63 个交易日窗口内按持仓计划止损和跟踪止损卖出（提前卖出后不再投资），同样跑赢按同一卖出规则买入的同日其他股票。
+mechanism: 股票在长期均线下方筑底（第一阶段）之后，放量突破 30 周均线标志着进入上升期（第二阶段），机构资金进场，上升期通常持续数月（Weinstein 1988《Secrets for Profiting in Bull and Bear Markets》）。
+expected_failure: 原规格（到期按收盘卖出）已被否定；卖出规则对策略股和对照股一视同仁，本身不应制造选股优势。如果原规格没有选股优势，换卖出规则大概率也没有。突破后回落到均线下方的假突破多；大盘处于下降期时个股突破的成功率低（Weinstein 本人要求先看大盘阶段）；股票池是大中盘股，放量突破的含义可能弱于小盘股。
+deviations: 卖出规则改为持仓计划：买入后用价位图在买入前一天收盘算出的初始止损（结构位下方，至少 1 个 ATR）；到目标 1 不卖，止损改为吊灯止损（买入以来最高收盘 − 3×ATR，只升不降）；不分批；最长 60 个交易日。 原规格说明：原法在周线收盘跌破 30 周均线时离场，这里固定持有 63 个交易日；"前几周平均量"取前 4 周；没有加大盘阶段和行业阶段的过滤（Weinstein
+  建议加，留给条件版另行登记）；只做多。
+registered_on: '2026-10-28'
+registration_note: 2026-10-28 用户要求：所有已否定的策略按持仓计划的卖出规则各重测一次。选股/入场条件、持有窗口与原规格相同，只换卖出规则；对照股票用同样的卖出规则。计入原族的检验次数。

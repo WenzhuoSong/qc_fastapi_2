@@ -1,0 +1,17 @@
+# Pre-registration (G0), written 2026-10-28 before any run. Never edited after a run.
+key: rank_short_term_reversal_plan
+family: short_term_reversal
+type: rank
+ranker: short_term_reversal
+hold: 21
+every: 21
+top_frac: 0.1
+exit: plan
+primary_control: select
+title: 短期反转：上个月跌得最多的股票 · 持仓计划卖出
+claim: 按过去 21 个交易日的收益排名，跌得最多的 10% 在随后 1 个月跑赢同一天的其他股票；在同样的 21 个交易日窗口内按持仓计划止损和跟踪止损卖出（提前卖出后不再投资），同样跑赢按同一卖出规则买入的同日其他股票。
+mechanism: 短期的大幅下跌里有一部分是流动性冲击和过度反应（有人被迫卖出），提供流动性的一方会在随后的反弹中得到补偿（Jegadeesh 1990；Lehmann 1990；Nagel 2012）。
+expected_failure: 原规格（到期按收盘卖出）已被否定；卖出规则对策略股和对照股一视同仁，本身不应制造选股优势。如果原规格没有选股优势，换卖出规则大概率也没有。大盘股里效果弱于小盘股，2010 年后有所减弱；跌得多的股票里混有真正出了坏消息的公司（基本面下跌不会反弹）；成本侵蚀明显。
+deviations: 卖出规则改为持仓计划：买入后用价位图在买入前一天收盘算出的初始止损（结构位下方，至少 1 个 ATR）；到目标 1 不卖，止损改为吊灯止损（买入以来最高收盘 − 3×ATR，只升不降）；不分批；最长 60 个交易日。 原规格说明：只做多跌幅最大的 10%，不做空涨幅最大的；没有按换手率分组（Medhat、Schmeling 2022 发现反转主要来自低换手股票，Scout 没有可靠的流通股数据）；没有做行业调整；股票池是当前指数成分股中流动性足够的股票。
+registered_on: '2026-10-28'
+registration_note: 2026-10-28 用户要求：所有已否定的策略按持仓计划的卖出规则各重测一次。选股/入场条件、持有窗口与原规格相同，只换卖出规则；对照股票用同样的卖出规则。计入原族的检验次数。

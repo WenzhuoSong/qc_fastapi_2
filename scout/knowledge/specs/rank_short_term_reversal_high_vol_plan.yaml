@@ -1,0 +1,20 @@
+# Pre-registration (G0), written 2026-10-28 before any run. Never edited after a run.
+key: rank_short_term_reversal_high_vol_plan
+family: short_term_reversal
+type: rank
+ranker: short_term_reversal
+hold: 21
+every: 21
+top_frac: 0.1
+when:
+  vol:
+  - high
+exit: plan
+primary_control: select
+title: 短期反转（只在市场高波动时） · 持仓计划卖出
+claim: 只在市场处于高波动（SPY 20 日波动高于自身一年中位数）时，按过去 21 个交易日收益排名，跌得最多的 10% 在随后 1 个月跑赢同一天的其他股票；在同样的 21 个交易日窗口内按持仓计划止损和跟踪止损卖出（提前卖出后不再投资），同样跑赢按同一卖出规则买入的同日其他股票。
+mechanism: 反转收益是给提供流动性的一方的补偿；市场波动高时流动性提供者少、要价高，所以反转收益更大（Nagel 2012《Evaporating Liquidity》：VIX 高时短期反转收益显著更高）。
+expected_failure: 原规格（到期按收盘卖出）已被否定；卖出规则对策略股和对照股一视同仁，本身不应制造选股优势。如果原规格没有选股优势，换卖出规则大概率也没有。高波动期往往是急跌，跌得多的股票可能继续下跌（2008、2020 年 3 月这种行情）；样本只有约一半的调仓日。
+deviations: 卖出规则改为持仓计划：买入后用价位图在买入前一天收盘算出的初始止损（结构位下方，至少 1 个 ATR）；到目标 1 不卖，止损改为吊灯止损（买入以来最高收盘 − 3×ATR，只升不降）；不分批；最长 60 个交易日。 原规格说明：用 SPY 的已实现波动代替 VIX；其余同 rank_short_term_reversal。
+registered_on: '2026-10-28'
+registration_note: 2026-10-28 用户要求：所有已否定的策略按持仓计划的卖出规则各重测一次。选股/入场条件、持有窗口与原规格相同，只换卖出规则；对照股票用同样的卖出规则。计入原族的检验次数。

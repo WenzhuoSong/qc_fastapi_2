@@ -1,0 +1,17 @@
+# Pre-registration (G0), written 2026-10-28 before any run. Never edited after a run.
+key: rank_gross_profitability_plan
+family: gross_profitability
+type: rank
+ranker: gross_profitability
+hold: 63
+every: 21
+top_frac: 0.1
+exit: plan
+primary_control: select
+title: 毛利能力：毛利 / 总资产最高的公司 · 持仓计划卖出
+claim: 按近四季毛利除以总资产排名，前 10% 的公司在随后一个季度跑赢同一天的其他股票；在同样的 63 个交易日窗口内按持仓计划止损和跟踪止损卖出（提前卖出后不再投资），同样跑赢按同一卖出规则买入的同日其他股票。
+mechanism: 毛利是最接近真实经济利润的会计量，毛利能力高的公司被市场低估（Novy-Marx 2013），是复现得较好的质量因子之一。
+expected_failure: 原规格（到期按收盘卖出）已被否定；卖出规则对策略股和对照股一视同仁，本身不应制造选股优势。如果原规格没有选股优势，换卖出规则大概率也没有。原文按年调仓、持有一年，效果主要体现在长周期；一个季度的持有期可能太短。
+deviations: 卖出规则改为持仓计划：买入后用价位图在买入前一天收盘算出的初始止损（结构位下方，至少 1 个 ATR）；到目标 1 不卖，止损改为吊灯止损（买入以来最高收盘 − 3×ATR，只升不降）；不分批；最长 60 个交易日。 原规格说明：每 21 个交易日按申报时点重排一次，持有 63 个交易日；只做多前 10%；股票池是当前指数成分股中流动性足够的股票。
+registered_on: '2026-10-28'
+registration_note: 2026-10-28 用户要求：所有已否定的策略按持仓计划的卖出规则各重测一次。选股/入场条件、持有窗口与原规格相同，只换卖出规则；对照股票用同样的卖出规则。计入原族的检验次数。

@@ -12,7 +12,8 @@ recomputed or tuned later. An entry moves to `forward` when its record starts.
 Ranking strategies (`spec.type: rank`) are recorded in `scout.forward_ranks` instead: on the
 record's first session and then every `every` sessions, the ranker's picks and every other
 eligible stock of that day, each held from the next open to the close `hold` sessions later
-(the backtest's rule). A pick's control is the mean of every other stock of its day.
+(the backtest's rule; with `exit: plan` each holding is managed by the holdings plan inside that
+window, `scout.plan_exit`). A pick's control is the mean of every other stock of its day.
 
 Report: per signal, its return minus its control; mean and t on monthly means. The entry is
 ready for the user's decision when the record spans ≥ 6 months, has ≥ 30 complete signals,
@@ -105,6 +106,11 @@ async def record(p, asof: date) -> dict:
         if en["status"] == "backtested":
             note = "每次调仓记录选中的股票和全部候选股" if is_rank(en) else "每日记录信号和选股对照"
             en = await learned.move(en["key"], "forward", "system", f"开始前向验证（{asof} 收盘起{note}）")
+        if not is_rank(en) and (en.get("spec") or {}).get("exit") == "plan":
+            # the detector record resolves with the rule's own bracket; a plan-exit rule needs its own resolver first
+            logger.warning("forward record %s skipped: plan exit for detector rules is not recorded yet", en["key"])
+            out[en["key"]] = "skipped: plan exit"
+            continue
         try:
             out[en["key"]] = await (record_rank(p, en, asof) if is_rank(en) else record_signals(p, en, asof, cooldown_from))
         except Exception as exc:          # one entry must not stop the others' records
@@ -173,8 +179,9 @@ async def record_rank(p, entry: dict, asof: date) -> int:
     return sum(r["role"] == "pick" and r["counted"] for r in rows)
 
 
-def resolve_rank(p, r: dict) -> dict | None:
-    """Next open → close `hold` sessions after the rebalance, from one price series; None while running."""
+def resolve_rank(p, r: dict, plan: bool = False) -> dict | None:
+    """Next open → close `hold` sessions after the rebalance, from one price series; None while running.
+    plan: the holding is managed by the holdings plan inside that window instead."""
     ts = pd.to_datetime(p.dates)
     if pd.Timestamp(r["asof"]) < ts[0]:
         return None                                   # older than the panel: wait for a longer one
@@ -185,7 +192,14 @@ def resolve_rank(p, r: dict) -> dict | None:
     o, c, spy_o, spy_c = (p[f][col].iloc[k] if col in p[f].columns else np.nan
                           for f, col, k in (("open", r["ticker"], a), ("close", r["ticker"], b), ("open", BENCHMARK, a), ("close", BENCHMARK, b)))
     out = {"id": r["id"], "ed": p.dates[a], "xd": p.dates[b], "ret": None, "spy": None, "s": "missing"}
-    if np.isfinite(o) and np.isfinite(c) and o > 0:
+    if plan:
+        from scout import plan_exit
+
+        if r["ticker"] in p["close"].columns:
+            ret = plan_exit.buy_next_open(plan_exit.stock_arrays(p, r["ticker"]), int(a) - 1, int(r["hold"]))
+            if ret is not None:
+                out.update(ret=float(ret), s="closed")
+    elif np.isfinite(o) and np.isfinite(c) and o > 0:
         out.update(ret=float(c / o - 1), s="closed")
     if np.isfinite(spy_o) and np.isfinite(spy_c) and spy_o > 0:
         out["spy"] = float(spy_c / spy_o - 1)
@@ -193,8 +207,13 @@ def resolve_rank(p, r: dict) -> dict | None:
 
 
 async def update_ranks(p) -> int:
-    rows = await db.fetch_all("SELECT id, asof, ticker, hold FROM scout.forward_ranks WHERE state = 'pending'")
-    done = [x for x in (resolve_rank(p, r) for r in rows) if x]
+    rows = await db.fetch_all("SELECT id, key, asof, ticker, hold FROM scout.forward_ranks WHERE state = 'pending'")
+    plan = set()
+    for key in {r["key"] for r in rows}:
+        en = await learned.get(key)
+        if ((en or {}).get("spec") or {}).get("exit") == "plan":
+            plan.add(key)
+    done = [x for x in (resolve_rank(p, r, r["key"] in plan) for r in rows) if x]
     if done:
         await db.execute_many("UPDATE scout.forward_ranks SET state = :s, entry_date = :ed, exit_date = :xd, ret = :ret, "
                               "spy_ret = :spy WHERE id = :id", done)

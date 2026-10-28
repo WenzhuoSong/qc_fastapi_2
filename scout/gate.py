@@ -61,6 +61,9 @@ REGIMES = ("uptrend", "mixed", "downtrend")
 VOL_STATES = ("high", "low")
 VOL_ZH = {"high": "高波动", "low": "低波动"}
 WHEN_KEYS = ("regime", "vol", "sectors")     # a spec's `when`: the contexts the claim is about (rows outside are dropped)
+EXITS = ("hold", "plan")   # a spec's `exit`: the rule's own (hold = rank close-to-close, detector bracket) or the holdings plan
+EXIT_ZH = {"plan": "持仓计划：初始止损（结构位下方，至少 1 ATR）；到目标 1 不卖，止损改为吊灯止损（买入以来最高收盘 − 3×ATR，只升不降）；"
+                   "不分批；最长 60 个交易日；提前卖出后到窗口结束不再投资"}
 
 
 # ── G0: the spec ────────────────────────────────────────────────────────
@@ -87,6 +90,8 @@ def validate_spec(spec: dict) -> list[str]:
     for k, allowed in (("regime", REGIMES), ("vol", VOL_STATES), ("sectors", tuple(SECTOR_ETFS))):
         if k in when and (not isinstance(when[k], list) or not when[k] or set(when[k]) - set(allowed)):
             issues.append(f"when.{k} 必须是非空列表，取值 {'/'.join(allowed)}")
+    if spec.get("exit", "hold") not in EXITS:
+        issues.append(f"exit 必须是 {'/'.join(EXITS)}")
     if spec.get("type") == "rank":
         issues += [f"排名规格缺少 {f}" for f in RANK_FIELDS if not spec.get(f)]
         if spec.get("ranker") and spec["ranker"] not in rankers.RANKERS:
@@ -147,8 +152,10 @@ def monthly_t(dates: list[date], diffs: list[float]) -> tuple[float | None, floa
     return float(s.mean()), float(m.mean() / (m.std(ddof=1) / np.sqrt(len(m)))), len(m)
 
 
-def trade(p, det: Detector, ticker: str, i: int, span: int) -> tuple[float, int, int] | None:
-    """(gross return, entry index, exit index) of the rule's bracket placed on day i, if it fills."""
+def trade(p, det: Detector, ticker: str, i: int, span: int, plan: bool = False) -> tuple[float, int, int] | None:
+    """(gross return, entry index, exit index) of the rule's bracket placed on day i, if it fills.
+    plan: the rule's entry, then the holdings plan's exit (`scout.plan_exit`) within the rule's holding
+    limit; the exit index is the window's last session."""
     try:
         lv = det.levels(p.row(ticker, p.dates[i]))
     except KeyError:                    # a control day without the formula's inputs (early history): draw again
@@ -156,9 +163,29 @@ def trade(p, det: Detector, ticker: str, i: int, span: int) -> tuple[float, int,
     if not lv.valid():
         return None
     res = simulate(base_rates._bars(p, ticker, i + 1, i + 1 + span), lv, det.horizon_days, det.trigger_window, det.exit)
-    if res.entry_date is None or res.return_pct is None or res.exit_date is None:
+    if res.entry_date is None or (not plan and (res.return_pct is None or res.exit_date is None)):
         return None
-    return res.return_pct, p.dates.get_loc(res.entry_date), p.dates.get_loc(res.exit_date)
+    a = p.dates.get_loc(res.entry_date)
+    if plan:
+        from scout import plan_exit
+
+        sessions = plan_exit.cap(det.exit.holding_limit(det.horizon_days))
+        got = plan_exit.outcome(_stock(p, ticker), a, float(res.entry_price), sessions)
+        return None if got is None else (got[0], a, a + sessions - 1)
+    return res.return_pct, a, p.dates.get_loc(res.exit_date)
+
+
+_STOCKS: dict = {}
+
+
+def _stock(p, ticker: str) -> dict:
+    """Per-stock arrays for the plan replay, cached per panel."""
+    from scout import plan_exit
+
+    key = (id(p), ticker)
+    if key not in _STOCKS:
+        _STOCKS[key] = plan_exit.stock_arrays(p, ticker)
+    return _STOCKS[key]
 
 
 class Market:
@@ -182,7 +209,7 @@ def rng_for(det: Detector) -> np.random.Generator:
     return np.random.default_rng([SEED, zlib.crc32(det.name.encode())])
 
 
-def fills(p, det: Detector, m: Market) -> list[dict]:
+def fills(p, det: Detector, m: Market, plan: bool = False) -> list[dict]:
     """The rule's own filled trades (no controls)."""
     span = det.trigger_window + det.exit.holding_limit(det.horizon_days)
     n = len(p.dates)
@@ -190,7 +217,7 @@ def fills(p, det: Detector, m: Market) -> list[dict]:
     for ticker, i in base_rates.hit_positions(det.mask(p)):
         if i + span >= n or ticker not in m.col:
             continue
-        got = trade(p, det, ticker, i, span)
+        got = trade(p, det, ticker, i, span, plan)
         if got:
             ret, a, b = got
             out.append({"ticker": ticker, "i": i, "date": p.dates[i], "ret": ret, "a": a, "b": b, "regime": m.regime[i],
@@ -198,13 +225,13 @@ def fills(p, det: Detector, m: Market) -> list[dict]:
     return out
 
 
-def backtest(p, det: Detector, m: Market, draws: int = DRAWS) -> list[dict]:
-    """Every filled signal with its paired benchmarks and controls."""
+def backtest(p, det: Detector, m: Market, draws: int = DRAWS, plan: bool = False) -> list[dict]:
+    """Every filled signal with its paired benchmarks and controls (each traded the same way)."""
     rng = rng_for(det)
     span = det.trigger_window + det.exit.holding_limit(det.horizon_days)
     n = len(p.dates)
     rows = []
-    for r in fills(p, det, m):
+    for r in fills(p, det, m, plan):
         ticker, i = r["ticker"], r["i"]
         days = np.flatnonzero(m.valid[: n - span - 1, m.col[ticker]])
         timing = []
@@ -214,7 +241,7 @@ def backtest(p, det: Detector, m: Market, draws: int = DRAWS) -> list[dict]:
             j = int(rng.choice(days))
             if abs(j - i) < MIN_GAP:
                 continue
-            c = trade(p, det, ticker, j, span)
+            c = trade(p, det, ticker, j, span, plan)
             if c:
                 timing.append(c[0])
         names = [m.stocks[k] for k in np.flatnonzero(m.valid[i]) if m.stocks[k] != ticker]
@@ -222,7 +249,7 @@ def backtest(p, det: Detector, m: Market, draws: int = DRAWS) -> list[dict]:
         for _ in range(MAX_TRIES * draws):
             if len(select) == draws or not names:
                 break
-            c = trade(p, det, names[int(rng.integers(len(names)))], i, span)
+            c = trade(p, det, names[int(rng.integers(len(names)))], i, span, plan)
             if c:
                 select.append(c[0])
         a, b = r["a"], r["b"]
@@ -236,7 +263,8 @@ def rank_backtest(p, spec: dict, m: Market, angle: dict | None = None) -> list[d
     """Ranking mode: every `every` sessions take the ranker's picks, buy at the next open, sell at the
     close `hold` sessions later. Selection control = the mean holding return of every other stock in
     the universe that day (the expectation of a same-day random stock); timing control = the same
-    stock held from random other rebalance days (at least `hold` sessions away)."""
+    stock held from random other rebalance days (at least `hold` sessions away). With `exit: plan` every
+    holding (picks and controls alike) is managed by the holdings plan inside the same window."""
     from scout import rankers
 
     a, stocks = rankers.arrays(p)
@@ -245,10 +273,11 @@ def rank_backtest(p, spec: dict, m: Market, angle: dict | None = None) -> list[d
     o, c, n = a["open"], a["close"], len(p.dates)
     rng = np.random.default_rng([SEED, zlib.crc32(spec["key"].encode())])
     dates = rankers.rebalance_dates(n, spec)
+    managed = plan_matrix(p, stocks, hold) if spec.get("exit") == "plan" else None
     picks, rets, mean_ret, members, sector_sum = {}, {}, {}, {}, {}
     for i in dates:
         uni = rankers._universe(a, i)
-        r = c[i + hold, uni] / o[i + 1, uni] - 1
+        r = managed[i, uni] if managed is not None else c[i + hold, uni] / o[i + 1, uni] - 1
         ok = np.isfinite(r)
         rets[i] = dict(zip(uni[ok].tolist(), r[ok].tolist()))
         mean_ret[i] = (float(r[ok].sum()), int(ok.sum()))
@@ -274,6 +303,23 @@ def rank_backtest(p, spec: dict, m: Market, angle: dict | None = None) -> list[d
                          "select": (total - r) / (cnt - 1) if cnt > 1 else None,
                          "peers": _peers(sector_sum[i].get(m.sector.get(stocks[j])), r)})
     return rows
+
+
+PLAN_HOLDS = (20, 21, 63)        # the registered windows, computed together (one managed path per buy)
+_PLANS: dict = {}
+
+
+def plan_matrix(p, stocks: list[str], hold: int) -> np.ndarray:
+    """(dates × stocks) returns of next-open buys managed by the holdings plan over `hold` sessions,
+    for every day; computed once per panel (several specs in one process share it)."""
+    from scout import plan_exit, rankers
+
+    key = (id(p), tuple(stocks))
+    if key not in _PLANS or hold not in _PLANS[key]:
+        holds = tuple(sorted({*PLAN_HOLDS, hold, *(_PLANS.get(key) or {})}))
+        days = list(range(rankers.YEAR, len(p.dates) - 1))
+        _PLANS[key] = plan_exit.matrix(p, stocks, days, holds)
+    return _PLANS[key][hold]
 
 
 def _peers(sec: tuple[float, int] | None, r: float) -> float | None:
@@ -403,8 +449,12 @@ def critique_facts(spec: dict, trials: int, det: Detector | None, rule_status: d
         "成本": f"每笔往返成本 {ROUND_TRIP_COST * 100:.1f}%（对照同样扣除）",
         "本族检验次数": trials,
         "持有期上限（交易日）": hold,
-        **({"检验方式": f"排名：每 {spec['every']} 个交易日取排名靠前的股票，次日开盘买入，持有 {spec['hold']} 个交易日后按收盘卖出；"
-                    "选股对照 = 当天股票池里其他所有股票的平均持有收益"} if det is None else {}),
+        **({"检验方式": f"排名：每 {spec['every']} 个交易日取排名靠前的股票，次日开盘买入，"
+                    + (f"在 {spec['hold']} 个交易日的窗口内按卖出规则管理" if spec.get("exit") == "plan"
+                       else f"持有 {spec['hold']} 个交易日后按收盘卖出") + "；选股对照 = 当天股票池里其他所有股票的平均收益（同样的买卖方式）"}
+           if det is None else {}),
+        **({"卖出规则": EXIT_ZH["plan"] + "。选股和时机对照用同样的卖出规则；SPY 与等权股票池是买入持有，只作背景，不可与本策略直接比较"}
+           if spec.get("exit") == "plan" else {}),
         **({"适用条件": f"只统计这些情境下的信号：{when_zh(spec)}"} if spec.get("when") else {}),
         "市场状态最小样本": MIN_REGIME_N,
         **({"同行业对照": "report 里的 vs_peers = 选中股票减去同一天同行业其他股票的平均收益，用来看优势是不是来自行业偏向；仅供参考，不参与判定"}
@@ -545,7 +595,7 @@ async def run(key: str, p=None) -> dict:
 
         rows = rank_backtest(p, spec, m, await rankers.prepare(spec, p, rankers.arrays(p)[1]))
     else:
-        rows = backtest(p, det, m)
+        rows = backtest(p, det, m, plan=spec.get("exit") == "plan")
     rows = [r for r in rows if applies(spec, r["regime"], r["vol"], r["sector"])]
     summary = summarize(rows)
     entries = await learned.current()
@@ -594,6 +644,7 @@ def report_text(res: dict) -> str:
     s, rep = res["report"]["summary"], res["report"]
     lines = [f"检验关：{res['key']} → {'通过' if res['passed'] else '未通过'}（状态 {learned.STATUS_ZH[res['status']]}）",
              *([f"适用条件：{when_zh(res['spec'])}"] if (res.get("spec") or {}).get("when") else []),
+             *([f"卖出规则：{EXIT_ZH['plan']}（SPY、等权两行是买入持有，仅作背景）"] if (res.get("spec") or {}).get("exit") == "plan" else []),
              f"样本 {s['first']} 至 {s['last']}，{s['n']} 笔成交，按 {s['split']} 分前后两半；本族第 {rep['trials']} 次检验，t 门槛 {rep['required_t']}",
              "对照 | 全样本 | 前半 | 后半"]
     for k in (*BENCHMARKS, *CONTROLS, *(k for k in REPORTED if f"vs_{k}" in s)):
