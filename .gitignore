@@ -69,3 +69,4 @@ quantconnect_newbase_validation_results/
 quantconnect_newbase_validation_reports/
 newbase_validation_results_bundle.json
 quantconnect_newbase_validation_results_upload.zip
+exports/

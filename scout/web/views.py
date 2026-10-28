@@ -1021,7 +1021,7 @@ def knowledge_card(en: dict, versions: list[dict], today: date, run: dict | None
         acts = (f"<form method='post' action='/knowledge/{e(en['key'])}/status' class='small' style='margin-top:8px'>"
                 f"<input name='note' placeholder='理由（必填）' required style='width:60%;margin-right:6px'>{buttons}</form>")
     hist = "".join(f"<tr><td>v{v['version']}</td><td>{e(v['created_at'].date() if v.get('created_at') else '')}</td>"
-                   f"<td>{e(learned.STATUS_ZH.get(v['status'], v['status']))}</td><td>{e({'seed': '首批', 'system': '系统', 'user': '你'}.get(v['changed_by'], v['changed_by']))}</td>"
+                   f"<td>{e(learned.STATUS_ZH.get(v['status'], v['status']))}</td><td>{e({'seed': '首批', 'system': '系统', 'user': '你', 'import': 'B0 导入'}.get(v['changed_by'], v['changed_by']))}</td>"
                    f"<td>{e(v.get('note') or '')}</td></tr>" for v in versions)
     return (f"<div class='card' id='{e(en['key'])}'><h3><span class='{tone}'>{'✓' if en['polarity'] == 'positive' else '✗'}</span> {e(en['title'])}</h3>"
             f"<div class='small muted'><span class='chip'>{e(learned.KIND_ZH.get(en['kind'], en['kind']))}</span>"

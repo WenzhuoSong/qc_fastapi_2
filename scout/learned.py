@@ -36,7 +36,7 @@ OPEN = ("hypothesis", "backtested", "forward")
 NEXT = {"hypothesis": ("backtested", "rejected"), "backtested": ("forward", "rejected"), "forward": ("confirmed", "rejected"),
         "confirmed": ("retired",), "rejected": ("hypothesis",), "retired": ("hypothesis",)}
 USER_ONLY = {"confirmed"}
-ACTORS = ("seed", "system", "user")
+ACTORS = ("seed", "system", "user", "import")       # import = results brought in from B0 (scout.b0)
 FIELDS = ("kind", "polarity", "status", "title", "claim", "mechanism", "context", "applies", "evidence", "invalidation",
           "recheck_on", "supersedes", "spec")
 JSON_FIELDS = ("context", "applies", "evidence")          # never null; `spec` (the pre-registration, scout.gate) may be
@@ -91,6 +91,8 @@ def check_transition(old: dict | None, new: dict, actor: str) -> list[str]:
     if actor not in ACTORS:
         return [f"未知的修改者：{actor}"]
     if old is None:
+        if actor == "import":
+            return [] if new["status"] in ("hypothesis", "backtested", "forward", "rejected") else ["导入的知识不能直接是已确认"]
         if actor != "seed" and new["status"] != "hypothesis":
             return ["新知识只能从假设开始（预登记），再逐关推进"]
         return []
