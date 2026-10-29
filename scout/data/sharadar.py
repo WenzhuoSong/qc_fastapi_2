@@ -30,11 +30,20 @@ ROOT = Path(__file__).resolve().parents[2] / "exports" / "sharadar"
 TABLES = ("tickers", "descriptions", "actions", "sp500", "events", "stocks", "funds", "metrics", "daily",
           "fundamentals", "insiders", "holdings_ticker")
 CHUNK = 1 << 20
-RETRIES = 6
+RETRIES = 60                  # connections to the file host drop every few minutes; each retry resumes
 
 
 def _headers(key: str) -> dict[str, str]:
     return {"x-api-key": key}
+
+
+def _total(r: httpx.Response) -> int | None:
+    """The whole file's size: from Content-Range on a partial answer, else Content-Length."""
+    cr = r.headers.get("content-range")
+    if cr and "/" in cr and cr.rsplit("/", 1)[1].isdigit():
+        return int(cr.rsplit("/", 1)[1])
+    cl = r.headers.get("content-length")
+    return int(cl) if cl and cl.isdigit() else None
 
 
 def bulk_location(key: str, table: str, client: httpx.Client) -> str:
@@ -52,26 +61,40 @@ def download(key: str, table: str, root: Path = ROOT, client: httpx.Client | Non
     own = client is None
     client = client or httpx.Client(timeout=httpx.Timeout(60.0, read=600.0))
     try:
-        tmp, dest = raw / f"{table}.zip.part", raw / f"{table}.zip"
-        tmp.unlink(missing_ok=True)
+        tmp, dest = raw / f"{table}.zip.part", raw / f"{table}.zip"      # a partial file from an earlier run is resumed
         t0 = time.time()
+        size_file = raw / f"{table}.zip.size"          # the total size of the file the partial belongs to
         for attempt in range(RETRIES):
             try:
                 url = bulk_location(key, table, client)          # a fresh pre-signed URL per attempt
                 have = tmp.stat().st_size if tmp.exists() else 0
                 headers = {"Range": f"bytes={have}-"} if have else {}
                 with client.stream("GET", url, headers=headers, follow_redirects=True) as r:   # pre-signed: no key sent
+                    if r.status_code == 416:                     # the partial is already whole
+                        break
                     r.raise_for_status()
-                    mode = "ab" if have and r.status_code == 206 else "wb"
+                    total = _total(r)
+                    same = size_file.exists() and total is not None and size_file.read_text() == str(total)
+                    mode = "ab" if have and r.status_code == 206 and same else "wb"
+                    if mode == "wb" and have:
+                        logger.info("%s: the file changed since the partial download, starting over", table)
+                        if r.status_code == 206:                 # a range of a different file: ask for all of it
+                            tmp.unlink()
+                            continue
+                    if total is not None:
+                        size_file.write_text(str(total))
                     with tmp.open(mode) as f:
                         for chunk in r.iter_bytes(CHUNK):
                             f.write(chunk)
+                if total is not None and tmp.stat().st_size < total:
+                    raise httpx.ReadError(f"{tmp.stat().st_size} of {total} bytes")
                 break
             except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                 if attempt == RETRIES - 1:
                     raise
                 logger.info("%s: attempt %d interrupted (%s), resuming", table, attempt + 1, type(exc).__name__)
-                time.sleep(5 * (attempt + 1))
+                time.sleep(min(60, 5 * (attempt + 1)))
+        size_file.unlink(missing_ok=True)
         digest = hashlib.sha256()
         with tmp.open("rb") as f:
             for chunk in iter(lambda: f.read(CHUNK), b""):

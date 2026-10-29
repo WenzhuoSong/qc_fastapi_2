@@ -54,7 +54,9 @@ class SharadarTests(unittest.TestCase):
             rng = request.headers.get("range")
             if rng:
                 start = int(rng.split("=")[1].rstrip("-"))
-                return httpx.Response(206, content=body[start:])
+                return httpx.Response(206, content=body[start:], headers={"content-range": f"bytes {start}-{len(body) - 1}/{len(body)}"})
+            if calls["n"] == 2:                     # first full answer cut halfway
+                return httpx.Response(200, content=body[: len(body) // 2], headers={"content-length": str(len(body))})
             return httpx.Response(200, content=body)
 
         with tempfile.TemporaryDirectory() as d, httpx.Client(transport=httpx.MockTransport(handler)) as c:
