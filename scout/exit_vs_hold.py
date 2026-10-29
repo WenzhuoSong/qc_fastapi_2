@@ -207,30 +207,37 @@ def vs_hold(rows: list[dict], k: str) -> dict:
 
 
 def summarize(rows: list[dict], means: dict, rf: np.ndarray, n: int, dates) -> dict:
+    out = evaluate(rows, means, rf, n, dates, POLICIES)
+    out["decision"] = decide(out["policies"])
+    return out
+
+
+def evaluate(rows: list[dict], means: dict, rf: np.ndarray, n: int, dates, labels: dict[str, str]) -> dict:
+    """Portfolio and trade statistics of every policy in `labels` (one of them `hold`), per half too."""
     cohorts = sorted(means)
     split = cohorts[len(cohorts) // 2]
     halves = {"first": [r for r in rows if r["i"] < split], "second": [r for r in rows if r["i"] >= split]}
     out: dict = {"n": len(rows), "cohorts": len(cohorts), "first": str(dates[cohorts[0]]), "split": str(dates[split]),
                  "last": str(dates[cohorts[-1]]), "policies": {}}
-    for k in POLICIES:
+    for k in labels:
         nav = portfolio(means, n, k)
         cut = split + 1
         out["policies"][k] = {
-            "label": POLICIES[k], "portfolio": stats(nav, rf),
+            "label": labels[k], "portfolio": stats(nav, rf),
             "portfolio_first": stats(nav[nav.index < cut], rf), "portfolio_second": stats(nav[nav.index >= cut], rf),
             "trades": trade_stats(rows, k),
             **({"vs_hold": vs_hold(rows, k), "vs_hold_first": vs_hold(halves["first"], k),
                 "vs_hold_second": vs_hold(halves["second"], k)} if k != "hold" else {})}
-    out["decision"] = decide(out["policies"])
     return out
 
 
-def decide(pol: dict) -> dict:
+def decide(pol: dict, names: list[str] | None = None) -> dict:
     """The pre-registered rule: Sharpe not below holding in both halves, max drawdown at least
     MIN_DD_GAIN smaller, worst 5% of trades smaller losses; the highest full-sample Sharpe wins."""
     h = pol["hold"]
+    names = STOPS if names is None else names
     checks = {}
-    for k in STOPS:
+    for k in names:
         x = pol[k]
         checks[k] = {
             "sharpe_halves": x["portfolio_first"]["sharpe"] >= h["portfolio_first"]["sharpe"]
@@ -238,7 +245,7 @@ def decide(pol: dict) -> dict:
             "drawdown": x["portfolio"]["max_dd"] >= h["portfolio"]["max_dd"] + MIN_DD_GAIN,
             "worst_trades": x["trades"]["worst5"] > h["trades"]["worst5"],
         }
-    ok = [k for k in STOPS if all(checks[k].values())]
+    ok = [k for k in names if all(checks[k].values())]
     pick = max(ok, key=lambda k: pol[k]["portfolio"]["sharpe"]) if ok else None
     return {"checks": checks, "candidates": ok, "pick": pick}
 
