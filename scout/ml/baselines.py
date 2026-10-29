@@ -29,7 +29,7 @@ def design(df: pd.DataFrame) -> tuple[np.ndarray, list[str]]:
     """Ridge inputs: ranked numerics (+ flags), sector-neutral ranks, rank changes, context z-scores, signals,
     ordinals, sector one-hot and two interactions."""
     cs = F.PRICE + F.FUND + F.EVENTS
-    cols = cs + [f"{c}_na" for c in cs] + [c for c in df.columns if c.endswith("_secn") or c.endswith("_chg")]
+    cols = cs + [f"{c}_na" for c in cs] + [c for c in df.columns if c.endswith("_secn")] + [f"{c}_chg" for c in F.TS_SOURCES]
     cols += [c for c in df.columns if c.startswith("ctx_")] + F.SIGNALS + list(F.ORDINAL)
     X = df[cols].astype("float32").copy()
     for k in F.ORDINAL:
@@ -87,7 +87,7 @@ def summary(s: pd.Series, n: int) -> dict:
     return {"all": part(s), "first": part(s[s.index < mid]), "second": part(s[s.index >= mid]), "split": str(mid.date())}
 
 
-def walk_forward(df: pd.DataFrame, n: int) -> pd.DataFrame:
+def walk_forward(df: pd.DataFrame, n: int, alphas: tuple = ALPHAS, name: str = "ridge") -> pd.DataFrame:
     """Monthly versions of the ridge model for horizon n; returns the discovery rows with predictions."""
     y, end = f"y{n}", f"y{n}_end"
     df = df[df[y].notna()].copy()
@@ -110,8 +110,8 @@ def walk_forward(df: pd.DataFrame, n: int) -> pd.DataFrame:
         inner_cut = tr_dates.max() - pd.DateOffset(months=INNER_MONTHS)
         fit_i = train[(tr_dates <= inner_cut - pd.Timedelta(days=int(n * 1.5)))]
         val_i = train[tr_dates > inner_cut]
-        best, best_ic = ALPHAS[0], -np.inf
-        for a in ALPHAS:                                         # alpha by the last 24 training months, forward
+        best, best_ic = alphas[0], -np.inf
+        for a in alphas:                                         # alpha by the last 24 training months, forward
             model = ridge_fit(X[df.index.get_indexer(fit_i)], tgt[df.index.get_indexer(fit_i)], a)
             v = df.loc[val_i, ["date", y]].copy()
             v["s"] = ridge_predict(model, X[df.index.get_indexer(val_i)])
@@ -120,7 +120,7 @@ def walk_forward(df: pd.DataFrame, n: int) -> pd.DataFrame:
                 best, best_ic = a, ic
         model = ridge_fit(X[df.index.get_indexer(train)], tgt[df.index.get_indexer(train)], best)
         pred.loc[rows] = ridge_predict(model, X[df.index.get_indexer(rows)])
-        (CKPT / f"ridge_y{n}_{m}.json").write_text(json.dumps({"alpha": best, "inner_ic": round(float(best_ic), 4),
+        (CKPT / f"{name}_y{n}_{m}.json").write_text(json.dumps({"alpha": best, "inner_ic": round(float(best_ic), 4),
                                                                  "train_rows": int(len(train)), "features": names,
                                                                  "coef": [round(float(x), 6) for x in model[0]]}))
     out = disc.copy()
