@@ -1,0 +1,31 @@
+# Pre-registration of the ML stock-ranking work, stage 2 (gradient-boosted trees), written 2026-10-30
+# after stage 1 (ml_v1) and before any stage-2 model was trained. Never edited after a run.
+# Discovery period only, as in stage 1.
+key: ml_v2
+registered_on: '2026-10-30'
+requested_by: 用户 2026-10-30："好，继续第二阶段，预登记并开始"
+question: 梯度提升树（LightGBM）能否比岭回归和等权综合分更好地融合特征，尤其是让排名靠前 10% 的股票有显著超额？
+
+data: 与 ml_v1 相同的特征库 v1（exports/ml/features_v1.parquet）与标签（21 / 63 个交易日，减去股票池平均）；挖掘期 2004-01 至 2015-12，确认期 2016 年以后不读取
+features:
+  numeric: ml_v1 的全部截面排名特征、缺失标记、行业中性排名、排名变化、情境 z 分数、规则信号、有序编码（不加手工交互项，交给树）
+  categorical: 行业、细分行业作为 LightGBM 原生类别特征（类别编号按名称排序固定，与标签无关）
+
+models:
+  lgb_reg: 回归，目标 = 标签当天的截面排名（[−1, 1]），L2 损失
+  lgb_rank: lambdarank，每个截面日期为一组，相关度 = 标签在当天的十分位（0–9）
+  ridge_v2: 岭回归（ml_v1 的设计），正则网格扩大为 1e3、3e3、1e4、3e4、1e5、3e5、1e6（stage 1 几乎都选在旧网格的上限 1e4）
+  composite: 与 ml_v1 相同（不训练）
+
+search:
+  space: num_leaves {15, 31, 63}；min_data_in_leaf {200, 1000, 5000}；learning_rate {0.02, 0.05}；feature_fraction {0.5, 0.8}；lambda_l2 {0, 10}；bagging_fraction 0.7、bagging_freq 1 固定
+  budget: 从 72 组中按固定种子 7 抽 12 组，两种目标、两个周期共用同一批，记为 12 × 2 × 2 = 48 次尝试
+  selection: 每年 1 月用训练集最后 24 个月作内部验证（与训练部分之间隔离 N 个交易日），按验证期平均 IC 选参数；树的数量由验证期早停决定（最多 1000 棵，50 轮不改善即停）
+  cadence: 每季度（1、4、7、10 月）用当时全部已完整的样本重训一次（round1，标签结束 + N 个交易日隔离），新版本用于此后三个月的预测；每月的预测在标签完整后评分（round0）
+
+metrics: 与 ml_v1 相同（截面 IC 及重叠校正 t、前 10% 相对其他股票的超额、前后两半、分市况）；另加 SHAP：每年 12 月的版本在 5000 个随机样本上的平均 |SHAP|，看重要特征是否随时间稳定
+decision:
+  candidate: 进入下一步（确认期预登记）的候选要满足：挖掘期 IC 的重叠校正 t ≥ 3，前后两半 IC 都为正，前 10% 超额前后两半都为正
+  pick: 多个候选时取挖掘期 IC t 最高的一个；同时保留岭回归 v2 作为对照
+  note: 这一步只决定确认期要检验哪个模型；确认期的检验另行预登记，只运行一次
+trials: 每个模型类型 × 目标 × 周期的组合都记录在 exports/ml/trials_v2.json（本地）与研究文档中

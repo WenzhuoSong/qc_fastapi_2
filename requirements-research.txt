@@ -1,0 +1,4 @@
+# Local research only (scout/ml, stage 2+); not installed on Railway.
+# macOS: LightGBM needs the OpenMP runtime: `brew install libomp`.
+lightgbm==4.7.0
+shap==0.51.0
