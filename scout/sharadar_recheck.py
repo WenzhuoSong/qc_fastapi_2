@@ -46,7 +46,8 @@ def rank_rows(p: sr.Prices, members: dict[pd.Timestamp, list[str]], signal: dict
         total, n = sum(rets.values()), len(rets)
         for j in picks:
             r = rets[j]
-            rows.append({"date": d, "ret": r, "select": (total - r) / (n - 1), "sector": sector.get(p.tickers[j])})
+            sec = sector.get(p.tickers[j])
+            rows.append({"date": d, "ret": r, "select": (total - r) / (n - 1), "sector": sec if isinstance(sec, str) else None})
     return rows
 
 
