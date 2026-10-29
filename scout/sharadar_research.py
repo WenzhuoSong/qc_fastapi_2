@@ -132,9 +132,9 @@ def holding_return(p: Prices, j: int, i: int, hold: int) -> float | None:
 def asset_growth(days: pd.DatetimeIndex, tickers: list[str]) -> dict[pd.Timestamp, dict[str, float]]:
     """{day: {ticker: total-asset growth}}: the latest quarter filed by that day over the quarter four
     reports earlier (As Reported, ARQ), the two report periods 330–400 days apart, filed within 400 days."""
-    f = _read("fundamentals", ["ticker", "dimension", "datekey", "reportperiod", "assets"],
-              filters=[("dimension", "=", "ARQ"), ("ticker", "in", tickers)])
-    f = f.dropna(subset=["assets", "datekey", "reportperiod"])
+    f = _read("fundamentals", ["ticker", "dimension", "date", "reportperiod", "assets"],
+              filters=[("dimension", "=", "ARQ"), ("ticker", "in", tickers)]).rename(columns={"date": "datekey"})
+    f = f.dropna(subset=["assets", "datekey", "reportperiod"])     # the bulk file calls the filing date (Date Key) `date`
     f["datekey"], f["reportperiod"] = pd.to_datetime(f["datekey"]), pd.to_datetime(f["reportperiod"])
     f = f.sort_values(["ticker", "reportperiod"]).drop_duplicates(["ticker", "reportperiod"], keep="first")
     g = f.groupby("ticker")
