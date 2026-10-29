@@ -38,5 +38,32 @@ class SharadarTests(unittest.TestCase):
             self.assertFalse(root.exists())
 
 
+    def test_an_interrupted_download_resumes(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("SHARADAR_T.csv", "ticker,date,close\n" + "AAA,2020-01-02,1.5\n" * 2000)
+        body = buf.getvalue()
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "api.sharadar.com":
+                return httpx.Response(302, headers={"location": "https://files.example.com/t.zip"})
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise httpx.ReadError("cut")
+            rng = request.headers.get("range")
+            if rng:
+                start = int(rng.split("=")[1].rstrip("-"))
+                return httpx.Response(206, content=body[start:])
+            return httpx.Response(200, content=body)
+
+        with tempfile.TemporaryDirectory() as d, httpx.Client(transport=httpx.MockTransport(handler)) as c:
+            from unittest import mock
+
+            with mock.patch("time.sleep"):
+                entry = sharadar.download("k", "t", root=Path(d), client=c)
+            self.assertEqual(entry["bytes"], len(body))
+
+
 if __name__ == "__main__":
     unittest.main()

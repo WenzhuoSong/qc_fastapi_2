@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[2] / "exports" / "sharadar"
 TABLES = ("tickers", "descriptions", "actions", "sp500", "events", "stocks", "funds", "metrics", "daily",
           "fundamentals", "insiders", "holdings_ticker")
 CHUNK = 1 << 20
+RETRIES = 6
 
 
 def _headers(key: str) -> dict[str, str]:
@@ -51,16 +52,30 @@ def download(key: str, table: str, root: Path = ROOT, client: httpx.Client | Non
     own = client is None
     client = client or httpx.Client(timeout=httpx.Timeout(60.0, read=600.0))
     try:
-        url = bulk_location(key, table, client)
         tmp, dest = raw / f"{table}.zip.part", raw / f"{table}.zip"
-        digest = hashlib.sha256()
+        tmp.unlink(missing_ok=True)
         t0 = time.time()
-        with client.stream("GET", url, follow_redirects=True) as r:      # pre-signed: no key sent
-            r.raise_for_status()
-            with tmp.open("wb") as f:
-                for chunk in r.iter_bytes(CHUNK):
-                    f.write(chunk)
-                    digest.update(chunk)
+        for attempt in range(RETRIES):
+            try:
+                url = bulk_location(key, table, client)          # a fresh pre-signed URL per attempt
+                have = tmp.stat().st_size if tmp.exists() else 0
+                headers = {"Range": f"bytes={have}-"} if have else {}
+                with client.stream("GET", url, headers=headers, follow_redirects=True) as r:   # pre-signed: no key sent
+                    r.raise_for_status()
+                    mode = "ab" if have and r.status_code == 206 else "wb"
+                    with tmp.open(mode) as f:
+                        for chunk in r.iter_bytes(CHUNK):
+                            f.write(chunk)
+                break
+            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                if attempt == RETRIES - 1:
+                    raise
+                logger.info("%s: attempt %d interrupted (%s), resuming", table, attempt + 1, type(exc).__name__)
+                time.sleep(5 * (attempt + 1))
+        digest = hashlib.sha256()
+        with tmp.open("rb") as f:
+            for chunk in iter(lambda: f.read(CHUNK), b""):
+                digest.update(chunk)
         with zipfile.ZipFile(tmp) as z:
             if z.testzip() is not None:
                 raise RuntimeError(f"bulk {table}: corrupt zip")
