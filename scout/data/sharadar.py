@@ -108,6 +108,56 @@ def to_parquet(table: str, root: Path = ROOT) -> dict:
     return {"table": table, "rows": rows, "parquet_bytes": dest.stat().st_size}
 
 
+LEGACY = {"stocks": "SEP", "funds": "SFP", "daily": "DAILY", "metrics": "METRICS", "fundamentals": "SF1",
+          "insiders": "SF2", "holdings_ticker": "SF3A", "events": "EVENTS", "actions": "ACTIONS", "sp500": "SP500",
+          "tickers": "TICKERS"}
+TEXT_UNITS = ("text", "Y/N")
+
+
+def column_types(table: str, root: Path = ROOT) -> dict[str, str]:
+    """column → "string" | "date" | "float", from the descriptions table's unit types."""
+    import pandas as pd
+
+    d = pd.read_parquet(root / "parquet" / "descriptions.parquet")
+    d = d[d["table"] == LEGACY.get(table, table.upper())]
+    out = {}
+    for ind, unit in zip(d["indicator"], d["unittype"]):
+        unit = unit or "text"
+        out[ind] = "string" if unit in TEXT_UNITS else "date" if unit.startswith("date") else "float"
+    return out
+
+
+def retype(table: str, root: Path = ROOT) -> dict:
+    """Rewrite a text parquet with typed columns (numbers float64, dates date32), row group by row group.
+    Columns the descriptions do not cover stay text."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    types = column_types(table, root)
+    src = root / "parquet" / f"{table}.parquet"
+    tmp = root / "parquet" / f"{table}.typed.part"
+    f = pq.ParquetFile(src)
+    target = pa.schema([pa.field(n, pa.float64() if types.get(n) == "float" else pa.date32() if types.get(n) == "date"
+                                 else pa.string()) for n in f.schema_arrow.names])
+    writer, rows = pq.ParquetWriter(tmp, target, compression="zstd"), 0
+    for i in range(f.num_row_groups):
+        t = f.read_row_group(i)
+        cols = []
+        for field in target:
+            c = t.column(field.name)
+            if field.type == pa.float64():
+                c = pc.cast(c, pa.float64())
+            elif field.type == pa.date32():
+                c = pc.cast(pc.strptime(c, format="%Y-%m-%d", unit="s"), pa.date32())
+            cols.append(c)
+        writer.write_table(pa.Table.from_arrays(cols, schema=target))
+        rows += t.num_rows
+    writer.close()
+    tmp.replace(src)
+    return {"table": table, "typed": True, "rows": rows, "parquet_bytes": src.stat().st_size}
+
+
 def write_manifest(entries: list[dict], root: Path = ROOT) -> Path:
     path = root / "manifest.json"
     old = json.loads(path.read_text()) if path.exists() else {}

@@ -1,0 +1,37 @@
+# Pre-registration of the rechecks on Sharadar data, written 2026-10-29 before any Sharadar-based
+# number was computed. Never edited after a run; each recheck runs once.
+key: sharadar_rechecks
+registered_on: '2026-10-29'
+requested_by: 用户 2026-10-29："用方案A，今天刚订阅的，开始吧"
+data:
+  source: Sharadar Core US Equities Bundle（全历史，个人使用许可，本地 git 忽略的 exports/sharadar/；退订后 30 天内删除）
+  prices: stocks 表；成交按拆股调整后的开盘价，收益用 closeadj（含分红）的比值，即 次日开盘买入 → 窗口最后一天收盘，乘以 closeadj/close 的变化
+  sample: 1999-01 至数据最新日（需要一年的历史，价格从 1998-01 开始）
+
+universe:
+  eligible: tickers 表中 category 为 Domestic Common Stock 或 Domestic Common Stock Primary Class，交易所为 NYSE / NASDAQ / NYSEMKT（现交易所，近似）；当天不复权收盘价 ≥ 5 美元；当天有 daily 表的市值
+  large_mid: 每天按 daily.marketcap 排名前 1000 只（时点正确，含后来退市的公司）——主样本，对应 Scout 现在的大中盘股票池
+  small: 排名 1001–3000 只——只报告，回答"扩大到小盘股是否更好"
+  delisting: 持有窗口内停止交易的股票，按最后一个收盘价结算；actions 表在停牌前后 30 天内有 bankruptcyliquidation 或 delisted 且没有 acquisitionby 的，按最后收盘价再 −30%（Shumway 1997 对表现性退市的估计）；被收购的按最后收盘价
+  sector: tickers.sector（Sharadar 自己的分类），只用于拆分报告
+
+recheck_1_asset_growth:
+  rule: 与 rank_low_asset_growth 相同——每 21 个交易日，取总资产同比增长最低的 10%（fundamentals ARQ 维度的 assets，按 datekey 申报日时点正确：当天已申报的最新季度 ÷ 往前第 4 个季度 − 1），次日开盘买入，持有 63 个交易日；选股对照 = 当天股票池其他所有股票的平均
+  family: low_asset_growth（检验次数 +1，门槛按 gate.required_t）
+  verdict: 主样本（前 1000）1999 至今：前后两半为正，按月 t ≥ 门槛 → 维持（继续前向验证）；否则知识库条目 rank_low_asset_growth 改为否定，并记录原因（无偏数据复核未通过）
+  reported: 2015-11 至今同一规则在时点正确股票池上的结果（与 Scout 原结论 +0.88% / 63 日、t 3.26 对比，量化幸存者偏差）；小盘样本；熊市月份（与 osap_replication 相同的列表）；逐年代；行业拆分（探索性）
+
+recheck_2_exits:
+  rule: exit_vs_hold 与 exit_redeploy 的设计原样重跑（同样的方案、同样的判定条件），买入改为主样本股票池每 20 个交易日全池买入，样本 1999 至今
+  verdict: 按两份原规格的判定条件；结果写入知识库条目 exit_vs_hold、exit_redeploy 作为复核证据；持仓计划是否修改由用户决定
+  reported: 熊市年份（2000–2002、2007–2009、2020、2022）单独列出
+
+recheck_3_b0:
+  rule: B0 的排名信号回放（参数来自环境变量 SCOUT_B0_SCORE，不进仓库）；规格与结果只保存在 git 忽略的 exports/b0/ 下，这里只登记规格文件的 sha256（见 b0_spec_sha256）
+  b0_spec_sha256: 待写入（规格写好后、运行前，以单独一次提交写入）
+
+recheck_4_composite:
+  plan: 学术上有效的信号（净回购、毛利率、财报公告收益、残差动量）的综合分，另行预登记：1999–2015 为挖掘期，2016 至今为确认期，确认期只用一次
+
+use: 所有结果只以汇总数字写入知识库和研究文档，不包含、也不能复现 Sharadar 的原始数据（许可条款第 10 条允许保留这类衍生成果）
+limits: 交易所字段是现交易所；纳斯达克 100 的历史成分没有，B0 回放中用纳斯达克上市、按市值排名的前 100 只非金融股近似；退市收益按固定 −30% 估计
