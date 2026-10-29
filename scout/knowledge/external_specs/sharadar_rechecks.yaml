@@ -28,7 +28,7 @@ recheck_2_exits:
 
 recheck_3_b0:
   rule: B0 的排名信号回放（参数来自环境变量 SCOUT_B0_SCORE，不进仓库）；规格与结果只保存在 git 忽略的 exports/b0/ 下，这里只登记规格文件的 sha256（见 b0_spec_sha256）
-  b0_spec_sha256: 待写入（规格写好后、运行前，以单独一次提交写入）
+  b0_spec_sha256: 57080b2a3ea5a59f49080fd3a62bf1bfe030553e44edcb884b2d6674ad89a4a0
 
 recheck_4_composite:
   plan: 学术上有效的信号（净回购、毛利率、财报公告收益、残差动量）的综合分，另行预登记：1999–2015 为挖掘期，2016 至今为确认期，确认期只用一次
