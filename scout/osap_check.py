@@ -40,10 +40,11 @@ def load(path: Path = DATA / "deciles_selected.csv") -> pd.DataFrame:
 
 
 def edge_series(d: pd.DataFrame, construction: str, signal: str) -> pd.Series:
-    """Monthly top decile (10) minus the mean of the ten deciles, in percent, START..END."""
+    """Monthly top decile (10) minus the mean of the ten deciles, in percent, START..END. The NYSE
+    construction keeps some papers' 3 or 5 groups: there the top group minus the mean of its groups."""
     q = d[(d.construction == construction) & (d.signalname == signal)].pivot_table(index="date", columns="port", values="ret")
-    q = q[[f"{k:02d}" for k in range(1, 11)]].dropna()
-    s = q["10"] - q.mean(axis=1)
+    q = q[sorted(q.columns)].dropna()
+    s = q[q.columns[-1]] - q.mean(axis=1)
     return s[(s.index >= START) & (s.index <= END)]
 
 
@@ -102,7 +103,8 @@ def analyze(d: pd.DataFrame, scout: dict[str, dict]) -> dict:
 
 def report_text(res: dict) -> str:
     p = lambda x: "—" if x is None else f"{x:+.2f}%"  # noqa: E731
-    lines = [f"外部复现（Open Source Asset Pricing，{START[:7]} 至 {END[:7]}，第 10 组 − 十组平均，每月；主口径市值加权）",
+    lines = [f"外部复现（Open Source Asset Pricing，{START[:7]} 至 {END[:7]}，第 10 组 − 十组平均，每月；主口径市值加权；"
+             "纽交所分界点口径在部分信号上只有 3 或 5 组，取最高组 − 各组平均）",
              "策略 | 学术 全部（t） | 前半 / 后半 | 发表前 / 发表后（t） | 熊市月份 | 2015-11 起 | 等权 − 市值加权 | Scout（每 21 日，t） | 判断"]
     for key, r in res.items():
         v = r[PRIMARY]
