@@ -37,7 +37,7 @@ def _read(table: str, columns: list[str], filters=None) -> pd.DataFrame:
 
 
 def eligible() -> pd.DataFrame:
-    t = _read("tickers", ["table", "ticker", "permaticker", "category", "exchange", "sector", "isdelisted"])
+    t = _read("tickers", ["table", "ticker", "permaticker", "category", "exchange", "sector", "industry", "isdelisted"])
     t = t[(t["table"] == "SEP") & t["category"].isin(CATEGORIES) & t["exchange"].isin(EXCHANGES)]
     return t.drop_duplicates("ticker").set_index("ticker")
 
