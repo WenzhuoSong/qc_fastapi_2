@@ -1,0 +1,49 @@
+# Pre-registration of the external replication on Open Source Asset Pricing, written 2026-10-29
+# before any number was computed. Never edited after the run. Run once:
+# `python -m scout.jobs.osap_check` (data in the git-ignored exports/research_data/osap/).
+key: osap_replication
+registered_on: '2026-10-29'
+requested_by: 用户 2026-10-29："好，预登记并开始分析"
+question: Scout 对各选股策略的检验结论，在 60 多年、没有幸存者偏差的学术数据上是否成立？差异来自时间、规模还是定义？
+
+data:
+  source: Open Source Asset Pricing（Chen & Zimmermann），2026.10 版，基于 CRSP / Compustat
+  sample: 1963-07 至 2025-12（会计信号可靠的时期；所有信号用同一时期）
+  construction:
+    primary: deciles_vw（市值加权十分组，更接近大中盘）
+    reported: deciles_ew（等权十分组，小盘股权重大）、nyse（纽交所分界点十分组）
+
+mapping:
+  rank_low_asset_growth: AssetGrowth
+  rank_net_buyback: ShareIss1Y
+  rank_gross_profitability: GP
+  rank_low_accruals: Accruals
+  rank_residual_momentum: ResidualMomentum
+  rank_high_52w: High52
+  rank_short_term_reversal: STreversal
+  rank_ear_drift: AnnouncementReturn
+  b0_core: Mom12m（B0 的核心逻辑，Scout 没有单独的检验结论）
+
+measure:
+  edge: 每月 第 10 组（OSAP 已把信号调成第 10 组为预期收益高的一侧）减去 10 个组的平均，与 Scout 的"选中股票 − 同日其他股票"同口径，只做多一侧
+  t: 月度超额的 t 值（每月调仓、月度收益不重叠，不需要重叠校正）
+  halves: 按月份中位数分前后两半
+
+verdict:
+  pass: 主口径（市值加权）全样本 t ≥ 3，且前后两半的月均超额都为正（与 Scout 的检验关相同）
+  categories:
+    一致有效: 学术通过，Scout 通过
+    学术有效、Scout 未通过: 学术通过，Scout 未通过；再按 2015-11 至 2025-12 的学术超额区分：≤ 0 为"近年衰减"，> 0 为"可能是股票池或定义差异"
+    一致无效: 学术未通过，Scout 未通过
+    Scout 有效、学术无效: 学术未通过，Scout 通过（提示幸存者偏差或过拟合风险）
+
+descriptive:
+  decades: 1960 年代至 2020 年代逐个年代的月均超额
+  post_publication: 论文发表年之后（signal_doc 的 Year 之后的 1 月起）与之前的月均超额和 t 值
+  bear_markets: 标普 500 从高点到低点的月份，固定为 1968-12..1970-05、1973-01..1974-09、1980-11..1982-08、1987-08..1987-11、2000-03..2002-09、2007-10..2009-02、2020-02..2020-03、2022-01..2022-09；另单独列出 2009-03..2009-05（动量崩盘）
+  overlap: 2015-11 至 2025-12，与 Scout 的样本期重叠；Scout 的超额按持有期折算成每 21 个交易日后并列
+  size: 等权与市值加权的超额之差（小盘股里是否更强）
+
+use: 结果作为外部证据写入各策略的知识库条目（来源 osap），不改变 Scout 检验关的判定与状态；只用于决定下一步复核的优先顺序
+
+limits: 只做多一侧的因子组合、月度调仓、全部 CRSP 股票；与 Scout 的定义（季度滚动财报、大中盘、21–63 日持有、按日调仓）不同，只能比较同一个想法，不能复现 Scout 的规则；技术规则、卖出规则、行业拆分不在范围内。
