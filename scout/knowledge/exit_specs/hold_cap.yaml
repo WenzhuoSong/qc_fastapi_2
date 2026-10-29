@@ -1,0 +1,34 @@
+# Pre-registration of the holding-cap study, written 2026-10-29 before the horizon profile was run
+# and before this study was run. Never edited after a run. Run once:
+# `python -m scout.jobs.eval_hold_cap run`.
+key: hold_cap
+registered_on: '2026-10-29'
+requested_by: 用户 2026-10-29："两个都做，先做持有期曲线"
+question: 持仓计划的持有上限从 60 个交易日放宽到 126 或 252 个交易日，对经过检验的选股是否更好？
+
+sample:
+  buys:
+    asset_growth: rank_low_asset_growth 的选股（每 21 个交易日，资产增长最慢的 10%），次日开盘买入
+    breakout_retest: breakout_retest 规则的信号，按规则的入场区间与触发窗口成交
+  window: 252 个交易日（从成交起），所有方案都覆盖同一个窗口
+  after_sale: 卖出（止损、跟踪止损或到达持有上限）后，钱立即换入股票池等权组合，持有到窗口结束（与 exit_redeploy 的"换入股票池"相同），换入扣一次 0.1%
+  cost: 每笔往返 0.1%
+  daily_bars: 与 exit_vs_hold 相同
+
+exits:
+  plan: 现行持仓计划（初始止损、到目标 1 后吊灯止损、不分批）
+  atr10: 买入以来最高收盘 − 10×ATR42，收盘跌破次日开盘卖出
+caps: [60, 126, 252]
+variants: 2 种选股 × 2 种卖出 × 3 种上限 = 12 个；另有基准：同样的买入一直持有 252 天
+
+decision:
+  baseline: 每种选股、每种卖出方式各自和上限 60 的方案比（现行做法）
+  better: 较长的上限（126 或 252）要满足全部条件，才算可以替换 60
+    - 逐笔收益减去上限 60 方案的逐笔收益，前后两半（按买入日期中位数分）都为正
+    - 全样本按月 t 值 ≥ 2（换卖出规则要求前后两半都改善且有理论支持，CLAUDE.md）
+    - 组合最大回撤不比上限 60 的方案差 5 个百分点以上
+  pick: 同一种选股和卖出方式里 126 与 252 都满足时，取全样本平均超额较大的一个
+  trials: 2 种选股 × 2 种卖出 × 2 个较长上限 = 8 次比较，各一次；理论依据：资产增长、盈利质量类的优势按文献在一年左右兑现，60 天上限可能过早卖出
+  user: 是否改持仓计划由用户确认
+
+expected_failure: 换入股票池大致等于回到市场；如果选股的优势在 60 天内已基本兑现，延长上限没有增益；突破回踩的样本较少（几百笔），统计力弱。
