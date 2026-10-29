@@ -108,7 +108,7 @@ def walk_forward(df: pd.DataFrame, n: int, threads: int = 5) -> tuple[pd.DataFra
                     ic = float(B.daily_ic(v, "s", y).mean())
                     log.append({"year": year, "objective": obj, "config": k, "trees": int(m.best_iteration), "val_ic": round(ic, 5)})
                     if best is None or ic > best[0]:
-                        best = (ic, cfg, max(50, int(m.best_iteration)))
+                        best = (ic, cfg, max(1, int(m.best_iteration)))     # the early stop decides (ml_v2.yaml)
                 chosen[obj] = best
         for obj in OBJECTIVES:
             ic, cfg, trees = chosen[obj]
