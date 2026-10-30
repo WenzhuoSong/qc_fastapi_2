@@ -1,0 +1,45 @@
+# Pre-registration of the risk model (volatility and crash probability), written 2026-10-31 after ml_v6
+# closed the return-ranking route, before any risk feature, label or model was built. Never edited after a run.
+key: ml_risk_v1
+registered_on: '2026-10-31'
+requested_by: 用户 2026-10-31："好，按这个顺序开始，先预登记风险模型"（顺序：风险模型 → 书中"方法"类章节 → 图表形态族）
+question: 能否比简单基线更准地预测每只股票未来 21 个交易日的波动、以及未来 63 个交易日内从买入价下跌 20% 的概率？预测的概率是否校准（说 10% 的时候，实际约 10%）？
+why: 收益几乎不可预测（ml_v1–ml_v6，IC ≈ 0.02），风险可预测得多（探索：过去 63 日波动对未来 21 日波动的截面秩相关 ≈ 0.68；按过去波动分十组，63 日内跌 ≥ 25% 的比例从 1.3% 到 12.7%）。用途是仓位大小、止损距离和规避，而不是选股
+
+split:
+  same_as: ml_v6（训练从 1999 年起每月扩展；挖掘期 2004-01 至 2021-12，样本日与标签结束都不晚于 2021-12-31；2021-12-31 以后的数据一律不读）
+  final_test: 2022-01 至最新，只运行一次，需用户同意；2016 年以后的收益汇总曾被看过两次（ml_confirm_v1、ml_tilt_v1），但从未用于风险目标，写明；之后做前向检验（Scout 每天记录预测，另行登记）
+  subperiod: 另报告 2008–2021
+
+data:
+  rows: 特征库 v1 的样本（每 5 个交易日，市值前 1000，价格 ≥ 5 美元，含已退市股票）
+  storage: 只写本地 exports/ml/（Sharadar 衍生）
+
+targets:
+  vol: log(未来 21 日实际波动)，即样本日之后第 1–21 个交易日日对数收益的标准差（至少 15 个有效收益；第六阶段的 fut_vol21）
+  crash: 1 若从下一日开盘买入价起，未来 63 个交易日内任一收盘价 ≤ 买入价 × 0.8（20% 固定止损会被触发）；停止交易且不再交易的股票，按最后收盘价并计入退市调整（与标签相同的规则）
+  crash_endpoint: 描述用：63 日收益 ≤ −25%
+
+inputs:
+  stock: 原始值（不做截面排名，因为目标是水平而不是排名）：log vol_21、log vol_63、log downvol_63、log idio_252、beta_252、mdd_63、mdd_252、dist_hi_252、dist_lo_252、ret_21、ret_63、ret_252、skew63、log_dv21、amihud21、log_mcap、leverage、bm、ep 是否为负、ear（上次财报 3 日反应）、earnings_due（距上次财报 63–100 天，即下次财报大概率落在未来 21 日内）、max_ret21、turnover21（第六阶段的定义）
+  context: VIX、SPY 21 日波动、SPY 63 日收益、期限利差（前一日的值），以及第六阶段的 BAA10Y 与其 63 日变化（扩展 z 分数）
+  categorical: 板块（岭回归 / 逻辑回归 one-hot；树用类别）
+  missing: 第六阶段的规则（基本面先用自身上一次的值，最多 13 个样本日；仍缺失的用当天截面中位数，加缺失标记）；数值在每天截面上缩尾 1% / 99%
+
+models:
+  B_vol: HAR 型基线（Corsi 2009 的思路，只用自身历史）：log 未来波动 对 [1, log vol_21, log vol_63, log idio_252] 的混合 OLS
+  B_crash: 只用 log vol_63 的逻辑回归
+  M1: 岭回归（vol，log 目标）与 L2 逻辑回归（crash），全部输入；正则强度每月在训练集最后 24 个月（与拟合部分隔离 1.5 × 周期）上选，网格 ridge {1, 10, 100, 1000, 10000}、logistic C {0.001, 0.01, 0.1, 1}
+  M2: LightGBM（vol 回归、crash 二分类），固定配置 num_leaves 31、min_data_in_leaf 1000、learning_rate 0.05、feature_fraction 0.8、bagging 0.7 / 1、最多 500 棵树、在同一内部验证上提前停止 50；每季度一个版本；单独进程
+  versions: 基线与 M1 每月一个版本，隔离 = 标签周期（vol 21、crash 63）
+
+metrics:
+  vol: QLIKE 损失（Patton 2011，对噪声代理稳健：σ²/h − log(σ²/h) − 1，h 为预测方差）、log 波动的 MSE 与截面 R²、截面秩相关
+  crash: 对数损失、Brier、AUC（按月合并计算后取均值）、校准：按预测概率分十组的预测均值与实际比例，校准斜率与截距（实际 ~ 预测的 logit 回归），期望校准误差（ECE）
+  economic_descriptive: 每月按 1 / 预测波动加权（前 1000）与等权相比的实现波动、最大回撤、夏普（前后两半）；预测 crash 概率最高的 10% 的实际下跌比例；只作描述
+
+decision:
+  improvement: 每天损失之差（基线 − 模型；vol 用 QLIKE，crash 用对数损失）的全样本均值 > 0、按月 t ≥ 2（Newey-West）、前后两半都为正，才算成立
+  calibration: crash 模型的校准斜率在 [0.8, 1.2]、ECE ≤ 1 个百分点，前后两半都满足
+  pass: 对 vol 与 crash 分别判定；M1、M2 都与各自基线比较；两个都成立时选损失更低的一个（M2 相对 M1 的同一检验成立才选 M2，否则选 M1）
+  next: 通过的模型才进入最终检验（需用户同意）与前向检验；进入 Scout 之前（仓位计算、AI 解读、卡片上的风险数字），需用户确认；不通过则 Scout 继续使用简单基线（过去波动）作为风险估计
