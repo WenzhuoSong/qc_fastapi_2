@@ -1,0 +1,23 @@
+# Pre-registration of the one-time confirmation test of the ML ranking work, written 2026-10-30
+# after stage 2 (ml_v2) and before any number of the confirmation period was computed.
+# Never edited after the run; the job refuses to run a second time.
+key: ml_confirm_v1
+registered_on: '2026-10-30'
+requested_by: 用户 2026-10-30："好，A 和 B 同时做，预登记并开始"
+question: 挖掘期唯一达到候选标准的 21 日等权综合分（净发行取负、毛利 / 总资产、财报公告收益、12−1 月动量），在从未看过的 2016 年以后是否仍然有效？
+
+tested: composite_21（ml_v1 / ml_v2 的 composite，不训练，周期 21 个交易日）
+control: ridge_v2_21（ml_v2 的岭回归，正则网格 1e3–1e6，每月一个版本，只用标签结束 + 21 个交易日之前的样本训练；只报告，不因这次结果升级）
+not_looked_at: 63 日的任何模型、LightGBM 各版本、第 2b 阶段的变体都不在确认期计算
+
+data: 特征库 v1（exports/ml/features_v1.parquet，与挖掘期相同的构造、股票池与标签），确认期 = 2016-01 起、21 日标签已完整的全部截面（至 2026-09）
+cost: 前 10% 组合每 21 个交易日全部换手一次，每次扣 simulate.ROUND_TRIP_COST（0.10%），对照"其他股票"不扣成本（保守）
+
+metrics:
+  primary: 前 10% 相对当天股票池其他股票的 21 日超额（扣成本后），t 按月均值计算（horizons.nw_t，与挖掘期完全相同的口径）
+  secondary: 截面 Spearman IC（t）；前后两半；分市况；逐年
+pass: 扣成本后前 10% 超额全样本 t ≥ 3，且前后两半均值都为正，且 IC 前后两半都为正（检验关标准，不调整）
+outcomes:
+  pass: 作为知识库候选（judgment 以外的规则，状态 backtested），由用户决定是否进入前向检验；不会自动影响持仓计划或推送
+  fail: 记为否定结果（大中盘等权综合分 21 日），与原因一起写入研究文档，不再在大中盘上调整这个综合分的成分或权重
+run_once: 结果写入 exports/ml/confirm_v1.json（本地）；文件存在时任务拒绝再次运行

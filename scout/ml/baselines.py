@@ -87,14 +87,17 @@ def summary(s: pd.Series, n: int) -> dict:
     return {"all": part(s), "first": part(s[s.index < mid]), "second": part(s[s.index >= mid]), "split": str(mid.date())}
 
 
-def walk_forward(df: pd.DataFrame, n: int, alphas: tuple = ALPHAS, name: str = "ridge") -> pd.DataFrame:
-    """Monthly versions of the ridge model for horizon n; returns the discovery rows with predictions."""
+def walk_forward(df: pd.DataFrame, n: int, alphas: tuple = ALPHAS, name: str = "ridge",
+                 window: tuple = DISCOVERY) -> pd.DataFrame:
+    """Monthly versions of the ridge model for horizon n; returns the rows of `window` (the discovery
+    period unless the one-time confirmation run passes its own) with predictions."""
     y, end = f"y{n}", f"y{n}_end"
     df = df[df[y].notna()].copy()
     df["t"] = target(df, y)
     X, names = design(df)
     tgt = df["t"].to_numpy()
-    disc = df[(df["date"] >= DISCOVERY[0]) & (df["date"] <= DISCOVERY[1]) & (df[end] <= pd.Timestamp(DISCOVERY[1]))]
+    hi = pd.Timestamp(window[1]) if window[1] else df[end].max()
+    disc = df[(df["date"] >= window[0]) & (df["date"] <= hi) & (df[end] <= hi)]
     months = sorted(disc["date"].dt.to_period("M").unique())
     i_of_date = df.groupby("date")["i"].first()
     pred = pd.Series(np.nan, index=df.index)

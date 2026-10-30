@@ -27,8 +27,8 @@ SHAP_ROWS = 5000
 OBJECTIVES = ("lgb_reg", "lgb_rank")
 
 
-def configs() -> list[dict]:
-    grid = [dict(zip(SPACE, v)) for v in itertools.product(*SPACE.values())]
+def configs(space: dict = SPACE) -> list[dict]:
+    grid = [dict(zip(space, v)) for v in itertools.product(*space.values())]
     pick = sorted(np.random.default_rng(SEED).choice(len(grid), N_CONFIGS, replace=False))
     return [grid[k] for k in pick]
 
@@ -76,17 +76,15 @@ def fit(objective: str, params: dict, X: pd.DataFrame, t: pd.Series, rel: pd.Ser
     return lgb.train(p, d, num_boost_round=rounds, valid_sets=[v] if v is not None else None, callbacks=cb)
 
 
-def walk_forward(df: pd.DataFrame, n: int, threads: int = 5) -> tuple[pd.DataFrame, dict]:
-    """Quarterly versions for horizon n; returns discovery rows with every model's score, plus the trial log."""
-    y, end = f"y{n}", f"y{n}_end"
-    df = df[df[y].notna()].reset_index(drop=True)
-    df["t"] = B.target(df, y)
-    rel = decile(df, y)
-    X = matrix(df)
-    disc = df[(df["date"] >= B.DISCOVERY[0]) & (df["date"] <= B.DISCOVERY[1]) & (df[end] <= pd.Timestamp(B.DISCOVERY[1]))]
+def _versions(df: pd.DataFrame, disc: pd.DataFrame, n: int, X: pd.DataFrame, rel: pd.Series,
+              models: dict[str, str], space: dict, threads: int) -> tuple[dict, dict, list, dict]:
+    """The forward protocol: each January choose a configuration per model on the last 24 months of the
+    available training data (early-stopped there), each quarter refit on every sample whose label ended
+    ≥ n sessions earlier; that version predicts the quarter. `models` maps a name to its objective."""
+    y = f"y{n}"
     i_of_date = df.groupby("date")["i"].first()
     quarters = sorted({(d.year, (d.month - 1) // 3) for d in disc["date"]})
-    preds = {k: pd.Series(np.nan, index=disc.index) for k in OBJECTIVES}
+    preds = {k: pd.Series(np.nan, index=disc.index) for k in models}
     chosen, log, shap_years = {}, [], {}
     for year, q in quarters:
         rows = disc.index[(disc["date"].dt.year == year) & ((disc["date"].dt.month - 1) // 3 == q)]
@@ -98,28 +96,45 @@ def walk_forward(df: pd.DataFrame, n: int, threads: int = 5) -> tuple[pd.DataFra
             inner = tr_dates.max() - pd.DateOffset(months=24)
             fit_i = train[tr_dates <= inner - pd.Timedelta(days=int(n * 1.5))]
             val_i = train[tr_dates > inner]
-            for obj in OBJECTIVES:
+            for name, obj in models.items():
                 best = None
-                for k, cfg in enumerate(configs()):
+                for k, cfg in enumerate(configs(space)):
                     m = fit(obj, cfg, X.loc[fit_i], df.loc[fit_i, "t"], rel.loc[fit_i], df.loc[fit_i, "date"], MAX_TREES,
                             (X.loc[val_i], df.loc[val_i, "t"], rel.loc[val_i], df.loc[val_i, "date"]), threads)
                     v = df.loc[val_i, ["date", y]].copy()
                     v["s"] = m.predict(X.loc[val_i], num_iteration=m.best_iteration)
                     ic = float(B.daily_ic(v, "s", y).mean())
-                    log.append({"year": year, "objective": obj, "config": k, "trees": int(m.best_iteration), "val_ic": round(ic, 5)})
+                    log.append({"year": year, "objective": name, "config": k, "trees": int(m.best_iteration), "val_ic": round(ic, 5)})
                     if best is None or ic > best[0]:
                         best = (ic, cfg, max(1, int(m.best_iteration)))     # the early stop decides (ml_v2.yaml)
-                chosen[obj] = best
-        for obj in OBJECTIVES:
-            ic, cfg, trees = chosen[obj]
+                chosen[name] = best
+        for name, obj in models.items():
+            ic, cfg, trees = chosen[name]
             m = fit(obj, cfg, X.loc[train], df.loc[train, "t"], rel.loc[train], df.loc[train, "date"], trees, None, threads)
-            preds[obj].loc[rows] = m.predict(X.loc[rows])
-            m.save_model(str(B.CKPT / f"{obj}_y{n}_{year}Q{q + 1}.txt"))
+            preds[name].loc[rows] = m.predict(X.loc[rows])
+            m.save_model(str(B.CKPT / f"{name}_y{n}_{year}Q{q + 1}.txt"))
             if q == 3:                                           # the version used in December: SHAP on that year's rows
                 yr = disc.index[disc["date"].dt.year == year]
                 sample = np.random.default_rng(SEED + year).choice(yr, min(SHAP_ROWS, len(yr)), replace=False)
                 contrib = m.predict(X.loc[sample], pred_contrib=True)[:, :-1]
-                shap_years.setdefault(obj, {})[year] = dict(zip(X.columns, np.abs(contrib).mean(0).round(6).tolist()))
+                shap_years.setdefault(name, {})[year] = dict(zip(X.columns, np.abs(contrib).mean(0).round(6).tolist()))
+    return preds, chosen, log, shap_years
+
+
+def _discovery(df: pd.DataFrame, n: int) -> pd.DataFrame:
+    end = f"y{n}_end"
+    return df[(df["date"] >= B.DISCOVERY[0]) & (df["date"] <= B.DISCOVERY[1]) & (df[end] <= pd.Timestamp(B.DISCOVERY[1]))]
+
+
+def walk_forward(df: pd.DataFrame, n: int, threads: int = 5) -> tuple[pd.DataFrame, dict]:
+    """Quarterly versions for horizon n; returns discovery rows with every model's score, plus the trial log."""
+    y = f"y{n}"
+    df = df[df[y].notna()].reset_index(drop=True)
+    df["t"] = B.target(df, y)
+    rel = decile(df, y)
+    X = matrix(df)
+    disc = _discovery(df, n)
+    preds, chosen, log, shap_years = _versions(df, disc, n, X, rel, {o: o for o in OBJECTIVES}, SPACE, threads)
     out = disc.copy()
     for obj in OBJECTIVES:
         out[obj] = preds[obj]
@@ -130,10 +145,10 @@ def walk_forward(df: pd.DataFrame, n: int, threads: int = 5) -> tuple[pd.DataFra
                  "shap": shap_years}
 
 
-def evaluate(df: pd.DataFrame, n: int) -> dict:
+def evaluate(df: pd.DataFrame, n: int, scores: tuple = (*OBJECTIVES, "ridge_v2", "composite")) -> dict:
     y = f"y{n}"
     res = {}
-    for score in (*OBJECTIVES, "ridge_v2", "composite"):
+    for score in scores:
         d = df[df[score].notna()]
         ic, td = B.summary(B.daily_ic(d, score, y), n), B.summary(B.top_spread(d, score, y), n)
         cand = bool(ic and ic["all"]["t_nw"] is not None and ic["all"]["t_nw"] >= 3 and ic["first"]["mean"] > 0
@@ -185,4 +200,89 @@ def report_text(results: dict) -> str:
         for obj, feats in r["shap"].items():
             lines.append(f"{obj} 重要特征（平均 |SHAP|，进入当年前 10 的年数）：" +
                          "、".join(f"{x['feature']}（{x['years_in_top']}）" for x in feats[:10]))
+    return "\n".join(lines)
+
+
+# ── stage 2b (ml_v2b.yaml): cumulative changes against memorising periods ─────────────
+
+SPACE_2B = {**SPACE, "min_data_in_leaf": (5000, 20000, 50000)}
+INTERACT = ["mom_12_1", "vol_63", "log_mcap", "bm"]
+DATE_LEVEL = ["regime", "vol_state"]            # ordinals that change only with the date (SPY)
+VARIANTS = {
+    "b1_no_industry": {"industry": False, "interact": False, "space": SPACE, "label": "y"},
+    "b2_ctx_interact": {"industry": False, "interact": True, "space": SPACE, "label": "y"},
+    "b3_big_leaves": {"industry": False, "interact": True, "space": SPACE_2B, "label": "y"},
+    "b4_sector_label": {"industry": False, "interact": True, "space": SPACE_2B, "label": "y_sec"},
+}
+RIDGE_V2_IC = {21: 0.0206, 63: 0.0155}           # stage-2 discovery IC a variant must beat
+
+
+def matrix_2b(df: pd.DataFrame, v: dict) -> pd.DataFrame:
+    X = matrix(df)
+    if not v["industry"]:
+        X = X.drop(columns=["industry"])
+    if v["interact"]:
+        ctx = [c for c in X.columns if c.startswith("ctx_")]
+        level = {c: X[c] for c in ctx}
+        level["regime"] = (X["regime"] - 1).clip(-1, 1)
+        level["vol_state"] = (X["vol_state"] * 2 - 1).clip(-1, 1)
+        X = X.drop(columns=ctx + DATE_LEVEL)
+        inter = {f"{c}_x_{f}": (level[c] * df[f]).astype("float32") for c in level for f in INTERACT}
+        X = pd.concat([X, pd.DataFrame(inter, index=X.index)], axis=1)
+    return X
+
+
+def walk_forward_2b(df: pd.DataFrame, n: int, name: str, threads: int = 5) -> tuple[pd.DataFrame, dict]:
+    v = VARIANTS[name]
+    y = f"y{n}"
+    df = df[df[y].notna()].reset_index(drop=True)
+    df["t"] = B.target(df, y if v["label"] == "y" else f"y{n}_sec").fillna(0.0)
+    X = matrix_2b(df, v)
+    disc = _discovery(df, n)
+    preds, chosen, log, shap_years = _versions(df, disc, n, X, df["t"], {name: "lgb_reg"}, v["space"], threads)
+    out = disc.copy()
+    out[name] = preds[name]
+    c = chosen[name]
+    return out, {"trials": log, "chosen": {"val_ic": c[0], "config": c[1], "trees": c[2]}, "shap": shap_years}
+
+
+def run_2b(horizon: int, threads: int = 5, done: dict | None = None, save=None) -> dict:
+    """Every variant in order; `done` holds variants finished by an earlier interrupted run, `save` is
+    called after each variant so a crash keeps what was finished."""
+    df = pd.read_parquet(F.OUT / "features_v1.parquet")
+    df["date"] = pd.to_datetime(df["date"])
+    for k in F.HORIZONS:
+        df[f"y{k}_end"] = pd.to_datetime(df[f"y{k}_end"])
+    df = df[df["date"] <= pd.Timestamp(B.DISCOVERY[1])].reset_index(drop=True)    # nothing after discovery is read
+    B.CKPT.mkdir(parents=True, exist_ok=True)
+    res = dict(done or {})
+    for name in VARIANTS:
+        if name in res:
+            continue
+        scored, info = walk_forward_2b(df, horizon, name, threads)
+        m = evaluate(scored, horizon, (name,))[name]
+        m["beats_ridge_v2"] = bool(m["ic"] and m["ic"]["all"]["mean"] > RIDGE_V2_IC[horizon])
+        m["candidate_2b"] = m["candidate"] and m["beats_ridge_v2"]
+        res[name] = {"metrics": m, "chosen": info["chosen"], "shap": shap_stability(info["shap"])[name],
+                     "trials": info["trials"]}
+        if save:
+            save(res)
+    return res
+
+
+def report_2b(results: dict) -> str:
+    p = lambda x: "—" if x is None else f"{x:+.4f}"  # noqa: E731
+    q = lambda x: "—" if x is None else f"{x:+.2%}"  # noqa: E731
+    lines = [f"ML 第 2b 阶段（挖掘期 {B.DISCOVERY[0][:7]} 至 {B.DISCOVERY[1][:7]}，LightGBM 回归，逐步累加改动；确认期未触碰）"]
+    for n, r in results.items():
+        lines.append(f"\n持有 {n} 个交易日（岭回归 v2 IC {RIDGE_V2_IC[int(n)]:+.4f}）：变体 | IC（t） | IC 前半 / 后半 | "
+                     "前 10% 超额（t） | 前半 / 后半 | 树数中位 | 候选")
+        for k, v in r.items():
+            m, ic, td = v["metrics"], v["metrics"]["ic"], v["metrics"]["top_decile"]
+            trees = int(np.median([t["trees"] for t in v["trials"]]))
+            lines.append(f"{k} | {p(ic['all']['mean'])}（{ic['all']['t_nw']}） | {p(ic['first']['mean'])} / {p(ic['second']['mean'])} | "
+                         f"{q(td['all']['mean'])}（{td['all']['t_nw']}） | {q(td['first']['mean'])} / {q(td['second']['mean'])} | "
+                         f"{trees} | {'是' if m['candidate_2b'] else '否'}")
+        for k, v in r.items():
+            lines.append(f"{k} 重要特征：" + "、".join(f"{x['feature']}（{x['years_in_top']}）" for x in v["shap"][:8]))
     return "\n".join(lines)

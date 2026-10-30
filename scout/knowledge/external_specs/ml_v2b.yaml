@@ -1,0 +1,24 @@
+# Pre-registration of ML stage 2b (targeted tree changes), written 2026-10-30 after stage 2 (ml_v2)
+# and before any 2b model was trained, at the same time as ml_confirm_v1. Discovery period only.
+# Never edited after a run.
+key: ml_v2b
+registered_on: '2026-10-30'
+requested_by: 用户 2026-10-30："好，A 和 B 同时做，预登记并开始"
+question: 第二阶段树模型落后的原因是不是"记住时期"（SHAP 由细分行业和只随日期变化的情境变量主导、早停在 6–9 棵树）？去掉这些通道后，LightGBM 能否超过岭回归？
+written_before_confirmation: 本文件在 ml_confirm_v1 的任何结果出来之前提交，确认期结果不会影响第 2b 阶段的设计
+
+data: 与 ml_v2 相同（特征库 v1，标签 21 / 63 日，挖掘期 2004-01 至 2015-12，确认期不读取）
+model: 只做 LightGBM 回归（lambdarank 在第二阶段两个周期都为负，不再尝试）
+variants: 依次累加，每一步在前一步之上只改一处
+  b1_no_industry: 去掉细分行业类别（约 150 类），保留 11 个大类行业
+  b2_ctx_interact: 在 b1 上，只随日期（或行业 × 日期）变化的输入不再直接进入模型（ctx_* 八个情境 z 分数、市况、波动状态），改为它们与四个股票特征（12−1 月动量、63 日波动、市值对数、账面市值比）的乘积，共 10 × 4 = 40 列；市况编码居中为 −1 / 0 / 1，波动状态为 −1 / 1
+  b3_big_leaves: 在 b2 上，min_data_in_leaf 的候选改为 {5000, 20000, 50000}，其余搜索空间不变
+  b4_sector_label: 在 b3 上，训练目标改为减去同行业平均后的标签（y_sec）的当天截面排名；评估仍用主标签（减去股票池平均）
+search: 与 ml_v2 相同的流程（每年 1 月用最后 24 个月选参数，早停决定树数，最多 1000 棵、50 轮不改善即停；每季度重训）；每个变体从各自的 72 组网格中按种子 7 抽 12 组
+trials: 4 个变体 × 12 组 × 2 个周期 = 96 次，加上第二阶段的 48 次，树模型累计 144 次；全部记录在 exports/ml/trials_v2b_y<N>.json 与研究文档
+
+metrics: 与 ml_v2 相同（IC 与 t、前 10% 相对其他股票的超额、前后两半、分市况、每年 12 月版本的 SHAP）
+decision:
+  candidate: 满足 ml_v2 的候选标准（IC t ≥ 3、IC 前后两半为正、前 10% 超额前后两半为正），并且挖掘期 IC 高于同周期的岭回归 v2（第二阶段的结果：21 日 +0.0206，63 日 +0.0155）
+  if_none: 大中盘不再继续调整树模型；转向第三阶段（序列模型）或接受线性融合，由用户决定
+  if_some: 取 IC t 最高的一个；确认期检验另行预登记。由于 ml_confirm_v1 已经用过一次 2016 年以后的数据，第二次使用会在报告中写明，并同时要求前向检验
