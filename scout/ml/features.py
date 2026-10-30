@@ -233,21 +233,26 @@ def events_holders(keys: pd.DataFrame, names: list[str], p: sr.Prices, spy: np.n
 
 # ── build and process ───────────────────────────────────────────────────
 
-def build(fred: dict[str, list[tuple]], until: str | None = None) -> pd.DataFrame:
-    """Raw features and labels, one row per (sample date, large / mid universe stock). `until` limits the
-    sampled dates (a smoke test inside the discovery period)."""
+def build(fred: dict[str, list[tuple]], until: str | None = None, part: str = "large",
+          hi: str | None = None) -> pd.DataFrame:
+    """Raw features and labels, one row per (sample date, stock of that day's `part` universe: "large" =
+    market cap top 1000, "small" = ranks 1001–3000, cap_rank continuing from 1000). `until` limits the
+    sampled dates (a smoke test inside the discovery period); `hi` also limits the price history read."""
     dates = sr.trading_days()
+    if hi:
+        dates = dates[dates <= pd.Timestamp(hi)]
     samples = [i for i in sample_days(dates) if until is None or dates[i] <= pd.Timestamp(until)]
     elig = sr.eligible()
     uni = sr.universe(dates[samples], elig)
-    names = sorted({t for v in uni.values() for t in v["large"]})
+    names = sorted({t for v in uni.values() for t in v[part]})
     p = sr.prices(names, dates)
+    offset = 0 if part == "large" else sr.LARGE
     rows_l, cols_l, rank_l = [], [], []
     for i in samples:
-        members = [t for t in uni.get(dates[i], {}).get("large", []) if t in p.col]
+        members = [t for t in uni.get(dates[i], {}).get(part, []) if t in p.col]
         rows_l += [i] * len(members)
         cols_l += [p.col[t] for t in members]
-        rank_l += list(range(len(members)))
+        rank_l += [offset + k for k in range(len(members))]
     rows, cols = np.asarray(rows_l), np.asarray(cols_l)
     keys = pd.DataFrame({"date": dates[rows], "ticker": [p.tickers[j] for j in cols], "i": rows,
                          "sector": elig["sector"].reindex([p.tickers[j] for j in cols]).to_numpy(),

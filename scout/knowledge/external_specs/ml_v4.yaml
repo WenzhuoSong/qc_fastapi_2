@@ -1,0 +1,29 @@
+# Pre-registration of ML stage 4 (residual labels and a wider training universe), written 2026-10-30
+# after ml_tilt_v1 and before the wide feature store was built or any stage-4 model trained.
+# Discovery period only. Never edited after a run.
+key: ml_v4
+registered_on: '2026-10-30'
+requested_by: 用户 2026-10-30："好，三项都做，先预登记倾斜组合检验并开始"（三项 = 倾斜组合、残差标签、更大股票池训练）
+question: 业界的两个做法能否提高大中盘（市值前 1000）的排名质量：(1) 预测扣掉风险因子后的残差收益并按波动缩放；(2) 用市值前 3000 训练、只在前 1000 使用？
+
+data:
+  store_v1: 现有特征库（前 1000）
+  store_v2: 新建，前 3000 = 前 1000 + 第 1001–3000 名（sharadar_rechecks 的 small 股票池，同样含后来退市的公司），特征公式与 v1 完全相同；截面排名、行业中性排名、排名变化在前 3000 内计算；市场宽度按两部分股票数加权合并；size_bucket = 市值排名 × 10 // 3000；标签减去前 3000 的平均
+  periods: 挖掘期 2004-01 至 2015-12；2016 年以后不读取
+
+labels:
+  sec: 行业中性标签（y_sec，第 2b 阶段 b4 的训练目标），作为基线
+  res: 每个截面日，用原始收益（y_raw）对常数、beta_252、log_mcap、bm、mom_12_1 的截面排名和行业虚拟变量做最小二乘回归，取残差，再除以该股票样本日的 63 日波动（原始值，事前已知）；训练目标 = 它的当天截面排名
+  evaluation: 都用主标签（减去当天前 1000 平均；排名类指标与减去哪个平均无关），只在前 1000 的样本上评估
+
+models:
+  ridge: 岭回归 v2（ml_v2 的设计与正则网格，每月一个版本）
+  lgb: 第 2b 阶段 b4 的设置（无细分行业、情境只走交互、min_data_in_leaf ∈ {5000, 20000, 50000}，每年 1 月选参数、每季度重训），只换标签与训练股票池；参数选择用训练股票池内的验证 IC
+grid: 标签 {sec, res} × 训练股票池 {前 1000, 前 3000} × 模型 {ridge, lgb} × 周期 {21, 63}；lgb 的（sec, 前 1000）就是 b4，沿用第 2b 阶段已保存的版本，不重训
+trials: ridge 4 × 2 = 8 次；lgb 3 × 2 × 12 组参数 = 72 次；树模型累计 216 次
+
+metrics: 与 ml_v2 相同（IC 与 t、前 10% 超额、前后两半）；另加倾斜组合（ml_tilt_v1 的每月缓冲变体，挖掘期，扣成本）的信息比率
+decision:
+  increment: 每个新组合相对同模型同周期的基线（sec, 前 1000）：每天 IC 之差的全样本均值 > 0、按月 t ≥ 2、前后两半都为正，才算"该做法有效"
+  candidate: 同时满足 ml_v2 的候选标准（IC t ≥ 3、IC 两半为正、前 10% 超额两半为正）的组合，才考虑进入确认（2016 年以后的第三次使用，写明，并同时做前向检验，另行预登记）
+  if_none: 两个做法都记为否定结果（大中盘），不再在它们上调参
