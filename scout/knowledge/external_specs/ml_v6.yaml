@@ -1,0 +1,95 @@
+# Pre-registration of ML stage 6 (all features with grouped penalties, two-layer target, new data split),
+# written 2026-10-30 after ml_v5 and a review of the feature design against published practice
+# (Gu-Kelly-Xiu 2020, Jensen-Kelly-Pedersen, Kelly-Malamud-Zhou 2024, Bryzgalova et al. 2025, Barra USE4,
+# Moskowitz-Grinblatt 1999, Arnott et al. factor momentum, López de Prado, Numerai), before any stage-6
+# feature was built or model trained. Never edited after a run.
+key: ml_v6
+registered_on: '2026-10-30'
+requested_by: 用户 2026-10-30："你尽量把我们已有特征都试用上……专业的处理、目标设计"；"不可以继续滚动训练，然后找更近的一些年限做最终的eval和test？"；"开始"
+question: (A) 把已有特征全部用上、补齐文献中的缺口，并按特征组分别惩罚，个股层排名能否超过基线？(B) 加上板块层（板块相对全市场），两层合成能否超过只有个股层？(C) 同样输入下，深度网络（多种子集成）能否超过分组岭回归？
+
+split:
+  history: ml_v1 把 2004–2015 定为挖掘期、2016 年以后为确认期；2016 年以后已被 ml_confirm_v1 与 ml_tilt_v1 各用过一次（只看过整段的汇总结果）。本阶段重新划分，写明于此，ml_v1 不改
+  training: 样本日 1999-01 起，每月一个版本，训练集随时间扩展（标签结束 ≥ N 个交易日早于版本的第一个样本，隔离 + 冷却）
+  discovery: 2004-01 至 2021-12（样本日与标签结束都不晚于 2021-12-31）；第六阶段的比较、选择只在这里做
+  predictions_from: 2002-01（2002–2003 的样本外预测只用于选择合成权重 β 与分层集成的组合权重，不参与评估）
+  read_limit: 构建与挖掘期运行不读 2021-12-31 以后的任何数据（价格、基本面、宏观）
+  final_test: 2022-01 至最新数据，只运行一次，必须先得到用户同意；写明是 2016 年以后数据的第三次使用（汇总结果曾被看过两次），之后做前向检验；规则见 final
+  subperiod: 另报告 2008–2021（内部人数据齐全以后）作稳健性描述，不作判定
+
+data:
+  rows: 特征库 v1 的样本（每 5 个交易日一个样本日，市值前 1000，价格 ≥ 5 美元，含已退市股票）
+  storage: 新特征与模型只写本地 exports/ml/（Sharadar 衍生，退订时一起删除）
+
+features:
+  stock_raw:
+    price: 特征库 v1 的 25 个量价特征 + max_ret21（21 日内最大日收益，Bali 等 2011）、turnover21（21 日平均成交额 / 市值）、season（过去 1–5 年同一 21 日窗口的平均收益，至少 3 年，Heston-Sadka 2008）
+    value: log_mcap、bm、ep、sp、ebitda_ev + div_yield（TTM 现金分红 / 市值）
+    quality: gp_assets、roe、roa、accruals、leverage、capex_assets、rnd_sales + noa（(债务 + 权益 − 现金) / 一年前总资产，Hirshleifer 等 2004）、roe_chg（TTM ROE 同比变化）、gm_chg（TTM 毛利率同比变化）
+    growth: asset_growth、sales_growth、share_growth
+    events: ear、ear_days、insider_net、inst_chg + sue（季度净利润相对去年同季的变化 ÷ 此前 8 个季度这一变化的标准差，至少 4 个；按申报日）
+    count: 52 个
+    sign_flags: ep < 0、ebitda_ev < 0、roe < 0、rnd_sales = 0、insider_net = 0（有记录时）
+  stock_derived:
+    sector_rank: 52 个特征全部同时做全局排名与板块内排名，两者放在同一特征组
+    own_history: 第五阶段的 16 个相对自身历史的 z 分数（加缺失标记），重算到 2021
+    industry: 第五阶段的 6 个相对细分行业中位数的差；另有细分行业层面的 ind_ret21、ind_ret63、ind_mom（成员市值加权，细分行业当天 ≥ 5 只），以及 ind_dvr（成员市值加权的成交额变化）；这 4 个做板块内排名（行业动量，Moskowitz-Grinblatt 1999）
+    rank_change: 特征库 v1 的 4 个排名变化，加缺失标记（原来缺失填 0、没有标记）
+    other: 突破回踩信号、市值档位、板块 one-hot
+  context:
+    levels: 特征库 v1 的 7 个（SPY 21/63/252 日收益、SPY 波动、VIX、期限利差、宽度）、市况、波动状态、第五阶段的 6 个（3 个截面离散度、BAA10Y、它的 63 日变化、DGS10 的 63 日变化），以及因子动量 12 个
+    factor_momentum: 价值（bm）、动量（mom_12_1）、质量（gp_assets）、小市值（−log_mcap）、低波动（−vol_63）、低投资（−asset_growth）六个因子，各在 63 与 252 个交易日前的样本日按特征分三组（等权，前 1000），最高组减最低组到今天的收益（Arnott 等）
+    count: 27 个
+    operator: 只用以前日期的扩展 z 分数；只通过交叉项进入岭回归（每天一个值的变量对截面排名本身没有作用）
+  crosses: 27 个环境变量 × 52 个个股特征的板块内排名 = 1404 个（Gu-Kelly-Xiu 的个股特征 × 宏观交叉），按环境变量的类别分 4 组
+  sector_layer: 每个（日期, 板块）一行：成员市值加权的 21/63/126/252 日收益与 12-1 动量、成员市值加权的 63 日波动与成交额变化、站上 200 日线的比例、中位 bm / ep / gp_assets / sales_growth / ear、ret_63 的标准差、板块 ETF 相对 SPY 的 63 日收益；每天在 11 个板块间排名；另加 27 个环境变量 × 5 个板块特征（mom、ret_63、bm、宽度、波动）的交叉
+
+processing:
+  cross_sectional: 每天截面缩尾 1% / 99%，排名到 [−1, 1]（Gu-Kelly-Xiu、Jensen-Kelly-Pedersen）
+  missing:
+    step_1: 基本面与事件类特征先用这只股票上一次的已知值（最多 13 个样本日 ≈ 63 个交易日；Bryzgalova 等 2025：缺失不是随机的，这只股票自己的时间序列信息最有用）；量价特征不向前填
+    step_2: 仍缺失的填 0（截面中位数），加缺失标记
+    coverage: 某一天某个特征有值的股票不到 50%（数据源还没开始，例如 13F 2014 年以前、内部人 2008 年以前、财报事件 2005 年以前），这一天这一列（排名、板块内排名、标记、交叉项）全部为 0，不加缺失标记；系数只由有数据的年份估计（可用样本法），模型看不到"数据从哪年开始有"
+  groups:
+    price: 28 个量价特征（全局 + 板块内 + 缺失标记）
+    value: 6 个 + 2 个符号标记
+    quality: 10 个 + 2 个符号标记
+    growth: 3 个
+    events: 5 个 + 1 个零值标记
+    own: 自身历史 16 个 + 标记
+    industry: 细分行业相对 6 个 + 标记 + 行业层 4 个
+    misc: 排名变化 4 个 + 标记、突破回踩信号、市值档位、板块 one-hot
+    x_market: 市场类环境（SPY 收益 3 个、SPY 波动、VIX、宽度、市况、波动状态，共 8 个）× 52
+    x_rates: 期限利差、BAA10Y、它的变化、DGS10 变化（4 个）× 52
+    x_disp: 3 个离散度 × 52
+    x_factor: 12 个因子动量 × 52
+
+target:
+  stock_layer: 行业中性标签（下一日开盘 → N 日后收盘，减去当天所在板块的均值）的当天截面排名
+  sector_layer: 板块成员的平均标签（减去全市场均值）在当天 11 个板块间的排名
+  two_layer: 最终分数 = 个股层分数的当天 z 分数 + β × 所在板块的板块层分数（同样在全部股票上做当天 z 分数）；β ∈ {0, 0.25, 0.5, 1, 2}，每年 1 月用此前 24 个月已产生的样本外预测（标签在版本截止前结束）选，按全市场标签的 IC；不足 12 个月时 β = 0
+  evaluation: 全市场标签（减去全市场均值），与基线相同
+  horizons: 21 个交易日为判定周期；63 日只作描述（12 年挖掘期里 63 日独立观测只有约 46 个，18 年约 70 个）
+
+models:
+  M0_baseline: 岭回归 v2，第一阶段设计，行业中性标签（即 ridge_sec_u1000），在新的挖掘期上重跑（每月版本，α 每月在最后 24 个月上选）
+  M1_ridge_one_alpha: 全部输入，一个 α（网格同岭回归 v2，每年 1 月选），只作描述：显示统一惩罚的效果
+  M2_ridge_group: 全部输入，12 组各自的惩罚，从岭回归 v2 的网格加"整组去掉"中选；每年 1 月在内部验证（训练集最后 24 个月，与拟合部分隔离 1.5 × N 天）上做坐标搜索：所有组先取统一的最佳 α，再按上面列出的组顺序逐组改，两遍；每月用当年的惩罚重新拟合；按全市场标签的 IC 选
+  M3_stack: 对照：每组单独一个岭回归（α 在网格上选），再用一个岭回归（α = 1，组分数标准化）在内部验证上合并各组分数；每年 1 月选，每月重拟合组模型
+  M4_sector: 板块层岭回归（网格同上，每月版本，α 在内部验证上按板块间 IC 选）；单独报告板块间的 IC
+  M5_two_layer: M2 + β × M4（见 target.two_layer）
+  M6_dnn: 数值输入 = 个股层的全部非交叉输入（不含板块 one-hot，不含环境变量，不含细分行业代码）；PLR 数值嵌入（k = 8, d = 8）；类别嵌入只有板块（4 维）与市值档位（4 维）；主体 256 → 128（GELU，dropout 0.1）；27 个环境变量只通过门控进入（最后隐藏层 × sigmoid(线性(环境))），不作为直接输入；变体 single（y21_sec，隔离 21）与 multi（y21_sec、y63_sec、未来 21 日波动排名，损失等权，隔离 63）；每年 1 月一个版本，内部验证为最后 12 个月，AdamW 1e-3 / 1e-4，批量 2048，每轮 40 万行，第一个版本最多 15 轮、之后热启动最多 5 轮，验证 IC 连续 2 轮不升即停；5 个种子（7–11），预测取平均（Gu-Kelly-Xiu 的集成）
+
+decision:
+  increment: 每天 IC 之差的全样本均值 > 0、按月 t ≥ 2、前后两半都为正，才算成立（同 ml_v4 / ml_v5）
+  A: M2 相对 M0
+  B: M5 相对 M2
+  C: M6 multi 相对 M2（single 相对 multi 只作描述）
+  candidate: ml_v2 的候选标准（IC t ≥ 3、IC 两半为正、前 10% 超额两半为正）
+  overfitting: 报告第六阶段全部 21 日分数（M0–M6）的回测过拟合概率（CSCV，按月 IC，16 段）；记录到本阶段为止的尝试次数，判定用的 t 门槛取 3 与 Bonferroni 门槛中较高者
+  descriptive: 2008–2021 子期的同样比较；特征暴露（每天分数与每个输入的相关，均值、两半是否同号，前 20 个）；63 日全部结果
+
+final:
+  object: 21 日；若 B 成立且 M5 是候选，用 M5；否则若 A 成立且 M2 是候选，用 M2；若 C 也成立且 M6 是候选，个股层改用 M6（与 M4 合成与否按 B）；都不成立就不做最终检验，在大中盘上记为否定结果
+  run: 同样的每月版本继续向前滚动到最新数据，在 2022-01 以后的样本上评估一次；需要用户同意；之后做前向检验（另行登记）
+  pass: 与 ml_confirm_v1 相同：IC 均值 > 0 且 t ≥ 2、前 10% 扣成本后超额 > 0，以及倾斜组合（ml_tilt_v1 的 m_band）相对等权股票池的超额 > 0
