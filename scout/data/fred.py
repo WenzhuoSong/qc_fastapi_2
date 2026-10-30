@@ -19,10 +19,12 @@ SERIES = {
 }
 
 
-async def series(series_id: str, start: date | None = None) -> list[tuple[date, float]]:
+async def series(series_id: str, start: date | None = None, end: date | None = None) -> list[tuple[date, float]]:
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
     if start:
         url += f"&cosd={start.isoformat()}"
+    if end:
+        url += f"&coed={end.isoformat()}"
     try:
         async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
             resp = await client.get(url)

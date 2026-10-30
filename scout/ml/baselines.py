@@ -88,15 +88,15 @@ def summary(s: pd.Series, n: int) -> dict:
 
 
 def walk_forward(df: pd.DataFrame, n: int, alphas: tuple = ALPHAS, name: str = "ridge",
-                 window: tuple = DISCOVERY, label: str | None = None) -> pd.DataFrame:
+                 window: tuple = DISCOVERY, label: str | None = None, design_fn=None) -> pd.DataFrame:
     """Monthly versions of the ridge model for horizon n; returns the rows of `window` (the discovery
     period unless the one-time confirmation run passes its own) with predictions. `label` is the column
     whose per-date rank is the training target (the main label by default); alphas are chosen on the
-    main label."""
+    main label. `design_fn` replaces the stage-1 design (same signature)."""
     y, end = f"y{n}", f"y{n}_end"
     df = df[df[y].notna()].copy()
     df["t"] = target(df, label or y).fillna(0.0)
-    X, names = design(df)
+    X, names = (design_fn or design)(df)
     tgt = df["t"].to_numpy()
     hi = pd.Timestamp(window[1]) if window[1] else df[end].max()
     disc = df[(df["date"] >= window[0]) & (df["date"] <= hi) & (df[end] <= hi)]
