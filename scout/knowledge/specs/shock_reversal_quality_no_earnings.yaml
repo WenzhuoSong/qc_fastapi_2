@@ -1,0 +1,38 @@
+# Pre-registration (G0), written 2026-10-30 before any run of this spec. Never edited after a run; one run.
+# Run on the local Sharadar files (not the Scout panel): `python -m scout.jobs.eval_shock_reversal register | run`.
+key: shock_reversal_quality_no_earnings
+family: short_term_reversal
+type: event
+primary_control: select
+hold: 21
+title: 好公司无财报大跌后的反弹
+claim: 市值前 1000 的公司里，毛利率资产比高于当天中位数、过去十二个月盈利为正的公司，单日相对 SPY 下跌 10% 以上、且前 7 天内没有财报（8-K 2.02 或 10-Q/10-K），次日开盘买入持有 21 个交易日，跑赢同一窗口里股票池的其他股票。
+mechanism: 没有公开消息的大幅价格变动多半是流动性冲击或过度反应，随后反转；有消息的变动随后延续（Chan 2003, JFE《Stock price reaction to news and no-news: drift and reversal after headlines》；Savor 2012, JFE《Stock returns after major price shocks: the impact of information》；Larson & Madura 2003；Tetlock 2010, RFS）。盈利的好公司被错杀时，基本面不支持继续下跌（质量用 Novy-Marx 2013 的毛利率资产比）。
+expected_failure: 历史新闻覆盖不足，"没有消息"只能用"没有财报"代理，大跌里混有并购失败、诉讼、降级、FDA、做空报告等非财报坏消息（这类会延续而不是反转）；10% 的单日跌幅在大盘股里少见，样本可能偏小、月度 t 值噪声大；2008 年这类危机里好公司也会继续跌；文献里的反转主要在小盘、低流动性股票，大盘股里更弱，2000 年后减弱。
+
+definitions:
+  data: Sharadar（本地 git 忽略的 exports/sharadar/），与 sharadar_rechecks.yaml 的股票池、价格、退市处理完全相同
+  universe: 时点正确的市值前 1000（含后来退市的公司），成员取冲击日当天或之前最近一次的 21 日调仓日名单（自 1999-01-04 起每 21 个交易日）
+  sample: 冲击日 2004-09-01 至持有窗口完整的最后一天。起点原因：8-K 2.02 条款 2004-08-23 生效，之前没有可用的财报日期
+  shock: 冲击日 d 的收益（closeadj 收盘比收盘）减 SPY 同日收益 ≤ −10%。单日 10% 是 Savor (2012)、Larson & Madura (2003) 使用的大幅变动标准；相对 SPY 是本规格的选择，用来排除全市场暴跌日
+  quality: 截至 d 已申报（fundamentals ART 维度，datekey ≤ d，400 天内）的最新 TTM 数据：gp / assets 高于成员名单日股票池的横截面中位数（Novy-Marx 2013），且 netinc > 0（E/P 为正）。gp 缺失（多数银行）= 不合格
+  no_news_proxy: d 前 7 个自然日到 d（含）之间，该股票没有 Sharadar events 的 8-K 2.02（eventcode 22，财报）且没有 10-Q/10-K 申报（fundamentals ARQ datekey）。这是"没有财报"，不是"没有消息"——历史新闻覆盖太短，无法检验真正的"无消息"
+  entry_exit: d 的次日开盘买入，持有 21 个交易日（到第 21 个交易日收盘），收益含分红；退市按 sharadar_rechecks 的规则结算
+  dedupe: 同一股票在持有窗口结束前的再次冲击不计
+  control: 选股对照（主对照）= 同一窗口（同样的次日开盘到第 21 个交易日收盘）里成员名单其他所有股票的平均收益；差值按月平均后算 t（gate.monthly_t）
+
+verdict:
+  pass: 全样本按月 t ≥ gate.required_t(本族检验次数)，且按事件日期中位数分成的前后两半超额都为正 → G1 通过；之后还要过 G2 批判关（gate.critique），通过后状态改为 backtested，进入前向验证；只有用户能确认
+  fail: G1 任一条件不满足 → 知识库条目改为 rejected（否定结论保留），不调参、不重测
+  not_checked: 与已通过规则（breakout_retest_selection）的月度相关检查需要 Scout 面板上的成交，Sharadar 上没有，不检查；若 G1 通过，在批判关里说明
+  reported_only: 持有 5 / 63 个交易日；所有冲击（不加过滤）；只加质量 / 只加无财报；有财报的冲击；更严的"7 天内没有任何 8-K"；逐年；熊市月份（osap_check.BEARS）；去掉 2008–2009；行业。这些不影响结论
+
+family_note: 与 rank_short_term_reversal、rank_short_term_reversal_high_vol 及它们的持仓计划重测同属短期反转族（都已否定）；本条计为该族的下一次检验，门槛 gate.required_t 按族内次数计（运行时从 scout.gate_runs 读取，预计第 5 次；Bonferroni 在第 19 次之前低于 3，所以门槛仍是 t ≥ 3）。
+disclosure: |
+  登记前做过一次探索（2004–2015，市值前 1000，raw_v1 特征）：5 日跌幅 ≥ 15% 的股票整体跑输（63 日 −3.2%，12 年中 9 年为负）；
+  其中毛利率资产比高于中位数、E/P 为正、杠杆 < 0.5、过去 7 天没有财报的，63 日跑赢股票池 +2.7%（去掉 2008–09 为 +1.5%，12 年中 10 年为正，危机以外每年约 15–20 次）。
+  这些条件是边看边挑的。本规格尽量改用文献定义：冲击改为单日相对 SPY ≤ −10%（不用探索里的 5 日 15%），持有期用反转文献的 1 个月（21 日，不用探索里的 63 日，63 日只报告），去掉杠杆条件（没有文献依据的阈值）。
+  保留的"毛利率高于中位数"和"盈利为正"与探索时的切分相同，属于数据窥探过的条件；中位数和符号是自然切分点，没有在别的阈值上比较过。
+  2004–2015 是探索看过的区间，2016 年以后没有看过；结果会单独报告 2016 年以后的部分，但结论按全样本和前后两半。
+deviations: 用"没有财报"代理"没有消息"；用 Sharadar 的点时股票池而不是 Scout 当前成分股；不做空；与 breakout_retest 的相关不检查（见 verdict.not_checked）。
+registered_on: '2026-10-30'
