@@ -1,0 +1,50 @@
+# Pre-registration of ML stage 5 (feature gaps, tabular DNN with embeddings and multi-task heads, per-sector
+# shrinkage), written 2026-10-30 after ml_v4 and before any stage-5 feature was built or model trained.
+# Discovery period only. Never edited after a run.
+key: ml_v5
+registered_on: '2026-10-30'
+requested_by: 用户 2026-10-30："好，三项都做，先预登记第五阶段并开始"（三项 = 补特征缺口、表格深度网络（嵌入 + 多任务）、分板块收缩模型）
+question: (A) 补上个股相对同行、相对自身历史、板块汇总、截面离散度、更多宏观以及环境 × 个股交叉之后，岭回归的排名质量能否提高？(B) 同样输入下，带数值与类别嵌入的表格深度网络能否超过岭回归？多任务辅助学习能否超过单任务？(C) 每个板块有自己的系数（向共享模型收缩），能否超过一个共享模型？
+
+data:
+  rows: 特征库 v1（市值前 1000）的样本与标签；挖掘期 2004-01 至 2015-12；读入后先删去 2015 年以后的行，2016 年以后的数据（包括价格与宏观）一律不读
+  baseline: 第四阶段的 ridge_sec_u1000（岭回归 v2，行业中性标签，已保存的预测，不重训）
+  new_features:
+    peer: 其余 40 个截面特征的行业（板块）内排名（已有 4 个不重复）；6 个特征（ret_21、ret_63、mom_12_1、bm、ep、gp_assets）相对细分行业中位数的差（当天该细分行业 ≥ 5 只时，否则缺失），再做截面排名并加缺失标记
+    own_history: 16 个特征（FUND 中除 log_mcap 外的 14 个、vol_63、log_dv21）相对该股票自身此前样本（最多 260 个样本日 ≈ 5 年，至少 20 个，不含当天）的 z 分数，再做截面排名并加缺失标记
+    sector_aggregate: 每个（日期, 板块）在前 1000 成员上的中位 mom_12_1、站上 200 日均线的比例、中位 bm、中位 sales_growth、中位 ear、ret_63 的标准差；每只股票取所在板块的值，做截面排名
+    dispersion: 每个日期前 1000 截面上缩尾后 ret_21、ret_63、mom_12_1 的标准差；环境算子（只用以前日期的扩展 z 分数）
+    macro: Moody's Baa − 10 年期利差（FRED BAA10Y）水平、它的 63 日变化、10 年期国债收益率（DGS10）的 63 日变化；取前一日的值，环境算子
+    context_cross: 全部环境变量（已有 8 个 + 市况 + 波动状态 + 新的 6 个 = 16 个）× 4 个个股特征（mom_12_1、vol_63、log_mcap、bm 的截面排名）= 64 个交叉项；替换基线的 2 个手工交叉项（每天一个值的环境变量本身对截面排名没有作用，只能通过交叉起作用）
+  storage: 新特征与模型只写本地 exports/ml/（Sharadar 衍生，退订时一起删除）
+
+target: 行业中性标签（y_sec）的当天截面排名；评估用主标签，只在挖掘期、前 1000 上
+
+A_ridge:
+  model: 岭回归 v2 的设计、正则网格与每月版本，只换输入
+  runs: full（全部新特征组）为判定对象；另外每组单独加入（peer、own_history、sector_aggregate、context_cross，后者包含离散度与宏观）只作描述
+  trials: 5 × 2 个周期 = 10 次
+B_dnn:
+  inputs: 与 A 的 full 相同的数值输入（不含 one-hot 和手工交叉项，环境变量直接输入），类别：板块、细分行业、市值档位、市况、波动状态
+  numeric_embedding: 每个数值特征 PLR 嵌入（Gorishniy 等 2022）：8 个可学习频率的 sin / cos → 线性 → 8 维 → ReLU；频率初始化 N(0, 1)
+  categorical_embedding: 板块 4 维、细分行业 8 维、市值档位 4 维、市况 2 维、波动状态 2 维；未知类别有自己的向量；不使用股票代码
+  body: 拼接 → 256 → 128（GELU，dropout 0.1）→ 每个任务一个线性输出
+  variants:
+    single_21: 一个输出，目标为 y21_sec 排名；隔离期 21
+    single_63: 一个输出，目标为 y63_sec 排名；隔离期 63
+    multi: 三个输出：y21_sec 排名、y63_sec 排名、未来 21 日实际波动（下一日起 21 个交易日日对数收益的标准差）的截面排名；损失等权（缺失的标签不计入）；隔离期 63（最长的标签）；21 日分数取第一个输出，63 日取第二个
+  training: 每年 1 月一个版本（2004–2015 共 12 个）；内部验证 = 训练集最后 12 个月（与拟合部分隔离 1.5 × 隔离期）；AdamW（学习率 1e-3，权重衰减 1e-4），批量 2048，每轮随机抽 40 万行；第一个版本最多 15 轮，之后从上一版本继续最多 5 轮；验证 IC（multi 用两个收益输出的平均）连续 2 轮不提高即停，保留最好的一轮；种子 7；超参数全部固定
+  trials: 3 次训练
+  note: 第三阶段序列没有增量，这一阶段不加入序列分支
+C_sector_ridge:
+  model: 系数 = 共享系数 + 板块系数；共享部分惩罚 α（按岭回归 v2 的方式选），板块部分惩罚 λ = α × {1, 10, 100, 1000}，在同一内部验证上选；λ 趋于无穷即为基线；输入与基线相同
+  trials: 2 个周期（每个 4 个 λ）
+
+metrics: 与 ml_v4 相同（IC 与 t、前后两半、前 10% 超额、ml_tilt_v1 每月缓冲倾斜组合的信息比率）
+decision:
+  increment: 每天 IC 之差的全样本均值 > 0、按月 t ≥ 2、前后两半都为正，才算成立
+  A: ridge_v5_full 相对基线
+  B: 深度网络相对 ridge_v5_full（同输入，检验非线性与嵌入）；multi 相对 single（同周期，检验多任务）；同时报告相对基线
+  C: 分板块收缩相对基线
+  candidate: 同时满足 ml_v2 的候选标准（IC t ≥ 3、IC 两半为正、前 10% 超额两半为正）
+  next: 有增量成立且是候选的模型，才考虑进入确认（2016 年以后数据的第三次使用，写明，并同时做前向检验，另行预登记）；不成立的做法在大中盘上记为否定结果，不再在它上面调参
