@@ -1,0 +1,31 @@
+# Pre-registration of the tilt-portfolio test, written 2026-10-30 after ml_confirm_v1 / ml_v3 and the
+# literature check (professionals use a weak score as tilts with turnover control, not as a top-decile
+# buy list), before any tilt portfolio was simulated. Never edited after a run.
+key: ml_tilt_v1
+registered_on: '2026-10-30'
+requested_by: 用户 2026-10-30："好，三项都做，先预登记倾斜组合检验并开始"
+question: IC ≈ 0.02 的等权综合分，按专业做法用作只做多的倾斜组合（覆盖整个股票池、控制换手、按实际换手计成本），相对等权基准能否得到稳定的超额？
+
+signal: composite（ml_v1 / ml_confirm_v1 的 21 日等权综合分：净发行取负、毛利 / 总资产、财报公告收益、12−1 月动量，各自截面排名后平均；不训练）
+descriptive_only: b4（第 2b 阶段的树，21 日）只在挖掘期报告，不参与选择和确认（确认期没有它的版本）
+universe: 每个决策日的大中盘股票池（特征库 v1 的样本，市值前 1000，含后来退市的公司）
+
+portfolio:
+  benchmark: 决策日股票池等权，此后随价格漂移，与组合在同一天再平衡；基准不计成本（相当于指数）
+  target: 目标权重 = (1 + s) / N，s = 当天综合分的截面排名（[−1, 1]）；只做多，单只最多 2 / N，s 缺失按 0
+  execution: 决策日收盘计算，下一个交易日收盘成交（滞后一天，保守）；退出股票池的股票目标为 0
+  returns: 逐日复权收盘收益；停牌期间为 0，复牌时补回；永久停止交易的股票在最后一个收盘后一天计入退市调整（sharadar_rechecks：表现型退市 −30%），之后按现金（0 收益）留到下一次再平衡；基准同样处理
+  cost: 单边 0.05%（simulate.ROUND_TRIP_COST 的一半）× 实际换手（|新权重 − 漂移后权重| 之和）
+variants:
+  m_full: 每 4 个样本日（20 个交易日）一次，全部调到目标
+  m_band: 每 4 个样本日一次，只调整与目标相差超过 0.5 / N 的股票（以及进出股票池的股票），之后整体归一
+  w_band: 每个样本日（5 个交易日）一次，规则同 m_band
+trials: 3 个变体（只用综合分）；b4 的 3 个只作描述
+
+metrics: 每月主动收益（组合 − 基准，扣成本）的年化均值、跟踪误差、信息比率、按月 t、前后两半；年换手；相对基准的最大回撤；组合与基准各自的年化收益、夏普；同期 SPY；分市况
+selection: 在挖掘期（2004-01 至 2015-12）选扣成本后信息比率最高的变体，只用于确认期
+confirmation:
+  period: 2016-01 至数据结束；这是 2016 年以后数据的第二次使用（第一次是 ml_confirm_v1，已知综合分在确认期 IC +0.022），报告中写明
+  pass: 扣成本后每月主动收益全样本 t ≥ 3，前后两半都为正（检验关标准，不调整）
+  run_once: 结果写入 exports/ml/tilt_confirm_v1.json，文件存在时拒绝再次运行
+  then: 无论结果如何都需要前向检验（每月记录倾斜组合，数据来自订阅期内的 Sharadar 或 Scout 自己的数据），通过前不进入持仓计划
