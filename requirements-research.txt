@@ -1,4 +1,5 @@
 # Local research only (scout/ml, stage 2+); not installed on Railway.
-# macOS: LightGBM needs the OpenMP runtime: `brew install libomp`.
+# macOS: LightGBM needs the OpenMP runtime: `brew install libomp`; torch uses the Apple GPU (MPS) when present.
 lightgbm==4.7.0
 shap==0.51.0
+torch==2.9.0
