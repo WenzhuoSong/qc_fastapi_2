@@ -35,6 +35,19 @@ class SizingTests(unittest.TestCase):
         self.assertEqual(wild["shares"], math.floor(2000 / (0.80 * math.sqrt(21 / 252) * 100)))
         self.assertIn("波动上限", portfolio.size_text(wild))
 
+    def test_the_satellite_cap_limits_new_buys(self):
+        s = {**self.S, "satellite_max_pct": 0.25, "satellite_used": 22_000}
+        sz = portfolio.size(100, 80, s, vol=0.15)                   # risk allows 50, room $3,000 → 30 shares
+        self.assertEqual((sz["shares"], sz["capped"]), (30, "satellite"))
+        self.assertIn("卫星仓剩余额度 $3,000", portfolio.size_text(sz))
+        full = portfolio.size(100, 80, {**s, "satellite_used": 26_000}, vol=0.15)
+        self.assertEqual(full["shares"], 0)
+        self.assertIn("卫星仓已到上限", portfolio.size_text(full))
+        sat = portfolio.satellite({**s, "satellite_used": 26_000})
+        self.assertTrue(sat["over"])
+        self.assertEqual((sat["room"], sat["cap"]), (0.0, 25_000))
+        self.assertIsNone(portfolio.satellite(self.S))             # no holdings value given: no satellite check
+
     def test_without_volatility_only_the_position_cap_applies(self):
         sz = portfolio.size(100, 99, {**self.S, "max_position_pct": 0.2})
         self.assertEqual((sz["shares"], sz["capped"]), (200, "position"))

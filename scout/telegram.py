@@ -383,6 +383,10 @@ async def trades_text() -> str:
     lines.append(f"合计盈亏 {total:+,.0f}（含已实现）")
     from scout import market_filter
 
+    sat = portfolio.satellite(await portfolio.get_settings())
+    if sat:
+        lines.append(f"卫星仓 ${sat['used']:,.0f}，占账户 {sat['pct'] * 100:.1f}%（上限 {sat['cap_pct'] * 100:.0f}%，"
+                     + ("超出，按计划不新买入个股）" if sat["over"] else f"剩余额度 ${sat['room']:,.0f}）"))
     lines.append(esc(market_filter.text(await market_filter.current())))
     return "\n".join(lines)
 

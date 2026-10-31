@@ -17,7 +17,12 @@ from scout import db, position_risk
 
 logger = logging.getLogger("scout.portfolio")
 
-DEFAULTS = {"account_size": None, "risk_pct": 0.01, "max_position_pct": 0.20, "vol_budget_pct": position_risk.VOL_BUDGET}
+DEFAULTS = {"account_size": None, "risk_pct": 0.01, "max_position_pct": 0.20, "vol_budget_pct": position_risk.VOL_BUDGET,
+            "satellite_max_pct": 0.25}
+# Core / satellite (the user's decision, 2026-10-31): the journal's open trades are the satellite (single stocks);
+# the rest of the account is the core, held outside Scout. The satellite's market value is capped at
+# satellite_max_pct of the account: no proven edge yet (the only rule in forward test reports around 2027-04),
+# so its size is a loss budget, not a return target.
 SECTOR_CROWDED = 3       # this many open ideas/trades in one sector is one bet, not several
 INDUSTRY_CROWDED = 2
 
@@ -25,8 +30,28 @@ INDUSTRY_CROWDED = 2
 # ── Settings ──
 
 async def get_settings() -> dict:
+    """Saved settings over the defaults, plus 'satellite_used': the open trades' market value now."""
     rows = await db.fetch_all("SELECT key, value FROM scout.user_settings WHERE key = ANY(:k)", {"k": list(DEFAULTS)})
-    return {**DEFAULTS, **{r["key"]: r["value"] for r in rows}}
+    return {**DEFAULTS, **{r["key"]: r["value"] for r in rows}, "satellite_used": satellite_value(await trades(open_only=True))}
+
+
+def satellite_value(open_rows: list[dict]) -> float:
+    """Market value of the remaining shares of open trades (last close, else the fill)."""
+    total = 0.0
+    for t in open_rows:
+        m = metrics(t)
+        total += (m.get("price") or t["entry_price"]) * m["remaining"]
+    return total
+
+
+def satellite(settings: dict) -> dict | None:
+    """The satellite against its cap: used, cap and room in dollars, share of the account."""
+    account, cap = settings.get("account_size"), settings.get("satellite_max_pct")
+    if not account or not cap or settings.get("satellite_used") is None:
+        return None
+    used = settings["satellite_used"]
+    return {"used": used, "pct": used / account, "cap_pct": cap, "cap": account * cap, "room": max(0.0, account * cap - used),
+            "over": used > account * cap}
 
 
 async def save_settings(values: dict) -> None:
@@ -39,9 +64,10 @@ async def save_settings(values: dict) -> None:
 # ── Sizing ──
 
 def size(entry: float, stop: float, settings: dict, vol: float | None = None) -> dict | None:
-    """Shares so that a stop-out loses risk_pct of the account, capped by max_position_pct and, given
-    the stock's 63-day volatility, by vol_budget_pct: the position's typical monthly move (1σ) costs at
-    most that share of the account (Magee's composite leverage; the risk study's 1 / past-volatility weights)."""
+    """Shares so that a stop-out loses risk_pct of the account, capped by max_position_pct, given
+    the stock's 63-day volatility by vol_budget_pct: the position's typical monthly move (1σ) costs at
+    most that share of the account (Magee's composite leverage; the risk study's 1 / past-volatility weights),
+    and by the satellite's room left under satellite_max_pct (when settings carry 'satellite_used')."""
     risk_per_share = entry - stop
     account = settings.get("account_size")
     if risk_per_share <= 0 or entry <= 0:
@@ -55,12 +81,15 @@ def size(entry: float, stop: float, settings: dict, vol: float | None = None) ->
     vcap = position_risk.vol_cap_shares(entry, vol, account, settings.get("vol_budget_pct") or position_risk.VOL_BUDGET)
     if vcap is not None:
         limits["vol"] = vcap
+    sat = satellite({**settings, "account_size": account})
+    if sat:
+        limits["satellite"] = math.floor(sat["room"] / entry)
     limit = min(limits, key=limits.get)
     capped = limit if shares > limits[limit] else None
     shares = min(shares, limits[limit])
     out = {"configured": True, "shares": shares, "notional": shares * entry, "pct_of_account": shares * entry / account,
            "risk_usd": shares * risk_per_share, "risk_pct": settings["risk_pct"], "capped": capped,
-           "risk_per_share": risk_per_share, "vol": vol}
+           "risk_per_share": risk_per_share, "vol": vol, "satellite_room": sat["room"] if sat else None}
     if vol:
         out["month_move_usd"] = shares * entry * position_risk.monthly_sigma(vol)
     return out
@@ -88,7 +117,11 @@ def size_text(sz: dict | None) -> str | None:
             f"（占账户 {sz['pct_of_account'] * 100:.0f}%），止损亏损约 ${sz['risk_usd']:,.0f}")
     if sz.get("month_move_usd"):
         text += f"，一个月的正常波动（1σ）约 ±${sz['month_move_usd']:,.0f}"
-    if sz["capped"] == "vol":
+    if sz["capped"] == "satellite" and not sz["shares"]:
+        return f"卫星仓已到上限（剩余额度 ${sz['satellite_room']:,.0f}），按计划不新买入个股"
+    if sz["capped"] == "satellite":
+        text += f"；已按卫星仓剩余额度 ${sz['satellite_room']:,.0f} 截断"
+    elif sz["capped"] == "vol":
         text += f"；已按波动上限截断（年化波动 {sz['vol'] * 100:.0f}%，波动越大仓位越小）"
     elif sz["capped"]:
         text += "；已按单只仓位上限截断"

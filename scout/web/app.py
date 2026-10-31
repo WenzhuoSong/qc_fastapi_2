@@ -761,22 +761,33 @@ async def trades_page(opp: str | None = None, t: str | None = None, plan: str | 
     from scout import market_filter
 
     mf = await market_filter.current()
-    filter_html = (f"<div class='card' style='margin-bottom:12px'><b class='{'warn' if mf and mf['off'] else ''}'>"
+    sat = portfolio.satellite(settings)
+    sat_html = ""
+    if sat:
+        sat_html = (f"<p class='{'warn' if sat['over'] else ''}'><b>卫星仓（个股）${sat['used']:,.0f}，占账户 {sat['pct'] * 100:.1f}%</b>"
+                    f"（上限 {sat['cap_pct'] * 100:.0f}% = ${sat['cap']:,.0f}，"
+                    + (f"超出 ${sat['used'] - sat['cap']:,.0f}，按计划不新买入个股" if sat["over"] else f"剩余额度 ${sat['room']:,.0f}")
+                    + f"）· 核心仓（Scout 之外）应约 ${acct - sat['used']:,.0f}</p>")
+    filter_html = (f"<div class='card' style='margin-bottom:12px'>{sat_html}<b class='{'warn' if mf and mf['off'] else ''}'>"
                    f"{e(market_filter.text(mf))}</b><p class='small muted'>规则（2026-10-31 你的决定）：每月最后一个交易日收盘后，"
                    "SPY 月末收盘低于最近 10 个月末收盘的均值即进入避险，按计划不新买入；回到均值之上恢复。已有持仓不因此卖出，"
                    "照常按回落 20% 管理。1999–2026 年回放：最大回撤从 −54% 降到 −22%、2008 年从 −35% 降到 −7%，"
-                   "代价是每年约少 1.5 个百分点，2012 年以后落后于一直持有（2020 年的急跌月度规则来不及反应）。</p></div>")
+                   "代价是每年约少 1.5 个百分点，2012 年以后落后于一直持有（2020 年的急跌月度规则来不及反应）。"
+                   "卫星仓 = 这里记录的未平仓个股按最近收盘的市值，上限按账户规模计算（2026-10-31 你的决定：先设 25%）；"
+                   "股价上涨让卫星仓超过上限时不强制卖出，只是不再新买入。</p></div>")
     settings_html = f"""<details class="card" {'' if acct else 'open'}><summary>账户与风险设置
-<span class="small muted">{'账户 $' + format(acct, ',.0f') + f" · 单笔风险 {settings['risk_pct'] * 100:.1f}% · 单只上限 {settings['max_position_pct'] * 100:.0f}% · 单只月波动上限 {settings['vol_budget_pct'] * 100:.1f}%" if acct else '未设置：卡片只显示每 $1,000 风险对应的股数'}</span></summary>
+<span class="small muted">{'账户 $' + format(acct, ',.0f') + f" · 单笔风险 {settings['risk_pct'] * 100:.1f}% · 单只上限 {settings['max_position_pct'] * 100:.0f}% · 单只月波动上限 {settings['vol_budget_pct'] * 100:.1f}% · 卫星仓上限 {settings['satellite_max_pct'] * 100:.0f}%" if acct else '未设置：卡片只显示每 $1,000 风险对应的股数'}</span></summary>
 <form method="post" action="/trades/settings" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:end">
 <label class="small">账户规模（美元）<br><input name="account_size" value="{e(acct or '')}" placeholder="如 100000" size="12"></label>
 <label class="small">单笔风险 %<br><input name="risk_pct" value="{settings['risk_pct'] * 100:g}" size="5"></label>
 <label class="small">单只仓位上限 %<br><input name="max_position_pct" value="{settings['max_position_pct'] * 100:g}" size="5"></label>
 <label class="small">单只月波动上限 %<br><input name="vol_budget_pct" value="{settings['vol_budget_pct'] * 100:g}" size="5"></label>
+<label class="small">卫星仓上限 %<br><input name="satellite_max_pct" value="{settings['satellite_max_pct'] * 100:g}" size="5"></label>
 <button>保存</button></form>
 <p class="small muted">仓位 = 账户 × 单笔风险 ÷（入场 − 止损），再按两个上限截断：单只仓位上限，以及波动上限——
 一只股票一个月的正常波动（1σ，按过去 63 日波动）带来的盈亏不超过账户的这个比例，波动越大仓位越小
-（《股票趋势技术分析》第 42 章的"综合杠杆"思路；风险研究中按过去波动倒数加权的组合夏普 0.57，等权 0.49，回撤也更小）。只用于计算，Scout 不会下单。</p></details>"""
+（《股票趋势技术分析》第 42 章的"综合杠杆"思路；风险研究中按过去波动倒数加权的组合夏普 0.57，等权 0.49，回撤也更小）；
+以及卫星仓剩余额度。只用于计算，Scout 不会下单。</p></details>"""
     add_html = f"""<div class="card" style="margin-top:12px"><h3>记录一笔入场</h3>
 <form method="post" action="/trades/add" style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
 <input type="hidden" name="opportunity_id" value="{e(pre.get('opp', ''))}">
@@ -811,13 +822,14 @@ async def trades_page(opp: str | None = None, t: str | None = None, plan: str | 
 
 @app.post("/trades/settings")
 async def trades_settings(account_size: str = Form(""), risk_pct: str = Form("1"), max_position_pct: str = Form("20"),
-                          vol_budget_pct: str = Form("2"), _: str = Depends(require_auth)):
-    risk, cap, vb = _num(risk_pct), _num(max_position_pct), _num(vol_budget_pct)
+                          vol_budget_pct: str = Form("2"), satellite_max_pct: str = Form("25"), _: str = Depends(require_auth)):
+    risk, cap, vb, sat = _num(risk_pct), _num(max_position_pct), _num(vol_budget_pct), _num(satellite_max_pct)
     await portfolio.save_settings({
         "account_size": _num(account_size),
         "risk_pct": min(max((risk or 1) / 100, 0.001), 0.05),          # 0.1%–5% per trade
         "max_position_pct": min(max((cap or 20) / 100, 0.01), 1.0),
         "vol_budget_pct": min(max((vb or 2) / 100, 0.002), 0.2),       # 0.2%–20% of the account per month (1σ)
+        "satellite_max_pct": min(max((sat or 25) / 100, 0.01), 1.0),
     })
     return RedirectResponse("/trades", status_code=303)
 
