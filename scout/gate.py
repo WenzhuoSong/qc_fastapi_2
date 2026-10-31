@@ -96,6 +96,8 @@ def validate_spec(spec: dict) -> list[str]:
         issues += [f"排名规格缺少 {f}" for f in RANK_FIELDS if not spec.get(f)]
         if spec.get("ranker") and spec["ranker"] not in rankers.RANKERS:
             issues.append(f"排名方法 {spec['ranker']} 不存在（先在 scout.rankers 里实现）")
+    elif spec.get("type") == "event":       # run on the local Sharadar files by its own module, not a Scout detector
+        pass
     elif not spec.get("detector"):
         issues.append("规格缺少 detector")
     elif spec["detector"] not in {d.name for d in registry(include_candidates=True)}:
