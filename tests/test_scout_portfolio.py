@@ -100,20 +100,11 @@ class OutcomeAndEventTests(unittest.TestCase):
         self.assertEqual(event_flags([{"headline": "Shares rally on guidance"}]), [])
 
     def test_holding_label(self):
-        t = {"entry_price": 100.0, "stop": 95.0, "target": 110.0}
-        self.assertIn("跌破止损（持仓止损 95.00）", holding_label(94.0, t))
-        self.assertIn("较你的成本 +2.0%，距持仓止损 7.4%", holding_label(102.0, t))
-        self.assertIn("已到目标 1 附近", holding_label(111.0, t))
-
-    def test_holding_label_time_stop(self):
-        from datetime import date
-
-        t = {"entry_price": 100.0, "stop": 95.0, "opened_on": date(2026, 10, 12),
-             "plan": {"time_stop_days": 10, "target1": 106.0}}
-        self.assertIn("已到计划的时间止损", holding_label(101.0, t, date(2026, 10, 27)))
-        self.assertNotIn("时间止损", holding_label(101.0, t, date(2026, 10, 20)))
-        self.assertNotIn("时间止损", holding_label(107.0, t, date(2026, 10, 27)))
-
+        t = {"entry_price": 100.0, "stop": 95.0}
+        self.assertIn("盘前低于回落止损 95.00（按收盘判断）", holding_label(94.0, t))
+        self.assertIn("较你的成本 +2.0%，距回落止损 7.4%", holding_label(102.0, t))
+        hit = {**t, "plan": {"stop_hit": "2026-10-30"}}
+        self.assertIn("按计划今天开盘卖出全部", holding_label(96.0, hit))
 
 if __name__ == "__main__":
     unittest.main()

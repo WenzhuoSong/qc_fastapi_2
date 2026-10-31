@@ -56,10 +56,8 @@ def trade_events(t: dict, price: float) -> list[tuple[str, str]]:
     out = []
     pnl = price / t["entry_price"] - 1
     if t.get("stop") and price <= t["stop"]:
-        out.append(("trade_stop", f"跌破持仓止损 {t['stop']:.2f}（成本 {t['entry_price']:.2f}，{pnl * 100:+.1f}%）"))
-    if t.get("target") and price >= t["target"]:
-        out.append(("trade_target", f"到达目标 1 {t['target']:.2f}（成本 {t['entry_price']:.2f}，{pnl * 100:+.1f}%）："
-                                    "按计划不卖出，收盘后止损改用吊灯止损（只升不降）"))
+        out.append(("trade_stop", f"盘中低于回落止损 {t['stop']:.2f}（成本 {t['entry_price']:.2f}，{pnl * 100:+.1f}%）："
+                                  "按收盘判断，收盘仍低于止损则下一个交易日开盘卖出全部"))
     return out
 
 

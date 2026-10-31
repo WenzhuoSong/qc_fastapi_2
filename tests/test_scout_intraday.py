@@ -33,8 +33,9 @@ class OpportunityEventTests(unittest.TestCase):
 class TradeEventTests(unittest.TestCase):
     def test_stop_and_target(self):
         t = {"entry_price": 100.0, "stop": 95.0, "target": 110.0}
-        self.assertIn("跌破持仓止损 95.00", intraday.trade_events(t, 94.0)[0][1])
-        self.assertEqual(intraday.trade_events(t, 111.0)[0][0], "trade_target")
+        self.assertIn("盘中低于回落止损 95.00", intraday.trade_events(t, 94.0)[0][1])
+        self.assertIn("按收盘判断", intraday.trade_events(t, 94.0)[0][1])
+        self.assertEqual(intraday.trade_events(t, 111.0), [])            # holdings have no target to alert on
         self.assertEqual(intraday.trade_events({**t, "stop": None, "target": None}, 50.0), [])
 
 

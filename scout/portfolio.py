@@ -66,6 +66,13 @@ def size(entry: float, stop: float, settings: dict, vol: float | None = None) ->
     return out
 
 
+def holding_stop(entry: float) -> float:
+    """The stop a buy at `entry` starts with under the holdings plan (20 % below), used for sizing."""
+    from scout import levels
+
+    return levels.trail_stop(entry)
+
+
 def opp_vol(o: dict) -> float | None:
     """The 63-day volatility on an opportunity's signal day (cards from before it was stored: none)."""
     return ((o.get("evidence") or {}).get("price") or {}).get("vol_63")
@@ -75,8 +82,9 @@ def size_text(sz: dict | None) -> str | None:
     if not sz:
         return None
     if not sz["configured"]:
-        return f"每承担 $1,000 风险约 {sz['shares_per_1k']} 股（每股风险 {sz['risk_per_share']:.2f}；在「我的交易」设置账户后按比例计算）"
-    text = (f"按单笔风险 {sz['risk_pct'] * 100:.1f}%：约 {sz['shares']} 股，${sz['notional']:,.0f}"
+        return (f"每承担 $1,000 风险约 {sz['shares_per_1k']} 股（按回落 20% 止损，每股风险 {sz['risk_per_share']:.2f}；"
+                "在「我的交易」设置账户后按比例计算）")
+    text = (f"按单笔风险 {sz['risk_pct'] * 100:.1f}%（回落 20% 止损）：约 {sz['shares']} 股，${sz['notional']:,.0f}"
             f"（占账户 {sz['pct_of_account'] * 100:.0f}%），止损亏损约 ${sz['risk_usd']:,.0f}")
     if sz.get("month_move_usd"):
         text += f"，一个月的正常波动（1σ）约 ±${sz['month_move_usd']:,.0f}"
@@ -100,37 +108,37 @@ async def add_trade(t: dict) -> int:
 
 
 async def manage_trade(t: dict) -> list[str]:
-    """Set an open trade's stop and target from its plan (created from the price map if missing),
-    as the system manages them; returns what changed today."""
-    from scout import levels
+    """Set an open trade's stop from its plan (the 20 % trailing stop, created at the first run;
+    a trade under the earlier plan is moved to it), as the system manages it; returns what changed today."""
+    from scout import levels, market_filter
 
-    plan = t.get("plan")
-    if not plan or "target1" not in plan:     # no plan yet (a sell note alone does not make one)
-        pm = await levels.get_map(t["ticker"], before=t["opened_on"]) or {}
-        new = levels.locked_plan(pm, t["entry_price"], t["opened_on"])
-        if not new:
-            return []
-        plan = {**new, "history": (plan or {}).get("history", [])}
-    bars = await db.fetch_all("SELECT date, high, low, close FROM scout.bars_daily WHERE ticker = :t AND date >= :d ORDER BY date",
+    plan = t.get("plan") or {}
+    bars = await db.fetch_all("SELECT date, close FROM scout.bars_daily WHERE ticker = :t AND date >= :d ORDER BY date",
                               {"t": t["ticker"], "d": t["opened_on"]})
-    feat = await db.fetch_one("SELECT payload FROM scout.features_daily WHERE ticker = :t ORDER BY date DESC LIMIT 1",
-                              {"t": t["ticker"]})
     asof = bars[-1]["date"] if bars else t["opened_on"]
-    # the buy day's high may have come before the fill, its close did not
-    reached = [b["close"] if b["date"] == t["opened_on"] else b["high"] for b in bars]
-    low = bars[-1]["low"] if bars and bars[-1]["date"] > t["opened_on"] else None
-    stop, target, _, msgs = levels.manage(plan, reached, [b["close"] for b in bars],
-                                          ((feat or {}).get("payload") or {}).get("atr14"), asof, low)
-    remaining = t["shares"] - sum(r["shares"] for r in await sells(t["id"]))
-    for st in levels.exit_plan(plan, t["entry_price"], t["shares"], remaining, stop):
-        if st["state"] == "due" and st["sell_now"] and plan.get("hold_limit_hit") == asof.isoformat():
-            msgs.append(f"建议卖出余下 {st['sell_now']:g} 股，卖出后记录（/sell 或「我的交易」）")
+    msgs: list[str] = []
+    if plan.get("policy") != levels.TRAIL_POLICY:
+        if "target1" in plan:                 # a trade from before 2026-10-31
+            plan = levels.adopt_trail(plan, t["entry_price"], asof)
+            msgs.append("持仓计划已改为回落 20% 卖出（不再用目标 1、吊灯止损和 60 日上限）")
+        else:                                 # a new trade (a sell note alone does not make a plan)
+            pm = await levels.get_map(t["ticker"], before=t["opened_on"]) or {}
+            market = await market_filter.current(date.fromordinal(t["opened_on"].toordinal() - 1))
+            plan = {**levels.holding_plan(pm, t["entry_price"], t["opened_on"], market), "history": plan.get("history", [])}
+            if plan.get("market_off_at_buy"):
+                msgs.append("买入时大盘过滤处于避险（SPY 月末收盘低于 10 个月均值），按计划这段时间不新买入；"
+                            "这笔仍按回落 20% 管理")
+    stop, _, changed = levels.manage(plan, [b["date"] for b in bars], [b["close"] for b in bars], asof)
+    msgs += changed
     # ch. 43 of Edwards & Magee, stick to your guns: an outstanding sell signal is repeated on its 2nd and 5th session
     due = position_risk.adherence({**t, "plan": plan}, [], asof).get("signal")
     if due and due["sessions"] in (2, 5):
         msgs.append(due["text"])
-    await db.execute("UPDATE scout.trades SET stop = :s, target = :g, plan = CAST(:p AS JSONB), updated_at = now() WHERE id = :id",
-                     {"s": stop, "g": target, "p": db.jsonb(plan), "id": t["id"]})
+    for m in msgs:
+        if m not in changed:
+            plan.setdefault("history", []).append({"date": asof.isoformat(), "text": m})
+    await db.execute("UPDATE scout.trades SET stop = :s, target = NULL, plan = CAST(:p AS JSONB), updated_at = now() WHERE id = :id",
+                     {"s": stop, "p": db.jsonb(plan), "id": t["id"]})
     return msgs
 
 
@@ -236,7 +244,8 @@ def metrics(t: dict) -> dict:
     pnl = realized + ((price - t["entry_price"]) * remaining if remaining else 0.0)
     out.update(pnl=pnl, realized=realized, pnl_pct=pnl / (t["entry_price"] * t["shares"]))
     # R is measured against the initial stop; the stop the system has raised since only sets the open risk
-    first = (t.get("plan") or {}).get("stop") or t.get("stop")
+    pl = t.get("plan") or {}
+    first = (pl.get("previous") or {}).get("stop") or pl.get("stop") or t.get("stop")
     if first and t["entry_price"] > first:
         out["r"] = pnl / ((t["entry_price"] - first) * t["shares"])
     if t.get("stop") and price and not t.get("closed_on"):

@@ -7,7 +7,8 @@
   (`tier`), a volatility cap on position size so that each position's typical monthly move costs
   about the same share of the account (Magee's "composite leverage", `vol_cap_shares`), and the
   holdings' volatility with their correlations (`portfolio_vol`);
-- ch. 43, stick to your guns: did the journal follow the plan (`adherence`)?
+- ch. 43, stick to your guns: did the journal follow the plan (`adherence`): the 20 % trailing stop
+  (from 2026-10-31; earlier trades: their earlier plan) and the market filter at the buy?
 
 The risk study (ml_risk_v1, pre-registered 2026-10-31, 2004–2021, top 1000 by market cap incl.
 delisted stocks): no model beat the stock's own 63-day volatility at forecasting volatility, and
@@ -122,7 +123,8 @@ def _signals(t: dict) -> list[tuple[date, str, bool]]:
     period ended (hard); the time stop passed before target 1 (soft: the page says 'consider')."""
     plan = t.get("plan") or {}
     out = [(date.fromisoformat(plan[key]), text, True)
-           for key, text in (("stop_hit", "止损触发"), ("hold_limit_hit", "持有期满")) if plan.get(key)]
+           for key, text in (("stop_hit", "回落止损触发" if plan.get("policy") == "trail20" else "止损触发"),
+                             ("hold_limit_hit", "持有期满")) if plan.get(key)]
     if plan.get("time_stop_days") and t.get("opened_on"):
         d = _after_sessions(t["opened_on"], plan["time_stop_days"])
         if not plan.get("target1_hit") or date.fromisoformat(plan["target1_hit"]) > d:
@@ -135,7 +137,7 @@ def adherence(t: dict, sells: list[dict], today: date) -> dict:
 
     Open: whether a sell signal is outstanding and for how many sessions. Closed (or partly sold):
     each sell is on plan (within ADHERENCE_GRACE sessions of a signal), late (after that), or early
-    (no signal yet: the plan said hold). The time stop counts for sells but is not nagged about.
+    (no signal yet: the plan said hold). A buy made while the market filter was off is flagged. The time stop counts for sells but is not nagged about.
     Sells under the earlier plan (a third at target 1, before 2026-10-27) count as early too; the
     page shows the date. A trade closed before sells were recorded counts as one sell at its exit."""
     from scout.intraday import sessions_since
@@ -143,7 +145,7 @@ def adherence(t: dict, sells: list[dict], today: date) -> dict:
     sig = _signals(t)
     if not sells and t.get("closed_on"):
         sells = [{"sold_on": t["closed_on"]}]
-    out: dict = {"signal": None, "sells": []}
+    out: dict = {"signal": None, "sells": [], "against_filter": bool((t.get("plan") or {}).get("market_off_at_buy"))}
     for s in sells:
         before = [d for d in sig if d[0] <= s["sold_on"]]
         if not before:
@@ -170,4 +172,5 @@ def adherence(t: dict, sells: list[dict], today: date) -> dict:
 def adherence_summary(items: list[dict]) -> dict:
     """Counts over closed trades' verdicts."""
     v = [a["verdict"] for a in items if a.get("verdict")]
-    return {"n": len(v), "on_plan": v.count("按计划"), "early": v.count("提前"), "late": v.count("拖延")}
+    return {"n": len(v), "on_plan": v.count("按计划"), "early": v.count("提前"), "late": v.count("拖延"),
+            "against_filter": sum(bool(a.get("against_filter")) for a in items)}

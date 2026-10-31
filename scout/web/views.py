@@ -144,7 +144,7 @@ def opp_card(o: dict, settings: dict | None = None) -> str:
         base += f"<br>{e(outcome)}"
     sizing = ""
     if settings is not None and o.get("status") in ("new", "triggered"):
-        sz = portfolio.size_text(portfolio.size((o["entry_lo"] + o["entry_hi"]) / 2, o.get("current_stop") or o["stop"], settings,
+        sz = portfolio.size_text(portfolio.size((o["entry_lo"] + o["entry_hi"]) / 2, portfolio.holding_stop((o["entry_lo"] + o["entry_hi"]) / 2), settings,
                                                 portfolio.opp_vol(o)))
         sizing = (f"<div class='small'>📐 {e(sz)} · <a href='/trades?opp={e(o['id'])}'>记录入场</a></div>" if sz else "")
     return f"""<div class="card">
@@ -410,7 +410,7 @@ def trade_plan(o: dict, close: float | None, settings: dict | None = None, live:
     if outcome_hist:
         extra += f"<p class='small'><b>历史上</b>：{escape(outcome_hist.removeprefix('历史结局：'))}。目标是最好情况，不是预期结果。</p>"
     if settings is not None and o.get("status") in ("new", "triggered"):
-        sz = portfolio.size_text(portfolio.size(mid, o.get("current_stop") or o["stop"], settings, portfolio.opp_vol(o)))
+        sz = portfolio.size_text(portfolio.size(mid, portfolio.holding_stop(mid), settings, portfolio.opp_vol(o)))
         if sz:
             extra += f"<p class='small'><b>仓位</b>：{escape(sz)} · <a href='/trades?opp={escape(o['id'])}'>记录入场</a></p>"
     extra += event_html(o.get("evidence") or {})
@@ -433,12 +433,9 @@ STAGE_STATE = {"done": ("已执行", "muted"), "due": ("已到达，待卖出", 
 
 def holding_card(trades: list[dict], live: dict | None, close: float | None, today=None,
                  sells: dict[int, list[dict]] | None = None) -> str:
-    """The user's open position(s) in this stock: the system stop, the take-profit plan
-    (reasoning, price, share, what to sell now) and the sells recorded so far."""
-    from datetime import date as _date
-
+    """The user's open position(s) in this stock: the system stop, the exit plan
+    (reasoning, price, what to sell now) and the sells recorded so far."""
     from scout import levels
-    from scout.intraday import sessions_since
 
     if not trades:
         return ""
@@ -453,26 +450,24 @@ def holding_card(trades: list[dict], live: dict | None, close: float | None, tod
         if t.get("stop"):
             line += (f"<div class='small'><b>止损 {t['stop']:.2f}</b>（{escape(pl.get('stop_now_basis') or pl.get('stop_basis') or '')}"
                      + (f"，距现价 {signed(t['stop'] / price - 1)}" if price else "") + "）</div>")
-        if "target1" in pl:
+        if pl.get("policy") == levels.TRAIL_POLICY:
             rows = []
-            for st in levels.exit_plan(pl, t["entry_price"], t["shares"], m["remaining"], t.get("stop")):
-                label, tone = (("已到达，止损已改为吊灯止损", "muted") if st["stage"] == "目标 1" and st["state"] == "done"
-                               else STAGE_STATE[st["state"]])
+            for st in levels.exit_plan(pl, m["remaining"], t.get("stop")):
+                label, tone = STAGE_STATE[st["state"]]
                 act = (escape(levels.due_advice(st, price, t.get("stop"))) if st["state"] == "due" else
-                       "改用吊灯止损" if st["stage"] == "目标 1" and st["state"] == "pending" else
-                       f"跌破时卖 {st['suggest']:g} 股" if st["state"] == "pending" and st["suggest"] else "—")
-                at = (f"{st['price']:.2f}" + (f"（{st['r']:.1f}R）" if st["r"] else "")) if st["price"] else "—"
+                       f"收盘跌破时卖 {st['suggest']:g} 股" if st["suggest"] else "—")
+                at = f"{st['price']:.2f}" if st["price"] else "—"
                 rows.append(f"<tr><td>{escape(st['stage'])}</td><td>{at}</td><td>{escape(st['fraction'])}</td>"
                             f"<td class='{tone}'>{act}<br><span class='small'>{label}</span></td>"
                             f"<td class='small muted'>{escape(st['why'])}</td></tr>")
             line += ("<table class='small'><thead><tr><th>出场</th><th>价位</th><th>卖出</th><th>建议</th><th>逻辑</th></tr></thead>"
                      f"<tbody>{''.join(rows)}</tbody></table>")
-            if not pl.get("target1_hit"):
-                held = sessions_since(t["opened_on"], today or _date.today())
-                line += f"<div class='small'>时间止损 {held}/{pl['time_stop_days']} 个交易日"
-                if held >= pl["time_stop_days"]:
-                    line += " <span class='warn'>已到时间止损仍未到目标 1，考虑卖出全部</span>"
-                line += "</div>"
+            ref = pl.get("ref") or {}
+            if ref.get("target1"):
+                line += (f"<div class='small muted'>买入时价位图（只作参考，不触发卖出）：买点失效位 {ref['stop']:.2f}，"
+                         f"上方阻力 {ref['target1']:.2f}" + (f" / {ref['target2']:.2f}" if ref.get("target2") else "") + "</div>")
+            if pl.get("market_off_at_buy"):
+                line += "<div class='small warn'>买入时大盘过滤处于避险（计划不新买入）</div>"
         sl = (sells or {}).get(t["id"]) or []
         if sl:
             line += "<div class='small'>卖出记录：" + "；".join(
@@ -488,9 +483,10 @@ def holding_card(trades: list[dict], live: dict | None, close: float | None, tod
                  f"<input type='hidden' name='back' value='/ticker/{escape(t['ticker'])}'><button>记录卖出</button></form></div>")
         items.append(line)
     return (f"<div class='card plan'><h3>我的持仓</h3>{''.join(items)}"
-            "<p class='small muted'>止损和出场由系统管理：初始止损和目标 1 来自买入前的价位图，每天收盘后更新。"
-            "不分批：到目标 1 之前用初始止损；到目标 1 不卖出，止损改为吊灯止损（买入以来最高收盘 − 3×ATR，只升不降），跌破时卖出全部；"
-            f"最长持有 {levels.HOLD_SESSIONS} 个交易日。12 年出场回放里这在前后两段样本都是最好的方式（分批止盈和过早收紧止损都会砍掉大赢家）。"
+            "<p class='small muted'>止损由系统管理，每天收盘后更新：买入以来最高收盘的 80%，只升不降；"
+            "收盘低于它时，下一个交易日开盘卖出全部。不分批、不设目标、不设持有期限（2026-10-31 你的决定）。"
+            "1999–2026 年回放（含 2000–02、2008 熊市）里，这是唯一两段夏普都高于一直持有、同时把最大回撤从 −57% 降到 −45%、"
+            "最差 5% 交易从 −39% 降到 −25% 的卖法，代价是每笔比一直持有少约 0.2%。"
             "记录卖出后（这里、「我的交易」或 Telegram <code>/sell 代码 股数 价格</code>），剩余股数、盈亏和下一步建议会立即更新。Scout 不会替你下单。</p></div>")
 
 
@@ -656,19 +652,16 @@ def premarket_card(rec: dict | None, current: bool) -> str:
 
 
 def next_exit(t: dict, m: dict) -> str:
-    """The take-profit stage an open trade is at: price and the shares to sell there."""
+    """The exit an open trade is at: the trailing stop, or the sell that is due."""
     from scout import levels
 
     pl = t.get("plan") or {}
-    if "target1" not in pl:
+    if pl.get("policy") != levels.TRAIL_POLICY:
         return f"{t['target']:.2f}" if t.get("target") else "—"
-    for st in levels.exit_plan(pl, t["entry_price"], t["shares"], m["remaining"], t.get("stop")):
+    for st in levels.exit_plan(pl, m["remaining"], t.get("stop")):
         if st["state"] == "due":
             return f"<span class='warn'>{escape(levels.due_advice(st, m.get('price'), t.get('stop')))}</span>"
-        if st["state"] == "pending":
-            return (f"{st['price']:.2f}（目标 1，到达后改用吊灯止损，不卖）" if st["stage"] == "目标 1"
-                    else f"吊灯止损，{m['remaining']:g} 股")
-    return "—"
+    return f"回落 20%，{m['remaining']:g} 股" + ("<div class='small warn'>避险期买入</div>" if pl.get("market_off_at_buy") else "")
 
 
 ADHERENCE_TONE = {"on_plan": "", "early": "warn", "late": "down"}
@@ -702,7 +695,8 @@ def trades_table(rows: list[dict], closable: bool = True, adherence: dict[int, d
                       next_exit(t, m)]
         elif adherence is not None:
             a = adherence.get(t["id"]) or {}
-            cells.append(f"{escape(a.get('verdict') or '—')}" + "".join(
+            cells.append(f"{escape(a.get('verdict') or '—')}"
+                         + ("<div class='small warn'>大盘避险期买入</div>" if a.get("against_filter") else "") + "".join(
                 f"<div class='small {ADHERENCE_TONE[x['kind']]}'>{escape(str(x['date']))} {escape(x['text'])}</div>"
                 for x in a.get("sells") or []))
         cells.append(escape(t.get("note") or ""))
@@ -932,7 +926,7 @@ def price_panel(pm: dict, live: dict | None, settings: dict | None, opp: dict | 
     entries = pm.get("entries") or []
     for en, es in zip(entries, st["entries"]):
         mid = (en["zone_lo"] + en["zone_hi"]) / 2
-        sz = portfolio.size_text(portfolio.size(mid, en["stop"], settings, pm.get("vol"))) if settings is not None else None
+        sz = portfolio.size_text(portfolio.size(mid, portfolio.holding_stop(mid), settings, pm.get("vol"))) if settings is not None else None
         link = (f" <a class='small' href='/trades?t={quote(ticker)}&plan={quote(en['name'])}'>按此计划记录买入</a>"
                 if ticker and es["state"] == "in_zone" else "")
         out.append(
@@ -940,10 +934,10 @@ def price_panel(pm: dict, live: dict | None, settings: dict | None, opp: dict | 
             f"<span class='small {STATE_TONE.get(es['state'], '')}'>{escape(es['text'])}</span>{link}"
             f"<table class='small'><tbody>"
             f"<tr><td>买入区间</td><td>{en['zone_lo']:.2f}–{en['zone_hi']:.2f}</td><td class='muted'>高于上沿不追</td></tr>"
-            f"<tr><td style='color:var(--down)'>止损</td><td>{en['stop']:.2f}</td><td class='muted'>{en['stop_pct'] * 100:.1f}% · {escape(en['stop_basis'])}</td></tr>"
-            f"<tr><td style='color:var(--up)'>目标 1</td><td>{en['target1']:.2f}</td><td class='muted'>{escape(en['target1_basis'])} · R:R {en['rr']:.1f} · 到达后不卖，止损改用吊灯止损</td></tr>"
-            f"<tr><td style='color:var(--up)'>上方参考</td><td>{en['target2']:.2f}</td><td class='muted'>{escape(en['target2_basis'])} · 只作参考，不在这里卖</td></tr>"
-            f"<tr><td>时间止损</td><td>{en['time_stop_days']} 个交易日</td><td class='muted'>入场后迟迟不到目标 1 就离场</td></tr>"
+            f"<tr><td style='color:var(--down)'>买点失效</td><td>{en['stop']:.2f}</td><td class='muted'>{en['stop_pct'] * 100:.1f}% · {escape(en['stop_basis'])} · 跌破说明这个买点判断错了</td></tr>"
+            f"<tr><td style='color:var(--up)'>上方阻力 1</td><td>{en['target1']:.2f}</td><td class='muted'>{escape(en['target1_basis'])} · 盈亏比 {en['rr']:.1f} · 只作参考，不在这里卖</td></tr>"
+            f"<tr><td style='color:var(--up)'>上方阻力 2</td><td>{en['target2']:.2f}</td><td class='muted'>{escape(en['target2_basis'])} · 只作参考</td></tr>"
+            f"<tr><td>买入后</td><td>{portfolio.holding_stop(mid):.2f} 起</td><td class='muted'>持仓按回落 20% 管理（买入以来最高收盘的 80%，只升不降）</td></tr>"
             f"</tbody></table>"
             + (f"<div class='small warn'>{escape(en['warning'])}</div>" if en.get("warning") else "")
             + (f"<div class='small'><b>仓位</b>：{escape(sz)}</div>" if sz else "")
@@ -956,7 +950,8 @@ def price_panel(pm: dict, live: dict | None, settings: dict | None, opp: dict | 
             out.append(f"<details><summary class='small muted'>系统跟踪（规则原计划与假设成交，用于给规则记分，不是你的交易）</summary>{tracking_html}</details>")
     out.append(f"<p class='small muted'>价位按 {escape(str(pm.get('asof', '')))} 收盘计算并保存，盘中不变，实时价格只更新状态。"
                f"支撑 / 阻力取近一年的主要波段高低点；买入区间为买点到其上方 min(0.5 ATR, 5%)（ATR {pm['atr']:.2f}）；"
-               f"止损放在判断失效的结构位下方，至少 1 个 ATR、最多 10%。记录买入后，止损和止盈由系统按你的成交管理并每天更新。这些是价位参考，不是经过回放检验的规则信号。</p>")
+               f"买点失效位放在判断失效的结构位下方，至少 1 个 ATR、最多 10%。记录买入后，持仓按回落 20% 卖出管理并每天更新，仓位也按 20% 止损计算。"
+               f"这些是价位参考，不是经过回放检验的规则信号。</p>")
     return f"<div class='card plan'>{''.join(out)}</div>"
 
 
@@ -1010,7 +1005,9 @@ def adherence_html(a: dict) -> str:
     if not a.get("n"):
         return ""
     return (f"<p class='small'>执行检查：{a['n']} 笔中按计划离场 {a['on_plan']} 笔 · 提前离场 {a['early']} 笔 · 信号后拖延 {a['late']} 笔"
-            "<span class='muted'>（按计划 = 止损触发、时间止损或持有期满后 1 个交易日内卖出；提前 = 计划仍要求持有时卖出）</span></p>")
+            + (f" · 大盘避险期买入 {a['against_filter']} 笔" if a.get("against_filter") else "")
+            + "<span class='muted'>（按计划 = 回落止损触发后 1 个交易日内卖出（2026-10-31 之前的交易：止损、时间止损或持有期满）；"
+            "提前 = 计划仍要求持有时卖出）</span></p>")
 
 
 # ── knowledge base ──────────────────────────────────────────────────────

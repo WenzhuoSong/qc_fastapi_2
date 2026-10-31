@@ -189,11 +189,26 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         managed = await portfolio.manage_open_trades()
         summary["trades_managed"] = managed
         if push and managed:
-            await telegram.send("📌 <b>持仓止损 / 止盈更新</b>\n" + "\n".join(
+            await telegram.send("📌 <b>持仓止损更新</b>\n" + "\n".join(
                 f"• <b>{telegram.esc(m['ticker'])}</b>：" + "；".join(telegram.esc(x) for x in m["messages"]) for m in managed))
     except Exception as exc:
         logger.warning("trade management failed: %s", exc)
         summary["trades_managed"] = f"failed: {type(exc).__name__}"
+    mfilter = None
+    try:                               # the user's market filter (no new buys while risk is off)
+        from scout import intraday, market_filter
+
+        mfilter = await market_filter.current(asof)
+        summary["market_filter"] = {"off": mfilter["off"], "since": str(mfilter["since"])} if mfilter else None
+        if push and mfilter and mfilter["changed_today"] and await intraday._claim(
+                [{"key": f"market_filter:{mfilter['since']}", "kind": "market_filter", "ticker": None, "payload": None}]):
+            await telegram.send(("🛑 " if mfilter["off"] else "🟢 ") + "<b>大盘过滤状态改变</b>\n"
+                                + telegram.esc(market_filter.text(mfilter))
+                                + ("\n按计划不新买入；已有持仓照常按回落 20% 管理，不因此卖出。" if mfilter["off"]
+                                   else "\n恢复正常：可以按计划新买入。"))
+    except Exception as exc:
+        logger.warning("market filter failed: %s", exc)
+        summary["market_filter"] = f"failed: {type(exc).__name__}"
     try:                               # the ledger must never block the scan
         summary["ledger"] = {"sector_heat": await ledger.record_sector_heat(sector_rows, asof),
                              "scored": await ledger.score_due()}
@@ -252,6 +267,11 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         summary["market_focus"] = f"failed: {type(exc).__name__}"
 
     brief = render_eod_brief(asof, market, candidates, transitions, saved, sector_rows, focus)
+    if mfilter:
+        from scout import market_filter
+
+        brief += ("\n\n" + ("🛑 " if mfilter["off"] else "🟢 ") + telegram.esc(market_filter.text(mfilter))
+                  + ("。下面的机会卡只作观察。" if mfilter["off"] else ""))
     from scout import learned
 
     quiet = learned.held_back(await learned.current())

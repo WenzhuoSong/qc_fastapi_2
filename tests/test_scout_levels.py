@@ -83,45 +83,57 @@ class StatusTests(unittest.TestCase):
 
 
 class ManageTests(unittest.TestCase):
-    PLAN = {"stop": 95.5, "stop_basis": "支撑 1 下方", "target1": 101.5, "target2": 104.0, "time_stop_days": 10}
+    D = [date(2026, 10, d) for d in (26, 27, 28, 29, 30)]
 
-    def test_initial_stop_until_target_one_then_chandelier(self):
-        plan = dict(self.PLAN)
-        closes, highs = [98.5, 100.0, 100.5], [99.0, 100.5, 101.0]
-        stop, target, _, msgs = levels.manage(plan, highs, closes, 0.5, date(2026, 10, 28))
-        self.assertEqual((stop, target, msgs), (95.5, 101.5, []))           # chandelier 99.0 ignored before target 1
-        closes, highs = closes + [102.0, 103.0], highs + [102.5, 103.5]
-        stop, target, basis, msgs = levels.manage(plan, highs, closes, 2.0, date(2026, 10, 30))
-        self.assertEqual((stop, target), (97.0, None))                     # 103 − 3×2 once target 1 traded
-        self.assertIn("买入以来最高收盘", basis)
-        self.assertIn("不卖出", msgs[0])
-        stop, _, _, _ = levels.manage(plan, highs + [101.0], closes + [100.0], 2.0, date(2026, 10, 31))
-        self.assertEqual(stop, 97.0)                                       # a pullback never lowers the stop
-        stop, _, _, _ = levels.manage(plan, highs + [101.0, 104.2], closes + [100.0, 104.0], 2.0, date(2026, 11, 2))
-        self.assertEqual(stop, 98.0)
+    def plan(self):
+        return levels.holding_plan({}, 100.0, date(2026, 10, 26))
 
-    def test_the_chandelier_uses_the_highest_close_since_the_buy(self):
-        plan = {**self.PLAN, "target1_hit": "2026-09-01"}
-        closes = [100.0, 120.0] + [118.0] * 30                             # the 120 close is more than 22 sessions back
-        stop, _, _, _ = levels.manage(plan, [x + 1 for x in closes], closes, 2.0, date(2026, 10, 30))
-        self.assertEqual(stop, 114.0)                                      # 120 − 3×2, not 118 − 3×2
+    def test_the_stop_is_80_percent_of_the_highest_close_and_only_rises(self):
+        plan = self.plan()
+        self.assertEqual((plan["policy"], plan["stop"]), ("trail20", 80.0))
+        stop, basis, msgs = levels.manage(plan, self.D[:3], [99.0, 110.0, 105.0], self.D[2])
+        self.assertEqual(stop, 88.0)                                       # 0.8 × 110, a pullback does not lower it
+        self.assertIn("110.00", basis)
+        self.assertNotIn("stop_hit", plan)
+        self.assertEqual(levels.manage(plan, self.D[:1], [99.0], self.D[0])[0], 79.2)   # the first close counts, not the fill
 
-    def test_sold_after_the_holding_period(self):
-        plan = dict(self.PLAN)
-        closes = [99.0] * (levels.HOLD_SESSIONS - 1)
-        self.assertNotIn("hold_limit_hit", (levels.manage(plan, closes, closes, 1.0, date(2026, 12, 1)), plan)[1])
-        msgs = levels.manage(plan, closes + [99.0], closes + [99.0], 1.0, date(2026, 12, 2))[3]
-        self.assertIn("卖出余下全部", msgs[-1])
-        due = [st for st in levels.exit_plan(plan, 98.0, 100, 100, 95.5) if st["state"] == "due"]
-        self.assertEqual((due[0]["stage"], due[0]["sell_now"]), ("持有期满", 100))
-        self.assertIn("建议卖出余下 100 股", levels.due_advice(due[0], 99.0, 95.5))
+    def test_a_close_below_the_stop_is_the_signal_once(self):
+        plan = self.plan()
+        _, _, msgs = levels.manage(plan, self.D[:4], [100.0, 125.0, 101.0, 99.0], self.D[3])
+        self.assertEqual(plan["stop_hit"], "2026-10-29")                   # 101 ≥ 100, 99 < 0.8 × 125
+        self.assertIn("下一个交易日开盘卖出全部", msgs[0])
+        self.assertEqual(levels.manage(plan, self.D, [100.0, 125.0, 101.0, 99.0, 95.0], self.D[4])[2], [])
+        due = [st for st in levels.exit_plan(plan, 100, 100.0) if st["state"] == "due"]
+        self.assertEqual((due[0]["stage"], due[0]["sell_now"]), ("回落止损触发", 100))
+        self.assertIn("建议卖出余下 100 股", levels.due_advice(due[0], 99.0, 100.0))
+
+    def test_a_missed_day_is_still_caught(self):
+        plan = self.plan()
+        levels.manage(plan, self.D, [100.0, 130.0, 100.0, 110.0, 112.0], self.D[4])
+        self.assertEqual(plan["stop_hit"], "2026-10-28")
 
     def test_rerun_on_the_same_bars_changes_nothing(self):
-        plan = dict(self.PLAN)
-        levels.manage(plan, [102.0], [101.0], 1.0, date(2026, 10, 27))
+        plan = self.plan()
+        levels.manage(plan, self.D[:2], [100.0, 101.0], self.D[1])
         before = dict(plan)
-        self.assertEqual(levels.manage(plan, [102.0], [101.0], 1.0, date(2026, 10, 27))[3], [])
+        self.assertEqual(levels.manage(plan, self.D[:2], [100.0, 101.0], self.D[1])[2], [])
         self.assertEqual(plan, before)
+
+    def test_large_stop_raises_are_pushed(self):
+        plan = self.plan()
+        levels.manage(plan, self.D[:1], [100.0], self.D[0])
+        msgs = levels.manage(plan, self.D[:2], [100.0, 120.0], self.D[1])[2]
+        self.assertIn("上移到 96.00", msgs[0])
+
+    def test_an_earlier_plan_is_moved_to_the_trailing_stop(self):
+        old = {"stop": 95.5, "stop_basis": "支撑 1 下方", "target1": 101.5, "target2": 104.0, "time_stop_days": 10,
+               "target1_hit": "2026-10-27", "stop_now": 97.0, "history": [{"date": "2026-10-27", "text": "x"}]}
+        new = levels.adopt_trail(old, 98.0, date(2026, 10, 30))
+        self.assertEqual((new["policy"], new["stop"], new["ref"]["target1"]), ("trail20", 78.4, 101.5))
+        self.assertEqual(new["previous"]["stop_now"], 97.0)
+        self.assertNotIn("target1_hit", new)
+        self.assertEqual(len(new["history"]), 2)
+        self.assertIn("回落 20%", new["history"][-1]["text"])
 
 
 class StructureStopTests(unittest.TestCase):
@@ -154,32 +166,18 @@ class StructureStopTests(unittest.TestCase):
 
 
 class ExitPlanTests(unittest.TestCase):
-    PLAN = {"stop": 95.0, "target1": 110.0, "target1_basis": "阻力 1", "target2": 120.0, "target2_basis": "3R"}
+    def test_one_stage_for_the_whole_position(self):
+        (st,) = levels.exit_plan({"policy": "trail20", "stop": 80.0}, 67, 97.0)
+        self.assertEqual((st["stage"], st["price"], st["suggest"], st["state"]), ("全部仓位", 97.0, 67, "pending"))
+        self.assertIn("不设持有期限", st["why"])
 
-    def stages(self, remaining, **hit):
-        return levels.exit_plan({**self.PLAN, **hit}, 100.0, 200, remaining, 97.0)
-
-    def test_nothing_is_sold_at_target_one(self):
-        t1, rest = self.stages(200)
-        self.assertEqual((t1["price"], t1["r"], t1["sell_now"], t1["fraction"], t1["state"]), (110.0, 2.0, 0.0, "不卖", "pending"))
-        self.assertIn("吊灯止损", t1["why"])
-        self.assertEqual((rest["stage"], rest["suggest"], rest["price"]), ("全部仓位", 200, 97.0))
-        t1, rest = self.stages(200, target1_hit="2026-10-28")
-        self.assertEqual((t1["state"], t1["sell_now"]), ("done", 0.0))
-        self.assertIn("跌破吊灯止损", rest["why"])
-        self.assertFalse(any(st["state"] == "due" for st in self.stages(200, target1_hit="2026-10-28")))
-
-    def test_shares_sold_under_the_old_plan_follow_the_same_rules(self):
-        _, rest = self.stages(67, target1_hit="2026-10-20")
-        self.assertEqual(rest["suggest"], 67)
-
-    def test_intraday_target_alert_says_do_not_sell(self):
-        from scout import intraday
-
-        t = {"entry_price": 100.0, "shares": 200, "sold_shares": 0, "stop": 95.0, "target": 110.0, "plan": self.PLAN}
-        text = intraday.trade_events(t, 110.5)[0][1]
-        self.assertIn("不卖出", text)
-        self.assertIn("吊灯止损", text)
+    def test_holding_plan_keeps_the_map_as_reference(self):
+        pm = {"asof": "2026-10-23", "atr": 2.0, "entries": [
+            {"name": "回调买点", "zone_lo": 97.0, "zone_hi": 98.0, "stop": 95.0, "stop_basis": "支撑 1 下方",
+             "target1": 104.0, "target1_basis": "阻力 1", "target2": 108.0, "target2_basis": "阻力 2"}]}
+        plan = levels.holding_plan(pm, 97.5, date(2026, 10, 27), {"off": True})
+        self.assertEqual((plan["stop"], plan["ref"]["target1"], plan["market_off_at_buy"]), (78.0, 104.0, True))
+        self.assertNotIn("target1", plan)
 
 
 class PlanPanelTests(unittest.TestCase):

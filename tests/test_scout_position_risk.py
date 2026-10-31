@@ -4,7 +4,7 @@ from datetime import date
 
 import numpy as np
 
-from scout import levels, portfolio, position_risk as pr
+from scout import portfolio, position_risk as pr
 
 
 class TierAndRangeTests(unittest.TestCase):
@@ -76,16 +76,18 @@ class AdherenceTests(unittest.TestCase):
         t = {**self.T, "closed_on": date(2026, 11, 20)}
         self.assertEqual(pr.adherence(t, [{"sold_on": date(2026, 11, 20)}], date(2026, 11, 21))["verdict"], "按计划")
 
-    def test_manage_records_a_stop_hit_once(self):
-        plan = {"stop": 90.0, "stop_basis": "x", "target1": 120.0}
-        _, _, _, msgs = levels.manage(plan, [100, 101], [100, 95], 2.0, date(2026, 10, 2), low=89.5)
-        self.assertEqual(plan["stop_hit"], "2026-10-02")
-        self.assertTrue(any("触及止损" in m for m in msgs))
-        _, _, _, again = levels.manage(plan, [100, 101, 99], [100, 95, 92], 2.0, date(2026, 10, 3), low=88.0)
-        self.assertFalse(any("触及止损" in m for m in again))
-        st = levels.exit_plan(plan, 100.0, 10, 10, 90.0)
-        self.assertEqual([x["stage"] for x in st if x["state"] == "due"], ["止损触发"])
+    def test_a_trailing_stop_signal_is_judged_like_a_stop(self):
+        t = {**self.T, "plan": {"policy": "trail20", "stop": 80.0, "stop_hit": "2026-10-05"}}
+        a = pr.adherence(t, [], date(2026, 10, 9))
+        self.assertIn("回落止损触发", a["signal"]["text"])
+        on = pr.adherence({**t, "closed_on": date(2026, 10, 6)}, [{"sold_on": date(2026, 10, 6)}], date(2026, 10, 9))
+        self.assertEqual(on["verdict"], "按计划")                         # next open after the close signal
 
+    def test_a_buy_against_the_market_filter_is_flagged(self):
+        t = {**self.T, "closed_on": date(2026, 10, 3), "plan": {"policy": "trail20", "stop": 80.0, "market_off_at_buy": True}}
+        a = pr.adherence(t, [{"sold_on": date(2026, 10, 3)}], date(2026, 10, 9))
+        self.assertTrue(a["against_filter"])
+        self.assertEqual(pr.adherence_summary([a, pr.adherence(self.T, [], date(2026, 10, 9))])["against_filter"], 1)
 
 if __name__ == "__main__":
     unittest.main()

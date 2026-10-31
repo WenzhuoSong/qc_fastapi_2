@@ -63,20 +63,15 @@ def position_label(price: float, o: dict) -> str:
 
 
 def holding_label(price: float, t: dict, session: date | None = None) -> str:
-    """Where a pre-market price sits against the user's own trade (and its locked plan's time stop)."""
+    """Where a pre-market price sits against the user's own trade and its 20 % trailing stop."""
     pnl = price / t["entry_price"] - 1
     text = f"较你的成本 {pnl * 100:+.1f}%"
-    if t.get("stop"):
-        text += f"，盘前已跌破止损（持仓止损 {t['stop']:.2f}）" if price <= t["stop"] else f"，距持仓止损 {(price / t['stop'] - 1) * 100:.1f}%"
-    if t.get("target") and price >= t["target"]:
-        text += f"，已到目标 1 附近（{t['target']:.2f}）：按计划不卖出，收盘后止损改用吊灯止损"
     plan = t.get("plan") or {}
-    if session and plan.get("time_stop_days") and not (plan.get("target1") and price >= plan["target1"]):
-        from scout.intraday import sessions_since
-
-        held = sessions_since(t["opened_on"], session)
-        if held >= plan["time_stop_days"]:
-            text += f"，持有 {held} 个交易日仍未到目标 1，已到计划的时间止损"
+    if plan.get("stop_hit"):
+        return text + f"，回落止损已在 {plan['stop_hit']} 收盘触发：按计划今天开盘卖出全部"
+    if t.get("stop"):
+        text += (f"，盘前低于回落止损 {t['stop']:.2f}（按收盘判断）" if price <= t["stop"]
+                 else f"，距回落止损 {(price / t['stop'] - 1) * 100:.1f}%")
     return text
 
 

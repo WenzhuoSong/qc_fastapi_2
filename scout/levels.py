@@ -13,9 +13,9 @@ platforms present levels:
 - buy points with a buy zone from the point up to min(0.5 ATR, 5 %) above it,
   beyond which the stock is extended and not chased (O'Neil); a protective
   stop at least one ATR from the zone (its percentage shown next to fixed-%
-  rules); target 1 at the first resistance (or 2R) to take part of the
-  position, target 2 at the next resistance (or 3R) with a trailing stop for
-  the rest; a time stop.
+  rules); target 1 at the first resistance (or 2R), target 2 at the next
+  resistance (or 3R); a time stop. These judge a buy point; once bought, the
+  holding is managed by the 20 % trailing stop (`holding_plan`, `manage`).
 
 Rule opportunities keep their own plan (fixed on the signal day, scored by
 the replay). These levels are references, not replayed rules; the page says so.
@@ -38,13 +38,19 @@ MAX_PULLBACK_ATR = 4.0       # a level further below is not a pullback buy point
 MAX_BREAKOUT_PCT = 0.15      # a resistance further above is not a near-term buy point
 MIN_RR = 1.0                 # less reward to target 1 than risk to the stop is flagged
 TIME_STOP = {"回调买点": 10, "突破买点": 20, "反转确认": 20}
-# Holdings exit = the exit study's `chandelier_all_t1` (2026-10-27, 25,113 fills over 12 years,
-# `python -m scout.jobs.eval_exits`): no partial sells; the initial stop until target 1 trades, then the
-# chandelier stop (highest close since the buy − 3 ATR, only rising); whatever is left is sold after
-# HOLD_SESSIONS. Best of all policies in both halves of the sample (+1.55 % / +1.13 % net vs +1.09 % /
-# +0.81 % for a third at target 1): selling at targets and trailing early both cut the large winners.
+# The user's holdings exit from 2026-10-31 (their decision on the Sharadar recheck of `exit_vs_hold`, 1999–2026,
+# 345,565 buys): sell everything at the next open after a close below 80 % of the highest close since the buy
+# (buy day included, so the stop only rises); no partial sells, no target, no holding cap. The only policy that
+# met all three conditions of the pre-registered study: Sharpe above holding in both halves (0.32 / 0.64 vs
+# 0.27 / 0.60), max drawdown −45 % vs −57 %, worst 5 % of trades −25 % vs −39 %; about 0.2 % per trade behind
+# holding (t −1.4). The study held at most 60 sessions per buy; without a cap the stop keeps trailing.
+TRAIL_POLICY = "trail20"
+TRAIL_KEEP = 0.80
+TRAIL_BASIS = "买入以来最高收盘回落 20%"
+# The plan before 2026-10-31 (exit study `chandelier_all_t1`): initial stop until target 1, then the
+# chandelier stop, at most HOLD_SESSIONS sessions. `plan_exit` still replays it for gate specs with `exit: plan`.
 CHANDELIER_ATR = 3.0
-HOLD_SESSIONS = 60           # the study's holding cap (exit_study.MAX_HOLD), counting the buy day
+HOLD_SESSIONS = 60           # that plan's holding cap (exit_study.MAX_HOLD), counting the buy day
 
 
 def trend_of(f: dict) -> str:
@@ -252,85 +258,87 @@ def locked_plan(pm: dict, fill: float, opened_on: date) -> dict | None:
             "in_zone": e is not None, "history": []}
 
 
-def manage(plan: dict, highs: list[float], closes: list[float], atr: float | None, asof: date,
-           low: float | None = None) -> tuple[float, float | None, str, list[str]]:
-    """Today's system stop and target for an open trade, from its plan and the bars since the buy.
+def trail_stop(top_close: float) -> float:
+    return round(TRAIL_KEEP * top_close, 2)
 
-    `highs`: prices traded after the fill per session (the buy day counts with its close);
-    `closes` start on the buy day. Stop: the plan's stop until target 1 trades; from then on raised (never
-    lowered) to the chandelier stop, the highest close since the buy − 3 ATR, once that is higher and still
-    below the last close. Nothing is sold at target 1. After HOLD_SESSIONS sessions the rest is due to be sold.
-    Target: target 1 until it trades, then none. `low`: today's low after the buy day; at or below
-    the stop in force, the plan says sell everything (recorded once as plan['stop_hit'], checked first
-    as in the replay). Changes are appended to plan['history']; returns (stop, target, stop basis, messages)."""
-    stop, basis = plan.get("stop_now", plan["stop"]), plan.get("stop_now_basis", plan["stop_basis"])
+
+def holding_plan(pm: dict, fill: float, opened_on: date, market: dict | None = None) -> dict:
+    """The plan of a recorded buy: the 20 % trailing stop from the fill; the price map's levels at the
+    buy (`locked_plan`) are kept as references only; `market`: the market filter at the buy."""
+    ref = locked_plan(pm, fill, opened_on) if pm else None
+    plan = {"policy": TRAIL_POLICY, "stop": trail_stop(fill), "stop_basis": "成交价回落 20%（第一个收盘后按最高收盘计）",
+            "opened_on": opened_on.isoformat(), "map_asof": (pm or {}).get("asof"), "risk_pct": round(TRAIL_KEEP - 1, 4),
+            "history": []}
+    if ref:
+        plan["ref"] = {k: ref[k] for k in ("from", "stop", "stop_basis", "target1", "target1_basis", "target2",
+                                           "target2_basis", "in_zone")}
+    if market:
+        plan["market_off_at_buy"] = bool(market["off"])
+    return plan
+
+
+def adopt_trail(plan: dict, fill: float, asof: date) -> dict:
+    """An open trade under the earlier plan moves to the trailing stop (the user's decision of 2026-10-31);
+    the earlier plan's levels and flags are kept under 'previous'."""
+    prev = {k: v for k, v in plan.items() if k != "history"}
+    new = {"policy": TRAIL_POLICY, "stop": trail_stop(fill), "stop_basis": "成交价回落 20%",
+           "opened_on": plan.get("opened_on"), "map_asof": plan.get("map_asof"), "risk_pct": round(TRAIL_KEEP - 1, 4),
+           "previous": prev, "history": list(plan.get("history") or [])}
+    if "target1" in prev:
+        new["ref"] = {k: prev.get(k) for k in ("from", "stop", "stop_basis", "target1", "target1_basis", "target2",
+                                               "target2_basis", "in_zone")}
+    new["history"].append({"date": asof.isoformat(), "text": "持仓计划改为回落 20% 卖出（2026-10-31 你的决定）："
+                           "不再用初始止损、目标 1 和吊灯止损，也没有 60 日上限"})
+    return new
+
+
+def manage(plan: dict, dates: list[date], closes: list[float], asof: date) -> tuple[float, str, list[str]]:
+    """Today's stop for an open trade: 80 % of the highest close since the buy (`closes` start on the
+    buy day; before the first close, 80 % of the fill). The first close below the stop in force is the
+    sell signal (sell at the next open, as in the replay), recorded once as plan['stop_hit'] with its
+    date; every session since the buy is checked, so a missed day is still caught.
+    Changes are appended to plan['history']; returns (stop, stop basis, messages)."""
     msgs: list[str] = []
-    if low is not None and low <= stop and not plan.get("stop_hit"):
-        plan["stop_hit"] = asof.isoformat()
-        msgs.append(f"盘中最低 {low:.2f} 触及止损 {stop:.2f}：按计划卖出全部，卖出后记录（/sell 或「我的交易」）")
-    top = max(highs) if highs else None
-    if top is not None and top >= plan["target1"] and not plan.get("target1_hit"):
-        plan["target1_hit"] = asof.isoformat()
-        msgs.append(f"到达目标 1 {plan['target1']:.2f}：按计划不卖出，止损从今天收盘起改用吊灯止损（只升不降）")
-    if plan.get("target1_hit") and atr and closes:
-        chand = round(max(closes) - CHANDELIER_ATR * atr, 2)
-        if stop + 0.005 < chand < closes[-1]:
-            msgs.append(f"止损由 {stop:.2f} 上移到 {chand:.2f}（吊灯止损）")
-            stop, basis = chand, f"吊灯止损（买入以来最高收盘 − {CHANDELIER_ATR:g}×ATR）"
-        elif closes[-1] <= chand and closes[-1] > stop and not plan.get("chandelier_broken"):
-            plan["chandelier_broken"] = asof.isoformat()
-            msgs.append(f"收盘 {closes[-1]:.2f} 已低于吊灯止损 {chand:.2f}，趋势转弱，止损仍为 {stop:.2f}")
-    if len(closes) >= HOLD_SESSIONS and not plan.get("hold_limit_hit"):
-        plan["hold_limit_hit"] = asof.isoformat()
-        msgs.append(f"买入已满 {HOLD_SESSIONS} 个交易日：按计划卖出余下全部")
-    target = None if plan.get("target1_hit") else plan["target1"]
+    stop, basis = plan["stop"], plan["stop_basis"]
+    top = None
+    for d, c in zip(dates, closes):
+        if c is None:
+            continue
+        top = c if top is None else max(top, c)
+        if c < trail_stop(top) and not plan.get("stop_hit"):
+            plan["stop_hit"] = d.isoformat()
+            msgs.append(f"{d:%m-%d} 收盘 {c:.2f} 低于回落止损 {trail_stop(top):.2f}（买入以来最高收盘 {top:.2f} 的 80%）："
+                        "按计划下一个交易日开盘卖出全部，卖出后记录（/sell 或「我的交易」）")
+    if top is not None:
+        stop, basis = trail_stop(top), f"{TRAIL_BASIS}（最高收盘 {top:.2f}）"
+    if plan.get("stop_now") is not None and stop >= plan["stop_now"] * 1.05:     # smaller daily moves are not pushed
+        msgs.append(f"止损由 {plan['stop_now']:.2f} 上移到 {stop:.2f}（{basis}）")
     plan["stop_now"], plan["stop_now_basis"] = stop, basis
     for m in msgs:
         plan.setdefault("history", []).append({"date": asof.isoformat(), "text": m})
-    return stop, target, basis, msgs
+    return stop, basis, msgs
 
 
-def exit_plan(plan: dict, entry_price: float, shares: float, remaining: float, stop: float | None) -> list[dict]:
-    """The exit stages with their reasoning, price and what to sell now.
-
-    No partial sells: target 1 only switches the stop to the chandelier stop; the whole position
-    leaves at the stop, or after HOLD_SESSIONS sessions. Shares already sold under the earlier
-    plan (a third at target 1) simply leave fewer shares on the same rules."""
-    risk = entry_price - plan["stop"] if plan.get("stop") and entry_price > plan["stop"] else None
-    t1 = plan["target1"]
-    out = [{"stage": "目标 1", "price": t1, "r": (t1 - entry_price) / risk if risk else None, "fraction": "不卖",
-            "why": (f"{'第一个上方价位（' + plan['target1_basis'] + '）' if plan.get('target1_basis') not in (None, '2R', '3R') else plan.get('target1_basis') or ''}"
-                    "：到这里不卖出，止损从初始止损改为吊灯止损（买入以来最高收盘 − 3×ATR，只升不降）。"
-                    "回放显示在目标位卖出会砍掉少数大赢家，而收益主要靠它们"),
-            "keep_after": remaining, "sell_now": 0.0, "suggest": 0.0,
-            "state": "done" if plan.get("target1_hit") else "pending"}]
+def exit_plan(plan: dict, remaining: float, stop: float | None) -> list[dict]:
+    """The exit stages with their reasoning: one stage, the trailing stop for the whole position;
+    'due' once a close went below it (shares already sold leave fewer shares on the same rule)."""
+    out = []
     if plan.get("stop_hit") and remaining > 0:
-        out.append({"stage": "止损触发", "price": None, "r": None, "fraction": "全部", "keep_after": 0.0, "sell_now": remaining,
-                    "suggest": remaining, "state": "due",
-                    "why": f"{plan['stop_hit']} 盘中触及止损，按计划卖出余下全部（坚持计划：不因为反弹或希望而拖延）"})
-    elif plan.get("hold_limit_hit") and remaining > 0:
-        out.append({"stage": "持有期满", "price": None, "r": None, "fraction": "全部", "keep_after": 0.0, "sell_now": remaining,
-                    "suggest": remaining, "state": "due",
-                    "why": f"买入已满 {HOLD_SESSIONS} 个交易日（出场回放的持有上限），卖出余下全部"})
-    out.append({"stage": "全部仓位", "price": stop, "r": None, "fraction": "全部", "keep_after": 0.0, "sell_now": 0.0,
-                "suggest": remaining, "state": "pending",
-                "why": ("跌破吊灯止损时卖出全部" if plan.get("target1_hit") else "到目标 1 之前用初始止损，跌破时卖出全部")
-                       + f"；最长持有 {HOLD_SESSIONS} 个交易日"})
+        out.append({"stage": "回落止损触发", "price": None, "fraction": "全部", "sell_now": remaining, "suggest": remaining,
+                    "state": "due",
+                    "why": f"{plan['stop_hit']} 收盘低于买入以来最高收盘的 80%，按计划下一个交易日开盘卖出全部"
+                           "（坚持计划：不因为反弹或希望而拖延）"})
+    out.append({"stage": "全部仓位", "price": stop, "fraction": "全部", "sell_now": 0.0, "suggest": remaining,
+                "state": "pending",
+                "why": "收盘低于买入以来最高收盘的 80% 时，下一个交易日开盘卖出全部；止损只升不降，不分批、不设目标、"
+                       "不设持有期限（1999–2026 年回放里唯一同时降低回撤和最差交易、两段夏普都高于一直持有的卖法）"})
     return out
 
 
 def due_advice(st: dict, price: float | None, stop: float | None) -> str:
-    """What to do at a reached exit stage: how many shares, at what price."""
-    if st["price"] is None:                    # the holding period is over
-        return f"{st['stage']}：建议卖出余下 {st['sell_now']:g} 股" + (f"（现价 {price:.2f}）" if price else "") + "，按市价或收盘附近卖出"
-    head = f"{st['stage']} {st['price']:.2f} 已到，建议卖出 {st['sell_now']:g} 股"
-    if price is None:
-        return f"{head}，限价不低于 {st['price']:.2f}"
-    if price >= st["price"]:
-        return (f"{head}：现价 {price:.2f} 在目标之上（{price / st['price'] - 1:+.1%}），按现价附近卖出，"
-                f"限价不低于 {st['price']:.2f}")
-    return (f"{head}：现价 {price:.2f} 已回落到目标下方（{price / st['price'] - 1:+.1%}），可挂 {st['price']:.2f} 的限价等反弹卖出，"
-            f"或按现价卖出" + (f"；收盘跌破止损 {stop:.2f} 则卖出全部" if stop else ""))
+    """What to do at a reached exit stage: how many shares, when."""
+    return (f"{st['stage']}：建议卖出余下 {st['sell_now']:g} 股" + (f"（现价 {price:.2f}）" if price else "")
+            + "，在下一个交易日开盘（或尽快）卖出")
 
 
 # ── stored per data date ──

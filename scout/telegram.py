@@ -182,7 +182,7 @@ def render_card(o: dict, settings: dict | None = None) -> str:
     for flag in ev.get("event_flags") or []:
         lines.append(f"⚡ 事件驱动·{esc(flag['type'])}：{esc(flag['headline'])}（技术规则统计参考价值有限）")
     if settings is not None and o.get("status") in ("new", "triggered"):
-        sz = portfolio.size_text(portfolio.size((o["entry_lo"] + o["entry_hi"]) / 2, o.get("current_stop") or o["stop"], settings,
+        sz = portfolio.size_text(portfolio.size((o["entry_lo"] + o["entry_hi"]) / 2, portfolio.holding_stop((o["entry_lo"] + o["entry_hi"]) / 2), settings,
                                                 portfolio.opp_vol(o)))
         if sz:
             lines.append(f"📐 {esc(sz)}")
@@ -350,26 +350,23 @@ async def dispatch(text: str) -> str:
 
 
 def next_step(t: dict, m: dict) -> str:
-    """The take-profit step for one open trade, in words."""
+    """The exit step for one open trade, in words."""
     from scout import levels
 
     pl = t.get("plan") or {}
-    if "target1" not in pl:
+    if pl.get("policy") != levels.TRAIL_POLICY:
         return ""
-    for st in levels.exit_plan(pl, t["entry_price"], t["shares"], m["remaining"], t.get("stop")):
+    for st in levels.exit_plan(pl, m["remaining"], t.get("stop")):
         if st["state"] == "due":
             return "⚠️ " + levels.due_advice(st, m.get("price"), t.get("stop"))
-        if st["state"] == "pending":
-            return (f"下一步：到目标 1 {st['price']:.2f} 后止损改用吊灯止损（不卖）" if st["stage"] == "目标 1"
-                    else f"{m['remaining']:g} 股跟随吊灯止损")
-    return ""
+    return f"{m['remaining']:g} 股跟随回落 20% 止损（收盘跌破，次日开盘卖出）"
 
 
 async def trades_text() -> str:
     held = await portfolio.trades(open_only=True)
     if not held:
         return "没有记录的持仓。在 Dashboard「我的交易」页记录买入后，这里和盘前简报会跟踪它们。"
-    lines = ["<b>我的持仓</b>（按最近收盘价；止损和止盈由系统每天收盘后更新）"]
+    lines = ["<b>我的持仓</b>（按最近收盘价；回落 20% 止损由系统每天收盘后更新）"]
     total = 0.0
     for t in held:
         m = portfolio.metrics(t)
@@ -384,6 +381,9 @@ async def trades_text() -> str:
         lines.append(f"• <b>{esc(t['ticker'])}</b> {qty} 股 @ {t['entry_price']:.2f} → {m['price']:.2f} "
                      f"{m['pnl']:+,.0f}（{pct(m['pnl_pct'], 1, True)}）{r}{stop}" + (f"\n  {esc(step)}" if step else ""))
     lines.append(f"合计盈亏 {total:+,.0f}（含已实现）")
+    from scout import market_filter
+
+    lines.append(esc(market_filter.text(await market_filter.current())))
     return "\n".join(lines)
 
 

@@ -746,7 +746,7 @@ async def trades_page(opp: str | None = None, t: str | None = None, plan: str | 
         en = next((x for x in pm.get("entries") or [] if x["name"] == plan), None)
         if en:
             mid = (en["zone_lo"] + en["zone_hi"]) / 2
-            sz = portfolio.size(mid, en["stop"], settings, pm.get("vol")) or {}
+            sz = portfolio.size(mid, portfolio.holding_stop(mid), settings, pm.get("vol")) or {}
             pre = {"ticker": universe.yahoo_symbol(t), "entry": f"{mid:.2f}", "stop": f"{en['stop']:.2f}",
                    "target": f"{en['target1']:.2f}", "shares": str(sz.get("shares") or ""), "from": plan}
     if opp:
@@ -754,10 +754,18 @@ async def trades_page(opp: str | None = None, t: str | None = None, plan: str | 
         if o:
             stop = o.get("current_stop") or o["stop"]
             mid = (o["entry_lo"] + o["entry_hi"]) / 2
-            sz = portfolio.size(mid, stop, settings, portfolio.opp_vol(o)) or {}
+            sz = portfolio.size(mid, portfolio.holding_stop(mid), settings, portfolio.opp_vol(o)) or {}
             pre = {"ticker": o["ticker"], "opp": o["id"], "entry": f"{mid:.2f}", "stop": f"{stop:.2f}",
                    "target": f"{o['target1']:.2f}", "shares": str(sz.get("shares") or "")}
     acct = settings.get("account_size")
+    from scout import market_filter
+
+    mf = await market_filter.current()
+    filter_html = (f"<div class='card' style='margin-bottom:12px'><b class='{'warn' if mf and mf['off'] else ''}'>"
+                   f"{e(market_filter.text(mf))}</b><p class='small muted'>规则（2026-10-31 你的决定）：每月最后一个交易日收盘后，"
+                   "SPY 月末收盘低于最近 10 个月末收盘的均值即进入避险，按计划不新买入；回到均值之上恢复。已有持仓不因此卖出，"
+                   "照常按回落 20% 管理。1999–2026 年回放：最大回撤从 −54% 降到 −22%、2008 年从 −35% 降到 −7%，"
+                   "代价是每年约少 1.5 个百分点，2012 年以后落后于一直持有（2020 年的急跌月度规则来不及反应）。</p></div>")
     settings_html = f"""<details class="card" {'' if acct else 'open'}><summary>账户与风险设置
 <span class="small muted">{'账户 $' + format(acct, ',.0f') + f" · 单笔风险 {settings['risk_pct'] * 100:.1f}% · 单只上限 {settings['max_position_pct'] * 100:.0f}% · 单只月波动上限 {settings['vol_budget_pct'] * 100:.1f}%" if acct else '未设置：卡片只显示每 $1,000 风险对应的股数'}</span></summary>
 <form method="post" action="/trades/settings" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:end">
@@ -777,8 +785,9 @@ async def trades_page(opp: str | None = None, t: str | None = None, plan: str | 
 <label class="small">成交价<br><input name="entry_price" value="{e(pre.get('entry', ''))}" size="8" required></label>
 <label class="small">股数<br><input name="shares" value="{e(pre.get('shares', ''))}" size="6" required></label>
 <label class="small">备注<br><input name="note" size="20"></label><button>记录</button></form>
-<p class="small muted">只需填代码、日期、成交价和股数。止损和止盈由系统设置：按成交时的价位图给出初始止损、目标 1 / 2，
-之后每天收盘后自动更新（不分批：到目标 1 后止损改用吊灯止损，只升不降，跌破时卖出全部，最长持有 60 个交易日），与个股页「我的持仓」一致，变动会推送到 Telegram。</p>
+<p class="small muted">只需填代码、日期、成交价和股数。止损由系统设置：成交价的 80% 起，之后每天收盘后改为买入以来最高收盘的 80%，只升不降；
+收盘低于它时，下一个交易日开盘卖出全部（不分批、不设目标、不设持有期限），与个股页「我的持仓」一致，触发会推送到 Telegram。
+大盘过滤处于避险时，计划不新买入（照样可以记录，执行检查会标出）。</p>
 {'<p class="small muted">已按' + ('价位参考的「' + e(pre["from"]) + '」' if pre.get("from") else '机会卡') + '预填买入区间中点和建议股数，请改成你的实际成交。</p>' if pre else ''}</div>"""
     risk = sum(portfolio.metrics(t).get("open_risk") or 0 for t in open_rows)
     risk_line = (f"<p class='small'>持仓 {len(open_rows)} 笔 · 全部触发止损的潜在亏损约 ${risk:,.0f}"
@@ -793,7 +802,7 @@ async def trades_page(opp: str | None = None, t: str | None = None, plan: str | 
     summ_html = (f"<p class='small'>已平仓 {summ['n']} 笔 · 胜率 {summ['win_rate'] * 100:.0f}% · 累计盈亏 ${summ['total_pnl']:+,.0f}"
                  + (f" · 平均 {summ['avg_r']:+.2f}R" if summ.get("avg_r") is not None else "") + "</p>") if summ["n"] else ""
     summ_html += views.adherence_html(adh_summary)
-    body = (f"<h2>我的交易</h2>{settings_html}{add_html}<h2>持仓</h2>{risk_line}{warn_html}{views.trades_table(open_rows)}"
+    body = (f"<h2>我的交易</h2>{filter_html}{settings_html}{add_html}<h2>持仓</h2>{risk_line}{warn_html}{views.trades_table(open_rows)}"
             f"<h2>已平仓</h2>{summ_html}{views.trades_table(closed_rows, adherence=adh)}"
             "<p class='small muted'>现价为最近一次收盘价（Scout 标的池之外的代码没有行情）。这里记录的是你实际做了什么，"
             "与规则记分板对照，可以看出执行是否偏离规则。</p>")
