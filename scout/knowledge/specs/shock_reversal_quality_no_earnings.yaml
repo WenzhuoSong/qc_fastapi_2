@@ -7,7 +7,7 @@ primary_control: select
 hold: 21
 title: 好公司无财报大跌后的反弹
 claim: 市值前 1000 的公司里，毛利率资产比高于当天中位数、过去十二个月盈利为正的公司，单日相对 SPY 下跌 10% 以上、且前 7 天内没有财报（8-K 2.02 或 10-Q/10-K），次日开盘买入持有 21 个交易日，跑赢同一窗口里股票池的其他股票。
-mechanism: 没有公开消息的大幅价格变动多半是流动性冲击或过度反应，随后反转；有消息的变动随后延续（Chan 2003, JFE《Stock price reaction to news and no-news: drift and reversal after headlines》；Savor 2012, JFE《Stock returns after major price shocks: the impact of information》；Larson & Madura 2003；Tetlock 2010, RFS）。盈利的好公司被错杀时，基本面不支持继续下跌（质量用 Novy-Marx 2013 的毛利率资产比）。
+mechanism: '没有公开消息的大幅价格变动多半是流动性冲击或过度反应，随后反转；有消息的变动随后延续（Chan 2003, JFE《Stock price reaction to news and no-news: drift and reversal after headlines》；Savor 2012, JFE《Stock returns after major price shocks: the impact of information》；Larson & Madura 2003；Tetlock 2010, RFS）。盈利的好公司被错杀时，基本面不支持继续下跌（质量用 Novy-Marx 2013 的毛利率资产比）。'
 expected_failure: 历史新闻覆盖不足，"没有消息"只能用"没有财报"代理，大跌里混有并购失败、诉讼、降级、FDA、做空报告等非财报坏消息（这类会延续而不是反转）；10% 的单日跌幅在大盘股里少见，样本可能偏小、月度 t 值噪声大；2008 年这类危机里好公司也会继续跌；文献里的反转主要在小盘、低流动性股票，大盘股里更弱，2000 年后减弱。
 
 definitions:
