@@ -18,7 +18,7 @@ SNAPSHOT_FEATURES = (
     "wk_dist_sma30", "wk_sma30_slope_4w", "wk_rsi14", "wk_macd_hist_pct", "wk_macd_hist_chg", "wk_vol_ratio",
     "gap_pct", "close_loc", "rs_pct", "sector_rs_pct", "sector_rel_20",
     "beta_60", "corr_60", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d", "market_ret_20d",
-    "zscore_20", "bb_pct", "vol_20", "max_dd_60",
+    "zscore_20", "bb_pct", "vol_20", "max_dd_60", "vol_63", "vol_63_pct",
 )
 
 
@@ -171,6 +171,7 @@ def build_panel(
     f["zscore_20"] = (c - f["sma20"]) / std20.replace(0, np.nan)
     f["bb_pct"] = (c - (f["sma20"] - 2 * std20)) / (4 * std20).replace(0, np.nan)
     f["vol_20"] = f["ret_1d"].rolling(20, min_periods=20).std() * np.sqrt(252)
+    f["vol_63"] = f["ret_1d"].rolling(63, min_periods=40).std() * np.sqrt(252)   # the risk study's baseline (ml_risk_v1)
     drawdown = c / c.rolling(60, min_periods=20).max() - 1
     f["max_dd_60"] = drawdown.rolling(60, min_periods=20).min()
     f["rsi2"] = rsi(c, 2)
@@ -232,6 +233,8 @@ def build_panel(
     f["sector_rel_63"] = _full(pd.DataFrame(rel63_cols, index=c.index))
 
     f["liquid"] = (c >= min_price) & (f["dollar_vol20"] >= min_dollar_volume)
+    # where a stock's 63-day volatility sits among today's liquid stocks: the risk tier (scout.position_risk)
+    f["vol_63_pct"] = f["vol_63"][stocks].where(f["liquid"][stocks]).rank(axis=1, pct=True).reindex(columns=c.columns)
 
     return FeaturePanel(
         f=f,

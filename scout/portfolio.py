@@ -13,11 +13,11 @@ import math
 from collections import Counter
 from datetime import date
 
-from scout import db
+from scout import db, position_risk
 
 logger = logging.getLogger("scout.portfolio")
 
-DEFAULTS = {"account_size": None, "risk_pct": 0.01, "max_position_pct": 0.20}
+DEFAULTS = {"account_size": None, "risk_pct": 0.01, "max_position_pct": 0.20, "vol_budget_pct": position_risk.VOL_BUDGET}
 SECTOR_CROWDED = 3       # this many open ideas/trades in one sector is one bet, not several
 INDUSTRY_CROWDED = 2
 
@@ -38,22 +38,37 @@ async def save_settings(values: dict) -> None:
 
 # ── Sizing ──
 
-def size(entry: float, stop: float, settings: dict) -> dict | None:
-    """Shares so that a stop-out loses risk_pct of the account, capped by max_position_pct."""
+def size(entry: float, stop: float, settings: dict, vol: float | None = None) -> dict | None:
+    """Shares so that a stop-out loses risk_pct of the account, capped by max_position_pct and, given
+    the stock's 63-day volatility, by vol_budget_pct: the position's typical monthly move (1σ) costs at
+    most that share of the account (Magee's composite leverage; the risk study's 1 / past-volatility weights)."""
     risk_per_share = entry - stop
     account = settings.get("account_size")
     if risk_per_share <= 0 or entry <= 0:
         return None
     if not account:
-        return {"configured": False, "shares_per_1k": math.floor(1000 / risk_per_share), "risk_per_share": risk_per_share}
+        return {"configured": False, "shares_per_1k": math.floor(1000 / risk_per_share), "risk_per_share": risk_per_share,
+                "vol": vol}
     budget = account * settings["risk_pct"]
     shares = math.floor(budget / risk_per_share)
-    cap = math.floor(account * settings["max_position_pct"] / entry)
-    capped = shares > cap
-    shares = min(shares, cap)
-    return {"configured": True, "shares": shares, "notional": shares * entry, "pct_of_account": shares * entry / account,
-            "risk_usd": shares * risk_per_share, "risk_pct": settings["risk_pct"], "capped": capped,
-            "risk_per_share": risk_per_share}
+    limits = {"position": math.floor(account * settings["max_position_pct"] / entry)}
+    vcap = position_risk.vol_cap_shares(entry, vol, account, settings.get("vol_budget_pct") or position_risk.VOL_BUDGET)
+    if vcap is not None:
+        limits["vol"] = vcap
+    limit = min(limits, key=limits.get)
+    capped = limit if shares > limits[limit] else None
+    shares = min(shares, limits[limit])
+    out = {"configured": True, "shares": shares, "notional": shares * entry, "pct_of_account": shares * entry / account,
+           "risk_usd": shares * risk_per_share, "risk_pct": settings["risk_pct"], "capped": capped,
+           "risk_per_share": risk_per_share, "vol": vol}
+    if vol:
+        out["month_move_usd"] = shares * entry * position_risk.monthly_sigma(vol)
+    return out
+
+
+def opp_vol(o: dict) -> float | None:
+    """The 63-day volatility on an opportunity's signal day (cards from before it was stored: none)."""
+    return ((o.get("evidence") or {}).get("price") or {}).get("vol_63")
 
 
 def size_text(sz: dict | None) -> str | None:
@@ -63,7 +78,13 @@ def size_text(sz: dict | None) -> str | None:
         return f"每承担 $1,000 风险约 {sz['shares_per_1k']} 股（每股风险 {sz['risk_per_share']:.2f}；在「我的交易」设置账户后按比例计算）"
     text = (f"按单笔风险 {sz['risk_pct'] * 100:.1f}%：约 {sz['shares']} 股，${sz['notional']:,.0f}"
             f"（占账户 {sz['pct_of_account'] * 100:.0f}%），止损亏损约 ${sz['risk_usd']:,.0f}")
-    return text + "；已按单只仓位上限截断" if sz["capped"] else text
+    if sz.get("month_move_usd"):
+        text += f"，一个月的正常波动（1σ）约 ±${sz['month_move_usd']:,.0f}"
+    if sz["capped"] == "vol":
+        text += f"；已按波动上限截断（年化波动 {sz['vol'] * 100:.0f}%，波动越大仓位越小）"
+    elif sz["capped"]:
+        text += "；已按单只仓位上限截断"
+    return text
 
 
 # ── Journal ──
@@ -90,19 +111,24 @@ async def manage_trade(t: dict) -> list[str]:
         if not new:
             return []
         plan = {**new, "history": (plan or {}).get("history", [])}
-    bars = await db.fetch_all("SELECT date, high, close FROM scout.bars_daily WHERE ticker = :t AND date >= :d ORDER BY date",
+    bars = await db.fetch_all("SELECT date, high, low, close FROM scout.bars_daily WHERE ticker = :t AND date >= :d ORDER BY date",
                               {"t": t["ticker"], "d": t["opened_on"]})
     feat = await db.fetch_one("SELECT payload FROM scout.features_daily WHERE ticker = :t ORDER BY date DESC LIMIT 1",
                               {"t": t["ticker"]})
     asof = bars[-1]["date"] if bars else t["opened_on"]
     # the buy day's high may have come before the fill, its close did not
     reached = [b["close"] if b["date"] == t["opened_on"] else b["high"] for b in bars]
+    low = bars[-1]["low"] if bars and bars[-1]["date"] > t["opened_on"] else None
     stop, target, _, msgs = levels.manage(plan, reached, [b["close"] for b in bars],
-                                          ((feat or {}).get("payload") or {}).get("atr14"), asof)
+                                          ((feat or {}).get("payload") or {}).get("atr14"), asof, low)
     remaining = t["shares"] - sum(r["shares"] for r in await sells(t["id"]))
     for st in levels.exit_plan(plan, t["entry_price"], t["shares"], remaining, stop):
         if st["state"] == "due" and st["sell_now"] and plan.get("hold_limit_hit") == asof.isoformat():
             msgs.append(f"建议卖出余下 {st['sell_now']:g} 股，卖出后记录（/sell 或「我的交易」）")
+    # ch. 43 of Edwards & Magee, stick to your guns: an outstanding sell signal is repeated on its 2nd and 5th session
+    due = position_risk.adherence({**t, "plan": plan}, [], asof).get("signal")
+    if due and due["sessions"] in (2, 5):
+        msgs.append(due["text"])
     await db.execute("UPDATE scout.trades SET stop = :s, target = :g, plan = CAST(:p AS JSONB), updated_at = now() WHERE id = :id",
                      {"s": stop, "g": target, "p": db.jsonb(plan), "id": t["id"]})
     return msgs
@@ -241,3 +267,41 @@ def concentration(items: list[dict]) -> list[str]:
                 names = "、".join(sorted({i["ticker"] for i in items if i.get(field) == name}))
                 out.append(f"{label}「{name}」同时有 {n} 个（{names}），走势高度相关，实际上接近一笔仓位")
     return out
+
+
+# ── Holdings risk (Edwards & Magee ch. 31, 38, 41–43) ──
+
+async def holdings_risk(open_rows: list[dict], account: float | None) -> dict:
+    """The open positions' volatility with correlations (last 63 sessions), risk tiers and
+    outstanding sell signals."""
+    today = date.today()
+    values, returns, tiers = {}, {}, {}
+    for t in open_rows:
+        m = metrics(t)
+        if m.get("price") and m["remaining"]:
+            values[t["ticker"]] = values.get(t["ticker"], 0.0) + m["price"] * m["remaining"]
+    closes = {}
+    for tk in values:
+        rows = await db.fetch_all("SELECT date, close FROM scout.bars_daily WHERE ticker = :t ORDER BY date DESC LIMIT 64",
+                                  {"t": tk})
+        closes[tk] = {r["date"]: r["close"] for r in rows}
+        feat = await db.fetch_one("SELECT payload FROM scout.features_daily WHERE ticker = :t ORDER BY date DESC LIMIT 1",
+                                  {"t": tk})
+        tiers[tk] = position_risk.tier(((feat or {}).get("payload") or {}).get("vol_63_pct"))
+    common = sorted(set.intersection(*(set(c) for c in closes.values()))) if closes else []
+    for tk, c in closes.items():             # returns on the dates every holding traded
+        px = [c[d] for d in common]
+        returns[tk] = [y / x - 1 for x, y in zip(px, px[1:])]
+    out = {"vol": position_risk.portfolio_vol(values, returns, account), "invested": sum(values.values()),
+           "tiers": tiers, "signals": []}
+    for t in open_rows:
+        sig = position_risk.adherence(t, [], today).get("signal")
+        if sig:
+            out["signals"].append({"ticker": t["ticker"], **sig})
+    return out
+
+
+async def journal_adherence(closed: list[dict]) -> tuple[dict[int, dict], dict]:
+    """Per closed trade: sells against the plan (on plan / early / late), and the counts."""
+    per = {t["id"]: position_risk.adherence(t, await sells(t["id"]), date.today()) for t in closed}
+    return per, position_risk.adherence_summary(list(per.values()))

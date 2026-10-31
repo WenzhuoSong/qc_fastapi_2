@@ -24,7 +24,9 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-MAP_VERSION = 2              # bump when the rules change: stored maps of an older version are recomputed
+from scout import position_risk
+
+MAP_VERSION = 3              # bump when the rules change: stored maps of an older version are recomputed
 ZONE_ATR = 0.5
 MAX_ZONE_PCT = 0.05          # O'Neil: more than ~5 % above the buy point is extended
 STOP_BUFFER_ATR = 0.25       # a stop sits a little below the level it protects
@@ -138,7 +140,8 @@ def price_map(f: dict, s: dict, options: dict | None = None, estimates: dict | N
         return {}
     trend = trend_of(f)
     above, below = key_levels(f, s)
-    out: dict = {"close": round(close, 2), "atr": round(atr, 2), "trend": trend,
+    out: dict = {"close": round(close, 2), "atr": round(atr, 2), "trend": trend, "vol": f.get("vol_63"),
+                 "vol_pct": f.get("vol_63_pct"), "move_range": position_risk.move_range(close, f.get("vol_63")),
                  "resistances": [{**p, "price": round(p["price"], 2)} for p in above[:5]],
                  "supports": [{**p, "price": round(p["price"], 2)} for p in below[:5]], "entries": []}
     swing_above = [p for p in above if p["kind"] == "swing"]
@@ -249,17 +252,22 @@ def locked_plan(pm: dict, fill: float, opened_on: date) -> dict | None:
             "in_zone": e is not None, "history": []}
 
 
-def manage(plan: dict, highs: list[float], closes: list[float], atr: float | None, asof: date) -> tuple[float, float | None, str, list[str]]:
+def manage(plan: dict, highs: list[float], closes: list[float], atr: float | None, asof: date,
+           low: float | None = None) -> tuple[float, float | None, str, list[str]]:
     """Today's system stop and target for an open trade, from its plan and the bars since the buy.
 
     `highs`: prices traded after the fill per session (the buy day counts with its close);
     `closes` start on the buy day. Stop: the plan's stop until target 1 trades; from then on raised (never
     lowered) to the chandelier stop, the highest close since the buy − 3 ATR, once that is higher and still
     below the last close. Nothing is sold at target 1. After HOLD_SESSIONS sessions the rest is due to be sold.
-    Target: target 1 until it trades, then none. Changes are appended to plan['history'];
-    returns (stop, target, stop basis, messages)."""
+    Target: target 1 until it trades, then none. `low`: today's low after the buy day; at or below
+    the stop in force, the plan says sell everything (recorded once as plan['stop_hit'], checked first
+    as in the replay). Changes are appended to plan['history']; returns (stop, target, stop basis, messages)."""
     stop, basis = plan.get("stop_now", plan["stop"]), plan.get("stop_now_basis", plan["stop_basis"])
     msgs: list[str] = []
+    if low is not None and low <= stop and not plan.get("stop_hit"):
+        plan["stop_hit"] = asof.isoformat()
+        msgs.append(f"盘中最低 {low:.2f} 触及止损 {stop:.2f}：按计划卖出全部，卖出后记录（/sell 或「我的交易」）")
     top = max(highs) if highs else None
     if top is not None and top >= plan["target1"] and not plan.get("target1_hit"):
         plan["target1_hit"] = asof.isoformat()
@@ -296,7 +304,11 @@ def exit_plan(plan: dict, entry_price: float, shares: float, remaining: float, s
                     "回放显示在目标位卖出会砍掉少数大赢家，而收益主要靠它们"),
             "keep_after": remaining, "sell_now": 0.0, "suggest": 0.0,
             "state": "done" if plan.get("target1_hit") else "pending"}]
-    if plan.get("hold_limit_hit") and remaining > 0:
+    if plan.get("stop_hit") and remaining > 0:
+        out.append({"stage": "止损触发", "price": None, "r": None, "fraction": "全部", "keep_after": 0.0, "sell_now": remaining,
+                    "suggest": remaining, "state": "due",
+                    "why": f"{plan['stop_hit']} 盘中触及止损，按计划卖出余下全部（坚持计划：不因为反弹或希望而拖延）"})
+    elif plan.get("hold_limit_hit") and remaining > 0:
         out.append({"stage": "持有期满", "price": None, "r": None, "fraction": "全部", "keep_after": 0.0, "sell_now": remaining,
                     "suggest": remaining, "state": "due",
                     "why": f"买入已满 {HOLD_SESSIONS} 个交易日（出场回放的持有上限），卖出余下全部"})

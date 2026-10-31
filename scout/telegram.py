@@ -182,7 +182,8 @@ def render_card(o: dict, settings: dict | None = None) -> str:
     for flag in ev.get("event_flags") or []:
         lines.append(f"⚡ 事件驱动·{esc(flag['type'])}：{esc(flag['headline'])}（技术规则统计参考价值有限）")
     if settings is not None and o.get("status") in ("new", "triggered"):
-        sz = portfolio.size_text(portfolio.size((o["entry_lo"] + o["entry_hi"]) / 2, o.get("current_stop") or o["stop"], settings))
+        sz = portfolio.size_text(portfolio.size((o["entry_lo"] + o["entry_hi"]) / 2, o.get("current_stop") or o["stop"], settings,
+                                                portfolio.opp_vol(o)))
         if sz:
             lines.append(f"📐 {esc(sz)}")
     score = score_text(why)

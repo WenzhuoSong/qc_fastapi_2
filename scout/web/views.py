@@ -144,7 +144,8 @@ def opp_card(o: dict, settings: dict | None = None) -> str:
         base += f"<br>{e(outcome)}"
     sizing = ""
     if settings is not None and o.get("status") in ("new", "triggered"):
-        sz = portfolio.size_text(portfolio.size((o["entry_lo"] + o["entry_hi"]) / 2, o.get("current_stop") or o["stop"], settings))
+        sz = portfolio.size_text(portfolio.size((o["entry_lo"] + o["entry_hi"]) / 2, o.get("current_stop") or o["stop"], settings,
+                                                portfolio.opp_vol(o)))
         sizing = (f"<div class='small'>📐 {e(sz)} · <a href='/trades?opp={e(o['id'])}'>记录入场</a></div>" if sz else "")
     return f"""<div class="card">
 <h3><a href="/ticker/{e(o['ticker'])}">{e(o['ticker'])}</a> · {e(label)} <span class="muted small">评分 {o['score']:.2f}</span></h3>
@@ -409,7 +410,7 @@ def trade_plan(o: dict, close: float | None, settings: dict | None = None, live:
     if outcome_hist:
         extra += f"<p class='small'><b>历史上</b>：{escape(outcome_hist.removeprefix('历史结局：'))}。目标是最好情况，不是预期结果。</p>"
     if settings is not None and o.get("status") in ("new", "triggered"):
-        sz = portfolio.size_text(portfolio.size(mid, o.get("current_stop") or o["stop"], settings))
+        sz = portfolio.size_text(portfolio.size(mid, o.get("current_stop") or o["stop"], settings, portfolio.opp_vol(o)))
         if sz:
             extra += f"<p class='small'><b>仓位</b>：{escape(sz)} · <a href='/trades?opp={escape(o['id'])}'>记录入场</a></p>"
     extra += event_html(o.get("evidence") or {})
@@ -670,13 +671,17 @@ def next_exit(t: dict, m: dict) -> str:
     return "—"
 
 
-def trades_table(rows: list[dict], closable: bool = True) -> str:
-    """Open or closed trades: realized + open P&L, the system stop and the next take-profit step."""
+ADHERENCE_TONE = {"on_plan": "", "early": "warn", "late": "down"}
+
+
+def trades_table(rows: list[dict], closable: bool = True, adherence: dict[int, dict] | None = None) -> str:
+    """Open or closed trades: realized + open P&L, the system stop and the next take-profit step;
+    closed trades with their sells against the plan when `adherence` is given."""
     if not rows:
         return "<p class='muted small'>没有记录。</p>"
     is_open = not rows[0].get("closed_on")
     head = ["代码", "开仓", "股数", "入场", "现价" if is_open else "平均卖出", "盈亏", "R"]
-    head += ["止损", "距止损", "止盈", "备注"] if is_open else ["备注"]
+    head += ["止损", "距止损", "止盈", "备注"] if is_open else (["执行", "备注"] if adherence is not None else ["备注"])
     body = []
     for t in rows:
         m = portfolio.metrics(t)
@@ -695,6 +700,11 @@ def trades_table(rows: list[dict], closable: bool = True) -> str:
         if is_open:
             cells += [f"{t['stop']:.2f}" if t.get("stop") else "—", signed(m["to_stop"]) if "to_stop" in m else "—",
                       next_exit(t, m)]
+        elif adherence is not None:
+            a = adherence.get(t["id"]) or {}
+            cells.append(f"{escape(a.get('verdict') or '—')}" + "".join(
+                f"<div class='small {ADHERENCE_TONE[x['kind']]}'>{escape(str(x['date']))} {escape(x['text'])}</div>"
+                for x in a.get("sells") or []))
         cells.append(escape(t.get("note") or ""))
         if closable and is_open:
             cells.append(
@@ -917,11 +927,12 @@ def price_panel(pm: dict, live: dict | None, settings: dict | None, opp: dict | 
                       f"（较现价 {signed((at.get('median') or at['mean']) / price - 1)}）")
     if checks:
         out.append("<div class='small muted' style='margin-top:4px'>" + "<br>".join(checks) + "</div>")
+    out.append(risk_block(pm))
 
     entries = pm.get("entries") or []
     for en, es in zip(entries, st["entries"]):
         mid = (en["zone_lo"] + en["zone_hi"]) / 2
-        sz = portfolio.size_text(portfolio.size(mid, en["stop"], settings)) if settings is not None else None
+        sz = portfolio.size_text(portfolio.size(mid, en["stop"], settings, pm.get("vol"))) if settings is not None else None
         link = (f" <a class='small' href='/trades?t={quote(ticker)}&plan={quote(en['name'])}'>按此计划记录买入</a>"
                 if ticker and es["state"] == "in_zone" else "")
         out.append(
@@ -949,6 +960,57 @@ def price_panel(pm: dict, live: dict | None, settings: dict | None, opp: dict | 
     return f"<div class='card plan'>{''.join(out)}</div>"
 
 
+
+
+def risk_block(pm: dict) -> str:
+    """Normal move range (Edwards & Magee ch. 24) and the relative risk tier, from 63-day volatility."""
+    from scout import position_risk
+
+    rng = pm.get("move_range") or []
+    if not rng:
+        return ""
+    rows = "".join(f"<tr><td>{escape(r['label'])}</td><td>±{r['sigma'] * 100:.1f}%</td><td>{r['lo1']:.2f}–{r['hi1']:.2f}</td>"
+                   f"<td class='muted'>{r['lo2']:.2f}–{r['hi2']:.2f}</td></tr>" for r in rng)
+    tier = position_risk.tier_text(position_risk.tier(pm.get("vol_pct")))
+    return (f"<div style='margin-top:8px'><b>正常波动范围</b> <span class='small muted'>年化波动 {pm['vol'] * 100:.0f}%（63 日）</span></div>"
+            "<table class='small'><thead><tr><th>期限</th><th>1σ</th><th>约三次中两次落在</th><th>约二十次中十九次（2σ）</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table>"
+            + (f"<div class='small'>{escape(tier)}</div>" if tier else "")
+            + "<div class='small muted'>按过去 63 日波动推算（风险研究里没有模型比它更准），实际涨跌的尾部比正态更厚："
+              "超出 2σ 的情况比 1/20 更常见，尤其在财报和市场危机时。止损如果落在 1 个月的 1σ 范围内，更容易被正常波动触发。</div>")
+
+
+def holdings_risk_html(hr: dict, account: float | None) -> str:
+    """The holdings as one portfolio: volatility with correlations, who carries the risk, tiers,
+    and sell signals not yet acted on (Edwards & Magee ch. 31, 38, 41–43)."""
+    out = []
+    for sig in hr.get("signals") or []:
+        out.append(f"<p class='small down'>⚠️ {escape(sig['ticker'])}：{escape(sig['text'])}。"
+                   "第 43 章：计划是在冷静时定的，执行时不要因为希望或恐惧改动它。</p>")
+    pv = hr.get("vol")
+    if pv:
+        acct = (f"，约占账户 {pv['month_pct_account'] * 100:.1f}%" if pv.get("month_pct_account") is not None else "")
+        top = "、".join(f"{escape(c['ticker'])} {c['share'] * 100:.0f}%" for c in pv["contrib"][:3])
+        out.append(f"<p class='small'>组合波动（按最近 {pv['sessions']} 个交易日的波动和相关性）：年化约 {pv['pct_invested'] * 100:.0f}%"
+                   f"（持仓市值 ${hr['invested']:,.0f}），一个月的正常波动（1σ）约 ±${pv['month_usd']:,.0f}{acct}。"
+                   f"风险主要来自 {top}；分散系数 {pv['diversification']:.2f}"
+                   "（各仓位单独波动之和 ÷ 组合波动，1 表示走势完全同步、没有分散）。</p>")
+    tiers = [(tk, t) for tk, t in (hr.get("tiers") or {}).items() if t]
+    high = [tk for tk, t in tiers if t["tier"] == 5]
+    if tiers:
+        out.append("<p class='small" + (" warn" if len(high) * 2 >= len(tiers) and high else "") + "'>风险档位："
+                   + "、".join(f"{escape(tk)} 第 {t['tier']} 档" for tk, t in tiers)
+                   + ("。一半或更多仓位在第 5 档（波动最大的 20%），组合整体回撤风险偏高" if len(high) * 2 >= len(tiers) and high else "")
+                   + "</p>")
+    return "".join(out)
+
+
+def adherence_html(a: dict) -> str:
+    """Counts of closed trades handled on plan, early or late."""
+    if not a.get("n"):
+        return ""
+    return (f"<p class='small'>执行检查：{a['n']} 笔中按计划离场 {a['on_plan']} 笔 · 提前离场 {a['early']} 笔 · 信号后拖延 {a['late']} 笔"
+            "<span class='muted'>（按计划 = 止损触发、时间止损或持有期满后 1 个交易日内卖出；提前 = 计划仍要求持有时卖出）</span></p>")
 
 
 # ── knowledge base ──────────────────────────────────────────────────────

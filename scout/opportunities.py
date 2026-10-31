@@ -229,7 +229,7 @@ def evidence(c: Candidate, market: dict) -> dict:
             "close", "ret_1d", "ret_5d", "ret_20d", "ret_63d", "ret_252d", "dist_52w_high",
             "vol_ratio", "atr_pct", "rsi14", "rsi2", "gap_pct", "rs_pct", "sector_rs_pct", "sector_rel_20",
             "beta_60", "corr_60", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d",
-            "zscore_20", "bb_pct", "vol_20", "max_dd_60",
+            "zscore_20", "bb_pct", "vol_20", "max_dd_60", "vol_63", "vol_63_pct",
         ) if k in f},
         "readings": {knowledge.zh(k): r for k in f if (r := knowledge.reading(k, f[k]))},
         "base_rate": c.base_rate,
