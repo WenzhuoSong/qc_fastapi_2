@@ -1,0 +1,32 @@
+# The trading-cost model for the small-cap studies (direction B), written 2026-10-31 before any
+# small-cap strategy was specified or run. Fixed for every study of the family; a changed model is a new
+# file with a new key, and studies say which one they use. Local only (Sharadar, git-ignored exports/).
+key: small_cap_costs_v1
+registered_on: '2026-10-31'
+requested_by: 用户 2026-10-31："好，开始 B，先做小盘成本模型"
+question: 散户（单笔约 2.5 万美元）在美股市值第 1001–3000 名的股票上，一次买入或卖出的实际成本大约是多少？哪些股票成本太高、不该进入研究？
+
+model:
+  one_way: 单边成本 = 半个有效价差 + 冲击成本
+  spread: Abdi & Ranaldo (2017, RFS) 的收盘—最高—最低价估计。每只股票每个自然月，用当月日线（Sharadar 的拆股调整后 high / low / close，月内比值不受拆股影响）：η_t = (ln H_t + ln L_t) / 2，s² = 4 × 当月平均 [(ln C_t − η_t)(ln C_t − η_{t+1})]，s = √max(s², 0)；当月少于 15 个交易日不估计。价差下限为 1 美分 / 当月平均未复权收盘价
+  impact: 平方根法则（Almgren 等 2005；Tóth 等 2011）：冲击 = Y × σ_日 × √(Q / ADV)，Y = 0.5；σ_日 = 当月日对数收益的标准差；ADV = 当月日成交额（未复权收盘 × 成交量）的中位数
+  order: Q = 25,000 美元（名义，各年相同；对早年偏保守），约为账户的 10%
+  timing: 某月估计的成本用于下一个月的交易（点时）；没有上月估计的股票视为不可交易
+  round_trip: 往返 = 2 × 单边
+
+tradeable:
+  rule: 上月 ADV ≥ 100 万美元，且 Q / ADV ≤ 5%，且上月有价差估计；不满足的股票在小盘研究中排除（不是按成本挑股票，而是散户实际难以成交）
+
+sensitivity:
+  - Y = 1.0（冲击翻倍）
+  - 价差估计 × 2
+  - Corwin & Schultz (2012) 高低价估计替代 Abdi-Ranaldo（只作对照）
+  note: 小盘策略研究以主模型为准，同时报告在这两种更保守成本下的结论
+
+checks:
+  - 按市值分组（前 1000、1001–3000 再分五档）和按年份报告中位数、均值和 90% 分位的往返成本，以及不可交易的比例
+  - 与文献量级对照：2010 年以后大盘股有效价差约 0.02%–0.1%，罗素 2000 成分约 0.1%–0.5%，微盘股 1% 以上（Hasbrouck 2009；Abdi & Ranaldo 2017 表格；Frazzini, Israel & Moskowitz 2018 实际成交成本）；量级明显不符时先查实现，不调参数
+  - 与 Scout 默认的 simulate.ROUND_TRIP_COST（往返 0.1%）对照大盘股的估计
+  - 交易日后可用 Yahoo 实时买卖报价对一批小盘股做一次抽查（另行记录）
+
+limits: 日线估计不是真实报价；Abdi-Ranaldo 在低价、低波动股票上会低估或得 0（因此有 1 美分下限）；冲击模型来自机构大单，对 2.5 万美元的小单可能偏高；不含佣金（目前美国券商多为零佣金）和借券成本（不做空）。
