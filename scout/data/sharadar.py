@@ -205,16 +205,22 @@ def write_manifest(entries: list[dict], root: Path = ROOT) -> Path:
     return path
 
 
-# Local results derived from Sharadar data (the public French / OSAP data in exports/research_data/ is not)
-DERIVED = ("ml", "costs", "chart_patterns", "shock_reversal", "cross_asset", "small_cap", "b0/sharadar_replay")
+# Fail closed: everything under exports/ is treated as derived from Sharadar and deleted, except what is
+# known not to be: the public French / OSAP data, and B0's exports from Scout's own database (whose
+# Sharadar replay is deleted).
+KEEP = ("research_data", "b0")
+ALSO = ("b0/sharadar_replay",)
 
 
-def purge(root: Path = ROOT, derived: tuple[str, ...] = DERIVED) -> list[Path]:
+def purge(root: Path = ROOT, keep: tuple[str, ...] = KEEP, also: tuple[str, ...] = ALSO) -> list[Path]:
     """Delete every local copy and every result derived from it (licence: within 30 days of the
     subscription ending); returns what was deleted."""
+    exports = root.parent
+    targets = [p for p in sorted(exports.iterdir()) if p.name not in keep] if exports.exists() else []
+    targets += [exports / a for a in also]
     gone = []
-    for path in (root, *(root.parent / d for d in derived)):
+    for path in targets:
         if path.exists():
-            shutil.rmtree(path)
+            shutil.rmtree(path) if path.is_dir() else path.unlink()
             gone.append(path)
     return gone

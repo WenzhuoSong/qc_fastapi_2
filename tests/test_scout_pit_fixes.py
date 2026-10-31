@@ -62,11 +62,13 @@ class PurgeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "sharadar"
-            for p in (root, Path(tmp) / "ml", Path(tmp) / "research_data"):
-                p.mkdir()
-            gone = sharadar.purge(root, ("ml", "costs"))
-            self.assertEqual({p.name for p in gone}, {"sharadar", "ml"})
+            for p in (root, Path(tmp) / "ml", Path(tmp) / "research_runs", Path(tmp) / "research_data",
+                      Path(tmp) / "b0" / "2026-10-28", Path(tmp) / "b0" / "sharadar_replay"):
+                p.mkdir(parents=True)
+            gone = sharadar.purge(root)
+            self.assertEqual({p.name for p in gone}, {"sharadar", "ml", "research_runs", "sharadar_replay"})
             self.assertTrue((Path(tmp) / "research_data").exists())     # public academic data stays
+            self.assertTrue((Path(tmp) / "b0" / "2026-10-28").exists())  # exports from Scout's own database stay
 
 
 if __name__ == "__main__":
