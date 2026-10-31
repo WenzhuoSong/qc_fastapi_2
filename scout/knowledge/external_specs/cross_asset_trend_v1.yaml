@@ -1,0 +1,99 @@
+# Pre-registration of the cross-asset trend test, written 2026-10-31 before any strategy return was
+# computed. Never edited after the run; a changed design is a new file with a new key. Run once
+# (local only, Sharadar ETF prices in the git-ignored exports/sharadar/, results in exports/cross_asset/).
+key: cross_asset_trend_v1
+registered_on: '2026-10-31'
+requested_by: 用户 2026-10-31："好，从 A 开始写预登记"（研究方向 A：跨资产趋势）
+family: cross_asset_trend
+question: 在十几只代表不同资产类别的 ETF 上做趋势跟踪（只做多，趋势向下时拿现金），能否比现行核心仓规则（SPY + 大盘过滤）和同样资产的静态配置有更高的风险调整收益、更小的回撤？如果能，它是核心仓的候选规则。
+
+literature:
+  - Moskowitz, Ooi & Pedersen (2012, JFE)，Time Series Momentum：58 个期货市场，过去 12 个月超额收益为正则做多，按波动倒数定权，1985–2009 年各资产类别都有效
+  - Hurst, Ooi & Pedersen (2017, JPM)，A Century of Evidence on Trend-Following Investing：1880 年起 67 个市场，每个十年都为正，在股市大跌时表现好
+  - Faber (2007, JWM)，A Quantitative Approach to Tactical Asset Allocation：5 类资产，各自月末价格高于 10 个月均线时持有、否则现金，回撤大幅缩小、收益接近买入持有
+  - Antonacci (2014)，Dual Momentum；Faber (2010) 相对强弱：在资产之间选过去 12 个月最强的几个，且要求其绝对动量为正
+  - 已知的反面证据：2009 年以后趋势策略整体表现平淡（Hurst 等文中也提到），多次急跌急涨（2018 年底、2020 年 3 月）造成来回止损
+
+data:
+  prices: Sharadar SFP（funds 表）的 closeadj（含分红复权，已扣管理费），逐日
+  cash: Kenneth French 数据库日度 RF（1 个月美国国债），本地 exports/research_data/french/
+  disclosure_seen: 登记前看过的数字只有：这些 ETF 的起始日期；SPY、SPY/IEF 组合与 SPY + 10 个月均线过滤在 2003-07 至 2026-10 的年化、回撤（第四十二节之前的并排比较）；exit_redeploy 的大盘过滤结果。其他 ETF 的收益、任何趋势规则在这些资产上的结果都没有看过
+
+universe:
+  rule: 每个主要资产类别选一只最早、最有代表性的宽基 ETF（与文献的资产类别对应），在看任何收益之前固定，不按结果增删
+  assets:
+    SPY: 美国大盘股
+    IWM: 美国小盘股
+    EFA: 发达市场（除美国）股票
+    EEM: 新兴市场股票
+    VNQ: 美国房地产信托
+    TLT: 美国长期国债
+    IEF: 美国中期国债
+    LQD: 美国投资级公司债
+    TIP: 美国通胀保值国债
+    GLD: 黄金
+    DBC: 大宗商品（综合）
+    UUP: 美元指数
+  eligibility: 决策日该 ETF 已有至少 252 个交易日的价格（12 个月动量和 63 日波动都可算）且当天有价格；资产陆续进入
+  start: 第一个至少有 6 只资产合格的月末决策日（预计 2003 年下半年）起，到数据结束的最后一个完整月份
+  faber5: Faber (2007) 原始的 5 类资产版本（SPY、EFA、IEF、VNQ、DBC）只作稳健性报告，不参与结论
+
+execution:
+  decision: 每月最后一个交易日收盘后计算信号和目标权重
+  trade: 下一个交易日收盘成交（滞后一天，保守）；两次调仓之间权重随价格漂移
+  returns: 逐日 closeadj 收益；现金部分逐日按 RF
+  cost: 单边 0.05% × 实际换手（|新权重 − 漂移后权重| 之和），覆盖这些 ETF 的买卖价差和冲击；另报告单边 0.2% 的敏感性
+  no_leverage: 权重之和不超过 1，不做空，不用杠杆（散户核心仓）
+
+definitions:
+  ret12: 决策日 closeadj 相对 252 个交易日之前的收益
+  rf12: 同一 252 个交易日的累计 RF
+  vol63: 最近 63 个交易日日收益的标准差 × √252
+  sma10: 最近 10 个月末收盘（closeadj）的平均，含决策日所在月
+
+trials:
+  tsmom: 时间序列动量（Moskowitz 等 2012、Hurst 等 2017 的只做多版本）。目标权重 w_i = (1/vol63_i) / Σ_j (1/vol63_j)，j 为全部合格资产；ret12_i > rf12_i 才持有，否则这部分拿现金
+  faber_gtaa: Faber (2007)。全部合格资产等权；决策日收盘 > sma10 才持有，否则这部分拿现金
+  dual_top3: 相对 + 绝对动量（Faber 2010、Antonacci 2014）。按 ret12 选最强的 3 只，各 1/3；其中 ret12 ≤ rf12 的那一份拿现金；合格资产少于 3 只时按实际只数等分
+
+trial_count: 3 项同时检验；本族（cross_asset_trend）此前没有检验，累计 3 次
+
+benchmarks:
+  spy: SPY 买入持有
+  core_now: 现行核心仓规则：SPY + 大盘过滤（Faber 10 个月均线，与 scout.market_filter 相同；避险时持有现金按 RF），同样的月末决策和执行约定
+  static_iv: 全部合格资产，权重按 1/vol63（与 tsmom 相同），始终持有，每月再平衡——tsmom 去掉择时后的对照
+  static_ew: 全部合格资产等权，始终持有，每月再平衡——faber_gtaa 和 dual_top3 的对照
+  sixty_forty: 60% SPY + 40% IEF，每月再平衡
+  note: 基准同样扣成本（换手很少）
+
+metrics:
+  each: 年化收益、年化波动、夏普（相对 RF）、Sortino、最大回撤、最差 12 个月、平均现金比例、年换手；前后两半（按月份中位数）各算一遍
+  years: 逐年收益，特别列出 2008、2020、2022 年
+  crisis: SPY 最差 10% 的月份里的平均月收益
+  vs: 每月收益差（策略 − core_now、策略 − 对应静态基准）的均值和 t，全样本和前后两半
+  correlation: 月收益与 SPY 的相关系数
+
+decision:
+  candidate_rule: 一个变体同时满足下面全部条件，才算"核心仓候选"
+  candidate:
+    - 前后两半的夏普都高于 core_now
+    - 前后两半的夏普都高于它的静态基准（tsmom 对 static_iv，另两个对 static_ew），即择时本身有用
+    - 全样本最大回撤比 core_now 至少小 5 个百分点
+    - 每月收益差（策略 − core_now）在前后两半的 t 都不低于 −2（收益不显著落后于现行规则）
+  pick: 满足条件的变体里选全样本夏普最高的一个，是否用于核心仓由用户决定
+  edge_claim: 只有当每月收益差（策略 − 静态基准）全样本 t ≥ gate.required_t(3) 且前后两半都为正时，才在报告中称"择时带来了可靠的超额收益"；否则只说"风险调整后更好"或"没有改善"
+  none: 都不满足 → 记为否定结论，现行核心规则不变；不换参数（回看期、均线长度、选几只、资产清单）重测
+  after: 无论结果，结论写入知识库条目 cross_asset_trend（只有用户能确认）；若用户采用，从采用当月起在 Scout 中每月记录目标权重和结果，作为前向记录
+
+external:
+  french_long: 用 French 数据库 1926-07 起的市场月收益（Mkt-RF + RF）复现单资产版本：12 个月动量（超过 RF 才持有）和 10 个月均线规则，对比买入持有；按十年分段报告。只作描述，不影响结论（只有美股一个资产，不是跨资产）
+  aqr: AQR 公开的时间序列动量因子数据若需下载，先问用户；本次不下载
+
+expected_failure:
+  - 2009–2021 年股债长期牛市里，趋势规则主要贡献是降低回撤，收益可能落后于持有 SPY；夏普能否两半都胜出不确定
+  - 12 只 ETF、约 23 年，资产之间相关较高（股票类 5 只），独立的赌注不多，统计功效有限
+  - 2020 年 3 月这种一个月内的急跌，月度规则来不及反应
+  - UUP、DBC、TIP 这类资产的长期收益接近 0，按波动倒数定权时会占很大权重，可能拉低 tsmom 的收益
+  - 资产清单是在 2026 年选的，虽然按资产类别而不是按表现选，仍隐含"这些资产类别后来都还存在"的事后信息
+
+disclosure: 登记时没有运行任何趋势规则，也没有看过 SPY 之外的 ETF 收益。参数全部照搬文献（12 个月、10 个月、63 日波动、前 3 名、月度调仓），本规格只决定了文献没有写明的部分：资产清单（每类一只）、滞后一天成交、0.05% 成本、资产进入规则、判定标准（与 exit_vs_hold / exit_redeploy 同一思路）。
