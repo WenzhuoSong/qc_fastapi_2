@@ -1,0 +1,90 @@
+# Pre-registration of the small-cap ranking test (direction B), written 2026-10-31 before any small-cap
+# strategy return was computed. Never edited after the run; a changed design is a new file with a new key.
+# Run once, local only (Sharadar, git-ignored exports/small_cap/), after the cost spot check (see costs).
+key: small_cap_rankers_v1
+registered_on: '2026-10-31'
+requested_by: 用户 2026-10-31："好，先写小盘策略预登记，周一再抽查"
+question: 文献认为在小盘股里更强的五种选股方法，在美股市值第 1001–3000 名、散户能成交的股票上，扣掉按成本模型估计的真实成本后，相对同期其他小盘股是否有可靠的超额？
+
+why_small: 机构因规模和流动性很少交易这些股票，分析师覆盖少，信息扩散慢（Hong, Lim & Stein 2000）；多数异象集中在小盘（Hou, Xue & Zhang 2020）。代价是成本高、容量小，散户单笔 2.5 万美元正好在这个空间里。
+
+principle: 每种方法的信号定义、选股比例、持有期、调仓间隔都与 Scout 在大盘股上的登记规格相同（scout/knowledge/specs/rank_*.yaml），只换股票池；动量没有大盘规格，按文献的 12−1 定义并与其他方法同样的 63 日持有、21 日调仓
+
+trials:
+  ear_drift:
+    family: ear_drift
+    prior_trials: 2（大盘原检验、持仓计划出场重测，均未通过）
+    literature: Brandt, Kishore, Santa-Clara & Venkatachalam (2008)；Chan, Jegadeesh & Lakonishok (1996)。公告后漂移在小盘、低关注股票中更强
+    signal: 财报公告（Sharadar events 的 8-K 第 2.02 项）前一日收盘到后一日收盘的收益减去 SPY 同期收益；公告后一个交易日收盘起可知
+    picks: 每 5 个交易日，在过去 5 个交易日内信号变为可知的股票中，选信号最高的 20%（与 rank_ear_drift 相同）
+    hold: 63
+    every: 5
+  gross_profitability:
+    family: gross_profitability
+    prior_trials: 2
+    literature: Novy-Marx (2013)
+    signal: 最近 12 个月毛利 / 总资产（Sharadar ART，按申报日点时可知）
+    picks: 每 21 个交易日选最高的 10%
+    hold: 63
+    every: 21
+  net_buyback:
+    family: net_buyback
+    prior_trials: 2（大盘 t 2.84，接近门槛未通过）
+    literature: Pontiff & Woodgate (2008)；Daniel & Titman (2006)。股本净发行的效应在小盘更强
+    signal: 基本股数相对 4 个季度前的变化（Sharadar ARQ sharesbas，按申报日点时可知），越低越好
+    picks: 每 21 个交易日选最低的 10%
+    hold: 63
+    every: 21
+  insider_cluster:
+    family: insider_cluster
+    prior_trials: 2
+    literature: Lakonishok & Lee (2001)；Cohen, Malloy & Pomorski (2012)。内部人买入的信息含量在小盘最高
+    signal: 过去 90 个自然日（按 Form 4 申报日）内，至少 2 名不同的高管或董事在公开市场买入普通股（交易代码 P）
+    picks: 每 21 个交易日，选全部满足条件的股票（与 rank_insider_cluster 相同）
+    hold: 63
+    every: 21
+    deviation: Sharadar 没有 10b5-1 计划标记，无法像 Scout 的大盘版本那样排除计划内交易（计划内多为卖出，买入很少）
+  momentum_12_1:
+    family: momentum_12_1
+    prior_trials: 0（新的一族；大盘检验过的是残差动量，不同信号；OSAP 的 Mom12m 已在外部复现中看过）
+    literature: Jegadeesh & Titman (1993)；Hong, Lim & Stein (2000)：动量在小盘、分析师覆盖少的股票中更强
+    signal: 252 个交易日前到 21 个交易日前的收益（跳过最近一个月）
+    picks: 每 21 个交易日选最高的 10%
+    hold: 63
+    every: 21
+
+universe:
+  members: 每个调仓日，Sharadar 点时市值排名第 1001–3000 名（与 sharadar_rechecks 相同的合格股票：美国本土普通股、NYSE / NASDAQ / NYSEMKT、未复权收盘 ≥ 5 美元，含后来退市的公司）
+  tradeable: 且按成本模型在调仓日所在月可交易（上月日成交额 ≥ 100 万美元、2.5 万美元单笔 ≤ 5%、有价差估计）；不可交易的股票既不入选、也不进对照
+  sample: 调仓日从 1999-03 起（信号需要的历史够长）到持有窗口仍完整的最后一天；全部年份，不留保留期；另外单独报告 2016 年以后与 2022 年以后
+
+returns:
+  entry_exit: 调仓日的下一个交易日开盘买入，持有 hold 个交易日到收盘（含分红）；退市按 sharadar_research.holding_return（表现型退市 −30%）
+  cost: 入选股票扣往返成本 = 2 × 成本模型单边成本（调仓日所在月适用的估计，即上月估计）
+  costs_model: small_cap_costs_v1；若在本检验运行之前根据周一的报价抽查登记了 v2，则改用 v2（运行时写明），之后不再更换
+  control: 选股对照 = 同一窗口（同样的次日开盘到第 hold 个交易日收盘）股票池其他所有可交易股票的平均收益，不扣成本（相当于被动持有小盘指数）
+  edge: 每个入选股票的（净收益 − 对照），按调仓日平均，再按月平均
+
+verdict:
+  bar: gate.required_t(该族累计次数)，各族累计都不超过 3 次，门槛为 3.0；五项同时检验时 Bonferroni 也低于 3，门槛不变
+  pass_rule: 下面全部满足才算 G1 通过
+  pass:
+    - 扣成本后月度超额全样本 t ≥ 3（gate.monthly_t）
+    - 按调仓日中位数分的前后两半，扣成本后超额都为正
+    - 持有期重叠（63 日持有、5 或 21 日调仓）造成相邻月份相关，所以另算 Newey-West 校正的 t（滞后 2 个月），要求 ≥ 2
+    - 成本按保守版本（价差 × 2）重算后，全样本超额仍为正
+  fail: 不通过 → 记为否定；不换参数、不换股票池重测
+  use: 通过 → 进入批判关（gate.critique）；之后需要前向验证。Scout 目前每天只更新标普 500 / 400 和纳斯达克 100 的数据，小盘前向验证需要先把这些股票的数据接进来（或保留 Sharadar 订阅），由用户决定；只有用户能确认
+
+reported_only:
+  - 不扣成本的超额（看成本吃掉多少）
+  - 冲击翻倍、价差翻倍两种保守成本下的结果
+  - 入选股票的平均往返成本、年换手、平均持股数
+  - 1001–3000 内按市值分两半（1001–2000、2001–3000）
+  - 2016 年以后、2022 年以后；去掉 2008–09；熊市月份（osap_check.BEARS）
+  - 同样方法在市值前 1000（同样的成本模型）上的结果，作为对照（不是新的检验，大盘的结论以原登记为准）
+
+disclosure: |
+  登记前看过的相关结果：Scout 在大盘股上对前四种方法的检验（均未通过，净回购 t 2.84 接近）；OSAP 外部复现（第二十九节）中这些信号的等权十分组结果（包含小盘股：净回购、毛利、动量、公告收益在 60 年样本 t 3–4.3，2015 年以后每月约 0.1%–0.3%）；资产增长在小盘（1001–3000）上的复核（未通过，因此不在本次）；机器学习第四阶段曾用前 3000 的特征训练（含这些信号，2004–2015），但只在前 1000 上评估，没有看过小盘单个信号的收益；小盘成本模型 v1 的汇总。
+  没有看过这五种方法在 1001–3000 股票池、按本规格选股的任何收益。参数全部沿用大盘规格或文献，本规格只决定了股票池、可交易条件、成本扣法和 Newey-West 条件。
+expected_failure: 成本：选股比例 10%–20%、每 21 日调仓，换手高，小盘往返 0.4%–0.9% 可能吃掉大部分超额；2015 年以后多数异象已衰减（OSAP）；小盘动量在 2009 年那种反弹中会大幅回撤；内部人集中买入在小盘里事件少，样本可能不足；公告漂移每 5 日调仓、持有重叠最多，成本最高。
