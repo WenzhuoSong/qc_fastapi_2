@@ -86,7 +86,7 @@ def fundamental_extras(keys: pd.DataFrame, names: list[str], mcap: pd.Series) ->
     f = f.rename(columns={"date": "datekey"})
     f["datekey"], f["reportperiod"] = pd.to_datetime(f["datekey"]), pd.to_datetime(f["reportperiod"])
     f = f[f["datekey"] <= pd.Timestamp(UNTIL)]
-    f = f.sort_values(["ticker", "dimension", "reportperiod"]).drop_duplicates(["ticker", "dimension", "reportperiod"])
+    f = sr.first_filed(f, ("ticker", "dimension", "reportperiod")).sort_values(["ticker", "dimension", "reportperiod"])
     pos = lambda s: s.where(s > 0)  # noqa: E731
     q = f[f["dimension"] == "ARQ"].copy()
     g = q.groupby("ticker")

@@ -205,7 +205,16 @@ def write_manifest(entries: list[dict], root: Path = ROOT) -> Path:
     return path
 
 
-def purge(root: Path = ROOT) -> None:
-    """Delete every local copy (licence: within 30 days of the subscription ending)."""
-    if root.exists():
-        shutil.rmtree(root)
+# Local results derived from Sharadar data (the public French / OSAP data in exports/research_data/ is not)
+DERIVED = ("ml", "costs", "chart_patterns", "shock_reversal", "cross_asset", "small_cap", "b0/sharadar_replay")
+
+
+def purge(root: Path = ROOT, derived: tuple[str, ...] = DERIVED) -> list[Path]:
+    """Delete every local copy and every result derived from it (licence: within 30 days of the
+    subscription ending); returns what was deleted."""
+    gone = []
+    for path in (root, *(root.parent / d for d in derived)):
+        if path.exists():
+            shutil.rmtree(path)
+            gone.append(path)
+    return gone

@@ -41,9 +41,11 @@ def cross_sectional(df: pd.DataFrame, cols: list[str], date: str = "date", group
     out = pd.DataFrame(index=df.index)
     g = df.groupby(keys, sort=False, dropna=False)
     for c in cols:
-        r = g[c].transform(lambda s: rank_pm1(winsorize(s)) if s.notna().any() else s)
+        x = df[c].replace([np.inf, -np.inf], np.nan)          # an infinite ratio is missing, not the top rank
+        r = x.groupby([df[k] for k in keys], sort=False, dropna=False).transform(
+            lambda s: rank_pm1(winsorize(s)) if s.notna().any() else s)
         out[c] = r.fillna(0.0).astype("float32")
-        out[f"{c}_na"] = df[c].isna().astype("int8")
+        out[f"{c}_na"] = x.isna().astype("int8")
     return out
 
 

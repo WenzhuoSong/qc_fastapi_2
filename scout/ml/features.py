@@ -97,7 +97,8 @@ def price_features(p: sr.Prices, spy: pd.Series, rows: np.ndarray, cols: np.ndar
     delta = c.diff()
     gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
     loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
-    out["rsi14"] = take(100 - 100 / (1 + gain / loss.replace(0, np.nan)))
+    rsi = 100 - 100 / (1 + gain / loss.replace(0, np.nan))
+    out["rsi14"] = take(rsi.mask((loss == 0) & (gain > 0), 100.0))      # only gains: 100, not missing
     line = c.ewm(span=12, adjust=False, min_periods=12).mean() - c.ewm(span=26, adjust=False, min_periods=26).mean()
     out["macd_hist_pct"] = take((line - line.ewm(span=9, adjust=False, min_periods=9).mean()) / c)
     dv21 = dv.rolling(21, min_periods=15).mean()
@@ -156,7 +157,7 @@ def fundamentals(keys: pd.DataFrame, names: list[str]) -> pd.DataFrame:
     f = sr._read("fundamentals", cols, filters=[("dimension", "in", ["ARQ", "ART"]), ("ticker", "in", names)])
     f = f.rename(columns={"date": "datekey"})
     f["datekey"], f["reportperiod"] = pd.to_datetime(f["datekey"]), pd.to_datetime(f["reportperiod"])
-    f = f.sort_values(["ticker", "dimension", "reportperiod"]).drop_duplicates(["ticker", "dimension", "reportperiod"])
+    f = sr.first_filed(f, ("ticker", "dimension", "reportperiod")).sort_values(["ticker", "dimension", "reportperiod"])
     g = f.groupby(["ticker", "dimension"])
     for c in ("assets", "revenue", "sharesbas", "reportperiod"):
         f[f"{c}_4"] = g[c].shift(4)

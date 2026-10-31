@@ -73,6 +73,7 @@ class Prices:
     closeadj: np.ndarray
     volume: np.ndarray
     haircut: np.ndarray            # per stock: the delisting adjustment applied at its last close
+    delisted: np.ndarray | None = None   # per stock: has a delisting / acquisition / bankruptcy action
     col: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -106,7 +107,7 @@ def prices(tickers: list[str], dates: pd.DatetimeIndex) -> Prices:
         arrays[k] = w.to_numpy(dtype=float)
     hc = delisting_haircut(tickers)
     return Prices(dates, tickers, arrays["open"], arrays["high"], arrays["low"], arrays["close"], arrays["closeadj"],
-                  arrays["volume"], np.array([hc.get(t, 0.0) for t in tickers]))
+                  arrays["volume"], np.array([hc.get(t, 0.0) for t in tickers]), np.array([t in hc for t in tickers]))
 
 
 def holding_return(p: Prices, j: int, i: int, hold: int) -> float | None:
@@ -124,9 +125,17 @@ def holding_return(p: Prices, j: int, i: int, hold: int) -> float | None:
     if not ok.size:
         return None
     later = p.closeadj[b + 1:, j] if b + 1 < len(p.dates) else np.array([])
-    stopped = not np.isfinite(later).any()                          # never trades again: delisted
+    # never trades again and was delisted; a halt that runs to the end of the data is not a delisting
+    stopped = not np.isfinite(later).any() and (p.delisted is None or bool(p.delisted[j]))
     last = seg[ok[-1]] / entry - 1
     return float((1 + last) * (1 + (p.haircut[j] if stopped else 0.0)) - 1)
+
+
+def first_filed(f: pd.DataFrame, keys: tuple[str, ...] = ("ticker", "reportperiod")) -> pd.DataFrame:
+    """One row per report period: the version filed first (`datekey`), as originally reported. A later
+    restatement never replaces it, so no value is used before the date it was first filed (restatements
+    are ignored: stale at worst, never ahead of time)."""
+    return f.sort_values([*keys, "datekey"], kind="stable").drop_duplicates(list(keys), keep="first")
 
 
 def asset_growth(days: pd.DatetimeIndex, tickers: list[str]) -> dict[pd.Timestamp, dict[str, float]]:
@@ -136,7 +145,7 @@ def asset_growth(days: pd.DatetimeIndex, tickers: list[str]) -> dict[pd.Timestam
               filters=[("dimension", "=", "ARQ"), ("ticker", "in", tickers)]).rename(columns={"date": "datekey"})
     f = f.dropna(subset=["assets", "datekey", "reportperiod"])     # the bulk file calls the filing date (Date Key) `date`
     f["datekey"], f["reportperiod"] = pd.to_datetime(f["datekey"]), pd.to_datetime(f["reportperiod"])
-    f = f.sort_values(["ticker", "reportperiod"]).drop_duplicates(["ticker", "reportperiod"], keep="first")
+    f = first_filed(f).sort_values(["ticker", "reportperiod"])
     g = f.groupby("ticker")
     f["prev_assets"], f["prev_period"] = g["assets"].shift(4), g["reportperiod"].shift(4)
     gap = (f["reportperiod"] - f["prev_period"]).dt.days

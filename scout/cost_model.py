@@ -53,7 +53,8 @@ def one_way(spread: float, sigma: float, adv: float, q: float = ORDER_USD, y: fl
 
 
 def tradeable(adv: float | None, spread: float | None, q: float = ORDER_USD) -> bool:
-    return bool(spread is not None and adv and adv >= MIN_ADV and q / adv <= MAX_PARTICIPATION)
+    ok = lambda x: x is not None and math.isfinite(x)  # noqa: E731
+    return bool(ok(spread) and ok(adv) and adv >= MIN_ADV and q / adv <= MAX_PARTICIPATION)
 
 
 def month_table(s: pd.DataFrame) -> pd.DataFrame:
@@ -75,7 +76,7 @@ def month_table(s: pd.DataFrame) -> pd.DataFrame:
     alpha = (np.sqrt(2 * beta) - np.sqrt(beta)) / k - np.sqrt(gamma / k)
     s["cs"] = np.maximum(2 * (np.exp(alpha) - 1) / (1 + np.exp(alpha)), 0.0)
     s["r"] = lc - lc.groupby([s["ticker"], s["month"]], sort=False).shift(1)
-    s["dv"] = s["closeunadj"] * s["volume"]
+    s["dv"] = s["close"] * s["volume"]          # Sharadar volume is split-adjusted, like close (not closeunadj)
     g = s.groupby(["ticker", "month"], sort=False)
     out = pd.DataFrame({"days": g["close"].count(), "ar": g["ar"].mean(), "spread_cs": g["cs"].mean(),
                         "sigma": g["r"].std(ddof=1), "n_r": g["r"].count(), "adv": g["dv"].median(),
