@@ -49,8 +49,9 @@ readings 是各项指标在 Scout 数据字典里的标准解读（例如 RSI(2)
 6. 判断规则是否有优势，看 base_rate.avg_edge_vs_hold（正文里称"扣费后相对持有"：扣除交易成本后、相对"同期一直持有这只股票"的平均超额）；
    它 ≤ 0 说明择时没有比持有更好，必须写进反方证据。样本少（n < 30）或它 ≤ 0 时，置信度不能是 high。
    历史基准存在幸存者偏差，不能当成保证。
-7. 用 price 里的拆分说明这波走势是"个股自身"还是"跟随大盘"：idio_ret_*（个股自身）、market_ret_1d（大盘贡献 = beta_60 × SPY）。
-   个股自身走强比随大盘上涨更有信息量；beta_60 高意味着大盘回撤时跌得更多，可作为风险。
+7. 用 price 里的拆分说明这波走势来自大盘、行业还是公司自身：market_ret_1d（大盘贡献 = beta_60 × SPY）、
+   sector_ret_*（行业部分）、own_ret_*（扣掉大盘和行业后的公司自身）；idio_ret_* 只扣了大盘、仍含行业，不要把它说成公司自身。
+   公司自身走强比随大盘、随行业上涨更有信息量；beta_60 高意味着大盘回撤时跌得更多，可作为风险。
 8. event_flags 非空时（并购/出售、药监/临床、增发/融资、监管/诉讼），说明这是事件驱动的走势：
    技术规则的历史统计对这类股票参考价值有限，必须写进反方证据或 key_risk。
 9. 中文输出，简洁、具体，不写空话；正文不要出现英文字段名（如 avg_edge_vs_hold、rs_pct），用中文说法；
@@ -63,6 +64,7 @@ _PCT_KEYS = {
     "target_rate", "stop_rate", "avg_return", "median_return", "avg_excess", "avg_mfe", "avg_mae",
     "win_rate_net", "avg_net_return", "avg_net_excess", "avg_hold_return", "avg_edge_vs_hold", "beat_hold_rate",
     "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d", "vol_20", "max_dd_60", "bb_pct",
+    "sector_ret_1d", "sector_ret_20d", "own_ret_1d", "own_ret_5d", "own_ret_20d",
     "spy_ret_1d", "spy_ret_20d", "qqq_ret_20d", "iwm_ret_20d", "smh_ret_20d",
     "eps_surprise_pct", "revenue_surprise_pct",
 }

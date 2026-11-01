@@ -140,7 +140,7 @@ def build_pack(ticker: str, name: str, ev: dict, facts: dict) -> dict:
     fmt = knowledge.fmt
     pack = {
         "ticker": ticker, "name": name, "date": ev["date"],
-        "move": {"key": "market", "当日涨跌": fmt("event_ret", ev["ret"]), "个股自身": fmt("event_idio", ev["idio"]),
+        "move": {"key": "market", "当日涨跌": fmt("event_ret", ev["ret"]), "扣除大盘后": fmt("event_idio", ev["idio"]),
                  "标准差倍数": fmt("event_sigma", ev.get("sigma_mult")), "开盘跳空": fmt("event_gap", ev["gap"]),
                  "盘中涨跌": fmt("event_intraday", ev["intraday"]), "发生时段": ev["timing"],
                  "量比": fmt("event_vol_ratio", ev.get("vol_ratio")),

@@ -48,14 +48,18 @@ def pct(x: float | None, digits: int = 1, sign: bool = False) -> str:
 
 
 def market_split_text(price: dict) -> str | None:
-    """'Is it the stock or the market?' — today's move split by 60-day beta."""
+    """'Is it the stock, its sector or the market?' — today's move split by 60-day betas."""
     if price.get("idio_ret_1d") is None or price.get("market_ret_1d") is None:
         return None
-    text = (
-        f"今日 {pct(price.get('ret_1d'), 1, True)}（大盘贡献 {pct(price['market_ret_1d'], 1, True)}"
-        f"｜个股自身 {pct(price['idio_ret_1d'], 1, True)}）"
-    )
-    if price.get("idio_ret_20d") is not None:
+    if price.get("sector_ret_1d") is not None and price.get("own_ret_1d") is not None:
+        text = (f"今日 {pct(price.get('ret_1d'), 1, True)}（大盘 {pct(price['market_ret_1d'], 1, True)}"
+                f"｜行业 {pct(price['sector_ret_1d'], 1, True)}｜公司自身 {pct(price['own_ret_1d'], 1, True)}）")
+    else:
+        text = (f"今日 {pct(price.get('ret_1d'), 1, True)}（大盘贡献 {pct(price['market_ret_1d'], 1, True)}"
+                f"｜扣除大盘后 {pct(price['idio_ret_1d'], 1, True)}，未分行业）")
+    if price.get("own_ret_20d") is not None:
+        text += f" · 20 日公司自身 {pct(price['own_ret_20d'], 1, True)}"
+    elif price.get("idio_ret_20d") is not None:
         text += f" · 20 日扣除大盘后 {pct(price['idio_ret_20d'], 1, True)}"
     if price.get("beta_60") is not None:
         text += f" · β {price['beta_60']:.2f}"

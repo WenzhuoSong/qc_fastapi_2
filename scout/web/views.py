@@ -108,6 +108,8 @@ def why_html(why: dict) -> str:
 
 DEMOTED_NOTE = ("<div class='small warn'>该规则已降为候选（回放扣费后跑输持有），"
                 "这条机会只继续跟踪到结束、计入实盘记录，不建议据此新开仓。</div>")
+REJECTED_NOTE = ("<div class='small warn'><b>⛔ 规则未通过检验</b>：和同一天的其他股票相比没有可靠优势（见「知识库」）。"
+                 "这张卡只为继续记录规则的表现，不是买入建议；按它买入的盈亏主要是运气。</div>")
 
 
 def is_live(detector: str) -> bool:
@@ -124,12 +126,13 @@ def event_html(ev: dict) -> str:
             + "。技术规则的历史统计对这类走势参考价值有限。</div>")
 
 
-def opp_card(o: dict, settings: dict | None = None) -> str:
+def opp_card(o: dict, settings: dict | None = None, rejected: bool = False) -> str:
     ev, th, br = o.get("evidence") or {}, knowledge.humanize_obj(o.get("thesis") or {}), o.get("base_rate") or {}
     label = (ev.get("setup") or {}).get("label", o["primary_detector"])
     chips = "".join(f'<span class="chip">{e(d)}</span>' for d in o.get("detectors") or [])
     theme = f'<span class="chip">#{e(ev["theme"])}</span>' if ev.get("theme") else ""
-    demoted = DEMOTED_NOTE if not is_live(o["primary_detector"]) and o.get("status") in ("new", "triggered") else ""
+    demoted = (REJECTED_NOTE if rejected else DEMOTED_NOTE if not is_live(o["primary_detector"]) else "") \
+        if o.get("status") in ("new", "triggered") else ""
     lists = ""
     if th.get("catalysts"):
         lists += "<div class='small muted'>催化</div><ul class='tight'>" + "".join(f"<li>{e(c)}</li>" for c in th["catalysts"]) + "</ul>"
@@ -468,6 +471,10 @@ def holding_card(trades: list[dict], live: dict | None, close: float | None, tod
                          f"上方阻力 {ref['target1']:.2f}" + (f" / {ref['target2']:.2f}" if ref.get("target2") else "") + "</div>")
             if pl.get("market_off_at_buy"):
                 line += "<div class='small warn'>买入时大盘过滤处于避险（计划不新买入）</div>"
+            if pl.get("after_loss_same_industry"):
+                x = pl["after_loss_same_industry"]
+                line += (f"<div class='small warn'>买入前 {x['sessions']} 个交易日刚在同一细分行业亏损卖出 {escape(x['ticker'])}"
+                         f"（冷却期 {portfolio.COOLDOWN_SESSIONS} 个交易日）</div>")
         sl = (sells or {}).get(t["id"]) or []
         if sl:
             line += "<div class='small'>卖出记录：" + "；".join(
@@ -696,7 +703,9 @@ def trades_table(rows: list[dict], closable: bool = True, adherence: dict[int, d
         elif adherence is not None:
             a = adherence.get(t["id"]) or {}
             cells.append(f"{escape(a.get('verdict') or '—')}"
-                         + ("<div class='small warn'>大盘避险期买入</div>" if a.get("against_filter") else "") + "".join(
+                         + ("<div class='small warn'>大盘避险期买入</div>" if a.get("against_filter") else "")
+                         + (f"<div class='small warn'>同行业亏损后 {a['after_loss']['sessions']} 日内买入（{escape(a['after_loss']['ticker'])}）</div>"
+                            if a.get("after_loss") else "") + "".join(
                 f"<div class='small {ADHERENCE_TONE[x['kind']]}'>{escape(str(x['date']))} {escape(x['text'])}</div>"
                 for x in a.get("sells") or []))
         cells.append(escape(t.get("note") or ""))
@@ -726,13 +735,13 @@ def events_card(ticker: str, evs: list[dict], causes: dict[str, dict], rates: di
     fmt = knowledge.fmt
     if not evs:
         return ("<div class='card'><h3>异动</h3><p class='small muted'>近 60 个交易日没有统计上的异常波动"
-                "（个股自身 ≥ 3σ、涨跌 ≥ 8% 或 3 倍放量）。</p></div>")
+                "（扣除大盘后 ≥ 3σ、涨跌 ≥ 8% 或 3 倍放量）。</p></div>")
     items = []
     pending = False
     for ev in evs:
         c = causes.get(ev["date"])
         head = (f"<b>{escape(ev['date'])}</b> <span class='{'down' if ev['ret'] < 0 else 'up'}'>{fmt('event_ret', ev['ret'])}</span>"
-                f" · 个股自身 {fmt('event_idio', ev['idio'])}（{fmt('event_sigma', ev.get('sigma_mult'))}）· {escape(ev['timing'])}"
+                f" · 扣除大盘后 {fmt('event_idio', ev['idio'])}（{fmt('event_sigma', ev.get('sigma_mult'))}）· {escape(ev['timing'])}"
                 f" · 量比 {fmt('event_vol_ratio', ev.get('vol_ratio'))} · 板块当日 {fmt('event_sector_ret', ev.get('sector_ret'))}"
                 f" · 之后 {fmt('event_after_ret', ev['after_ret'])}")
         body = ""
@@ -762,7 +771,7 @@ def events_card(ticker: str, evs: list[dict], causes: dict[str, dict], rates: di
     button = (f"<form method='post' action='/ticker/{escape(ticker)}/events'><button>检索异动原因</button>"
               f"<span class='small muted'> 新闻、SEC 文件、内部人交易、网络检索，约 30 秒</span></form>") if pending else ""
     return (f"<div class='card'><h3>异动 <span class='small muted'>近 60 个交易日</span></h3><ul class='tight' style='list-style:none;padding:0'>"
-            f"{''.join(items)}</ul>{button}<p class='small muted'>异动 = 个股自身涨跌 ≥ 事前 3σ，或涨跌 ≥ 8%，或 3 倍放量。"
+            f"{''.join(items)}</ul>{button}<p class='small muted'>异动 = 扣除大盘后的涨跌 ≥ 事前 3σ，或涨跌 ≥ 8%，或 3 倍放量。"
             f"同类异动统计含幸存者偏差；跑赢比例接近 50% 说明没有方向性。</p></div>")
 
 
@@ -1006,6 +1015,7 @@ def adherence_html(a: dict) -> str:
         return ""
     return (f"<p class='small'>执行检查：{a['n']} 笔中按计划离场 {a['on_plan']} 笔 · 提前离场 {a['early']} 笔 · 信号后拖延 {a['late']} 笔"
             + (f" · 大盘避险期买入 {a['against_filter']} 笔" if a.get("against_filter") else "")
+            + (f" · 同行业亏损后冷却期内买入 {a['after_loss']} 笔" if a.get("after_loss") else "")
             + "<span class='muted'>（按计划 = 回落止损触发后 1 个交易日内卖出（2026-10-31 之前的交易：止损、时间止损或持有期满）；"
             "提前 = 计划仍要求持有时卖出）</span></p>")
 

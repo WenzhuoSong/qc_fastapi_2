@@ -66,6 +66,31 @@ THEME_ETFS: dict[str, str] = {
 
 BENCHMARK = "SPY"
 
+# GICS sector / sub-industry for scanned stocks the S&P lists do not cover: Nasdaq-100-only members (that page
+# lists ICB industries) and watchlist names. Kept by hand (checked 2026-11-01); used only where the sector is
+# missing, so the sector checks, the sector part of a move and the outlook see these stocks too.
+GICS_FALLBACK: dict[str, tuple[str, str]] = {
+    "ALAB": ("Information Technology", "Semiconductors"),
+    "ALNY": ("Health Care", "Biotechnology"),
+    "ARM": ("Information Technology", "Semiconductors"),
+    "ASML": ("Information Technology", "Semiconductor Materials & Equipment"),
+    "CCEP": ("Consumer Staples", "Soft Drinks & Non-alcoholic Beverages"),
+    "CRWV": ("Information Technology", "Internet Services & Infrastructure"),
+    "FER": ("Industrials", "Construction & Engineering"),
+    "IONQ": ("Information Technology", "Technology Hardware, Storage & Peripherals"),
+    "MELI": ("Consumer Discretionary", "Broadline Retail"),
+    "MSTR": ("Information Technology", "Application Software"),
+    "NBIS": ("Information Technology", "Internet Services & Infrastructure"),
+    "OKLO": ("Utilities", "Electric Utilities"),
+    "PDD": ("Consumer Discretionary", "Broadline Retail"),
+    "RGTI": ("Information Technology", "Technology Hardware, Storage & Peripherals"),
+    "RKLB": ("Industrials", "Aerospace & Defense"),
+    "SHOP": ("Information Technology", "Internet Services & Infrastructure"),
+    "SPCX": ("Industrials", "Aerospace & Defense"),
+    "TRI": ("Industrials", "Research & Consulting Services"),
+    "TSM": ("Information Technology", "Semiconductors"),
+}
+
 _WIKI_PAGES = {
     "sp500": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
     "sp400": "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies",
@@ -173,7 +198,16 @@ async def refresh_instruments() -> dict:
             "WHERE kind = 'stock' AND updated_at < now() - interval '1 hour' "
             "AND ticker NOT IN (SELECT ticker FROM scout.watchlist WHERE active)"
         )
+    await apply_gics_fallback()
     return {"stocks": len(stocks), "etfs": len(context_etfs())}
+
+
+async def apply_gics_fallback() -> int:
+    """Fill a missing sector / industry from GICS_FALLBACK (never overwrites a sector from the S&P lists)."""
+    rows = [{"t": t, "s": s, "i": i} for t, (s, i) in GICS_FALLBACK.items()]
+    await db.execute_many("UPDATE scout.instruments SET sector = :s, industry = COALESCE(industry, :i) "
+                          "WHERE ticker = :t AND sector IS NULL", rows)
+    return len(rows)
 
 
 async def seed_watchlist() -> int:
@@ -198,6 +232,7 @@ async def ensure_watchlist_instruments() -> None:
         ON CONFLICT (ticker) DO UPDATE SET in_scan = true
         """
     )
+    await apply_gics_fallback()
 
 
 async def load_watchlist() -> list[dict]:

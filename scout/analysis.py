@@ -33,7 +33,7 @@ def trend_state(f: dict) -> tuple[str, str]:
     return "长期偏弱（在 200 日线下方）", "warn"
 
 
-DRIVER_STOCK, DRIVER_MARKET, DRIVER_MIXED = "个股自身", "大盘/板块", "混合"
+DRIVER_STOCK, DRIVER_MARKET, DRIVER_MIXED = "公司自身", "大盘/板块", "混合"
 
 
 def attribution(f: dict) -> tuple[str, str] | None:
@@ -46,12 +46,18 @@ def attribution(f: dict) -> tuple[str, str] | None:
     if mkt is None:
         return None
     total = f"涨跌 {knowledge.fmt('ret_20d', f['ret_20d'])} ≈ " if f.get("ret_20d") is not None else ""
-    text = f"20 日{total}个股自身 {knowledge.fmt('idio_ret_20d', idio)} + 大盘贡献 {knowledge.fmt('market_ret_20d', mkt)}"
+    sec, own = f.get("sector_ret_20d"), f.get("own_ret_20d")
+    if sec is not None and own is not None:      # the sector's part is the market's side, not the company's
+        text = (f"20 日{total}大盘 {knowledge.fmt('market_ret_20d', mkt)} + 行业 {knowledge.fmt('sector_ret_20d', sec)}"
+                f" + 公司自身 {knowledge.fmt('own_ret_20d', own)}")
+        idio, mkt = own, mkt + sec
+    else:
+        text = f"20 日{total}扣除大盘后 {knowledge.fmt('idio_ret_20d', idio)} + 大盘贡献 {knowledge.fmt('market_ret_20d', mkt)}（未分行业）"
     if abs(idio) >= 0.10 or (abs(idio) >= 0.03 and abs(idio) >= 2 * abs(mkt)):
-        return DRIVER_STOCK, text + " → 个股自身主导"
+        return DRIVER_STOCK, text + " → 公司自身主导"
     if abs(mkt) >= 0.03 and abs(mkt) >= 2 * abs(idio):
-        return DRIVER_MARKET, text + " → 主要跟随大盘"
-    return DRIVER_MIXED, text + " → 个股与大盘共同作用"
+        return DRIVER_MARKET, text + " → 主要跟随大盘和行业"
+    return DRIVER_MIXED, text + " → 公司与大盘、行业共同作用"
 
 
 def _rs_text(f: dict) -> Line | None:

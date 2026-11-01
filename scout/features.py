@@ -18,6 +18,7 @@ SNAPSHOT_FEATURES = (
     "wk_dist_sma30", "wk_sma30_slope_4w", "wk_rsi14", "wk_macd_hist_pct", "wk_macd_hist_chg", "wk_vol_ratio",
     "gap_pct", "close_loc", "rs_pct", "sector_rs_pct", "sector_rel_20",
     "beta_60", "corr_60", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d", "market_ret_20d",
+    "sector_ret_1d", "sector_ret_5d", "sector_ret_20d", "own_ret_1d", "own_ret_5d", "own_ret_20d",
     "zscore_20", "bb_pct", "vol_20", "max_dd_60", "vol_63", "vol_63_pct",
 )
 
@@ -231,6 +232,27 @@ def build_panel(
     f["sector_rel_20"] = _full(pd.DataFrame(rel20_cols, index=c.index))
     f["sector_rel_20_prev5"] = f["sector_rel_20"].shift(5)
     f["sector_rel_63"] = _full(pd.DataFrame(rel63_cols, index=c.index))
+
+    # The part left after the market split once more: the stock's 60-day beta to its sector ETF's excess over
+    # SPY, applied to today's excess (the sector part), and the rest (the company's own move). Without a
+    # sector or its ETF both stay missing, and idio_ret_* (after the market only) is unchanged.
+    sec_part: dict[str, pd.Series] = {}
+    for sector, etf in SECTOR_ETFS.items():
+        members = [t for t in stocks if sectors.get(t) == sector]
+        if not members or etf not in c.columns:
+            continue
+        x = r[etf] - spy_r
+        y = f["idio_ret_1d"][members]
+        cov_x = y.mul(x, axis=0).rolling(**roll).mean() - y.rolling(**roll).mean().mul(x.rolling(**roll).mean(), axis=0)
+        beta_x = cov_x.div(x.rolling(**roll).var(ddof=0), axis=0)
+        part = beta_x.shift(1).mul(x, axis=0)
+        for t in members:
+            sec_part[t] = part[t]
+    f["sector_ret_1d"] = _full(pd.DataFrame(sec_part, index=c.index))
+    f["own_ret_1d"] = f["idio_ret_1d"] - f["sector_ret_1d"]
+    for n in (5, 20):
+        f[f"sector_ret_{n}d"] = f["sector_ret_1d"].rolling(n, min_periods=n).sum()
+        f[f"own_ret_{n}d"] = f["own_ret_1d"].rolling(n, min_periods=n).sum()
 
     f["liquid"] = (c >= min_price) & (f["dollar_vol20"] >= min_dollar_volume)
     # where a stock's 63-day volatility sits among today's liquid stocks: the risk tier (scout.position_risk)

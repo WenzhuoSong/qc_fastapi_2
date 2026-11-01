@@ -34,6 +34,7 @@ OVERNIGHT = (("ES=F", "标普期货"), ("NQ=F", "纳指期货"), ("RTY=F", "罗�
 MAJOR_STOCKS = 150        # earnings of the most traded stocks are market events
 MOVE_THRESHOLD = 0.02     # pre-market move worth listing for watchlist names
 MAX_EARNINGS = 12
+PEERS = 5                  # per holding: the most traded stocks of its sector, whose earnings move the sector
 MAX_NEWS = 8
 WEEKDAYS = "一二三四五六日"
 HOUR_ZH = {"bmo": "盘前", "amc": "盘后", "dmh": "盘中"}
@@ -162,7 +163,16 @@ async def build_pack(session: date) -> dict:
         "AND event_date BETWEEN :a AND :b", {"a": prev, "b": session + timedelta(days=6)},
     )
     held = await db.fetch_all("SELECT ticker, entry_price, shares, stop, target, opened_on, plan FROM scout.trades WHERE closed_on IS NULL")
-    focus = set(watch) | {o["ticker"] for o in opps} | {t["ticker"] for t in held}
+    # sector peers of each holding with earnings in the window: a bellwether's report moves the whole sector
+    sector_of = {r["ticker"]: r["sector"] for r in await db.fetch_all(
+        "SELECT ticker, sector FROM scout.instruments WHERE kind = 'stock' AND sector IS NOT NULL")}
+    peers: dict[str, list[str]] = {}
+    for h in held:
+        s = sector_of.get(h["ticker"])
+        for t in sorted((t for t in major if s and sector_of.get(t) == s and t != h["ticker"]), key=major.get)[:PEERS]:
+            peers.setdefault(t, []).append(h["ticker"])
+    peers = {t: hs for t, hs in peers.items() if any(e["ticker"] == t for e in earnings)}
+    focus = set(watch) | {o["ticker"] for o in opps} | {t["ticker"] for t in held} | set(peers)
 
     def relevant(t: str) -> bool:
         return t in focus or t in major
@@ -194,7 +204,8 @@ async def build_pack(session: date) -> dict:
 
     def ident(t: str) -> str:
         tags = [lbl for cond, lbl in ((t in {h["ticker"] for h in held}, "持仓"), (t in {o["ticker"] for o in opps}, "活跃机会"),
-                                      (t in watch, "自选")) if cond]
+                                      (t in watch, "自选"),
+                                      (t in peers, f"持仓同行业（{'、'.join(sorted(set(peers.get(t, []))))}）")) if cond]
         return "、".join(tags) or "大市值"
 
     def pm(t: str) -> dict:
@@ -318,6 +329,7 @@ SYSTEM_PROMPT = """你是一名美股交易日开盘前的策略助理，基于 
 - opportunities：Scout 正在跟踪的机会，含入场区间、止损、目标和"位置判断"（Python 根据盘前价计算）。
 - watchlist_moves：自选股中盘前涨跌幅较大的。
 - earnings_reported / earnings_today / earnings_week：昨日盘后与今日盘前已公布、今日待公布、本周后续的重要财报。
+  身份含"持仓同行业（X）"的是用户持仓 X 所在行业交易最活跃的公司：它的财报会带动整个行业，必须提到，并说明可能影响哪只持仓。
 - economic_today / economic_week：今天和本周后续的美国经济数据与美联储事件（美东时间）。
 - news / macro_news：上一交易日收盘以来的个股新闻和宏观新闻。
 - last_focus：昨晚收盘后生成的市场关注点。
@@ -448,10 +460,14 @@ def render_text(b: PremarketBrief, pack: dict) -> str:
             line += f"（{e['EPS 超预期幅度']}）" if e.get("EPS 超预期幅度") else ""
             line += f"，盘前 {e['盘前较前收']}" if e.get("盘前较前收") else ""
             lines.append(line)
+    def peer(e: dict) -> str:
+        return f"，{e['身份']}" if "持仓同行业" in (e.get("身份") or "") else ""
+
     if pack["earnings_today"]:
-        lines.append("今日待公布：" + "、".join(f"{e['代码']}（{e['时间']}）" for e in pack["earnings_today"]))
+        lines.append("今日待公布：" + "、".join(f"{e['代码']}（{e['时间']}{peer(e)}）" for e in pack["earnings_today"]))
     if pack["earnings_week"]:
-        lines.append("本周后续财报：" + "、".join(f"{e['代码']} {e['时间']}" for e in pack["earnings_week"]))
+        lines.append("本周后续财报：" + "、".join(f"{e['代码']} {e['时间']}" + (f"（{peer(e)[1:]}）" if peer(e) else "")
+                                           for e in pack["earnings_week"]))
     if pack.get("positions"):
         lines += ["", "你的持仓："]
         lines += [f"· {o['代码']} {o.get('盘前价', '')} {o['位置判断']}".replace("  ", " ") for o in pack["positions"]]

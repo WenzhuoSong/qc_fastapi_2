@@ -153,8 +153,19 @@ class PanelAndReplayTests(unittest.TestCase):
         txt = market_split_text({"ret_1d": 0.042, "market_ret_1d": 0.008, "idio_ret_1d": 0.034,
                                  "idio_ret_20d": 0.12, "beta_60": 1.31})
         self.assertIn("大盘贡献 +0.8%", txt)
-        self.assertIn("个股自身 +3.4%", txt)
+        self.assertIn("扣除大盘后 +3.4%，未分行业", txt)
         self.assertIsNone(market_split_text({"ret_1d": 0.01}))
+        txt = market_split_text({"ret_1d": -0.056, "market_ret_1d": -0.035, "idio_ret_1d": -0.021, "sector_ret_1d": -0.016,
+                                 "own_ret_1d": -0.005, "own_ret_20d": 0.02})
+        self.assertIn("大盘 -3.5%｜行业 -1.6%｜公司自身 -0.5%", txt)
+
+    def test_sector_split_adds_up(self):
+        p, d = self.panel, self.panel.dates[-1]
+        r = p.row("AAA", d)
+        self.assertAlmostEqual(r["market_ret_1d"] + r["sector_ret_1d"] + r["own_ret_1d"], r["ret_1d"], places=10)
+        self.assertNotIn("sector_ret_1d", p.row("SPY", d))                  # ETFs have no sector part (row() drops NaN)
+        bare = build_panel(_synthetic_bars(), {"SPY": {"kind": "etf"}, "AAA": {"kind": "stock"}})
+        self.assertNotIn("own_ret_1d", bare.row("AAA", d))                  # no sector: no company split
 
     def test_detector_masks_never_fire_on_etfs(self):
         for det in registry():

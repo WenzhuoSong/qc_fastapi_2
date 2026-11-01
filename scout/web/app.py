@@ -128,8 +128,9 @@ async def today(_: str = Depends(require_auth)) -> str:
     pre = await premarket.latest()
     current = bool(pre) and pre["asof"] == date.fromisoformat(us_equity_market_status().market_date)
     settings = await portfolio.get_settings()
-    live = [o for o in active if views.is_live(o["primary_detector"])]
-    demoted = [o for o in active if not views.is_live(o["primary_detector"])]
+    quiet = learned.held_back(await learned.current())       # rules the knowledge base rejected
+    live = [o for o in active if views.is_live(o["primary_detector"]) and o["primary_detector"] not in quiet]
+    demoted = [o for o in active if o not in live]
     held = await portfolio.trades(open_only=True)
     body = views.premarket_card(pre, current) + head
     if held:
@@ -143,9 +144,9 @@ async def today(_: str = Depends(require_auth)) -> str:
     body += (f'<div class="grid">{"".join(opp_card(o, settings) for o in live)}</div>' if live
              else "<p class='muted'>暂无活跃机会。</p>")
     if demoted:
-        body += (f"<details style='margin-top:12px'><summary class='muted'>降为候选的规则仍在跟踪的机会（{len(demoted)}）"
-                 f"——只为积累实盘记录，不建议据此开仓</summary><div class='grid' style='margin-top:8px'>"
-                 f"{''.join(opp_card(o) for o in demoted)}</div></details>")
+        body += (f"<details style='margin-top:12px'><summary class='muted'>未通过检验或已降为候选的规则仍在跟踪的机会（{len(demoted)}）"
+                 f"——只为记录规则的表现，不是买入建议</summary><div class='grid' style='margin-top:8px'>"
+                 f"{''.join(opp_card(o, rejected=o['primary_detector'] in quiet) for o in demoted)}</div></details>")
     if ev_rows:
         body += "<h2>最近状态变化</h2>" + table(["日期", "代码", "规则", "事件", "价格"], ev_rows)
     return layout("今日", "today", body)
@@ -294,6 +295,8 @@ async def _side_panel(t: str, opp: dict | None, f: dict, struct: dict, bars: lis
         logger.exception("price map for %s failed", t)
         pm = {}
     panel = views.price_panel(pm, live, settings, opp=active, today=today, tracking_html=tracking, ticker=t)
+    if active and active["primary_detector"] in learned.held_back(await learned.current()):
+        panel = views.REJECTED_NOTE + panel
     held = [x for x in await portfolio.trades(open_only=True) if x["ticker"] == t]
     if held:
         panel += views.holding_card(held, live, f.get("close"), today,
@@ -351,6 +354,7 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
     payload = (feat or {}).get("payload") or {}
     pct_keys = {"ret_1d", "ret_5d", "ret_20d", "ret_63d", "ret_252d", "atr_pct", "dist_52w_high", "gap_pct",
                 "rs_pct", "sector_rs_pct", "sector_rel_20", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d",
+                "sector_ret_1d", "sector_ret_5d", "sector_ret_20d", "own_ret_1d", "own_ret_5d", "own_ret_20d",
                 "bb_pct", "vol_20", "max_dd_60"}
     def fmt(k: str, v: float) -> str:
         if k in pct_keys:

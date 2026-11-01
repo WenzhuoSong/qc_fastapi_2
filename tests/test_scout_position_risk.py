@@ -102,5 +102,12 @@ class AdherenceTests(unittest.TestCase):
         self.assertTrue(a["against_filter"])
         self.assertEqual(pr.adherence_summary([a, pr.adherence(self.T, [], date(2026, 10, 9))])["against_filter"], 1)
 
+    def test_a_buy_soon_after_a_loss_in_the_same_industry_is_flagged(self):
+        x = {"ticker": "VLO", "closed_on": "2026-10-28", "sessions": 1, "industry": "Oil & Gas Refining & Marketing", "pnl_pct": -0.087}
+        t = {**self.T, "closed_on": date(2026, 10, 3), "plan": {"policy": "trail20", "stop": 80.0, "after_loss_same_industry": x}}
+        a = pr.adherence(t, [{"sold_on": date(2026, 10, 3)}], date(2026, 10, 9))
+        self.assertEqual(a["after_loss"]["ticker"], "VLO")
+        self.assertEqual(pr.adherence_summary([a])["after_loss"], 1)
+
 if __name__ == "__main__":
     unittest.main()

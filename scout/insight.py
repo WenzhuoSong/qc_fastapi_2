@@ -53,9 +53,9 @@ class Insight(BaseModel):
         default=None,
         description="context.events 里距今 10 个交易日内有异常波动时必填：1–2 句先解释它，写明日期（如 10-23）、幅度、"
                     "原因类型和对业务/预期的影响，外部检索来源写'据外部报道'；没有时为 null")
-    driver: Literal["个股自身", "大盘/板块", "混合", "不适用"] = Field(
+    driver: Literal["公司自身", "大盘/板块", "混合", "不适用"] = Field(
         description="近 20 日走势的驱动力；context.scout_view 给出了规则判定时必须一致")
-    attribution: str = Field(description="走势归因：个股自身还是大盘/板块带动，1–2 句")
+    attribution: str = Field(description="走势归因：公司自身还是大盘/行业带动，1–2 句")
     lenses: list[LensView] = Field(description="evidence.lenses 里的每个视角各一条，按给出的顺序，一个都不能少")
     conflicts: list[str] = Field(default_factory=list, description="视角之间的矛盾，0–3 条")
     watch: list[str] = Field(description="值得关注的条件（触发什么会让机会成立），1–3 条")
@@ -93,8 +93,8 @@ class Synthesis(BaseModel):
         default=None,
         description="context.events 里距今 10 个交易日内有异常波动时必填：1–2 句先解释它，写明日期（如 10-23）、幅度、"
                     "原因类型和对业务/预期的影响，外部检索来源写'据外部报道'；没有时为 null")
-    driver: Literal["个股自身", "大盘/板块", "混合", "不适用"]
-    attribution: str = Field(description="走势归因：个股自身还是大盘/板块带动，1–2 句")
+    driver: Literal["公司自身", "大盘/板块", "混合", "不适用"]
+    attribution: str = Field(description="走势归因：公司自身还是大盘/行业带动，1–2 句")
     conflicts: list[str] = Field(description="视角之间最重要的矛盾，0–3 条，例如'技术面转弱，但盈利预期在上调'")
     watch: list[str] = Field(description="值得关注的条件（触发什么会让机会成立），1–3 条")
     invalidation: list[str] = Field(description="失效条件（出现什么说明判断错了），1–3 条")
@@ -131,7 +131,7 @@ LENS_PROMPT = """你是一名资深美股分析师，负责多视角研究中的
 - research.数据日期 里标着"已过期"的数据，要写明数据日期。
 - context.knowledge 是 Scout 知识库里与本组相关的检验结论，按 用法 使用：已确认的可以作为依据；回测通过或前向验证中的，
   引用时必须写明"尚未验证"；否定的表示这种做法经检验无效，不能当作看多或看空的理由。引用时在 evidence 里列出它的 key（kb_N）。
-- 标的是 ETF 时，用"ETF 自身"而不是"个股自身"。
+- 标的是 ETF 时，用"ETF 自身"而不是"公司自身"。
 - 中文、专业、简洁；不下达买卖指令。"""
 
 SYNTH_PROMPT = """你是一名资深美股策略分析师。各视角的分析员已经给出判断（lens_views），你负责综合成一份结论，供一位有经验的个人投资者参考。
@@ -139,7 +139,7 @@ SYNTH_PROMPT = """你是一名资深美股策略分析师。各视角的分析�
 工作方法：
 1. 先看 context.events：距今 10 个交易日内有统计上的异常波动时，先在 recent_event 里解释它（日期、幅度、原因类型、影响），
    结论也要围绕它；原因来自网络检索的写"据外部报道"。
-2. driver 必须与 context.driver（规则按 20 日个股自身 vs 大盘贡献判定）一致；标的是 ETF 时用"ETF 自身"表述。
+2. driver 必须与 context.driver（规则按 20 日公司自身 vs 大盘加行业贡献判定，没有行业拆分时按扣除大盘后 vs 大盘）一致；标的是 ETF 时用"ETF 自身"表述。
 3. 综合各视角：哪些一致、哪些矛盾（写进 conflicts）。矛盾是最有价值的部分，例如技术面转弱但预期在上调、估值高位但增长放缓。
    context.lens_reliability 是各视角过去的命中率（样本不足的不要引用），可靠度低的视角要降低权重。
 4. context.history 里有之前的判断时，在 confidence_reason 里回应：上次说了什么、后来符合还是不符合、这次为什么相同或不同；判断错了要承认。
@@ -278,7 +278,7 @@ SOURCE_LABEL = {"llm": "AI 归因（已校验）", "fallback": "规则判断"}
 def event_block(i: int, ev: dict, cause: dict | None) -> dict:
     fmt = knowledge.fmt
     block = {"key": f"event_{i + 1}", "日期": ev["date"], "距今交易日": ev["sessions_ago"], "当日涨跌": fmt("event_ret", ev["ret"]),
-             "个股自身": fmt("event_idio", ev["idio"]), "标准差倍数": fmt("event_sigma", ev.get("sigma_mult")),
+             "扣除大盘后": fmt("event_idio", ev["idio"]), "标准差倍数": fmt("event_sigma", ev.get("sigma_mult")),
              "发生时段": ev["timing"], "量比": fmt("event_vol_ratio", ev.get("vol_ratio")),
              "板块当日": fmt("event_sector_ret", ev.get("sector_ret")), "异动后至今": fmt("event_after_ret", ev["after_ret"])}
     if cause:
@@ -537,7 +537,7 @@ def validate_synthesis(s, pack: dict) -> list[str]:
         issues.append(f"以下数字不在证据包中：{', '.join(sorted(set(bad)))}")
     expected_driver = pack["context"].get("driver")
     if expected_driver and s.driver != expected_driver:
-        issues.append(f"驱动力判定应为「{expected_driver}」（按 20 日个股自身 vs 大盘贡献的规则），实际写成「{s.driver}」")
+        issues.append(f"驱动力判定应为「{expected_driver}」（按 20 日公司自身 vs 大盘加行业的规则），实际写成「{s.driver}」")
     issues += swing_conflicts([s.headline, s.attribution], pack)
     ev = must_explain(pack)
     if ev and (not s.recent_event or not any(m in s.recent_event for m in date_marks(ev["日期"]))):
@@ -600,7 +600,7 @@ def fallback(pack: dict) -> Insight:
     ev = must_explain(pack)
     recent = None
     if ev:
-        recent = (f"{ev['日期'][5:]} {ev['当日涨跌']}（个股自身 {ev['个股自身']}，{ev['标准差倍数']}，{ev['发生时段']}，量比 {ev['量比']}）"
+        recent = (f"{ev['日期'][5:]} {ev['当日涨跌']}（扣除大盘后 {ev['扣除大盘后']}，{ev['标准差倍数']}，{ev['发生时段']}，量比 {ev['量比']}）"
                   + (f"：{ev['原因类型']}——{ev['原因']}" if ev.get("原因") else "，原因未检索"))
     return Insight(
         headline=sv["结论"], recent_event=recent, driver=pack["context"].get("driver", "不适用"),

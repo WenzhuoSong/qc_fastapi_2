@@ -145,7 +145,9 @@ def adherence(t: dict, sells: list[dict], today: date) -> dict:
     sig = _signals(t)
     if not sells and t.get("closed_on"):
         sells = [{"sold_on": t["closed_on"]}]
-    out: dict = {"signal": None, "sells": [], "against_filter": bool((t.get("plan") or {}).get("market_off_at_buy"))}
+    pl = t.get("plan") or {}
+    out: dict = {"signal": None, "sells": [], "against_filter": bool(pl.get("market_off_at_buy")),
+                 "after_loss": pl.get("after_loss_same_industry")}
     for s in sells:
         before = [d for d in sig if d[0] <= s["sold_on"]]
         if not before:
@@ -173,4 +175,5 @@ def adherence_summary(items: list[dict]) -> dict:
     """Counts over closed trades' verdicts."""
     v = [a["verdict"] for a in items if a.get("verdict")]
     return {"n": len(v), "on_plan": v.count("按计划"), "early": v.count("提前"), "late": v.count("拖延"),
-            "against_filter": sum(bool(a.get("against_filter")) for a in items)}
+            "against_filter": sum(bool(a.get("against_filter")) for a in items),
+            "after_loss": sum(bool(a.get("after_loss")) for a in items)}

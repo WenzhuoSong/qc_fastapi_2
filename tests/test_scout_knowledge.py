@@ -110,7 +110,7 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("news", evidence_keys(_pack()))
 
     def test_catches_invented_numbers_unknown_keys_and_driver(self):
-        bad = _insight(headline="目标 250 美元", driver="个股自身",
+        bad = _insight(headline="目标 250 美元", driver="公司自身",
                        lenses=[LensView(lens="trend_dow", verdict="偏多", points=["x"], evidence=["pe_ratio"])])
         issues = "\n".join(validate(bad, _pack(), "down"))
         self.assertIn("250", issues)

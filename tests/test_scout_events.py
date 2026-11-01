@@ -128,10 +128,10 @@ class InsightEventTests(unittest.TestCase):
 
         lenses = [{"id": l.id, "title": l.title, "method": "", "evidence": []} for l in knowledge.lenses()]
         ev = {"key": "event_1", "日期": "2026-10-23", "距今交易日": 1, "当日涨跌": "-20.1%", "标准差倍数": "-4.6σ",
-              "个股自身": "-19.0%", "发生时段": "盘中", "量比": "2.7 倍", "原因类型": "竞争对手/同业传导", "原因": "x"}
-        pack = {"lenses": lenses, "context": {"events": [ev], "driver": "个股自身", "scout_view": {"结论": "", "要点": {}}}}
+              "扣除大盘后": "-19.0%", "发生时段": "盘中", "量比": "2.7 倍", "原因类型": "竞争对手/同业传导", "原因": "x"}
+        pack = {"lenses": lenses, "context": {"events": [ev], "driver": "公司自身", "scout_view": {"结论": "", "要点": {}}}}
         lv = [LensView(lens=l["id"], verdict="不适用", points=["-"], evidence=[]) for l in lenses]
-        base = dict(headline="h", driver="个股自身", attribution="a", lenses=lv, watch=["w"], invalidation=["i"],
+        base = dict(headline="h", driver="公司自身", attribution="a", lenses=lv, watch=["w"], invalidation=["i"],
                     key_risk="r", confidence="low", confidence_reason="c")
         issues = "\n".join(validate(Insight(**base), pack, "neutral"))
         self.assertIn("异常事件视角必须引用 event_1", issues)

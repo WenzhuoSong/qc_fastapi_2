@@ -25,6 +25,7 @@ DEFAULTS = {"account_size": None, "risk_pct": 0.01, "max_position_pct": 0.20, "v
 # so its size is a loss budget, not a return target.
 SECTOR_CROWDED = 3       # this many open ideas/trades in one sector is one bet, not several
 INDUSTRY_CROWDED = 2
+COOLDOWN_SESSIONS = 10   # a buy this soon after a losing exit in the same sub-industry is flagged (the user's rule, 2026-11-01)
 
 
 # ── Settings ──
@@ -161,6 +162,12 @@ async def manage_trade(t: dict) -> list[str]:
             if plan.get("market_off_at_buy"):
                 msgs.append("买入时大盘过滤处于避险（SPY 月末收盘低于 10 个月均值），按计划这段时间不新买入；"
                             "这笔仍按回落 20% 管理")
+            loss = await recent_loss_same_industry(t)
+            if loss:
+                plan["after_loss_same_industry"] = loss
+                msgs.append(f"买入前 {loss['sessions']} 个交易日刚在同一细分行业（{loss['industry']}）亏损卖出 {loss['ticker']}"
+                            f"（{loss['pnl_pct']:+.1%}）：冷却期 {COOLDOWN_SESSIONS} 个交易日内不再买同一细分行业，"
+                            "先确认这不是想把亏的赚回来")
     stop, _, changed = levels.manage(plan, [b["date"] for b in bars], [b["close"] for b in bars], asof)
     msgs += changed
     # ch. 43 of Edwards & Magee, stick to your guns: an outstanding sell signal is repeated on its 2nd and 5th session
@@ -173,6 +180,26 @@ async def manage_trade(t: dict) -> list[str]:
     await db.execute("UPDATE scout.trades SET stop = :s, target = NULL, plan = CAST(:p AS JSONB), updated_at = now() WHERE id = :id",
                      {"s": stop, "p": db.jsonb(plan), "id": t["id"]})
     return msgs
+
+
+async def recent_loss_same_industry(t: dict) -> dict | None:
+    """A trade in the same sub-industry closed at a loss within COOLDOWN_SESSIONS sessions before this buy."""
+    from scout.intraday import sessions_since
+
+    ind = await db.fetch_one("SELECT industry FROM scout.instruments WHERE ticker = :t", {"t": t["ticker"]})
+    if not ind or not ind["industry"]:
+        return None
+    rows = await db.fetch_all(
+        "SELECT x.ticker, x.closed_on, x.entry_price, x.exit_price FROM scout.trades x JOIN scout.instruments i USING (ticker) "
+        "WHERE i.industry = :ind AND x.id <> :id AND x.closed_on IS NOT NULL AND x.closed_on <= :d "
+        "AND x.exit_price < x.entry_price ORDER BY x.closed_on DESC",
+        {"ind": ind["industry"], "id": t.get("id") or 0, "d": t["opened_on"]})
+    for r in rows:
+        n = sessions_since(r["closed_on"], t["opened_on"])
+        if n <= COOLDOWN_SESSIONS:
+            return {"ticker": r["ticker"], "closed_on": str(r["closed_on"]), "sessions": n, "industry": ind["industry"],
+                    "pnl_pct": r["exit_price"] / r["entry_price"] - 1}
+    return None
 
 
 async def manage_open_trades() -> list[dict]:
