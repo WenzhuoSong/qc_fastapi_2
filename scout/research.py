@@ -89,7 +89,7 @@ def fundamental_trend(series: dict[str, list[tuple[date, float]]], unit: str = "
     if shares:
         out["fin_share_change"] = _chg(shares[-1][1], _near(shares, shares[-1][0] - timedelta(days=YEAR)))
         out["_shares"] = shares[-1][1]
-    out["fin_period"] = f"{rev[-1][0].isoformat()}（{'季度' if quarterly else '年度'}）"
+    out["fin_period"] = f"截至 {rev[-1][0].isoformat()} 的{'季度' if quarterly else '年度'}（期末日，不是发布日）"
     return {k: v for k, v in out.items() if v is not None}, table
 
 

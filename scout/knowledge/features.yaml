@@ -717,9 +717,9 @@ insider_sellers_90d:
 
 # ── v2 第 3 阶段：基本面趋势（SEC EDGAR 季度财报，按申报日期取当时已知的数据）──
 fin_period:
-  zh: 最近财报期
+  zh: 最近财报覆盖期
   unit: text
-  definition: 最近一份已申报财报的期末日期；外国公司多为年度数据。
+  definition: 最近一份已申报财报所覆盖的季度（或年度）的结束日，不是财报发布日；发布日看"距上次财报天数"。外国公司多为年度数据。
 fin_rev_yoy:
   zh: 最近一季营收同比
   unit: pct
