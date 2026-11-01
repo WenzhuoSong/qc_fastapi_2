@@ -65,7 +65,7 @@ async def parse(text: str, today: date) -> dict:
     data = await responses.create({
         "model": settings.scout_parse_model, "instructions": PROMPT.format(today=today.isoformat()),
         "input": [{"role": "user", "content": text}],
-        "text": {"format": {"type": "json_schema", "name": "trade", "schema": SCHEMA, "strict": True}}})
+        "text": {"format": {"type": "json_schema", "name": "trade", "schema": SCHEMA, "strict": True}}}, purpose="trade_parse")
     return json.loads(responses.output_text(data))
 
 

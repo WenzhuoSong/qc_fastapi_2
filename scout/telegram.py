@@ -275,6 +275,9 @@ async def load_opportunity(opp_id: str) -> dict | None:
 # ─────────────────────────── inbound ───────────────────────────
 
 async def handle_update(update: dict) -> None:
+    from scout import llm_usage
+
+    llm_usage.JOB.set("telegram")
     settings = get_scout_settings()
     if "callback_query" in update:
         cq = update["callback_query"]

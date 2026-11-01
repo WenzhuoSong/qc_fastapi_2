@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from pydantic import BaseModel, Field
 
-from scout import context, db, knowledge
+from scout import context, db, knowledge, llm_usage
 from scout.config import get_scout_settings
 from scout.data import finnhub
 from scout.market_calendar import previous_us_equity_trading_day
@@ -97,6 +97,7 @@ async def web_search(name: str, ticker: str, ev_date: date, ret: float) -> dict:
             logger.warning("web search HTTP %s for %s", resp.status_code, ticker)
             return {}
         data = resp.json()
+        await llm_usage.record_responses(data, "event_search", SEARCH_MODEL)
     except Exception as exc:
         logger.warning("web search failed for %s: %s", ticker, exc)
         return {}
@@ -221,6 +222,7 @@ async def classify(pack: dict, ev: dict) -> tuple[EventCause, str, list]:
             try:
                 resp = await client.beta.chat.completions.parse(
                     model=settings.scout_insight_model, messages=messages, response_format=EventCause, temperature=0.1)
+                await llm_usage.record_sdk(resp, "event_cause", settings.scout_insight_model)
                 parsed = resp.choices[0].message.parsed
             except Exception as exc:
                 logger.warning("event cause LLM failed: %s", exc)

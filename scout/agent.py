@@ -604,15 +604,19 @@ async def get_watchlist() -> dict:
 
 
 @tool("get_data_status", "数据状态：各数据源（行情、SEC 财报与文件、内部人、预期与评级、持股、期权、宏观）更新到哪天、覆盖多少股票、"
-                         "最近的数据质量问题、各定时任务最近一次运行和存储占用", pages=("/data",))
+                         "最近的数据质量问题、各定时任务最近一次运行、存储占用和 AI 用量（估计费用）", pages=("/data",))
 async def get_data_status() -> dict:
     from scout import research_data
 
+    from scout import llm_usage
+
     st = await research_data.status()
+    usage = await llm_usage.totals(14)
     ins = await db.fetch_one("SELECT max(filed) AS last, count(DISTINCT ticker) AS tickers, count(*) AS n FROM scout.insider_trades")
     loads = await db.fetch_one("SELECT max(period) AS p FROM scout.data_loads WHERE source = 'sec_insiders'")
     return {"内部人交易（SEC Form 4 数据集，按季度发布）": {"最新申报日": str((ins or {}).get("last")), "股票数": (ins or {}).get("tickers"),
                                               "记录数": (ins or {}).get("n"), "已载入的季度": (loads or {}).get("p")},
+            "AI 用量（估算，近 14 天）": {"合计": f"${usage['total_usd']:.2f}", "每天": usage["days"]},
             "快照": st.get("snapshots"), "财务": st.get("financials"), "文件": st.get("filings"), "评级变动": st.get("actions"),
             "宏观": st.get("macro"), "质量问题": st.get("issues"), "任务运行": [{"任务": r["job"], "状态": r["status"],
                                                                      "开始": str(r["started_at"])[:16]} for r in st.get("runs") or []],
@@ -805,7 +809,7 @@ async def research_company(ticker: str, question: str | None = None) -> dict:
               + (f" Specific question: {q}" if q else ""))
     settings = get_scout_settings()
     data = await responses.create({"model": settings.scout_agent_model, "reasoning": {"effort": "low"},
-                                   "tools": [{"type": "web_search"}], "input": prompt}, timeout=150)
+                                   "tools": [{"type": "web_search"}], "input": prompt}, timeout=150, purpose="company_research")
     sources = []
     for item in data.get("output") or []:
         for part in item.get("content") or [] if item.get("type") == "message" else []:
@@ -863,7 +867,7 @@ async def answer(question: str, channel: str = "telegram", remember: bool = True
             "input": [{"role": r["role"], "content": r["content"]} for r in reversed(history)] + [{"role": "user", "content": question}]}
     text = "抱歉，这个问题没能在工具调用轮次内完成，请换个更具体的问法。"
     for _ in range(MAX_ROUNDS):
-        data = await responses.create(body, timeout=settings.scout_agent_timeout_s)
+        data = await responses.create(body, timeout=settings.scout_agent_timeout_s, purpose="agent")
         calls = responses.function_calls(data)
         if not calls:
             text = responses.output_text(data).strip() or text

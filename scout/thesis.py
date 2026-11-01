@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from scout import knowledge
+from scout import knowledge, llm_usage
 from scout.config import get_scout_settings
 
 logger = logging.getLogger("scout.thesis")
@@ -223,6 +223,7 @@ async def write_thesis(ev: dict) -> tuple[Thesis, str]:
             resp = await client.beta.chat.completions.parse(
                 model=settings.scout_llm_model, messages=messages, response_format=Thesis, temperature=0.3,
             )
+            await llm_usage.record_sdk(resp, "thesis", settings.scout_llm_model)
             parsed = resp.choices[0].message.parsed
         except Exception as exc:
             logger.warning("thesis LLM call failed for %s: %s", ev.get("ticker"), exc)

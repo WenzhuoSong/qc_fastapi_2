@@ -15,7 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from scout import db, knowledge, opportunities, sector_news, sectors
+from scout import db, knowledge, llm_usage, opportunities, sector_news, sectors
 from scout.config import get_scout_settings
 from scout.thesis import allowed_numbers, unsupported_numbers
 
@@ -243,6 +243,7 @@ async def generate() -> dict | None:
             try:
                 resp = await client.beta.chat.completions.parse(
                     model=settings.scout_insight_model, messages=messages, response_format=MarketFocus, temperature=0.2)
+                await llm_usage.record_sdk(resp, "market_focus", settings.scout_insight_model)
                 parsed = resp.choices[0].message.parsed
             except Exception as exc:
                 logger.warning("market focus LLM call failed: %s", exc)

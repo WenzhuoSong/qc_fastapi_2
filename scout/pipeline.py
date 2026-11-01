@@ -194,6 +194,12 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     except Exception as exc:
         logger.warning("trade management failed: %s", exc)
         summary["trades_managed"] = f"failed: {type(exc).__name__}"
+    try:                               # AI spend of the last 24 hours, pushed once when unusually high
+        from scout import llm_usage
+
+        summary["llm_usage"] = await llm_usage.check_alert(push)
+    except Exception as exc:
+        logger.warning("llm usage check failed: %s", exc)
     mfilter = None
     try:                               # the user's market filter (no new buys while risk is off)
         from scout import intraday, market_filter

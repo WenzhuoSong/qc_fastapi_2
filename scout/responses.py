@@ -47,8 +47,8 @@ def _raise(status: int, body: dict | str) -> None:
     raise ResponsesError("http", f"HTTP {status}: {(msg or '')[:300]}")
 
 
-async def create(body: dict, timeout: float | None = None) -> dict:
-    """POST one request; never logs the key or the request body."""
+async def create(body: dict, timeout: float | None = None, purpose: str = "other") -> dict:
+    """POST one request; never logs the key or the request body. Usage is recorded under `purpose`."""
     settings = get_scout_settings()
     for attempt in range(RETRIES + 1):                # dropped connections are retried; timeouts and HTTP errors are not
         try:
@@ -69,6 +69,9 @@ async def create(body: dict, timeout: float | None = None) -> dict:
         _raise(resp.status_code, data)
     if isinstance(data, dict) and data.get("error"):
         raise ResponsesError("api", str(data["error"])[:300])
+    from scout import llm_usage
+
+    await llm_usage.record_responses(data, purpose, body.get("model") or "?")
     return data
 
 

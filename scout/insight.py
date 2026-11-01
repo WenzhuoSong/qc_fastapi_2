@@ -24,7 +24,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from scout import (context, db, event_cause, events, fundamentals, knowledge, learned, ledger, opportunities, research,
+from scout import (context, db, event_cause, events, fundamentals, knowledge, learned, ledger, llm_usage, opportunities, research,
                    research_data, sectors, structure, universe)
 from scout.analysis import attribution, scout_view
 from scout.config import get_scout_settings
@@ -646,6 +646,7 @@ def fallback_lenses(pack: dict) -> list[LensView]:
 
 async def _parse(client, model: str, messages: list, fmt):
     resp = await client.beta.chat.completions.parse(model=model, messages=messages, response_format=fmt, temperature=0.2)
+    await llm_usage.record_sdk(resp, "insight", model)
     return resp.choices[0].message.parsed
 
 

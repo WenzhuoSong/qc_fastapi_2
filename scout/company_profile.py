@@ -242,7 +242,7 @@ async def extract(doc: dict) -> tuple[dict, dict, str]:
     body = doc["section"][:MAX_SECTION] + ("\n\nCONCENTRATION:\n" + "\n".join(doc["snippets"]) if doc["snippets"] else "")
     req = {"model": settings.scout_parse_model, "instructions": PROMPT, "input": [{"role": "user", "content": body}],
            "text": {"format": {"type": "json_schema", "name": "company_profile", "schema": SCHEMA, "strict": True}}}
-    data = await responses.create(req, timeout=240)
+    data = await responses.create(req, timeout=240, purpose="company_profile")
     raw = json.loads(responses.output_text(data))
     kept, report = validate(raw, body)
     if report["dropped"]:                 # one correction pass: re-quote exactly, or leave the item out
@@ -250,7 +250,7 @@ async def extract(doc: dict) -> tuple[dict, dict, str]:
               "请重新输出完整的画像：能找到原文依据的改正 quote，找不到的删去：\n" + \
               "\n".join(f"- {d['field']} / {d['name']}：{d['reason']}" for d in report["dropped_items"])
         data2 = await responses.create({**req, "previous_response_id": data["id"], "input": [{"role": "user", "content": fix}]},
-                                       timeout=240)
+                                       timeout=240, purpose="company_profile")
         kept2, report2 = validate(json.loads(responses.output_text(data2)), body)
         if report2["kept"] >= report["kept"]:
             kept, report = kept2, {**report2, "first_pass": {"kept": report["kept"], "dropped": report["dropped"]}}

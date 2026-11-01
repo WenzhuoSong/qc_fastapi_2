@@ -31,5 +31,14 @@ class PreFetchNewsCronContractTests(unittest.TestCase):
         self.assertEqual(at(25, 10, 0), "core")          # Sunday: every second hour, never full
         self.assertIsNone(at(25, 16, 30))
 
+class FreshTests(unittest.TestCase):
+    def test_articles_past_the_ttl_are_not_summarized_again(self):
+        from cron import pre_fetch_news as pf
+
+        now = 1_800_000_000
+        items = [{"url": "a", "datetime": now - 3600}, {"url": "b", "datetime": now - 60 * 3600}, {"url": "c"}]
+        self.assertEqual([i["url"] for i in pf.fresh(items, now)], ["a"])
+
+
 if __name__ == "__main__":
     unittest.main()

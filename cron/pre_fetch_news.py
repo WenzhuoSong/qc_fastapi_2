@@ -148,6 +148,14 @@ def _build_macro_prose(macro_news: list[dict], econ_events: list[dict]) -> str:
 # Ticker section
 # ═══════════════════════════════════════════════════════════════
 
+def fresh(items: list[dict], now: float | None = None) -> list[dict]:
+    """Articles young enough to stay in the library. Finnhub's 2-day window is by calendar date, so it
+    returns articles up to ~72 h old; ones past the 48 h TTL were archived and dropped already, would look
+    new to the library dedup, be summarized again by the LLM and dropped again at the end of the run."""
+    cutoff = (now or time.time()) - TTL_SECONDS
+    return [it for it in items if (it.get("datetime") or 0) >= cutoff]
+
+
 async def _process_ticker(ticker: str, earnings_soon: set[str]) -> int:
     """
     Process single ticker: fetch -> dedupe -> summarize -> hard_risks -> insert.
@@ -166,6 +174,7 @@ async def _process_ticker(ticker: str, earnings_soon: set[str]) -> int:
         it["headline"] = sanitize(it.get("headline", ""))
         cleaned.append(it)
 
+    cleaned = fresh(cleaned)
     if not cleaned:
         return 0
 
@@ -319,6 +328,9 @@ async def _insert_external_news(
     Dedupe by url, LLM summarize (only for entries without pre-set sentiment), batch insert.
     Returns number of newly written entries.
     """
+    items = fresh(items)
+    if not items:
+        return 0
     # url dedup
     urls = [it["url"] for it in items]
     async with AsyncSessionLocal() as db:

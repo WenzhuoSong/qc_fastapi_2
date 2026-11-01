@@ -76,7 +76,7 @@ class AgentLoopTests(unittest.TestCase):
         final = {"id": "r2", "output": [{"type": "message", "content": [{"type": "output_text", "text": "NVDA 收于 210.96 <b>"}]}]}
         sent = []
 
-        async def fake_create(body, timeout=None):
+        async def fake_create(body, timeout=None, purpose="other"):
             sent.append(body)
             return first if len(sent) == 1 else final
 

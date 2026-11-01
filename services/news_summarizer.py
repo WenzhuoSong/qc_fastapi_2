@@ -25,6 +25,30 @@ BATCH_SIZE = 10
 _client: AsyncOpenAI | None = None
 
 
+# gpt-4o-mini list prices (USD per million tokens: input, cached input, output) for the usage table
+_MINI_PRICE = (0.15, 0.075, 0.60)
+
+
+async def _record_usage(response, model: str) -> None:
+    """One row in scout.llm_usage (plain SQL: this pipeline never imports Scout); never fails the caller."""
+    try:
+        from sqlalchemy import text
+
+        from db.session import AsyncSessionLocal
+
+        u = response.usage
+        inp, out = u.prompt_tokens or 0, u.completion_tokens or 0
+        cached = getattr(getattr(u, "prompt_tokens_details", None), "cached_tokens", 0) or 0
+        usd = ((inp - cached) * _MINI_PRICE[0] + cached * _MINI_PRICE[1] + out * _MINI_PRICE[2]) / 1e6 if "mini" in model else None
+        async with AsyncSessionLocal() as db:
+            await db.execute(text("INSERT INTO scout.llm_usage (job, purpose, model, input_tokens, cached_tokens, output_tokens, est_usd) "
+                                  "VALUES ('news', 'news_summary', :m, :i, :c, :o, :u)"),
+                             {"m": (response.model or model)[:64], "i": inp, "c": cached, "o": out, "u": usd})
+            await db.commit()
+    except Exception as exc:
+        logger.warning(f"llm usage not recorded: {exc}")
+
+
 def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
@@ -137,6 +161,7 @@ async def summarize_headlines_batch(
             response_format=BatchAnalysisResponse,
         )
 
+        await _record_usage(response, settings.openai_model)
         parsed_results = response.choices[0].message.parsed.results
 
         results = []

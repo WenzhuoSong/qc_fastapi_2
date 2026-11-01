@@ -15,6 +15,9 @@ def run(job: str, fn: Callable[[], Awaitable[dict]], alert: bool = True) -> None
     logging.getLogger("httpx").setLevel(logging.WARNING)       # request URLs can carry tokens
 
     async def _main() -> None:
+        from scout import llm_usage
+
+        llm_usage.JOB.set(job)                  # LLM calls in this process are recorded under the job's name
         await db.apply_migrations()
         try:
             from scout import learned

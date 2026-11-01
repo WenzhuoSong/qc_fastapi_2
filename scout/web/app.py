@@ -938,8 +938,27 @@ async def data_page(_: str = Depends(require_auth)) -> str:
             + f"<p class='small'>宏观（FRED）最新日期：{macro}</p>"
             + "<h2>数据质量（近 14 天）</h2>" + (table(["日期", "检查", "次数", "涉及"], issue_rows) if issue_rows
                                                 else "<p class='muted small'>没有发现问题。</p>")
-            + "<h2>最近任务</h2>" + table(["任务", "状态", "开始（UTC）", "摘要"], run_rows))
+            + "<h2>最近任务</h2>" + table(["任务", "状态", "开始（UTC）", "摘要"], run_rows)
+            + await _llm_usage_html())
     return layout("数据状态", "data", body)
+
+
+async def _llm_usage_html() -> str:
+    """AI usage by day and purpose (estimated at list prices) for the last 14 days."""
+    from scout import llm_usage
+
+    tot = await llm_usage.totals(30)
+    rows = await llm_usage.by_day(14)
+    if not rows:
+        return "<h2>AI 用量</h2><p class='muted small'>还没有记录（从 2026-11-01 起记录）。</p>"
+    daily = " · ".join(f"{d['day'][5:]} ${d['usd']:.2f}" for d in tot["days"][-14:])
+    body_rows = [[e(str(r["day"])[5:]), e(llm_usage.PURPOSE_ZH.get(r["purpose"], r["purpose"])), e(r["model"]), str(r["calls"]),
+                  f"{(r['input_tokens'] or 0) / 1000:,.0f}k / {(r['output_tokens'] or 0) / 1000:,.0f}k",
+                  f"${(r['usd'] or 0):.2f}" if r["usd"] is not None else "—"] for r in rows]
+    return ("<h2>AI 用量</h2>"
+            f"<p class='small'>近 30 天估计 <b>${tot['total_usd']:.2f}</b>；每天：{daily}</p>"
+            f"<p class='small muted'>按公开价目估算（gpt-6 系列的缓存价格是假设），以 OpenAI 账单为准；单日超过 ${llm_usage.ALERT_USD:.0f} 时收盘后推送提醒。</p>"
+            + table(["日期", "用途", "模型", "调用", "输入 / 输出 token", "估计费用"], body_rows))
 
 
 @app.get("/ledger", response_class=HTMLResponse)

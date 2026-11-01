@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 
-from scout import context, db, universe
+from scout import context, db, llm_usage, universe
 from scout.config import get_scout_settings
 from scout.data.yahoo import latest_quotes
 from scout.market_calendar import (is_us_equity_trading_day, previous_us_equity_trading_day,
@@ -417,6 +417,7 @@ async def generate(session: date) -> dict:
             try:
                 resp = await client.beta.chat.completions.parse(
                     model=settings.scout_insight_model, messages=messages, response_format=PremarketBrief, temperature=0.2)
+                await llm_usage.record_sdk(resp, "premarket", settings.scout_insight_model)
                 parsed = resp.choices[0].message.parsed
             except Exception as exc:
                 logger.warning("premarket LLM call failed: %s", exc)

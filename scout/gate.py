@@ -32,7 +32,7 @@ import pandas as pd
 import yaml
 from pydantic import BaseModel, Field
 
-from scout import base_rates, db, learned
+from scout import base_rates, db, learned, llm_usage
 from scout.detectors import Detector, registry
 from scout.simulate import ROUND_TRIP_COST, simulate
 from scout.universe import BENCHMARK, SECTOR_ETFS
@@ -523,6 +523,7 @@ async def critique(spec: dict, report: dict, facts: dict) -> dict:
     for attempt in (1, 2):
         resp = await client.beta.chat.completions.parse(model=settings.scout_insight_model, messages=messages,
                                                         response_format=Critique, temperature=0.2)
+        await llm_usage.record_sdk(resp, "gate_critique", settings.scout_insight_model)
         parsed = resp.choices[0].message.parsed
         issues = validate_critique(parsed, payload)
         history.append({"attempt": attempt, "issues": issues})
