@@ -351,6 +351,13 @@ async def run_weekly(push: bool = True) -> dict:
     except Exception as exc:
         logger.warning("universe SEC refresh failed: %s", exc)
         summary["sec_universe"] = f"failed: {type(exc).__name__}"
+    try:                               # company profiles: new annual reports since last week (10-K Item 1 / 20-F Item 4)
+        from scout import company_profile
+
+        summary["company_profiles"] = await company_profile.refresh()
+    except Exception as exc:
+        logger.warning("company profiles failed: %s", exc)
+        summary["company_profiles"] = f"failed: {type(exc).__name__}"
     try:                               # industry outlook (v3 P4): drivers + at most three theses
         from scout import outlook
 

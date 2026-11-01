@@ -40,7 +40,9 @@ SYSTEM_PROMPT = f"""你是 Scout，一位美股研究助理，服务于一位有
 - 想全面了解一只股票（"X 怎么样""帮我分析 X"）：调 get_evidence，按下面"多视角证据"的写法逐个视角讲。
 - 问到"从各个策略看这只股票行不行""哪些股票被多个策略选中"：get_strategy_view；逐个策略说是否选中、排第几，并强调每个策略的检验状态
   （只有前向验证中 / 已确认的有经过检验的依据；否定的经检验无效；描述性筛选只说明现状）。
-- 问到公司的业务和行业现状（主要产品、客户、是不是某行业的主要供应商、行业需求是否旺盛、竞争格局）：research_company 联网检索。
+- 问到公司的业务和行业现状（主要产品、客户、是不是某行业的主要供应商、行业需求是否旺盛、竞争格局）：先调 get_company_profile
+  （公司自己年报里写的，带原文引用；"其他公司年报提到它"能看出它是谁的供应商），年报没写或需要最新情况时再用 research_company 联网检索。
+  年报里的内容写成"据 X 年报（日期）"；
   这是外部报道：每条事实写明"据外部报道（未经核实）"和日期，并在回答末尾列出来源；再用 get_evidence 里的财务数据（收入增速与加速度、
   毛利率、预期修正、财报反应）和 get_outlook / get_sectors 的行业数据核对：报道说"需求旺盛"，就看收入和预期是否真的在加速、上调，
   一致就说一致，不一致就指出来。外部报道里的数字要标明来自报道，不能当成 Scout 计算的数字。
@@ -737,6 +739,45 @@ async def get_strategy_view(ticker: str | None = None) -> dict:
     top = sorted(picks.items(), key=lambda kv: -len(kv[1]))[:15]
     return {"数据日期": str(asof), "被最多策略选中的股票": [{"代码": k, "策略数": len(v), "策略": v} for k, v in top],
             "说明": "被多个策略选中不等于有优势：先看每个策略的检验状态"}
+
+
+@tool("get_company_profile", "公司画像与产业链（来自公司自己的年报 10-K / 20-F 业务部分，每条都有原文引用，按申报日保存）：业务分部与收入、"
+                             "终端市场、点名的客户（含披露的收入占比）、供应商 / 代工厂、竞争对手、合作方、竞争优势、业务风险、明确未披露的信息；"
+                             "以及其他公司年报里提到它的关系（谁把它列为供应商 / 客户 / 竞争对手），和这些关联公司的近期走势与财报日期",
+      TICKER, pages=("/ticker",))
+async def get_company_profile(ticker: str) -> dict:
+    from scout import company_profile
+
+    t = universe.yahoo_symbol(ticker)
+    p = await company_profile.latest(t)
+    if not p:
+        return {"note": f"{t} 还没有公司画像（没有找到 10-K / 20-F 业务部分，或还没处理）；可以用 research_company 联网检索"}
+    prof = p["profile"] or {}
+
+    def items(key: str) -> list[str]:
+        return [f"{x.get('name') or x.get('point')}：{x.get('detail') or ''}（原文：{x['quote'][:200]}）" for x in prof.get(key) or []]
+
+    zh = {"customer": "客户", "supplier": "供应商", "competitor": "竞争对手", "partner": "合作方"}
+    near = await company_profile.neighbours(t)
+    rows = await db.fetch_all("SELECT f.ticker, f.payload FROM scout.features_daily f WHERE f.ticker = ANY(:t) "
+                              "AND f.date = (SELECT max(date) FROM scout.features_daily)", {"t": list(near)}) if near else []
+    earn = {r["ticker"]: str(r["event_date"]) for r in await db.fetch_all(
+        "SELECT DISTINCT ON (ticker) ticker, event_date FROM scout.market_events WHERE event_type = 'earnings' AND ticker = ANY(:t) "
+        "AND event_date >= CURRENT_DATE ORDER BY ticker, event_date", {"t": list(near)})} if near else {}
+    return {"代码": t, "来源": f"{p['form']}（{p['filed']} 申报）", "原文链接": p["url"], "概述": prof.get("summary"),
+            "业务分部": items("segments"), "终端市场": items("end_markets"), "客户": items("customers"), "供应商": items("suppliers"),
+            "竞争对手": items("competitors"), "合作方": items("partners"), "竞争优势": items("advantages"), "业务风险": items("business_risks"),
+            "年报未披露": prof.get("not_disclosed"),
+            "其他公司年报提到它": [f"{r['ticker']} {REL_BY.get(r['relation'], r['relation'])}（{r['filed']}，原文：{(r['quote'] or '')[:160]}）"
+                            for r in p["named_by"]],
+            "关联公司近况": [{"代码": r["ticker"], "关系": "、".join(near[r["ticker"]]), "20 日": _p((r["payload"] or {}).get("ret_20d")),
+                          "20 日公司自身": _p((r["payload"] or {}).get("own_ret_20d")), "下次财报": earn.get(r["ticker"], "未知")} for r in rows],
+            "说明": "年报一年一份，说的是申报时的情况；最新的需求和订单变化看季度财务数据（get_evidence）和 research_company；"
+                    f"关系类型：{zh}"}
+
+
+REL_BY = {"customer": "在年报里把它列为客户（它向对方采购，对方是它的供应商）", "supplier": "在年报里把它列为供应商（它向对方供货，对方是它的客户）",
+          "competitor": "在年报里把它列为竞争对手", "partner": "在年报里把它列为合作方"}
 
 
 @tool("research_company", "联网检索公司和行业的真实现状（外部报道，未经核实）：主要产品和收入构成、主要客户与供应商、在行业里的地位和份额、"

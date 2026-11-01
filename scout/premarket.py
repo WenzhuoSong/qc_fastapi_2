@@ -172,7 +172,18 @@ async def build_pack(session: date) -> dict:
         for t in sorted((t for t in major if s and sector_of.get(t) == s and t != h["ticker"]), key=major.get)[:PEERS]:
             peers.setdefault(t, []).append(h["ticker"])
     peers = {t: hs for t, hs in peers.items() if any(e["ticker"] == t for e in earnings)}
-    focus = set(watch) | {o["ticker"] for o in opps} | {t["ticker"] for t in held} | set(peers)
+    # supply-chain neighbours named in annual reports (customers, suppliers, competitors), with earnings in the window
+    chain: dict[str, list[str]] = {}
+    try:
+        from scout import company_profile
+
+        for h in held:
+            for t, rels in (await company_profile.neighbours(h["ticker"])).items():
+                if any(e["ticker"] == t for e in earnings):
+                    chain.setdefault(t, []).append(f"{h['ticker']} 的{'、'.join(r.split('（')[0] for r in rels)}")
+    except Exception as exc:                # profiles are optional context
+        logger.warning("supply-chain neighbours unavailable: %s", exc)
+    focus = set(watch) | {o["ticker"] for o in opps} | {t["ticker"] for t in held} | set(peers) | set(chain)
 
     def relevant(t: str) -> bool:
         return t in focus or t in major
@@ -205,7 +216,8 @@ async def build_pack(session: date) -> dict:
     def ident(t: str) -> str:
         tags = [lbl for cond, lbl in ((t in {h["ticker"] for h in held}, "持仓"), (t in {o["ticker"] for o in opps}, "活跃机会"),
                                       (t in watch, "自选"),
-                                      (t in peers, f"持仓同行业（{'、'.join(sorted(set(peers.get(t, []))))}）")) if cond]
+                                      (t in peers, f"持仓同行业（{'、'.join(sorted(set(peers.get(t, []))))}）"),
+                                      (t in chain, f"持仓产业链（{'；'.join(chain.get(t, []))}）")) if cond]
         return "、".join(tags) or "大市值"
 
     def pm(t: str) -> dict:
@@ -330,6 +342,7 @@ SYSTEM_PROMPT = """你是一名美股交易日开盘前的策略助理，基于 
 - watchlist_moves：自选股中盘前涨跌幅较大的。
 - earnings_reported / earnings_today / earnings_week：昨日盘后与今日盘前已公布、今日待公布、本周后续的重要财报。
   身份含"持仓同行业（X）"的是用户持仓 X 所在行业交易最活跃的公司：它的财报会带动整个行业，必须提到，并说明可能影响哪只持仓。
+  身份含"持仓产业链（X 的客户 / 供应商 / 竞争对手）"的是年报里与持仓 X 有直接业务关系的公司：它的财报和指引会直接影响 X，必须提到。
 - economic_today / economic_week：今天和本周后续的美国经济数据与美联储事件（美东时间）。
 - news / macro_news：上一交易日收盘以来的个股新闻和宏观新闻。
 - last_focus：昨晚收盘后生成的市场关注点。
@@ -461,7 +474,7 @@ def render_text(b: PremarketBrief, pack: dict) -> str:
             line += f"，盘前 {e['盘前较前收']}" if e.get("盘前较前收") else ""
             lines.append(line)
     def peer(e: dict) -> str:
-        return f"，{e['身份']}" if "持仓同行业" in (e.get("身份") or "") else ""
+        return f"，{e['身份']}" if ("持仓同行业" in (e.get("身份") or "") or "持仓产业链" in (e.get("身份") or "")) else ""
 
     if pack["earnings_today"]:
         lines.append("今日待公布：" + "、".join(f"{e['代码']}（{e['时间']}{peer(e)}）" for e in pack["earnings_today"]))

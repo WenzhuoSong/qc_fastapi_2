@@ -175,6 +175,15 @@ async def earnings_lines(t: str, day: date) -> list[str]:
         due = [f"{r['ticker']} {r['event_date']:%m-%d}" for r in rows if r["ticker"] in peers]
         if due:
             out.append("同行业大公司 7 天内财报：" + "、".join(due))
+    try:
+        from scout import company_profile
+
+        near = await company_profile.neighbours(t)
+        due = [f"{r['ticker']}（{'、'.join(x.split('（')[0] for x in near[r['ticker']])}）{r['event_date']:%m-%d}" for r in rows if r["ticker"] in near]
+        if due:
+            out.append("产业链公司（年报点名的客户 / 供应商 / 竞争对手）7 天内财报：" + "、".join(due))
+    except Exception as exc:
+        logger.warning("supply-chain neighbours for %s unavailable: %s", t, exc)
     return out
 
 

@@ -732,6 +732,36 @@ def trades_table(rows: list[dict], closable: bool = True, adherence: dict[int, d
 CAUSE_SOURCE = {"llm": "AI 归因 · 已校验", "fallback": "规则判断"}
 
 
+PROFILE_PARTS = (("segments", "业务分部"), ("end_markets", "终端市场"), ("customers", "客户"), ("suppliers", "供应商 / 代工"),
+                 ("competitors", "竞争对手"), ("partners", "合作方"), ("advantages", "竞争优势"), ("business_risks", "业务风险"))
+
+
+def company_card(p: dict | None, near: dict[str, list[str]]) -> str:
+    """The company in its own annual report's words (every item quoted), and its supply-chain neighbours."""
+    if not p:
+        return ""
+    prof = p.get("profile") or {}
+    rows = []
+    for key, label in PROFILE_PARTS:
+        items = prof.get(key) or []
+        if not items:
+            continue
+        lis = "".join(f"<li><b>{escape(x.get('name') or x.get('point') or '')}</b>" + (f"：{escape(x['detail'])}" if x.get("detail") else "")
+                      + f"<div class='small muted'>“{escape(x['quote'][:240])}”</div></li>" for x in items[:10])
+        rows.append(f"<details{' open' if key in ('segments', 'customers', 'suppliers') else ''}><summary>{label}（{len(items)}）</summary>"
+                    f"<ul class='tight'>{lis}</ul></details>")
+    chain = "".join(f"<a class='chip' href='/ticker/{escape(t)}'>{escape(t)} · {escape('、'.join(r))}</a>" for t, r in near.items())
+    src = (f"据 {escape(p.get('form') or '')}（{escape(str(p.get('filed') or ''))} 申报）"
+           + (f" · <a href='{escape(p['url'])}' target='_blank' rel='noopener'>原文</a>" if p.get("url") else ""))
+    nd = prof.get("not_disclosed") or []
+    return (f"<div class='card'><h3>公司画像与产业链 <span class='small muted'>{src}</span></h3>"
+            + (f"<p>{escape(prof['summary'])}</p>" if prof.get("summary") else "")
+            + (f"<div class='small'><b>产业链</b>（年报点名、且在 Scout 标的池里的公司）：{chain}</div>" if chain else "")
+            + "".join(rows)
+            + (f"<p class='small muted'>年报未披露：{escape('；'.join(nd))}</p>" if nd else "")
+            + "<p class='small muted'>只收录年报原文里写了的内容，每条附原文引用；年报一年一份，最新的需求变化看季度财务和新闻。</p></div>")
+
+
 def events_card(ticker: str, evs: list[dict], causes: dict[str, dict], rates: dict, above_200: bool | None) -> str:
     """Abnormal days of the last 60 sessions with their researched cause and what usually followed."""
     from scout.events import base_rate_for

@@ -97,6 +97,30 @@ async def _get(url: str) -> dict | None:
     return None
 
 
+async def document(url: str) -> str | None:
+    """A filing document as raw HTML / text (same pacing as the JSON calls); None on failure."""
+    global _last
+    async with _lock:
+        wait = MIN_INTERVAL_S - (time.monotonic() - _last)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _last = time.monotonic()
+    for attempt in (1, 2):
+        try:
+            async with httpx.AsyncClient(timeout=120, headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
+                resp = await client.get(url)
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            return resp.text
+        except Exception as exc:
+            if attempt == 2:
+                logger.warning("EDGAR document %s failed: %s", url, exc)
+            else:
+                await asyncio.sleep(3)
+    return None
+
+
 async def cik_map() -> dict[str, tuple[str, str]]:
     """ticker → (10-digit CIK, company name). Class shares map BRK.B → BRK-B."""
     data = await _get("https://www.sec.gov/files/company_tickers.json") or {}

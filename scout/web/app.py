@@ -398,6 +398,12 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
             body += await asyncio.wait_for(_research_card(t, inst or {}, feat), timeout=20)
         except Exception as exc:
             logger.warning("research data for %s unavailable: %s", t, exc)
+    try:
+        from scout import company_profile
+
+        body += views.company_card(await company_profile.latest(t), await company_profile.neighbours(t))
+    except Exception as exc:
+        logger.warning("company profile for %s unavailable: %s", t, exc)
     if latest:
         body += opp_card(latest)
     body += await sector_members_card(t)
