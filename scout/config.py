@@ -17,6 +17,12 @@ class ScoutSettings(BaseSettings):
     scout_llm_timeout_s: float = 45.0
     # The ticker "AI 解读" runs a few times a day: use a stronger model than the cards/Q&A.
     scout_insight_model: str = "gpt-4o"
+    # The Q&A agent (Telegram / dashboard chat): tool calling with reasoning, through /v1/responses.
+    scout_agent_model: str = "gpt-6.1-sol"
+    scout_agent_reasoning: str = "low"
+    scout_agent_timeout_s: float = 90.0
+    # Parsing a trade message into fields (structured output): a small, cheap model is enough.
+    scout_parse_model: str = "gpt-6-luna"
 
     # Optional enrichment. Empty key → skipped.
     finnhub_api_key: str = ""

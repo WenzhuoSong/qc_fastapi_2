@@ -71,23 +71,33 @@ class AgentLoopTests(unittest.TestCase):
         get_scout_settings.cache_clear()
 
     def test_tool_call_then_answer_and_history_saved(self):
-        tool_call = SimpleNamespace(id="c1", function=SimpleNamespace(name="get_snapshot", arguments='{"ticker": "NVDA"}'))
-        first = SimpleNamespace(tool_calls=[tool_call], content=None,
-                                model_dump=lambda exclude_none=True: {"role": "assistant", "tool_calls": [{"id": "c1"}]})
-        final = SimpleNamespace(tool_calls=None, content="NVDA 收于 210.96 <b>")
-        client = FakeClient(create_results=[
-            SimpleNamespace(choices=[SimpleNamespace(message=first)]),
-            SimpleNamespace(choices=[SimpleNamespace(message=final)]),
-        ])
-        with patch("openai.AsyncOpenAI", return_value=client), \
+        first = {"id": "r1", "output": [{"type": "function_call", "name": "get_snapshot", "call_id": "c1",
+                                         "arguments": '{"ticker": "NVDA"}'}]}
+        final = {"id": "r2", "output": [{"type": "message", "content": [{"type": "output_text", "text": "NVDA 收于 210.96 <b>"}]}]}
+        sent = []
+
+        async def fake_create(body, timeout=None):
+            sent.append(body)
+            return first if len(sent) == 1 else final
+
+        trace = []
+        with patch("scout.responses.create", fake_create), \
+             patch.object(agent, "get_scout_settings", return_value=SimpleNamespace(
+                 openai_api_key="k", scout_agent_model="m", scout_agent_reasoning="low", scout_agent_timeout_s=5)), \
              patch.object(agent.db, "fetch_all", AsyncMock(return_value=[])), \
              patch.object(agent.db, "execute_many", AsyncMock()) as saved, \
              patch.object(agent, "call_tool", AsyncMock(return_value='{"close": 210.96}')) as tool:
-            out = asyncio.run(agent.answer("NVDA 怎么样", channel="telegram"))
+            out = asyncio.run(agent.answer("NVDA 怎么样", channel="telegram", trace=trace))
         tool.assert_awaited_once_with("get_snapshot", {"ticker": "NVDA"})
         self.assertEqual(out, "NVDA 收于 210.96 &lt;b&gt;")   # escaped for Telegram HTML
         self.assertEqual(len(saved.await_args.args[1]), 2)
+        self.assertEqual(sent[1]["previous_response_id"], "r1")              # the tool output continues the same response
+        self.assertEqual(sent[1]["input"], [{"type": "function_call_output", "call_id": "c1", "output": '{"close": 210.96}'}])
+        self.assertIn("instructions", sent[1])                                # not carried over by previous_response_id
+        self.assertEqual(trace[0]["tool"], "get_snapshot")
 
+    def test_every_tool_has_a_handler(self):
+        self.assertEqual(sorted(t["name"] for t in agent.TOOLS), sorted(agent.HANDLERS))
 
 if __name__ == "__main__":
     unittest.main()
