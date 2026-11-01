@@ -36,8 +36,9 @@ def trend_state(f: dict) -> tuple[str, str]:
 DRIVER_STOCK, DRIVER_MARKET, DRIVER_MIXED = "公司自身", "大盘/板块", "混合"
 
 
-def attribution(f: dict) -> tuple[str, str] | None:
-    """Who drove the last 20 sessions: the stock itself, the market, or both."""
+def attribution(f: dict, subject: str = "公司") -> tuple[str, str] | None:
+    """Who drove the last 20 sessions: the company itself (`subject` = "ETF" for an ETF), the market
+    and its sector, or both. The label is DRIVER_*; the text carries the numbers."""
     idio, mkt = f.get("idio_ret_20d"), f.get("market_ret_20d")
     if idio is None:
         return None
@@ -49,15 +50,18 @@ def attribution(f: dict) -> tuple[str, str] | None:
     sec, own = f.get("sector_ret_20d"), f.get("own_ret_20d")
     if sec is not None and own is not None:      # the sector's part is the market's side, not the company's
         text = (f"20 日{total}大盘 {knowledge.fmt('market_ret_20d', mkt)} + 行业 {knowledge.fmt('sector_ret_20d', sec)}"
-                f" + 公司自身 {knowledge.fmt('own_ret_20d', own)}")
+                f" + {subject}自身 {knowledge.fmt('own_ret_20d', own)}")
+        if sec * own < 0 and min(abs(sec), abs(own)) >= 0.05:
+            text += f"（行业{'大涨' if sec > 0 else '大跌'}，{subject}自身反向{'落后' if own < 0 else '跑赢'}）"
         idio, mkt = own, mkt + sec
     else:
-        text = f"20 日{total}扣除大盘后 {knowledge.fmt('idio_ret_20d', idio)} + 大盘贡献 {knowledge.fmt('market_ret_20d', mkt)}（未分行业）"
+        text = (f"20 日{total}扣除大盘后 {knowledge.fmt('idio_ret_20d', idio)} + 大盘贡献 {knowledge.fmt('market_ret_20d', mkt)}"
+                + ("" if subject == "ETF" else "（未分行业）"))
     if abs(idio) >= 0.10 or (abs(idio) >= 0.03 and abs(idio) >= 2 * abs(mkt)):
-        return DRIVER_STOCK, text + " → 公司自身主导"
+        return DRIVER_STOCK, text + f" → {subject}自身主导"
     if abs(mkt) >= 0.03 and abs(mkt) >= 2 * abs(idio):
         return DRIVER_MARKET, text + " → 主要跟随大盘和行业"
-    return DRIVER_MIXED, text + " → 公司与大盘、行业共同作用"
+    return DRIVER_MIXED, text + f" → {subject}与大盘、行业共同作用"
 
 
 def _rs_text(f: dict) -> Line | None:
@@ -161,7 +165,7 @@ def scout_view(
     struct_line = _structure(structure or {})
     if struct_line:
         lines.insert(1, struct_line)
-    attr = attribution(f)
+    attr = attribution(f, "公司" if is_stock else "ETF")
     if attr:
         lines.insert(1, Line("归因", attr[1]))
     if sector_ctx:

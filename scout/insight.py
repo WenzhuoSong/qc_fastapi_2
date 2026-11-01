@@ -140,6 +140,8 @@ SYNTH_PROMPT = """你是一名资深美股策略分析师。各视角的分析�
 1. 先看 context.events：距今 10 个交易日内有统计上的异常波动时，先在 recent_event 里解释它（日期、幅度、原因类型、影响），
    结论也要围绕它；原因来自网络检索的写"据外部报道"。
 2. driver 必须与 context.driver（规则按 20 日公司自身 vs 大盘加行业贡献判定，没有行业拆分时按扣除大盘后 vs 大盘）一致；标的是 ETF 时用"ETF 自身"表述。
+   attribution 要写出 scout_view.要点.归因 里的三段数字（大盘、行业、公司自身各多少），不能只说"公司自身因素驱动"；
+   行业和公司自身方向相反时（例如行业大涨、公司自身大幅落后），必须明确写出这一点，这往往是最重要的信息。
 3. 综合各视角：哪些一致、哪些矛盾（写进 conflicts）。矛盾是最有价值的部分，例如技术面转弱但预期在上调、估值高位但增长放缓。
    context.lens_reliability 是各视角过去的命中率（样本不足的不要引用），可靠度低的视角要降低权重。
 4. context.history 里有之前的判断时，在 confidence_reason 里回应：上次说了什么、后来符合还是不符合、这次为什么相同或不同；判断错了要承认。
@@ -315,7 +317,7 @@ def build_pack(facts: dict) -> dict:
         "scout_view": {"结论": headline, "要点": {l.label: l.text for l in lines}},
         "market": _market_block(facts["market"]),
     }
-    attr = attribution(facts["features"])
+    attr = attribution(facts["features"], "公司" if is_stock else "ETF")
     if attr:
         ctx["driver"] = attr[0]
     sec = facts["sector"]
