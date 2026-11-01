@@ -158,7 +158,8 @@ async def manage_trade(t: dict) -> list[str]:
         else:                                 # a new trade (a sell note alone does not make a plan)
             pm = await levels.get_map(t["ticker"], before=t["opened_on"]) or {}
             market = await market_filter.current(date.fromordinal(t["opened_on"].toordinal() - 1))
-            plan = {**levels.holding_plan(pm, t["entry_price"], t["opened_on"], market), "history": plan.get("history", [])}
+            plan = {**levels.holding_plan(pm, t["entry_price"], t["opened_on"], market), "history": plan.get("history", []),
+                    **({"thesis": plan["thesis"]} if plan.get("thesis") else {})}
             if plan.get("market_off_at_buy"):
                 msgs.append("买入时大盘过滤处于避险（SPY 月末收盘低于 10 个月均值），按计划这段时间不新买入；"
                             "这笔仍按回落 20% 管理")
@@ -170,6 +171,13 @@ async def manage_trade(t: dict) -> list[str]:
                             "先确认这不是想把亏的赚回来")
     stop, _, changed = levels.manage(plan, [b["date"] for b in bars], [b["close"] for b in bars], asof)
     msgs += changed
+    th = plan.get("thesis") or {}
+    if th.get("falsify_price") and bars and not th.get("broken_on"):     # the user's own invalidation, not a sell signal
+        c, lvl = bars[-1]["close"], th["falsify_price"]
+        if (c < lvl) if th.get("falsify_below", True) else (c > lvl):
+            th["broken_on"] = asof.isoformat()
+            msgs.append(f"你写的证伪条件触发：收盘 {c:.2f} {'跌破' if th.get('falsify_below', True) else '涨破'} {lvl:.2f}"
+                        f"（{th.get('falsification') or ''}）。这不是卖出信号，持仓仍按回落 20% 管理；请重新审视买入理由")
     # ch. 43 of Edwards & Magee, stick to your guns: an outstanding sell signal is repeated on its 2nd and 5th session
     due = position_risk.adherence({**t, "plan": plan}, [], asof).get("signal")
     if due and due["sessions"] in (2, 5):

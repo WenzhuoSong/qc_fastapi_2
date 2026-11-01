@@ -31,9 +31,11 @@ HELP_TEXT = (
     "/stats — 规则记分板\n"
     "/sectors — 板块热度、轮动与市场关注点\n"
     "/premarket — 今天的盘前简报\n"
-    "/trades — 我的持仓、止损和下一步止盈建议\n"
-    "/sell CART 66 61.50 [2026-10-28] — 记录卖出（代码 股数 价格 [日期]，股数可写 all）\n"
-    "直接发文字即可提问（例如：今天最强的板块是什么？）"
+    "/trades — 我的持仓、止损和卖出信号\n"
+    "记录交易：直接说「买了 PBF 300 股 75.76，理由……，跌破 71.9 说明错了」或「卖了 CART 全部 56.81」，"
+    "Scout 解析并检查后让你确认（也可用 /buy …）\n"
+    "/sell CART 66 61.50 [2026-10-28] — 直接记录卖出（代码 股数 价格 [日期]，股数可写 all）\n"
+    "直接发文字即可提问（例如：我的持仓怎么样？PBF 为什么跌？）"
 )
 
 
@@ -288,13 +290,20 @@ async def handle_update(update: dict) -> None:
     text = (msg.get("text") or "").strip()
     if not text:
         return
+    markup = None
     try:
-        reply = await dispatch(text)
+        from scout import trade_intake
+
+        if trade_intake.is_trade(text) or text.lower().startswith("/buy"):
+            reply, markup = await trade_intake.handle(text.split(maxsplit=1)[1] if text.lower().startswith("/buy") and " " in text
+                                                      else text)
+        else:
+            reply = await dispatch(text)
     except Exception as exc:
         logger.exception("command failed")
         reply = friendly_error(exc)
     if reply:
-        await send(reply, chat_id=chat_id)
+        await send(reply, chat_id=chat_id, reply_markup=markup)
 
 
 def friendly_error(exc: Exception) -> str:
@@ -311,6 +320,17 @@ def friendly_error(exc: Exception) -> str:
 async def _handle_callback(cq: dict) -> None:
     data = cq.get("data") or ""
     parts = data.split(":", 2)
+    if len(parts) == 3 and parts[0] == "td" and parts[1] in ("ok", "no") and parts[2].isdigit():
+        from scout import trade_intake
+
+        await _api("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "处理中…" if parts[1] == "ok" else "已取消"})
+        try:
+            reply = await trade_intake.decide(int(parts[2]), parts[1] == "ok")
+        except Exception as exc:
+            logger.exception("trade draft %s failed", parts[2])
+            reply = friendly_error(exc)
+        await send(reply)
+        return
     if len(parts) == 3 and parts[0] == "fb" and parts[1] in FEEDBACK_ACTIONS:
         await db.execute(
             "INSERT INTO scout.feedback (opportunity_id, action) VALUES (:id, :a)",

@@ -465,6 +465,11 @@ def holding_card(trades: list[dict], live: dict | None, close: float | None, tod
                             f"<td class='small muted'>{escape(st['why'])}</td></tr>")
             line += ("<table class='small'><thead><tr><th>出场</th><th>价位</th><th>卖出</th><th>建议</th><th>逻辑</th></tr></thead>"
                      f"<tbody>{''.join(rows)}</tbody></table>")
+            th = pl.get("thesis") or {}
+            if th.get("reason") or th.get("falsification"):
+                line += ("<div class='small'>" + (f"<b>买入理由</b>：{escape(th['reason'])}" if th.get("reason") else "")
+                         + (f" · <b>证伪</b>：{escape(th['falsification'])}" if th.get("falsification") else "")
+                         + (f" <span class='warn'>（{escape(th['broken_on'])} 已触发）</span>" if th.get("broken_on") else "") + "</div>")
             ref = pl.get("ref") or {}
             if ref.get("target1"):
                 line += (f"<div class='small muted'>买入时价位图（只作参考，不触发卖出）：买点失效位 {ref['stop']:.2f}，"
