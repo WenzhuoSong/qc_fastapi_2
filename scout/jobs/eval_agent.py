@@ -40,6 +40,9 @@ QUESTIONS: list[tuple[str, set[str]]] = [
     ("我想在 75 附近再买 200 股 PBF，你觉得怎么样？", {"check_trade_idea"}),
     ("打算买点 NVDA，财报前布局，合适吗？", {"check_trade_idea"}),
     ("SHOP 一直跌，我准备卖掉，要不要卖？", {"check_trade_idea"}),
+    ("从各个交易策略来看，MU 现在可行吗？", {"get_strategy_view"}),
+    ("今天哪些股票同时被多个策略选中？", {"get_strategy_view"}),
+    ("美光是不是 AI 存储的主要供应商？行业需求还旺盛吗？", {"research_company"}),
 ]
 
 NUM = re.compile(r"(?<![\w.])[-+−]?\d[\d,]*\.?\d*")

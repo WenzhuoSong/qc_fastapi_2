@@ -5,6 +5,7 @@ response JSON or raises `ResponsesError` (named like the SDK errors, so `telegra
 """
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -12,6 +13,7 @@ import httpx
 from scout.config import get_scout_settings
 
 URL = "https://api.openai.com/v1/responses"
+RETRIES = 2
 
 
 class ResponsesError(Exception):
@@ -32,6 +34,10 @@ class APITimeoutError(ResponsesError):
     pass
 
 
+class APIConnectionError(ResponsesError):
+    pass
+
+
 def _raise(status: int, body: dict | str) -> None:
     msg = (body.get("error") or {}).get("message") if isinstance(body, dict) else str(body)
     if status == 401:
@@ -44,11 +50,17 @@ def _raise(status: int, body: dict | str) -> None:
 async def create(body: dict, timeout: float | None = None) -> dict:
     """POST one request; never logs the key or the request body."""
     settings = get_scout_settings()
-    try:
-        async with httpx.AsyncClient(timeout=timeout or settings.scout_llm_timeout_s) as client:
-            resp = await client.post(URL, headers={"Authorization": f"Bearer {settings.openai_api_key}"}, json=body)
-    except httpx.TimeoutException as exc:
-        raise APITimeoutError("timeout", str(exc)) from exc
+    for attempt in range(RETRIES + 1):                # dropped connections are retried; timeouts and HTTP errors are not
+        try:
+            async with httpx.AsyncClient(timeout=timeout or settings.scout_llm_timeout_s) as client:
+                resp = await client.post(URL, headers={"Authorization": f"Bearer {settings.openai_api_key}"}, json=body)
+            break
+        except httpx.TimeoutException as exc:
+            raise APITimeoutError("timeout", str(exc)) from exc
+        except httpx.TransportError as exc:
+            if attempt == RETRIES:
+                raise APIConnectionError("connection", f"{type(exc).__name__}: {exc}") from exc
+            await asyncio.sleep(2 * (attempt + 1))
     try:
         data = resp.json()
     except json.JSONDecodeError:

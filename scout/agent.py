@@ -37,10 +37,21 @@ SYSTEM_PROMPT = f"""你是 Scout，一位美股研究助理，服务于一位有
 - 问到大盘、板块轮动、哪个行业强弱：get_market_overview、get_sectors；问到 Scout 的行业观点：get_outlook。
 - 问到今天 / 盘前要注意什么：get_briefs（premarket / eod / market_focus / weekly）；本周数据和财报：get_calendar。
 - 问到机会卡 / 今天有什么机会：list_opportunities（会标明规则是否通过检验）。
-- 用户说想买 / 打算买 / 准备卖 / 要不要卖某只股票时：先调 check_trade_idea（和记录交易时同一套检查），再按需要调 get_ai_insight、
-  get_fundamentals、get_events、get_snapshot 等。回答分四部分：
+- 想全面了解一只股票（"X 怎么样""帮我分析 X"）：调 get_evidence，按下面"多视角证据"的写法逐个视角讲。
+- 问到"从各个策略看这只股票行不行""哪些股票被多个策略选中"：get_strategy_view；逐个策略说是否选中、排第几，并强调每个策略的检验状态
+  （只有前向验证中 / 已确认的有经过检验的依据；否定的经检验无效；描述性筛选只说明现状）。
+- 问到公司的业务和行业现状（主要产品、客户、是不是某行业的主要供应商、行业需求是否旺盛、竞争格局）：research_company 联网检索。
+  这是外部报道：每条事实写明"据外部报道（未经核实）"和日期，并在回答末尾列出来源；再用 get_evidence 里的财务数据（收入增速与加速度、
+  毛利率、预期修正、财报反应）和 get_outlook / get_sectors 的行业数据核对：报道说"需求旺盛"，就看收入和预期是否真的在加速、上调，
+  一致就说一致，不一致就指出来。外部报道里的数字要标明来自报道，不能当成 Scout 计算的数字。
+- 用户说想买 / 打算买 / 准备卖 / 要不要卖某只股票时：同时调 check_trade_idea（和记录交易时同一套检查）和 get_evidence（完整证据包），
+  需要时再查 get_holdings、get_price_map、get_strategy_view（各策略是否选中）、research_company（业务和行业现状）。回答分四部分：
   1. 合不合用户的规则：逐条列出检查结果（卫星仓、大盘过滤、冷却期、建议股数、规则卡是否被否定、财报），不符合的放在前面；
-  2. 证据支持什么、反对什么：两边都写，数字来自工具；
+  2. 多视角证据：按 get_evidence 的视角逐个过一遍，相近的可以合并成这几组——趋势与价格结构（趋势、支撑阻力）、动量与相对强度、
+     波动与风险、大盘与行业（三段拆分、板块轮动）、事件与财报（催化、异动及原因、财报）、基本面（趋势、估值、预期与评级）、
+     资金与情绪（持股与做空、内部人、期权）、宏观。每组写：这组整体偏多 / 偏空 / 中性；最关键的 2–4 个数字；用一句白话说明这些数字是什么意思、
+     为什么重要（用证据里"—"后面的含义）；没有数据就写"缺少数据"。然后单独一段写"各视角之间的矛盾"（例如基本面改善但公司自身走势跑输），
+     并引用 Scout 过去对这只股票的判断和各视角的历史可靠度（样本不足要说明）；
   3. 用户的理由站不站得住：和数据对照（例如说"板块强"，要看行业贡献和公司自身是否一致）；没有经过检验的方法要说明"未经检验"；
   4. 如果要做：建议写下的证伪条件和验证期、需要提前知道的事件；卖出时说明持仓计划怎么规定、这样卖算不算提前离场。
   不要给出"买"或"卖"的结论，最后一句说明决定由用户做。
@@ -643,6 +654,131 @@ async def check_trade_idea(ticker: str, side: str, price: float | None = None, s
             "提示": "以上是对照用户自己规则的检查，数字由 Python 计算；结论由用户决定"}
 
 
+@tool("get_evidence", "某只股票的完整证据包（和 AI 解读用的是同一份）：14 个视角——趋势、支撑阻力、动量与相对强度、波动与风险、大盘与行业、"
+                      "催化、异动、财报、基本面趋势、估值、预期与评级、持股与做空、期权、宏观——每个数字都带名称、含义和标准读数；"
+                      "另有 Scout 的规则读数、新闻、异动原因、相关知识库结论、Scout 过去对它的判断和各视角的历史可靠度。全面分析或交易前评估时用",
+      TICKER, pages=("/ticker",))
+async def get_evidence(ticker: str) -> dict:
+    from scout import insight
+
+    facts = await insight.gather(universe.yahoo_symbol(ticker))
+    if not facts:
+        return {"error": f"{ticker} 不在 Scout 的标的池（没有数据）"}
+    pack = insight.build_pack(facts)
+    lenses = []
+    for lv in pack["lenses"]:
+        items = [f"{x['名称']}：{x['数值']}" + (f"（{x['读数']}）" if x.get("读数") else "") + f" — {x['含义']}"
+                 for x in lv["evidence"]]
+        lenses.append({"视角": lv["title"], "证据": items or ["这个视角没有数据"]})
+    return {"代码": pack["ticker"], "名称": pack["name"], "类型": pack["type"], "数据日期": pack["data_date"],
+            "各视角": lenses, "背景": pack["context"],
+            "说明": "数值已按中文格式化，原样引用；'—' 后是这个指标的含义，向用户解释时用它；没有数据的视角要说明缺失"}
+
+
+@tool("get_strategy_view", "策略视角：给 ticker 时，逐个检查 Scout 的每个策略（5 条规则及候选规则、技术信号筛选、基本面与事件角度排名、B0 动量打分、"
+                           "7 天内财报）今天是否选中这只股票、排第几，并标明每个策略的检验状态；不给 ticker 时，列出今天被最多策略同时选中的股票",
+      {"type": "object", "properties": {"ticker": {"type": "string", "description": "可选；不填则扫描全部股票"}}},
+      pages=("/screens",))
+async def get_strategy_view(ticker: str | None = None) -> dict:
+    from scout import b0, learned
+    from scout import screens as sc
+
+    asof, rows = await sc.snapshot()
+    if asof is None:
+        return {"note": "还没有每日快照"}
+    entries = await learned.current()
+    zh = {"confirmed": "已确认", "forward": "前向验证中", "backtested": "回测通过", "hypothesis": "假设", "rejected": "否定（检验无效）",
+          "retired": "已失效"}
+    by_rule = {r: zh.get(en["status"], en["status"]) for en in entries for r in [learned.rule_of(en)] if r}
+    by_key = {en["key"]: zh.get(en["status"], en["status"]) for en in entries}
+    picks: dict[str, list[str]] = {}                       # ticker → strategies selecting it today
+    detail: list[dict] = []
+    t = universe.yahoo_symbol(ticker) if ticker else None
+    for x in sc.all_screens():
+        if x.detector is not None:            # full membership (the screens page shows at most 40 rows)
+            names = [r["ticker"] for r in await db.fetch_all(
+                "SELECT ticker FROM scout.signal_hits WHERE asof = :d AND detector = :det ORDER BY score DESC",
+                {"d": asof, "det": x.detector.name})]
+        elif x is sc.EARNINGS_SCREEN:
+            names = [r["ticker"] for r in await db.fetch_all(
+                "SELECT ticker FROM scout.market_events WHERE event_type = 'earnings' AND event_date BETWEEN :a AND :b",
+                {"a": asof, "b": asof + timedelta(days=7)})]
+        else:
+            names = [r["ticker"] for r in rows if x.keep(r)]
+        status = (by_rule.get(x.detector.name, "未登记检验") if x.detector is not None else "描述性筛选（没有检验）")
+        for n in names:
+            picks.setdefault(n, []).append(f"{x.title}（{status}）")
+        if t:
+            detail.append({"策略": x.title, "分组": x.group, "检验状态": status, "今天选中": t in names,
+                           "条件": list(x.criteria), "选中数": len(names)})
+    angle_asof, angle_rows = await sc.angle_snapshot()
+    for x in sc.ANGLE_SCREENS:
+        ranked = sorted((r for r in angle_rows if r.get(x.key) is not None), key=lambda r: r[x.key], reverse=x.descending)
+        top = {r["ticker"] for r in ranked[:max(1, len(ranked) // 10)]}
+        status = by_key.get(x.strategy, "未登记检验")
+        for n in top:
+            picks.setdefault(n, []).append(f"{x.title}前 10%（{status}）")
+        if t:
+            pos = next((i for i, r in enumerate(ranked, 1) if r["ticker"] == t), None)
+            val = next((r[x.key] for r in ranked if r["ticker"] == t), None)
+            detail.append({"策略": x.title, "分组": "基本面与事件", "检验状态": status, "今天选中（前 10%）": t in top,
+                           "排名": f"{pos} / {len(ranked)}" if pos else "没有数据", "数值": knowledge.fmt(x.key, val), "条件": list(x.criteria)})
+    rk = await b0.latest_b0_rank()
+    if rk:
+        order = [r.get("ticker") for r in rk.get("rows") or []]
+        for n in order[:10]:
+            picks.setdefault(n, []).append("B0 动量打分前 10（只作信息）")
+        if t:
+            detail.append({"策略": "B0 动量打分", "分组": "我的策略", "检验状态": "用户自己的策略（只作信息）",
+                           "排名": f"{order.index(t) + 1} / {len(order)}" if t in order else "不在名单"})
+    if t:
+        return {"代码": t, "数据日期": str(asof), "各策略": detail, "被选中的策略": picks.get(t, []),
+                "说明": "只有检验状态为'前向验证中'或'已确认'的策略有经过检验的依据；'否定'表示经检验无效，'描述性筛选'只说明现在符合什么条件"}
+    top = sorted(picks.items(), key=lambda kv: -len(kv[1]))[:15]
+    return {"数据日期": str(asof), "被最多策略选中的股票": [{"代码": k, "策略数": len(v), "策略": v} for k, v in top],
+            "说明": "被多个策略选中不等于有优势：先看每个策略的检验状态"}
+
+
+@tool("research_company", "联网检索公司和行业的真实现状（外部报道，未经核实）：主要产品和收入构成、主要客户与供应商、在行业里的地位和份额、"
+                          "竞争格局、行业需求趋势和最新指引、主要风险；可以带一个具体问题。结果附来源和日期，同一天同一问题会复用缓存",
+      {"type": "object", "properties": {"ticker": {"type": "string"},
+                                        "question": {"type": "string", "description": "可选的具体问题，例如'它是不是英伟达 HBM 的主要供应商'"}},
+       "required": ["ticker"]}, pages=("/ticker",))
+async def research_company(ticker: str, question: str | None = None) -> dict:
+    from scout import responses
+
+    t = universe.yahoo_symbol(ticker)
+    inst = await db.fetch_one("SELECT name, sector, industry FROM scout.instruments WHERE ticker = :t", {"t": t}) or {}
+    q = (question or "").strip()
+    cached = await db.fetch_one("SELECT payload FROM scout.briefs WHERE kind = 'company_research' AND asof = CURRENT_DATE "
+                                "AND payload->>'ticker' = :t AND payload->>'question' = :q ORDER BY id DESC LIMIT 1", {"t": t, "q": q})
+    if cached:
+        return cached["payload"]["result"]
+    name = inst.get("name") or t
+    prompt = (f"Research {name} ({t}), {inst.get('industry') or inst.get('sector') or 'US-listed company'}, as of {date.today().isoformat()}. "
+              "Cover, with dates and the source of each fact: (1) main products / segments and their share of revenue; "
+              "(2) major customers and suppliers, and customer concentration; (3) its position in the industry: rank, market share, "
+              "whether it is a key supplier to the industry leaders; (4) competitors and how it compares; (5) the current demand trend of its "
+              "end markets and the latest company guidance; (6) the main risks. Distinguish reported facts from estimates and analyst opinion; "
+              "say plainly when something is not disclosed. Answer in Chinese."
+              + (f" Specific question: {q}" if q else ""))
+    settings = get_scout_settings()
+    data = await responses.create({"model": settings.scout_agent_model, "reasoning": {"effort": "low"},
+                                   "tools": [{"type": "web_search"}], "input": prompt}, timeout=150)
+    sources = []
+    for item in data.get("output") or []:
+        for part in item.get("content") or [] if item.get("type") == "message" else []:
+            for ann in part.get("annotations") or []:
+                if ann.get("type") == "url_citation" and ann.get("url") and ann["url"] not in [s["url"] for s in sources]:
+                    sources.append({"标题": ann.get("title"), "url": ann["url"]})
+    result = {"代码": t, "检索日期": date.today().isoformat(), "标注": "据外部报道（未经核实）",
+              "内容": responses.output_text(data)[:12000], "来源": sources[:12],
+              "说明": "外部报道，不是 Scout 的数据；引用时写明'据外部报道'，并用 get_evidence 的财务数据（收入增速、加速度、预期修正）和 get_outlook 的行业数据核对"}
+    await db.execute("INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('company_research', CURRENT_DATE, :c, CAST(:p AS JSONB))",
+                     {"c": result["内容"][:4000], "p": db.jsonb({"ticker": t, "question": q, "result": result})})
+    return result
+
+
 def _round(value: Any) -> Any:
     if isinstance(value, float):
         return round(value, 4)
@@ -651,6 +787,9 @@ def _round(value: Any) -> Any:
     if isinstance(value, list):
         return [_round(v) for v in value]
     return value
+
+
+LIMITS = {"get_evidence": 60000, "get_briefs": 20000, "get_strategy_view": 20000, "research_company": 16000}      # characters of tool output passed to the model
 
 
 async def call_tool(name: str, args: dict) -> str:
@@ -662,7 +801,7 @@ async def call_tool(name: str, args: dict) -> str:
     except Exception as exc:
         logger.warning("tool %s failed: %s", name, exc)
         result = {"error": repr(exc)[:300]}
-    return db.jsonb(_round(result))[:12000]
+    return db.jsonb(_round(result))[:LIMITS.get(name, 12000)]
 
 
 async def answer(question: str, channel: str = "telegram", remember: bool = True, trace: list | None = None) -> str:

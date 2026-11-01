@@ -295,7 +295,7 @@ async def handle_update(update: dict) -> None:
         from scout import trade_intake
 
         if not text.startswith("/") and not trade_intake.is_trade(text):
-            await send("🔎 正在查 Scout 的数据，复杂的问题约需半分钟到一分钟…", chat_id=chat_id)
+            await send("🔎 正在查 Scout 的数据：一般问题约半分钟；全面分析、交易前评估或联网检索公司情况需要 1–3 分钟…", chat_id=chat_id)
         if trade_intake.is_trade(text) or text.lower().startswith("/buy"):
             reply, markup = await trade_intake.handle(text.split(maxsplit=1)[1] if text.lower().startswith("/buy") and " " in text
                                                       else text)
