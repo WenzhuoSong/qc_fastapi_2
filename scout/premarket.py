@@ -118,11 +118,24 @@ async def _tickers_ranked_by_liquidity() -> dict[str, int]:
     return {r["ticker"]: i for i, r in enumerate(rows)}
 
 
+LIBRARY_HOURS = 48             # the shared news library keeps 48 h; older articles live in the archive
+
+
+def time_now() -> float:
+    import time
+
+    return time.time()
+
+
 async def _news_since(tickers: list[str], since: int) -> list[dict]:
+    """News since `since`; after a weekend or holiday that reaches past the library's 48 h, so the archive is read too."""
+    cols = "ticker, url, headline, source, relevance, llm_summary, sentiment, credibility, datetime_utc"
+    source = "public.ticker_news_library"
+    if since < time_now() - LIBRARY_HOURS * 3600:
+        source = f"(SELECT {cols} FROM public.ticker_news_library UNION SELECT {cols} FROM public.ticker_news_archive) n"
     try:
         rows = await db.fetch_all(
-            "SELECT ticker, url, headline, source, relevance, llm_summary, sentiment, credibility, datetime_utc "
-            "FROM public.ticker_news_library WHERE ticker = ANY(:t) AND datetime_utc >= :s "
+            f"SELECT {cols} FROM {source} WHERE ticker = ANY(:t) AND datetime_utc >= :s "
             "AND coalesce(relevance, '') <> 'not_relevant'", {"t": tickers, "s": since},
         )
     except Exception:
