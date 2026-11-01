@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Awaitable, Callable
 
 from scout import context, db, knowledge, universe
@@ -33,7 +33,12 @@ SYSTEM_PROMPT = f"""你是 Scout，一位美股研究助理，服务于一位有
 - 问到"我的持仓 / 我的 X / 止损 / 该不该卖"先调 get_holdings；问到复盘、执行纪律调 get_trade_journal。
 - 问到某只股票：get_snapshot（技术与涨跌拆分）、get_price_map（支撑阻力、买点、风险档位）、get_ai_insight（最近一次 AI 解读）、
   get_fundamentals（财报、估值、预期、持股、期权）、get_events（异动及原因）、get_news、get_earnings，按问题选。
-- 问到某个方法有没有用、某条规则是否通过：get_knowledge。问到 Scout 过去判断准不准：get_ledger。
+- 问到某个方法有没有用、某条规则是否通过：get_knowledge；问到前向验证、检验结果、研究进度：get_research。问到 Scout 过去判断准不准：get_ledger。
+- 问到大盘、板块轮动、哪个行业强弱：get_market_overview、get_sectors；问到 Scout 的行业观点：get_outlook。
+- 问到今天 / 盘前要注意什么：get_briefs（premarket / eod / market_focus / weekly）；本周数据和财报：get_calendar。
+- 问到机会卡 / 今天有什么机会：list_opportunities（会标明规则是否通过检验）。
+- 问到符合某种条件的股票（内部人买入、毛利高、接近新高、7 天内财报、B0 打分）：get_screens；按单个指标排序：screen。
+- 问到自选股、今天的提醒：get_watchlist；数据更新到哪天、某个任务有没有跑：get_data_status。
 - 可以并行调用多个工具；需要就多调几次，宁可多查一步，也不要凭印象回答。
 
 规则：
@@ -47,47 +52,21 @@ screen 可排序的字段：{", ".join(SNAPSHOT_FEATURES)}。"""
 
 TICKER = {"type": "object", "properties": {"ticker": {"type": "string"}}, "required": ["ticker"]}
 NONE = {"type": "object", "properties": {}}
-TOOLS = [
-    {"name": "get_holdings", "description": "用户当前持仓：成本、股数、最新收盘、盈亏、系统止损及依据、是否有待执行的卖出信号、买入理由，"
-                                            "以及卫星仓占用、大盘过滤状态和账户风险设置", "parameters": NONE},
-    {"name": "get_trade_journal", "description": "已平仓交易：盈亏、执行检查（按计划 / 提前 / 拖延、避险期买入、冷却期买入）和汇总",
-     "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}}}},
-    {"name": "get_snapshot", "description": "某只股票/ETF 最新一日的特征快照（含大盘 / 行业 / 公司自身的涨跌拆分）、所属行业、是否在 watchlist、最近的机会卡",
-     "parameters": TICKER},
-    {"name": "get_price_map", "description": "价位图：支撑 / 阻力、多空分界与情景、回调 / 突破买点（区间、失效位）、正常波动范围、风险档位、期权隐含波动和分析师目标价",
-     "parameters": TICKER},
-    {"name": "get_ai_insight", "description": "该股票最近一次 AI 解读（多视角）：结论、归因、各视角判断与要点、关键风险、观察点、失效条件和数据日期",
-     "parameters": TICKER},
-    {"name": "get_fundamentals", "description": "基本面与研究数据：财报趋势、估值（相对历史 / 行业）、预期与评级变化、财报反应、持股与做空、期权、宏观敏感度",
-     "parameters": TICKER},
-    {"name": "get_events", "description": "近 60 个交易日的异动（扣除大盘后 ≥ 3σ、涨跌 ≥ 8% 或 3 倍放量）及已归因的原因",
-     "parameters": TICKER},
-    {"name": "get_price_history", "description": "最近 N 个交易日的日线（日期、开高低收、成交量）",
-     "parameters": {"type": "object", "properties": {"ticker": {"type": "string"},
-                    "days": {"type": "integer", "minimum": 5, "maximum": 120}}, "required": ["ticker"]}},
-    {"name": "get_news", "description": "与该股票相关的新闻（标题、来源、摘要、时间），默认最近 3 天，最长可查 90 天历史",
-     "parameters": {"type": "object", "properties": {"ticker": {"type": "string"},
-                    "days": {"type": "integer", "minimum": 1, "maximum": 90}}, "required": ["ticker"]}},
-    {"name": "get_earnings", "description": "该股票最近一次和下一次财报（日期、EPS 预期/实际）", "parameters": TICKER},
-    {"name": "get_knowledge", "description": "Scout 知识库：各规则、选股方法和研究结论的检验状态（已确认 / 前向验证中 / 回测通过 / 假设 / 否定）和最新证据；可按关键词过滤",
-     "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "关键词，可选，如 动量、财报、突破"}}}},
-    {"name": "get_ledger", "description": "判断台账：Scout 过去的判断（AI 解读、机会卡、行业热度）事后对不对；给 ticker 时返回该股的历次判断",
-     "parameters": {"type": "object", "properties": {"ticker": {"type": "string"}}}},
-    {"name": "list_opportunities", "description": "规则触发的机会卡列表（标明规则是否通过检验）",
-     "parameters": {"type": "object", "properties": {
-         "status": {"type": "string", "enum": ["active", "closed", "all"]},
-         "ticker": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 30}}}},
-    {"name": "get_scoreboard", "description": "各规则的实盘表现与历史基准对比", "parameters": NONE},
-    {"name": "get_market_overview", "description": "最新收盘的大盘状态、主要指数与行业/主题 ETF 表现、大盘过滤状态",
-     "parameters": NONE},
-    {"name": "screen", "description": "按某个特征对最新一日的股票排序筛选（例如 rs_pct 最高、ret_5d 最低）",
-     "parameters": {"type": "object", "properties": {
-         "sort_by": {"type": "string", "enum": list(SNAPSHOT_FEATURES)},
-         "descending": {"type": "boolean"},
-         "sector": {"type": "string", "description": "GICS 行业英文名，可选"},
-         "watchlist_only": {"type": "boolean"},
-         "limit": {"type": "integer", "minimum": 1, "maximum": 30}}, "required": ["sort_by"]}},
-]
+# One registry for what the model sees (name, description, parameters), what runs, and which dashboard pages
+# the tool covers (tests check every page has at least one tool, so the chat can answer what the dashboard shows).
+TOOLS: list[dict] = []
+HANDLERS: dict[str, Callable[..., Awaitable[dict]]] = {}
+PAGES: dict[str, list[str]] = {}
+
+
+def tool(name: str, description: str, parameters: dict | None = None, pages: tuple[str, ...] = ()):
+    def register(fn: Callable[..., Awaitable[dict]]) -> Callable[..., Awaitable[dict]]:
+        TOOLS.append({"name": name, "description": description, "parameters": parameters or NONE})
+        HANDLERS[name] = fn
+        for page in pages:
+            PAGES.setdefault(page, []).append(name)
+        return fn
+    return register
 
 
 def _p(x: float | None, digits: int = 1) -> str:
@@ -103,6 +82,10 @@ async def _latest_feature_date() -> date | None:
     return row["d"] if row else None
 
 
+@tool('get_snapshot',
+      '某只股票/ETF 最新一日的特征快照（含大盘 / 行业 / 公司自身的涨跌拆分）、所属行业、是否在 watchlist、最近的机会卡',
+      TICKER,
+      pages=('/ticker',))
 async def get_snapshot(ticker: str) -> dict:
     t = universe.yahoo_symbol(ticker)
     feat = await db.fetch_one(
@@ -129,6 +112,12 @@ async def get_snapshot(ticker: str) -> dict:
             "features_date": feat and feat["date"], "indicators": readings, "latest_opportunity": opp}
 
 
+@tool('get_price_history',
+      '最近 N 个交易日的日线（日期、开高低收、成交量）',
+      {'type': 'object',
+       'properties': {'ticker': {'type': 'string'}, 'days': {'type': 'integer', 'minimum': 5, 'maximum': 120}},
+       'required': ['ticker']},
+      pages=('/ticker',))
 async def get_price_history(ticker: str, days: int = 30) -> dict:
     t = universe.yahoo_symbol(ticker)
     rows = await db.fetch_all(
@@ -141,6 +130,12 @@ async def get_price_history(ticker: str, days: int = 30) -> dict:
     ], "columns": ["date", "open", "high", "low", "close", "volume"]}
 
 
+@tool('get_news',
+      '与该股票相关的新闻（标题、来源、摘要、时间），默认最近 3 天，最长可查 90 天历史',
+      {'type': 'object',
+       'properties': {'ticker': {'type': 'string'}, 'days': {'type': 'integer', 'minimum': 1, 'maximum': 90}},
+       'required': ['ticker']},
+      pages=('/ticker',))
 async def get_news(ticker: str, days: int = 3) -> dict:
     t = universe.yahoo_symbol(ticker)
     days = min(max(int(days), 1), 90)
@@ -148,6 +143,10 @@ async def get_news(ticker: str, days: int = 3) -> dict:
     return {"ticker": t, "days": days, "news": await context.load_news(t, hours=days * 24, limit=limit)}
 
 
+@tool('get_earnings',
+      '该股票最近一次和下一次财报（日期、EPS 预期/实际）',
+      TICKER,
+      pages=('/ticker',))
 async def get_earnings(ticker: str) -> dict:
     t = universe.yahoo_symbol(ticker)
     today = date.today()
@@ -155,6 +154,13 @@ async def get_earnings(ticker: str) -> dict:
     return {"ticker": t, **context.earnings_summary(events, today)} if events else {"ticker": t, "note": "无财报日历数据"}
 
 
+@tool('list_opportunities',
+      '规则触发的机会卡列表（标明规则是否通过检验）',
+      {'type': 'object',
+       'properties': {'status': {'type': 'string', 'enum': ['active', 'closed', 'all']},
+                      'ticker': {'type': 'string'},
+                      'limit': {'type': 'integer', 'minimum': 1, 'maximum': 30}}},
+      pages=('/', '/ideas'))
 async def list_opportunities(status: str = "active", ticker: str | None = None, limit: int = 10) -> dict:
     where = {"active": "status IN ('new', 'triggered')", "closed": "status NOT IN ('new', 'triggered')", "all": "true"}[status]
     params: dict[str, Any] = {"n": limit}
@@ -173,12 +179,18 @@ async def list_opportunities(status: str = "active", ticker: str | None = None, 
     return {"opportunities": [{**r, "规则检验": "未通过检验，只作观察" if r["primary_detector"] in quiet else "未被否定"} for r in rows]}
 
 
+@tool('get_scoreboard',
+      '各规则的实盘表现与历史基准对比',
+      pages=('/scoreboard',))
 async def get_scoreboard() -> dict:
     from scout.tracker import scoreboard
 
     return {"scoreboard": await scoreboard()}
 
 
+@tool('get_market_overview',
+      '最新收盘的大盘状态、主要指数与行业/主题 ETF 表现、大盘过滤状态',
+      pages=('/', '/market'))
 async def get_market_overview() -> dict:
     brief = await db.fetch_one("SELECT asof, payload FROM scout.briefs WHERE kind = 'eod' ORDER BY asof DESC, id DESC LIMIT 1")
     d = await _latest_feature_date()
@@ -203,6 +215,14 @@ async def get_market_overview() -> dict:
             "大盘过滤": market_filter.text(await market_filter.current())}
 
 
+@tool("screen", "按某个特征对最新一日的股票排序筛选（例如 rs_pct 最高、ret_5d 最低）",
+      {"type": "object", "properties": {
+          "sort_by": {"type": "string", "enum": list(SNAPSHOT_FEATURES)},
+          "descending": {"type": "boolean"},
+          "sector": {"type": "string", "description": "GICS 行业英文名，可选"},
+          "watchlist_only": {"type": "boolean"},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 30}}, "required": ["sort_by"]},
+      pages=("/screens",))
 async def screen(sort_by: str, descending: bool = True, sector: str | None = None,
                  watchlist_only: bool = False, limit: int = 10) -> dict:
     if sort_by not in SNAPSHOT_FEATURES:
@@ -230,6 +250,10 @@ async def screen(sort_by: str, descending: bool = True, sector: str | None = Non
     ]}
 
 
+@tool('get_holdings',
+      '用户当前持仓：成本、股数、最新收盘、盈亏、系统止损及依据、是否有待执行的卖出信号、买入理由，组合风险（波动、分散度、风险贡献、风险档位），'
+      '以及卫星仓占用、大盘过滤状态和账户风险设置',
+      pages=('/', '/trades'))
 async def get_holdings() -> dict:
     from scout import market_filter, portfolio, position_risk
 
@@ -251,13 +275,28 @@ async def get_holdings() -> dict:
             "买入理由": thesis.get("reason") or t.get("note"), "证伪条件": thesis.get("falsification"),
             "来源": thesis.get("source")})
     sat = portfolio.satellite(settings)
-    return {"持仓": rows, "大盘过滤": market_filter.text(await market_filter.current()),
+    risk: dict = {}
+    open_rows = await portfolio.trades(open_only=True)
+    if open_rows:
+        hr = await portfolio.holdings_risk(open_rows, settings.get("account_size"))
+        v = hr.get("vol") or {}
+        risk = {"组合年化波动": _usd(v.get("usd")), "一个月正常波动（1σ）": _usd(v.get("month_usd")),
+                "占账户（月）": f"{v['month_pct_account'] * 100:.1f}%" if v.get("month_pct_account") else "—",
+                "分散度": f"{v['diversification']:.2f}（1 = 完全不分散，越大分散越好）" if v.get("diversification") else "—",
+                "风险贡献": [f"{c['ticker']} {c['share'] * 100:.0f}%" for c in v.get("contrib") or []],
+                "风险档位": {tk: f"第 {t['tier']} 档（{t['label']}）" for tk, t in (hr.get("tiers") or {}).items() if t},
+                "说明": f"按最近 {v.get('sessions', 63)} 个交易日的收益和相关性计算"}
+    return {"持仓": rows, "组合风险": risk, "大盘过滤": market_filter.text(await market_filter.current()),
             "卫星仓": ({"市值": _usd(sat["used"]), "占账户": f"{sat['pct'] * 100:.1f}%", "上限": f"{sat['cap_pct'] * 100:.0f}%",
                       "剩余额度": _usd(sat["room"])} if sat else "未设置账户规模"),
             "账户设置": {"账户规模": _usd(settings.get("account_size")), "单笔风险": f"{settings['risk_pct'] * 100:.1f}%",
                      "单只仓位上限": f"{settings['max_position_pct'] * 100:.0f}%", "单只月波动上限": f"{settings['vol_budget_pct'] * 100:.1f}%"}}
 
 
+@tool('get_trade_journal',
+      '已平仓交易：盈亏、执行检查（按计划 / 提前 / 拖延、避险期买入、冷却期买入）和汇总',
+      {'type': 'object', 'properties': {'limit': {'type': 'integer', 'minimum': 1, 'maximum': 50}}},
+      pages=('/trades',))
 async def get_trade_journal(limit: int = 20) -> dict:
     from scout import portfolio
 
@@ -273,6 +312,10 @@ async def get_trade_journal(limit: int = 20) -> dict:
     return {"已平仓": rows, "执行汇总": summary, "整体": portfolio.journal_summary(closed)}
 
 
+@tool('get_price_map',
+      '价位图：支撑 / 阻力、多空分界与情景、回调 / 突破买点（区间、失效位）、正常波动范围、风险档位、期权隐含波动和分析师目标价',
+      TICKER,
+      pages=('/ticker',))
 async def get_price_map(ticker: str) -> dict:
     from scout import levels, position_risk
 
@@ -292,6 +335,10 @@ async def get_price_map(ticker: str) -> dict:
             "说明": "价位是参考，不是经过回放检验的规则信号；持仓按回落 20% 管理，不按这里的失效位卖出"}
 
 
+@tool('get_ai_insight',
+      '该股票最近一次 AI 解读（多视角）：结论、归因、各视角判断与要点、关键风险、观察点、失效条件和数据日期',
+      TICKER,
+      pages=('/ticker',))
 async def get_ai_insight(ticker: str) -> dict:
     from scout import insight
 
@@ -307,6 +354,10 @@ async def get_ai_insight(ticker: str) -> dict:
                                                  for lv in ins.get("lenses") or []]}
 
 
+@tool('get_fundamentals',
+      '基本面与研究数据：财报趋势、估值（相对历史 / 行业）、预期与评级变化、财报反应、持股与做空、期权、宏观敏感度',
+      TICKER,
+      pages=('/ticker',))
 async def get_fundamentals(ticker: str) -> dict:
     from scout import fundamentals, research
 
@@ -325,6 +376,10 @@ async def get_fundamentals(ticker: str) -> dict:
             "指标": [knowledge.evidence(k, v).as_dict() for k, v in values.items() if k in knowledge.features() and v is not None]}
 
 
+@tool('get_events',
+      '近 60 个交易日的异动（扣除大盘后 ≥ 3σ、涨跌 ≥ 8% 或 3 倍放量）及已归因的原因',
+      TICKER,
+      pages=('/ticker',))
 async def get_events(ticker: str) -> dict:
     from scout import event_cause, events
 
@@ -338,6 +393,10 @@ async def get_events(ticker: str) -> dict:
                               "原因": (causes.get(x["date"]) or {}).get("summary") or "尚未归因"} for x in evs]}
 
 
+@tool('get_knowledge',
+      'Scout 知识库：各规则、选股方法和研究结论的检验状态（已确认 / 前向验证中 / 回测通过 / 假设 / 否定）和最新证据；可按关键词过滤',
+      {'type': 'object', 'properties': {'query': {'type': 'string', 'description': '关键词，可选，如 动量、财报、突破'}}},
+      pages=('/knowledge',))
 async def get_knowledge(query: str | None = None) -> dict:
     from scout import learned
 
@@ -354,6 +413,10 @@ async def get_knowledge(query: str | None = None) -> dict:
     return {"条目": rows[:40], "共": len(rows)}
 
 
+@tool('get_ledger',
+      '判断台账：Scout 过去的判断（AI 解读、机会卡、行业热度）事后对不对；给 ticker 时返回该股的历次判断',
+      {'type': 'object', 'properties': {'ticker': {'type': 'string'}}},
+      pages=('/ledger',))
 async def get_ledger(ticker: str | None = None) -> dict:
     from scout import ledger
 
@@ -365,14 +428,175 @@ async def get_ledger(ticker: str | None = None) -> dict:
     return out
 
 
-HANDLERS: dict[str, Callable[..., Awaitable[dict]]] = {
-    "get_holdings": get_holdings, "get_trade_journal": get_trade_journal, "get_price_map": get_price_map,
-    "get_ai_insight": get_ai_insight, "get_fundamentals": get_fundamentals, "get_events": get_events,
-    "get_knowledge": get_knowledge, "get_ledger": get_ledger,
-    "get_snapshot": get_snapshot, "get_price_history": get_price_history, "get_news": get_news,
-    "get_earnings": get_earnings, "list_opportunities": list_opportunities, "get_scoreboard": get_scoreboard,
-    "get_market_overview": get_market_overview, "screen": screen,
-}
+
+
+BRIEFS = {"premarket": "盘前简报", "eod": "收盘扫描简报", "market_focus": "市场关注点", "weekly": "周报"}
+STUDIES = ("gate", "rule_benchmarks", "exit_vs_hold", "exit_redeploy", "exit_study", "hold_cap", "horizon_profile",
+           "osap_replication", "sharadar_recheck", "level_study", "insight_eval", "agent_eval")
+
+
+@tool("get_briefs", "Scout 最近一期的简报全文：盘前简报（隔夜行情、持仓盘前位置、财报、经济数据、新闻）、收盘扫描简报、市场关注点或周报",
+      {"type": "object", "properties": {"kind": {"type": "string", "enum": list(BRIEFS)}}, "required": ["kind"]},
+      pages=("/", "/market"))
+async def get_briefs(kind: str) -> dict:
+    row = await db.fetch_one("SELECT asof, content, created_at FROM scout.briefs WHERE kind = :k ORDER BY id DESC LIMIT 1", {"k": kind})
+    if not row:
+        return {"note": f"还没有{BRIEFS.get(kind, kind)}"}
+    return {"简报": BRIEFS.get(kind, kind), "数据日期": str(row["asof"]), "生成时间": str(row["created_at"])[:16],
+            "全文": (row["content"] or "")[:8000]}
+
+
+@tool("get_sectors", "板块全景：每个行业和主题 ETF 的热度、轮动象限（领涨 / 转弱 / 落后 / 改善）及上周象限、相对 SPY、"
+                     "站上 50 日线比例、净新高、资金流、新闻关注度", pages=("/market",))
+async def get_sectors() -> dict:
+    from scout import sector_news
+    from scout import sectors as sec
+
+    asof, rows = await sec.latest()
+    if asof is None:
+        return {"note": "还没有板块数据"}
+    news = await sector_news.by_sector()
+
+    def row(r: dict) -> dict:
+        n = news.get(r.get("key"), {})
+        return {"名称": r.get("name"), "ETF": r.get("key"), "热度": r.get("heat_label"), "热度分": r.get("heat"),
+                "轮动象限": sec.QUADRANTS.get(r.get("quadrant"), r.get("quadrant")),
+                "上周象限": sec.QUADRANTS.get(r.get("quadrant_prev"), r.get("quadrant_prev")),
+                "20 日相对 SPY": _p(r.get("rel_20")), "站上 50 日线": _p(r.get("pct_above_50"), 0).lstrip("+"),
+                "净新高": r.get("net_new_highs"), "资金流 CMF": r.get("cmf_20"), "成交额热度": r.get("rel_dollar_vol"),
+                "新闻关注度": sec.attention_label(n.get("news_attention"))}
+
+    sectors = sorted((r for r in rows if r.get("kind") == "sector"), key=lambda r: -(r.get("heat") or 0))
+    return {"数据日期": str(asof), "行业": [row(r) for r in sectors], "主题": [row(r) for r in rows if r.get("kind") == "theme"]}
+
+
+@tool("get_outlook", "每周行业展望：当前市场驱动、AI 的行业判断（目标 ETF、方向、期限、依据方法、证伪条件）以及历次行业判断事后的打分",
+      pages=("/outlook",))
+async def get_outlook() -> dict:
+    from scout import outlook
+
+    rec = await outlook.latest()
+    rows = await db.fetch_all(
+        "SELECT j.ticker, j.asof, j.stance, j.lens, j.payload->>'headline' AS headline, o60.excess_spy AS x60, o60.hit AS hit60 "
+        "FROM scout.judgments j LEFT JOIN scout.judgment_outcomes o60 ON o60.judgment_id = j.id AND o60.horizon = 60 "
+        "WHERE j.kind = 'sector_thesis' ORDER BY j.asof DESC, j.id DESC LIMIT 15")
+    out = rec.get("outlook") if rec else None
+    return {"数据日期": (rec or {}).get("asof"), "市场驱动": (out or {}).get("drivers"),
+            "本周判断": (out or {}).get("theses") or (out or {}).get("no_thesis_reason") or "没有判断",
+            "历次判断": [{"日期": str(r["asof"]), "目标": r["ticker"], "方向": {1: "偏多", 0: "中性", -1: "偏空"}.get(r["stance"]),
+                       "判断": r["headline"], "60 日相对 SPY": _p(r["x60"]) if r["x60"] is not None else "未到期",
+                       "60 日是否符合": None if r["hit60"] is None else ("符合" if r["hit60"] else "不符合")} for r in rows]}
+
+
+@tool("get_screens", "预设筛选：不给 screen_id 时列出全部筛选（规则、技术信号、事件、基本面与事件角度、B0 动量打分）和今天的数量；"
+                     "给 screen_id 时返回符合条件的股票",
+      {"type": "object", "properties": {"screen_id": {"type": "string", "description": "筛选 id，先不带参数调用一次查看可用 id"}}},
+      pages=("/screens",))
+async def get_screens(screen_id: str | None = None) -> dict:
+    from scout import b0, learned
+    from scout import screens as sc
+
+    asof, rows = await sc.snapshot()
+    if asof is None:
+        return {"note": "还没有每日快照"}
+    quiet = learned.held_back(await learned.current())
+    angle_asof, angle_rows = await sc.angle_snapshot()
+    if not screen_id:
+        listing = [{"id": x.id, "名称": x.title, "分组": x.group, "条件": list(x.criteria),
+                    "规则检验": ("未通过检验" if x.detector.name in quiet else "未被否定") if x.detector is not None else "描述性筛选"}
+                   for x in sc.all_screens()]
+        listing += [{"id": x.id, "名称": x.title, "分组": "基本面与事件", "条件": list(x.criteria),
+                     "今天数量": len(sc.run_angle(x, angle_rows))} for x in sc.ANGLE_SCREENS]
+        listing.append({"id": "b0", "名称": "B0 动量打分", "分组": "我的策略", "条件": ["B0 自己的动量排名和大盘过滤（只作信息）"]})
+        return {"数据日期": str(asof), "筛选": listing}
+    if screen_id == "b0":
+        rk = await b0.latest_b0_rank()
+        return rk or {"note": "B0 打分未开启（SCOUT_B0_SCORE 未设置）"}
+    angle = next((x for x in sc.ANGLE_SCREENS if x.id == screen_id), None)
+    if angle:
+        found = sc.run_angle(angle, angle_rows)
+        return {"筛选": angle.title, "数据日期": str(angle_asof), "条件": list(angle.criteria),
+                "股票": [{"代码": r["ticker"], "名称": r.get("name"), "数值": knowledge.fmt(angle.key, r.get(angle.key))} for r in found]}
+    current = next((x for x in sc.all_screens() if x.id == screen_id), None)
+    if current is None:
+        return {"error": f"没有 id 为 {screen_id} 的筛选"}
+    found = await sc.run(current, asof, rows)
+    return {"筛选": current.title, "数据日期": str(asof), "条件": list(current.criteria),
+            "规则检验": ("未通过检验，只作观察" if current.detector.name in quiet else "未被否定") if current.detector is not None else "描述性筛选",
+            "股票": [{"代码": r["ticker"], "名称": r.get("name"), "收盘": r.get("close"), "1 日": _p(r.get("ret_1d")),
+                    "20 日": _p(r.get("ret_20d")), "相对强度": _p(r.get("rs_pct"), 0).lstrip("+")} for r in found[:20]]}
+
+
+@tool("get_research", "研究进度：正在前向验证的规则 / 方法（开始日期、完成的信号数、目前的超额、离确认还差什么）、"
+                      "最近的检验关记录（通过与否）和最近的研究报告摘要", pages=("/knowledge", "/scoreboard"))
+async def get_research() -> dict:
+    from scout import forward, learned
+
+    entries = await learned.current()
+    progress = []
+    for en in forward.under_test(entries):
+        try:
+            progress.append({"key": en["key"], "标题": en.get("title"), "状态": en["status"], **await forward.report(en, date.today())})
+        except Exception as exc:
+            progress.append({"key": en["key"], "error": repr(exc)[:120]})
+    runs = await db.fetch_all("SELECT key, family, passed, ran_at FROM scout.gate_runs ORDER BY ran_at DESC LIMIT 15")
+    studies = await db.fetch_all("SELECT DISTINCT ON (kind) kind, asof, content FROM scout.briefs WHERE kind = ANY(:k) "
+                                 "ORDER BY kind, id DESC", {"k": list(STUDIES)})
+    return {"前向验证": progress,
+            "检验关记录": [{"规格": r["key"], "族": r["family"], "结果": "通过" if r["passed"] else "未通过", "日期": str(r["ran_at"])[:10]}
+                      for r in runs],
+            "研究报告": [{"类型": r["kind"], "日期": str(r["asof"]), "摘要": (r["content"] or "")[:600]} for r in studies],
+            "说明": "本地数据（Sharadar 等）上的研究结论记在知识库条目和研究文档里，用 get_knowledge 查"}
+
+
+@tool("get_calendar", "本周日历：美国经济数据与美联储事件（美东 / 北京时间、重要性、预期、前值），以及持仓、自选和大市值股票的财报日期",
+      pages=("/",))
+async def get_calendar() -> dict:
+    from scout import premarket
+
+    econ = await context.economic_calendar()
+    today = date.today()
+    rows = await db.fetch_all("SELECT ticker, event_date, payload FROM scout.market_events WHERE event_type = 'earnings' "
+                              "AND event_date BETWEEN :a AND :b ORDER BY event_date", {"a": today, "b": today + timedelta(days=7)})
+    major = await premarket._tickers_ranked_by_liquidity()
+    mine = {r["ticker"] for r in await db.fetch_all("SELECT ticker FROM scout.trades WHERE closed_on IS NULL "
+                                                    "UNION SELECT ticker FROM scout.watchlist WHERE active")}
+    hour = {"bmo": "盘前", "amc": "盘后"}
+    return {"经济数据": [{"事件": e["title_zh"], "日期": e["date"], "美东": e["time_et"], "北京": e["time_bj"], "重要性": e["impact"],
+                       "预期": e.get("forecast"), "前值": e.get("previous")} for e in econ],
+            "财报": [{"代码": r["ticker"], "日期": str(r["event_date"]), "时间": hour.get((r["payload"] or {}).get("hour"), "未定"),
+                    "身份": "持仓或自选" if r["ticker"] in mine else "大市值"}
+                   for r in rows if r["ticker"] in mine or r["ticker"] in major][:40]}
+
+
+@tool("get_watchlist", "自选股：每只的主题、最新收盘和涨跌、相对强度，以及最近两天 Scout 推送过的盘中提醒", pages=("/watchlist",))
+async def get_watchlist() -> dict:
+    rows = await db.fetch_all(
+        "SELECT w.ticker, w.theme, f.date, f.payload FROM scout.watchlist w LEFT JOIN LATERAL (SELECT date, payload FROM scout.features_daily "
+        "WHERE ticker = w.ticker ORDER BY date DESC LIMIT 1) f ON true WHERE w.active ORDER BY w.theme, w.ticker")
+    alerts = await db.fetch_all("SELECT kind, ticker, payload, created_at FROM scout.alerts WHERE created_at > now() - interval '2 days' "
+                                "ORDER BY created_at DESC LIMIT 30")
+    return {"自选": [{"代码": r["ticker"], "主题": r["theme"], "日期": str(r["date"]), "收盘": (r["payload"] or {}).get("close"),
+                    "1 日": _p((r["payload"] or {}).get("ret_1d")), "20 日": _p((r["payload"] or {}).get("ret_20d")),
+                    "相对强度": _p((r["payload"] or {}).get("rs_pct"), 0).lstrip("+")} for r in rows],
+            "最近提醒": [{"类型": a["kind"], "代码": a["ticker"], "时间": str(a["created_at"])[:16],
+                      "内容": (a["payload"] or {}).get("text") if isinstance(a["payload"], dict) else None} for a in alerts]}
+
+
+@tool("get_data_status", "数据状态：各数据源（行情、SEC 财报与文件、内部人、预期与评级、持股、期权、宏观）更新到哪天、覆盖多少股票、"
+                         "最近的数据质量问题、各定时任务最近一次运行和存储占用", pages=("/data",))
+async def get_data_status() -> dict:
+    from scout import research_data
+
+    st = await research_data.status()
+    ins = await db.fetch_one("SELECT max(filed) AS last, count(DISTINCT ticker) AS tickers, count(*) AS n FROM scout.insider_trades")
+    loads = await db.fetch_one("SELECT max(period) AS p FROM scout.data_loads WHERE source = 'sec_insiders'")
+    return {"内部人交易（SEC Form 4 数据集，按季度发布）": {"最新申报日": str((ins or {}).get("last")), "股票数": (ins or {}).get("tickers"),
+                                              "记录数": (ins or {}).get("n"), "已载入的季度": (loads or {}).get("p")},
+            "快照": st.get("snapshots"), "财务": st.get("financials"), "文件": st.get("filings"), "评级变动": st.get("actions"),
+            "宏观": st.get("macro"), "质量问题": st.get("issues"), "任务运行": [{"任务": r["job"], "状态": r["status"],
+                                                                     "开始": str(r["started_at"])[:16]} for r in st.get("runs") or []],
+            "存储": st.get("storage")}
 
 
 def _round(value: Any) -> Any:

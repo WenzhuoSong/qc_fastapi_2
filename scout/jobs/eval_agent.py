@@ -28,6 +28,15 @@ QUESTIONS: list[tuple[str, set[str]]] = [
     ("相对强度最高的 5 只股票是哪些？", {"screen"}),
     ("NVDA 下一次财报是什么时候？", {"get_earnings"}),
     ("如果 SHOP 跌到 140，按我的计划要卖吗？", {"get_holdings"}),
+    ("今天盘前简报说了什么？", {"get_briefs"}),
+    ("哪些板块在从落后转向改善？", {"get_sectors"}),
+    ("Scout 现在看好哪个行业？之前的行业判断准吗？", {"get_outlook"}),
+    ("最近有内部人集中买入的股票吗？", {"get_screens"}),
+    ("突破回踩的前向验证进行到哪一步了？", {"get_research"}),
+    ("这周有什么重要的经济数据和财报？", {"get_calendar"}),
+    ("我的自选股里最近谁涨得最多？", {"get_watchlist"}),
+    ("我的持仓是不是太集中了？组合风险怎么样？", {"get_holdings"}),
+    ("内部人交易数据更新到什么时候了？", {"get_data_status"}),
 ]
 
 NUM = re.compile(r"(?<![\w.])[-+−]?\d[\d,]*\.?\d*")
