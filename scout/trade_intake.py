@@ -129,14 +129,13 @@ async def buy_checks(p: dict, day: date) -> list[str]:
         lines.append(f"卫星仓：买入后 ${after:,.0f}，占账户 {after / settings['account_size']:.1%}（上限 {sat['cap_pct']:.0%}）"
                      + ("，⚠️ 超过上限" if after > sat["cap"] else ""))
     mf = await market_filter.current()
-    if mf and mf["off"]:
-        lines.append("⚠️ 大盘过滤处于避险：按计划这段时间不新买入")
+    lines.append("⚠️ 大盘过滤处于避险：按计划这段时间不新买入" if mf and mf["off"] else "大盘过滤：正常")
     tier = position_risk.tier(f.get("vol_63_pct"))
     if tier:
         lines.append(f"风险档位：第 {tier['tier']} 档（{tier['label']}）")
     loss = await portfolio.recent_loss_same_industry({"ticker": t, "opened_on": day, "id": 0})
-    if loss:
-        lines.append(f"⚠️ 冷却期：{loss['sessions']} 个交易日前刚在同一细分行业亏损卖出 {loss['ticker']}（{loss['pnl_pct']:+.1%}）")
+    lines.append(f"⚠️ 冷却期：{loss['sessions']} 个交易日前刚在同一细分行业亏损卖出 {loss['ticker']}（{loss['pnl_pct']:+.1%}）"
+                 if loss else f"冷却期：无（近 {portfolio.COOLDOWN_SESSIONS} 个交易日没有在同一细分行业亏损卖出）")
     from scout import learned
 
     quiet = learned.held_back(await learned.current())
@@ -144,10 +143,14 @@ async def buy_checks(p: dict, day: date) -> list[str]:
                              "ORDER BY asof DESC LIMIT 1", {"t": t})
     if opp and opp["primary_detector"] in quiet:
         lines.append(f"⚠️ 当前的机会卡（{opp['asof']}，{opp['primary_detector']}）来自未通过检验的规则，不能当作买入理由")
+    elif opp:
+        lines.append(f"当前的机会卡（{opp['asof']}，{opp['primary_detector']}）的规则未被否定")
+    else:
+        lines.append("没有活跃的机会卡")
     if f.get("sector_ret_20d") is not None and f.get("own_ret_20d") is not None:
         lines.append(f"近 20 日：大盘 {knowledge.fmt('market_ret_20d', f.get('market_ret_20d'))}、"
                      f"行业 {knowledge.fmt('sector_ret_20d', f['sector_ret_20d'])}、公司自身 {knowledge.fmt('own_ret_20d', f['own_ret_20d'])}")
-    lines += await earnings_lines(t, day)
+    lines += await earnings_lines(t, day) or ["7 天内没有自己或同行业大公司的财报"]
     held = [x for x in await portfolio.trades(open_only=True) if x["ticker"] != t]
     inst = await db.fetch_one("SELECT sector, industry FROM scout.instruments WHERE ticker = :t", {"t": t}) or {}
     same = [x["ticker"] for x in held if inst.get("industry") and x.get("industry") == inst["industry"]]

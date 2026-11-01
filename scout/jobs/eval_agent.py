@@ -37,6 +37,9 @@ QUESTIONS: list[tuple[str, set[str]]] = [
     ("我的自选股里最近谁涨得最多？", {"get_watchlist"}),
     ("我的持仓是不是太集中了？组合风险怎么样？", {"get_holdings"}),
     ("内部人交易数据更新到什么时候了？", {"get_data_status"}),
+    ("我想在 75 附近再买 200 股 PBF，你觉得怎么样？", {"check_trade_idea"}),
+    ("打算买点 NVDA，财报前布局，合适吗？", {"check_trade_idea"}),
+    ("SHOP 一直跌，我准备卖掉，要不要卖？", {"check_trade_idea"}),
 ]
 
 NUM = re.compile(r"(?<![\w.])[-+−]?\d[\d,]*\.?\d*")

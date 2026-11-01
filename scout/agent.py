@@ -37,6 +37,13 @@ SYSTEM_PROMPT = f"""你是 Scout，一位美股研究助理，服务于一位有
 - 问到大盘、板块轮动、哪个行业强弱：get_market_overview、get_sectors；问到 Scout 的行业观点：get_outlook。
 - 问到今天 / 盘前要注意什么：get_briefs（premarket / eod / market_focus / weekly）；本周数据和财报：get_calendar。
 - 问到机会卡 / 今天有什么机会：list_opportunities（会标明规则是否通过检验）。
+- 用户说想买 / 打算买 / 准备卖 / 要不要卖某只股票时：先调 check_trade_idea（和记录交易时同一套检查），再按需要调 get_ai_insight、
+  get_fundamentals、get_events、get_snapshot 等。回答分四部分：
+  1. 合不合用户的规则：逐条列出检查结果（卫星仓、大盘过滤、冷却期、建议股数、规则卡是否被否定、财报），不符合的放在前面；
+  2. 证据支持什么、反对什么：两边都写，数字来自工具；
+  3. 用户的理由站不站得住：和数据对照（例如说"板块强"，要看行业贡献和公司自身是否一致）；没有经过检验的方法要说明"未经检验"；
+  4. 如果要做：建议写下的证伪条件和验证期、需要提前知道的事件；卖出时说明持仓计划怎么规定、这样卖算不算提前离场。
+  不要给出"买"或"卖"的结论，最后一句说明决定由用户做。
 - 问到符合某种条件的股票（内部人买入、毛利高、接近新高、7 天内财报、B0 打分）：get_screens；按单个指标排序：screen。
 - 问到自选股、今天的提醒：get_watchlist；数据更新到哪天、某个任务有没有跑：get_data_status。
 - 可以并行调用多个工具；需要就多调几次，宁可多查一步，也不要凭印象回答。
@@ -597,6 +604,43 @@ async def get_data_status() -> dict:
             "宏观": st.get("macro"), "质量问题": st.get("issues"), "任务运行": [{"任务": r["job"], "状态": r["status"],
                                                                      "开始": str(r["started_at"])[:16]} for r in st.get("runs") or []],
             "存储": st.get("storage")}
+
+
+@tool("check_trade_idea", "交易前检查（用户说想买 / 打算卖时先调用）：与记录交易时完全相同的逐项检查——是否在买点区间、回落 20% 的止损和亏损金额、"
+                          "建议股数、买入后卫星仓、大盘过滤、风险档位、同行业冷却期、是否来自未通过检验的规则卡、自己和同行业大公司的财报、"
+                          "大盘 / 行业 / 公司自身的涨跌拆分、同一细分行业已有持仓；卖出时对照持仓计划（是否提前离场）。没给价格用最近收盘，没给股数用建议股数",
+      {"type": "object", "properties": {
+          "ticker": {"type": "string"}, "side": {"type": "string", "enum": ["buy", "sell"]},
+          "price": {"type": "number", "description": "打算的成交价，可选"},
+          "shares": {"type": "number", "description": "打算的股数，可选；卖出全部可不填"}}, "required": ["ticker", "side"]},
+      pages=("/trades",))
+async def check_trade_idea(ticker: str, side: str, price: float | None = None, shares: float | None = None) -> dict:
+    from scout import portfolio, trade_intake
+    from scout.market_calendar import us_equity_market_status
+
+    t = universe.yahoo_symbol(ticker)
+    last = await db.fetch_one("SELECT date, close FROM scout.bars_daily WHERE ticker = :t ORDER BY date DESC LIMIT 1", {"t": t})
+    if not last:
+        return {"error": f"{t} 不在 Scout 的标的池（没有行情）"}
+    day = trade_intake.trade_day({"date": None}, date.fromisoformat(us_equity_market_status().market_date))
+    px = price or last["close"]
+    notes = [] if price else [f"没给价格，按最近收盘 {last['close']:.2f}（{last['date']}）计算"]
+    if side == "sell":
+        held = [x for x in await portfolio.trades(open_only=True) if x["ticker"] == t]
+        if not held:
+            return {"error": f"没有 {t} 的持仓"}
+        p = {"ticker": t, "side": "sell", "price": px, "shares": shares, "all_shares": not shares}
+        return {"代码": t, "说明": notes, "检查": await trade_intake.sell_checks(p, day)}
+    if not shares:
+        settings = await portfolio.get_settings()
+        f = await db.fetch_one("SELECT payload FROM scout.features_daily WHERE ticker = :t ORDER BY date DESC LIMIT 1", {"t": t})
+        sz = portfolio.size(px, portfolio.holding_stop(px), settings, ((f or {}).get("payload") or {}).get("vol_63")) or {}
+        shares = sz.get("shares") or 0
+        notes.append(f"没给股数，按你的设置建议的 {shares:g} 股计算" if shares else "按你的设置建议股数为 0（额度或上限已用完），以下按 1 股计算")
+        shares = shares or 1
+    p = {"ticker": t, "side": "buy", "price": px, "shares": shares}
+    return {"代码": t, "说明": notes, "检查": await trade_intake.buy_checks(p, day),
+            "提示": "以上是对照用户自己规则的检查，数字由 Python 计算；结论由用户决定"}
 
 
 def _round(value: Any) -> Any:
