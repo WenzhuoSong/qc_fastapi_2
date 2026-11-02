@@ -25,13 +25,15 @@ logger = logging.getLogger("scout.company_profile")
 ANNUAL_FORMS = ("10-K", "20-F")
 MAX_SECTION = 150_000          # characters of the business section sent to the model
 MIN_SECTION = 2_000            # shorter than this is a table-of-contents hit, not the section
+FALLBACK_SKIP = 3_000          # cover page skipped when a report has no item headings (INTC, GE, MCD, ASML style)
 MAX_SNIPPETS = 20
 CONCURRENCY = 6
 RELATIONS = {"customers": "customer", "suppliers": "supplier", "competitors": "competitor", "partners": "partner"}
 
 SECTIONS = {
     # no \b after the start heading: the extracted text joins a heading to the next word ("BusinessOur Company")
-    "10-K": (r"item\s*1\s*[.:\-–—]?\s*business", r"item\s*1a\s*[.:\-–—]?\s*risk\s+factors|item\s*2\s*[.:\-–—]?\s*properties"),
+    # "Item 1. Business", or energy companies' "Items 1 and 2. Business and Properties"
+    "10-K": (r"items?\s*1\s*\.?\s*(?:and\s*2\s*\.?\s*)?[:\-–—]?\s*business", r"item\s*1a\s*[.:\-–—]?\s*risk\s+factors|item\s*2\s*[.:\-–—]?\s*properties"),
     "20-F": (r"item\s*4\s*[.:\-–—]?\s*information\s+on\s+the\s+company",
              r"item\s*4a\s*[.:\-–—]?\s*unresolved|item\s*5\s*[.:\-–—]?\s*operating\s+and\s+financial"),
 }
@@ -232,7 +234,12 @@ async def fetch_doc(f: dict) -> dict:
         return {**f, "section": None, "snippets": [], "status": "fetch_failed"}
     text = html_text(raw)
     sec_text = section(text, f["form"])
-    return {**f, "section": sec_text, "snippets": snippets(text), "status": "ok" if sec_text else "no_section"}
+    status = "ok"
+    if not sec_text and len(text) > FALLBACK_SKIP + MIN_SECTION:
+        # reports in their own format (headings only in a cross-reference index at the end): the opening part
+        # describes the business; every item still has to quote the filing
+        sec_text, status = text[FALLBACK_SKIP:FALLBACK_SKIP + MAX_SECTION], "fallback"
+    return {**f, "section": sec_text, "snippets": snippets(text), "status": status if sec_text else "no_section"}
 
 
 async def extract(doc: dict) -> tuple[dict, dict, str]:
@@ -309,9 +316,11 @@ async def refresh(tickers: list[str] | None = None, force: bool = False) -> dict
             return
         doc = await fetch_doc(f)
         await store_doc(doc)
-        if doc["status"] != "ok":
+        if doc["status"] not in ("ok", "fallback"):
             counts[doc["status"]] += 1
             return
+        if doc["status"] == "fallback":
+            counts["fallback"] = counts.get("fallback", 0) + 1
         async with sem:
             try:
                 profile, report, model = await extract(doc)
