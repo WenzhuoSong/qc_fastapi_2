@@ -1,0 +1,40 @@
+# Pre-registration of the conditional base rates, written 2026-11-03 before any conditional cell was computed.
+# Never edited after the run; a changed design is a new file with a new key. Run once:
+# `python -m scout.jobs.conditional_rates` (Scout's own panel, so the results may be shown on the dashboard).
+key: conditional_rates_v1
+registered_on: '2026-11-03'
+requested_by: 用户 2026-11-03："按这个顺序开始"（不同板块、市况下的规则表现要更细致，告诉我更高概率的机会，而不只是否定结论）
+family: conditional_cells
+question: 每条规则在不同板块、不同市况、不同波动状态下，相对同日其他股票的表现是否不同？哪些组合在收缩估计之后仍然可靠地好于随机？
+
+data:
+  panel: Scout 自己的日线面板（scout.bars_daily，约 900 只当前指数成分股和自选，约 10 年），与 eval_rules / 检验关相同
+  events: 每条规则（含候选规则）的全部历史成交，按规则自己的入场区间和出场方式交易（gate.backtest，与公平基准完全相同）
+  outcome: 每笔的 ret − select（选股对照：同一天随机其他股票按同样的入场公式和出场规则交易的平均收益；交易成本两边相同，相互抵消）
+  absolute: 另报规则自身扣费后收益为正的比例，以及对照为正的比例（"上涨概率"的口径，必须和对照一起看）
+  survivorship: 股票池是当前成分股，绝对收益偏高；相对同日对照的差值受影响较小，但不为零，报告中写明
+
+cells:
+  primary: 规则 × 板块（GICS，11 个）× 市况（SPY 上升 / 震荡 / 下降，features.market_regime）
+  secondary: 规则 × 板块、规则 × 市况、规则 × 市场波动状态（gate.vol_states）各自单独一层
+  minimum: 少于 15 笔的组合不估计（只并入上一层）
+
+estimate:
+  method: 经验贝叶斯（正态—正态）。每条规则内，组合的原始均值按月聚类求标准误（月均值的标准差 / √月数；少于 3 个月时用逐笔标准差 / √n 乘以 1.5）；
+    组合间真实差异的方差 τ² 用矩估计：max(0, 组合均值的方差 − 平均标准误²)；收缩权重 w = τ² / (τ² + se²)；
+    收缩估计 = w × 组合均值 + (1 − w) × 该规则全部成交的均值；后验标准差 = √w × se；报告 90% 区间
+  halves: 按全部成交日期的中位数分前后两半，报告每个组合两半的原始均值
+  shown: 机会卡和筛选页显示信号所在组合（规则 × 板块 × 市况）的收缩估计、90% 区间、笔数、上涨比例与对照上涨比例，
+    标注"历史条件统计（收缩后），未经前向验证"
+
+candidates:
+  rule: 主层组合满足全部条件即为"条件候选"——收缩估计的 90% 区间下限 > 0；笔数 ≥ 40；覆盖 ≥ 12 个月；前后两半原始均值都 > 0
+  multiple_testing: 收缩本身把小样本拉向规则均值；候选只是进入前向验证的资格，不是结论
+  forward: 每个候选登记为知识库条目（family conditional_cells，spec 为该规则加 when 条件：板块、市况），进入前向记录（scout.forward），
+    按现有标准（≥ 6 个月、≥ 30 个完整信号、超额 > 0、前向与回测差的 t > −2）由用户确认；之前只显示为"条件候选：前向验证中"
+  none: 没有组合满足条件时，结论写入知识库（条件化之后也没有可靠的组合），不换维度或阈值重算
+
+expected_failure: 约 10 年、当前成分股，多数组合样本小；规则整体都没有通过公平基准，收缩后多数组合会接近规则均值（接近 0 或为负）；
+  市况和板块会在同一时间段集中（例如 2020 年），组合之间并不独立；即使有候选，前向验证通过的也可能很少。
+disclosure: 登记前看过的：各规则整体的公平基准结果（eval_rules，均未通过）和检验关报告里的分市况、分板块描述（gate.summarize 的 regimes / sectors，
+  只有原始均值和 t，没有收缩、没有组合层）。方法（经验贝叶斯、月聚类、候选条件）在看任何组合结果之前确定。
