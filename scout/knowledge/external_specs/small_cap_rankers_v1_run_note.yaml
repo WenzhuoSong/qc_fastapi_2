@@ -1,0 +1,31 @@
+# Run note for small_cap_rankers_v1, written 2026-11-03 before any small-cap strategy return was computed.
+# Records the user's decision on the quote spot check and the outcome policy the run needs. Never edited after the run.
+key: small_cap_rankers_v1_run_note
+registered_on: '2026-11-03'
+original_spec: small_cap_rankers_v1.yaml
+amends: small_cap_rankers_v1_p_clarification.yaml（只改下面写明的两处，其余照旧）
+
+quote_spot_check:
+  decision: 用户 2026-11-03 选择"跳过抽查，直接跑"
+  why: 免费数据拿不到带报价时间戳的买卖价（Yahoo 实时流只有成交价和成交时间；Yahoo 报价接口的买卖价没有报价时间），
+    small_cap_quote_packet_v1 的有效性条件无法满足；用户没有可用的券商行情接口
+  cost_model: 使用 small_cap_costs_v1（不登记 v2）。报告写明"成本未经实时报价验证"；原规格的保守成本条件（价差 × 2 后全样本超额仍为正）
+    照旧是通过条件之一，另报冲击翻倍（Y = 1.0）
+
+outcome_policy:
+  replaces: p_clarification 中"未知缺价阻塞整个运行"
+  why: 27 年的小盘数据里必然有个别股票在调仓次日没有开盘价（停牌、数据缺口），严格阻塞会让检验无法运行；该澄清本身允许"另行记录后放行"
+  formation: 股票池、分数、上月成本只用调仓日收盘前可得的信息冻结：池 = 当天市值 1001–3000 名中按上月成本可交易的股票；
+    入选按冻结的池和分数排序决定，之后不替补、不重排
+  not_filled: 调仓次日没有有效开盘价的股票视为"无法成交"：若是入选股票，这一笔不计入（不替补）；若是对照池股票，不进入当天对照平均。
+    与大盘 sharadar_rechecks.rank_rows 的处理一致（那里也只用有成交的股票）
+  in_window: 成交后的缺价按 sharadar_research.holding_return：停止交易且有退市记录 → 按最后收盘结算（表现型退市 −30%）；
+    停牌到数据末尾 → 按最后收盘；中途缺价后恢复交易 → 用窗口末的价格
+  reported: 每个方法报告入选股票中"无法成交"的笔数与比例；超过 1% 时在报告中标为数据质量问题（不改变判定规则）
+
+data_start: 不看收益的检查发现（运行前）：Sharadar 的 8-K 2.02 事件从 2004-08 开始，内部人申报从 2008-01 开始，所以公告漂移和
+  内部人集中买入的样本实际从数据开始时算起（前后两半按各自调仓日的中位数分）；其余三项从 1999-03 起。
+  同一检查：抽样日 2001 / 2012 / 2025 的 1001–3000 名中可交易的有 1154 / 1320 / 1533 只，入选股往返成本中位数约 0.6%–0.7%
+
+unchanged: 五项信号、选股比例、持有期、调仓间隔、股票池、可交易条件、成本扣法、对照（逐只 leave-one-out，含其他入选股）、
+  先按调仓日再按月平均、t ≥ 3、两半为正、Newey-West t（滞后 2 个月）≥ 2、保守成本下仍为正；内部人按 p_clarification 的普通股 P 类口径
