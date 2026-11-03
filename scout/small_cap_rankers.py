@@ -321,7 +321,7 @@ def _t(x) -> str:
 
 
 def report_text(res: dict) -> str:
-    lines = [f"小盘五项选股（预登记 {KEY}，只跑一次）：Sharadar 市值第 1001–3000 名、按上月成本可交易，扣往返成本后相对同期其他小盘股（每月超额）",
+    lines = [f"小盘五项选股（预登记 {KEY}，只跑一次）：Sharadar 市值第 1001–3000 名、按上月成本可交易，扣往返成本后相对同期其他小盘股；数字是每笔（持有 63 个交易日）的超额，先按调仓日、再按月平均",
              "成本模型 small_cap_costs_v1，未经实时报价验证（用户 2026-11-03 决定跳过抽查）", ""]
     for method, r in res["methods"].items():
         s, lg = r["small"], r["large"]
@@ -331,13 +331,13 @@ def report_text(res: dict) -> str:
         a, v = s["all"], s["variants"]
         lines.append(f"{ZH[method]}：{s['first_date']} 至 {s['last_date']}，{s['formations']} 次调仓、{s['n']} 笔（每次约 {s['picks_per_formation']:.0f} 只），"
                      f"平均往返成本 {_p(s['round_trip'])}")
-        lines.append(f"  扣成本后每月 {_p(a['mean'])}（t {_t(a['t'])}，Newey-West t {_t(a['nw_t'])}）；前半 {_p(s['first']['mean'])} / 后半 {_p(s['second']['mean'])}（按 {s['split']} 分）")
+        lines.append(f"  扣成本后每笔 {_p(a['mean'])}（t {_t(a['t'])}，Newey-West t {_t(a['nw_t'])}）；前半 {_p(s['first']['mean'])} / 后半 {_p(s['second']['mean'])}（按 {s['split']} 分）")
         lines.append(f"  不扣成本 {_p(v['gross']['mean'])}；价差 × 2 {_p(v['spread2']['mean'])}；冲击 × 2 {_p(v['impact2']['mean'])}")
         lines.append(f"  1001–2000 {_p(s['ranks_1001_2000']['mean'])}，2001–3000 {_p(s['ranks_2001_3000']['mean'])}；2016 年起 {_p(s['since_2016']['mean'])}（t {_t(s['since_2016']['t'])}），"
                      f"2022 年起 {_p(s['since_2022']['mean'])}；去掉 2008–09 {_p(s['ex_2008_09']['mean'])}；熊市月份 {_p(s['bear_months']['mean'])}")
         lines.append(f"  无法成交 {s['not_filled']} 笔（{s['not_filled_share'] * 100:.2f}%{'，⚠️ 超过 1%' if s['not_filled_share'] > 0.01 else ''}）")
         if lg.get("n"):
-            lines.append(f"  对照 · 同样方法在市值前 1000：扣成本后每月 {_p(lg['all']['mean'])}（t {_t(lg['all']['t'])}）")
+            lines.append(f"  对照 · 同样方法在市值前 1000：扣成本后每笔 {_p(lg['all']['mean'])}（t {_t(lg['all']['t'])}）")
         c = s["checks"]
         lines.append(f"  判定：{'通过' if s['pass'] else '不通过'}（t ≥ {s['required_t']} {'✓' if c['t'] else '✗'}，两半为正 {'✓' if c['halves'] else '✗'}，"
                      f"NW t ≥ {NW_BAR} {'✓' if c['nw_t'] else '✗'}，价差 × 2 仍为正 {'✓' if c['conservative_cost'] else '✗'}）")
