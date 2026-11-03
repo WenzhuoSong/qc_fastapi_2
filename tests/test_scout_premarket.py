@@ -142,5 +142,19 @@ class RenderTests(unittest.TestCase):
         self.assertIn("<details", premarket_card(rec, current=False))
 
 
+class PremarketWindowTests(unittest.TestCase):
+    def test_one_of_the_two_utc_firings_runs_in_each_season(self):
+        from datetime import datetime, timezone
+
+        from scout.premarket import due
+
+        utc = timezone.utc
+        self.assertFalse(due(datetime(2026, 11, 4, 13, 0, tzinfo=utc)))     # winter: 8:00 New York
+        self.assertTrue(due(datetime(2026, 11, 4, 14, 0, tzinfo=utc)))      # winter: 9:00
+        self.assertTrue(due(datetime(2026, 7, 1, 13, 0, tzinfo=utc)))       # summer: 9:00
+        self.assertFalse(due(datetime(2026, 7, 1, 14, 0, tzinfo=utc)))      # summer: 10:00
+        self.assertTrue(due(datetime(2026, 11, 4, 14, 20, tzinfo=utc)))     # a late start still runs
+
+
 if __name__ == "__main__":
     unittest.main()

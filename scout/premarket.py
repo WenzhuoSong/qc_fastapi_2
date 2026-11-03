@@ -511,7 +511,18 @@ def render_text(b: PremarketBrief, pack: dict) -> str:
 
 # ── Job ──
 
+RUN_WINDOW_ET = (time(8, 45), time(10, 0))   # the cron fires at 13:00 and 14:00 UTC; only the one near 9:00 ET runs
+
+
+def due(now: datetime) -> bool:
+    """True inside the run window in New York time, so one of the two UTC firings runs in summer and winter time."""
+    t = now.astimezone(ZoneInfo("America/New_York")).time()
+    return RUN_WINDOW_ET[0] <= t < RUN_WINDOW_ET[1]
+
+
 async def run(push: bool = True, force: bool = False) -> dict:
+    if not force and not due(datetime.now(ZoneInfo("UTC"))):
+        return {"skipped": "outside 8:45–10:00 New York time (the other UTC firing runs)"}
     status = us_equity_market_status()
     session = date.fromisoformat(status.market_date)
     if not is_us_equity_trading_day(session) and not force:

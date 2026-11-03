@@ -1,8 +1,8 @@
 """Weekday pre-market brief: `python -m scout.jobs.premarket [--no-push] [--force]`.
 
-Runs at 13:00 UTC (北京时间 21:00): 30 minutes before the open in US summer
-time, 90 minutes in winter. Skips holidays and sessions already briefed;
---force regenerates."""
+The cron fires at 13:00 and 14:00 UTC on weekdays; only the firing that lands near 9:00 New York time runs
+(13:00 UTC in summer time, 14:00 UTC in winter), 30 minutes before the open. Skips holidays and sessions
+already briefed; --force runs now and regenerates."""
 import sys
 
 from scout.jobs._run import run
