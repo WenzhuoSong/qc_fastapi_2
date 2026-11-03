@@ -113,6 +113,20 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("TSLA", issues)
         self.assertIn("NVDA 的位置判断", issues)
 
+    def test_revenue_verdict(self):
+        self.assertEqual(premarket.revenue_verdict(114.5e9, 113.4e9), "高于预期 +1.0%")
+        self.assertEqual(premarket.revenue_verdict(3.742e9, 3.744e9), "基本持平（-0.1%）")
+        self.assertTrue(premarket.revenue_verdict(90.0, 100.0).startswith("低于预期"))
+        self.assertIsNone(premarket.revenue_verdict(None, 100.0))
+
+    def test_revenue_claims_must_match_the_verdict(self):
+        rows = [{"代码": "AAPL", "名称": "Apple Inc", "营收对比预期": "高于预期 +1.0%"},
+                {"代码": "SHOP", "名称": "Shopify Inc", "营收对比预期": "基本持平（-0.1%）"},
+                {"代码": "PLTR", "名称": "Palantir"}]
+        bad = premarket.revenue_claim_issues(["Apple 财报超预期但营收不及预期，盘前下跌。", "SHOP 营收不及预期；PLTR 营收超预期"], rows)
+        self.assertEqual([i.split(" ")[0] for i in bad], ["AAPL", "SHOP", "PLTR"])
+        self.assertEqual(premarket.revenue_claim_issues(["Apple 营收高于预期，毛利率指引偏低", "SHOP 盘前下跌"], rows), [])
+
     def test_point_count(self):
         self.assertTrue(any("2–5" in i for i in premarket.validate(brief(points=[Point(text="x", evidence=[])]), PACK)))
 

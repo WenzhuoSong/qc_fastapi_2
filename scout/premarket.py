@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -97,6 +98,39 @@ def eps_surprise(actual: float | None, estimate: float | None) -> float | None:
     if actual is None or estimate in (None, 0):
         return None
     return (actual - estimate) / abs(estimate)
+
+
+REVENUE_INLINE = 0.005         # within ±0.5 % of the estimate counts as in line
+
+
+def revenue_verdict(actual: float | None, estimate: float | None) -> str | None:
+    """Revenue against the calendar's consensus, decided in Python (the model only repeats it)."""
+    if not actual or not estimate:
+        return None
+    gap = actual / estimate - 1
+    if abs(gap) < REVENUE_INLINE:
+        return f"基本持平（{_pct(gap)}）"
+    return f"{'高于' if gap > 0 else '低于'}预期 {_pct(gap)}"
+
+
+_REVENUE_BEAT = ("营收超预期", "营收高于预期", "营收好于预期", "收入超预期", "收入高于预期")
+_REVENUE_MISS = ("营收不及预期", "营收低于预期", "营收逊于预期", "营收未达预期", "收入不及预期", "收入低于预期")
+
+
+def revenue_claim_issues(texts: list[str], rows: list[dict]) -> list[str]:
+    """A sentence naming a reported company may call its revenue a beat / miss only when `营收对比预期` says so."""
+    issues = []
+    for row in rows:
+        names = {row["代码"]} | ({row["名称"].split()[0]} if row.get("名称") else set())
+        verdict = row.get("营收对比预期") or ""
+        for text in texts:
+            for sent in re.split(r"[。；;\n]", text):
+                if not any(n in sent for n in names):
+                    continue
+                beat, miss = any(c in sent for c in _REVENUE_BEAT), any(c in sent for c in _REVENUE_MISS)
+                if (beat and not verdict.startswith("高于")) or (miss and not verdict.startswith("低于")):
+                    issues.append(f"{row['代码']} 的营收对比预期是「{verdict or '没有数据'}」，文中却写「{sent.strip()[:40]}」")
+    return issues
 
 
 def _eps(x) -> str:
@@ -250,6 +284,8 @@ async def build_pack(session: date) -> dict:
                         **({"营收实际": _revenue(p.get("revenue_actual"))} if p.get("revenue_actual") else {}), **pm(e["ticker"])})
         if p.get("revenue_estimate"):
             row["营收预期"] = _revenue(p["revenue_estimate"])
+        if prefix == "er" and revenue_verdict(p.get("revenue_actual"), p.get("revenue_estimate")):
+            row["营收对比预期"] = revenue_verdict(p["revenue_actual"], p["revenue_estimate"])
         return row
 
     opp_rows = []
@@ -371,6 +407,8 @@ SYSTEM_PROMPT = """你是一名美股交易日开盘前的策略助理，基于 
 - 数字只能原样引用证据包中出现的数值，不要自行计算。
 - evidence 只能填证据包里出现的 key（如 q.ES=F、opp.NVDA、er.MSFT、econ_1、news_2、focus）。
 - 机会的位置只能按"位置判断"表述，不要自己推断是否跌破止损或追高。
+- 财报的营收是否超预期只能按"营收对比预期"表述（没有这一项就不要说营收超预期或不及预期，新闻里的说法也不行）；
+  EPS 只能按"EPS 超预期幅度"表述。管理层展望要说清是哪一项（如营收增长、毛利率），并引用对应的新闻 key。
 - 期货和盘前价格不代表开盘价；不编造新闻或数据；没有数据的项不要提。
 - 中文、简洁；不给买卖指令，非投资建议。"""
 
@@ -396,6 +434,7 @@ def validate(b: PremarketBrief, pack: dict) -> list[str]:
             wrong = [c for c in _POSITION_CLAIMS if c in n.note and c not in labels[n.ticker]]
             if wrong:
                 issues.append(f"{n.ticker} 的位置判断是「{labels[n.ticker]}」，文中却写「{'、'.join(wrong)}」")
+    issues += revenue_claim_issues(texts, pack.get("earnings_reported", []))
     if not 2 <= len(b.points) <= 5:
         issues.append("要点数量必须在 2–5 个之间")
     return issues
