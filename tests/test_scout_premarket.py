@@ -114,14 +114,18 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("NVDA 的位置判断", issues)
 
     def test_revenue_verdict(self):
-        self.assertEqual(premarket.revenue_verdict(114.5e9, 113.4e9), "高于预期 +1.0%")
-        self.assertEqual(premarket.revenue_verdict(3.742e9, 3.744e9), "基本持平（-0.1%）")
-        self.assertTrue(premarket.revenue_verdict(90.0, 100.0).startswith("低于预期"))
-        self.assertIsNone(premarket.revenue_verdict(None, 100.0))
+        v = premarket.revenue_verdict
+        self.assertEqual(v(114.477e9, {"Yahoo": 113.4e9}), "高于预期（Yahoo +0.9%）")
+        self.assertTrue(v(114.477e9, {"Finnhub": 115.66e9, "Yahoo": 113.4e9}).startswith("各家预期口径不一"))  # Apple 2026-11-02
+        self.assertTrue(v(3.742e9, {"Finnhub": 3.822e9, "Yahoo": 3.744e9}).startswith("各家预期口径不一"))    # Shopify 2026-11-03
+        self.assertEqual(v(3.742e9, {"Finnhub": 3.744e9, "Yahoo": None}), "基本持平（Finnhub -0.1%）")
+        self.assertTrue(v(90.0, {"Finnhub": 100.0, "Yahoo": 99.0}).startswith("低于预期"))
+        self.assertIsNone(v(None, {"Finnhub": 100.0}))
+        self.assertIsNone(v(90.0, {"Finnhub": None}))
 
     def test_revenue_claims_must_match_the_verdict(self):
-        rows = [{"代码": "AAPL", "名称": "Apple Inc", "营收对比预期": "高于预期 +1.0%"},
-                {"代码": "SHOP", "名称": "Shopify Inc", "营收对比预期": "基本持平（-0.1%）"},
+        rows = [{"代码": "AAPL", "名称": "Apple Inc", "营收对比预期": "高于预期（Yahoo +0.9%）"},
+                {"代码": "SHOP", "名称": "Shopify Inc", "营收对比预期": "各家预期口径不一，不能下结论（Finnhub -2.1%，Yahoo -0.1%）"},
                 {"代码": "PLTR", "名称": "Palantir"}]
         bad = premarket.revenue_claim_issues(["Apple 财报超预期但营收不及预期，盘前下跌。", "SHOP 营收不及预期；PLTR 营收超预期"], rows)
         self.assertEqual([i.split(" ")[0] for i in bad], ["AAPL", "SHOP", "PLTR"])
