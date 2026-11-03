@@ -452,7 +452,7 @@ async def get_ledger(ticker: str | None = None) -> dict:
 
 
 
-BRIEFS = {"premarket": "盘前简报", "eod": "收盘扫描简报", "market_focus": "市场关注点", "weekly": "周报"}
+BRIEFS = {"premarket": "盘前简报", "eod": "收盘汇总（市场、板块、持仓、自选股变化、机会）", "market_focus": "市场关注点", "weekly": "周报"}
 STUDIES = ("gate", "rule_benchmarks", "exit_vs_hold", "exit_redeploy", "exit_study", "hold_cap", "horizon_profile",
            "osap_replication", "sharadar_recheck", "level_study", "insight_eval", "agent_eval")
 

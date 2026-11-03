@@ -151,6 +151,9 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
             return {"skipped": reason}
         session = previous_us_equity_trading_day(date.today())
     summary: dict = {"session": session.isoformat(), "prepare": await prepare()}
+    deferred: list[str] = []           # pushes folded into the digest
+    managed: list[dict] = []
+    prop_signals: list[dict] = []
     p = await load_panel()
     asof: date = p.dates[-1]
     summary["asof"] = asof.isoformat()
@@ -188,8 +191,8 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     try:                               # the user's holdings: system stop / target after this close
         managed = await portfolio.manage_open_trades()
         summary["trades_managed"] = managed
-        if push and managed:
-            await telegram.send("📌 <b>持仓止损更新</b>\n" + "\n".join(
+        if managed:                    # in the digest; sent alone only when the session was already scanned
+            deferred.append("📌 <b>持仓止损更新</b>\n" + "\n".join(
                 f"• <b>{telegram.esc(m['ticker'])}</b>：" + "；".join(telegram.esc(x) for x in m["messages"]) for m in managed))
     except Exception as exc:
         logger.warning("trade management failed: %s", exc)
@@ -205,12 +208,12 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
 
         prop = await propagation.run(asof)
         summary["propagation"] = {k: v for k, v in prop.items() if k != "signals_list"}
-        if push:
-            held = {t["ticker"] for t in await portfolio.trades(open_only=True)}
-            watch = {r["ticker"] for r in await universe.load_watchlist()}
-            text = propagation.push_text(prop["signals_list"], held, watch)
-            if text:
-                await telegram.send(text)
+        prop_signals = prop["signals_list"]
+        held = {t["ticker"] for t in await portfolio.trades(open_only=True)}
+        watch = {r["ticker"] for r in await universe.load_watchlist()}
+        text = propagation.push_text(prop_signals, held, watch)
+        if text:
+            deferred.append(text)
     except Exception as exc:
         logger.warning("propagation failed: %s", exc)
         summary["propagation"] = f"failed: {type(exc).__name__}"
@@ -240,6 +243,9 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     )
     if already and not force:
         summary["skipped_scan"] = "session already scanned"
+        if push:
+            for text in deferred:
+                await telegram.send(text)
         return summary
 
     summary["earnings_rows"] = await context.refresh_earnings()
@@ -290,20 +296,26 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         logger.warning("market focus failed: %s", exc)
         summary["market_focus"] = f"failed: {type(exc).__name__}"
 
-    brief = render_eod_brief(asof, market, candidates, transitions, saved, sector_rows, focus)
-    if mfilter:
-        from scout import market_filter
-
-        brief += ("\n\n" + ("🛑 " if mfilter["off"] else "🟢 ") + telegram.esc(market_filter.text(mfilter))
-                  + ("。下面的机会卡只作观察。" if mfilter["off"] else ""))
     from scout import learned
 
     quiet = learned.held_back(await learned.current())
     cards = [o for o in [await telegram.load_opportunity(i) for i in saved] if o]
     muted = [o for o in cards if o["primary_detector"] in quiet]
+    scan = scan_lines(candidates, transitions, saved)
+    if mfilter and mfilter["off"]:
+        scan.append("大盘过滤处于避险：下面的机会卡只作观察。")
     if muted:
-        brief += (f"\n\n今天有 {len(muted)} 张规则机会卡只记录、不推送：这些规则没有通过公平基准检验"
-                  "（见 Dashboard「知识库」），仍在机会看板和判断台账里跟踪。")
+        scan.append(f"今天有 {len(muted)} 张规则机会卡只记录、不推送：这些规则没有通过公平基准检验"
+                    "（见 Dashboard「知识库」），仍在机会看板和判断台账里跟踪。")
+    try:
+        from scout import digest
+
+        g = await digest.gather(asof, earnings, prop_signals, managed if isinstance(managed, list) else [])
+        brief = digest.render(asof, market, sector_rows, focus, mfilter, g,
+                              portfolio.satellite(await portfolio.get_settings()), scan)
+    except Exception as exc:           # the digest must not cost the session its brief
+        logger.warning("digest failed: %s", exc)
+        brief = "\n\n".join([render_eod_brief(asof, market, sector_rows, focus), *deferred, "\n".join(scan)])
     await db.execute(
         "INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('eod', :d, :c, CAST(:p AS JSONB))",
         {"d": asof, "c": brief, "p": db.jsonb({"market": market, "saved": saved, "candidates": len(candidates)})},
@@ -322,8 +334,8 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     return summary
 
 
-def render_eod_brief(asof: date, market: dict, candidates, transitions, saved: list[str],
-                     sector_rows: list[dict] | None = None, focus: dict | None = None) -> str:
+def render_eod_brief(asof: date, market: dict, sector_rows: list[dict] | None = None, focus: dict | None = None) -> str:
+    """Market part of the brief; the fallback when the digest fails."""
     pct = telegram.pct
     lines = [
         f"🌇 <b>Scout 收盘扫描 {asof}</b>",
@@ -334,17 +346,20 @@ def render_eod_brief(asof: date, market: dict, candidates, transitions, saved: l
     rotation = sectors.rotation_line(sector_rows or [])
     if rotation:
         lines.append(rotation)
-    elif market.get("sector_leaders_20d"):
-        lines.append("领涨板块(20日)：" + "，".join(f"{k} {pct(v, 1, True)}" for k, v in market["sector_leaders_20d"]))
-        lines.append("落后板块(20日)：" + "，".join(f"{k} {pct(v, 1, True)}" for k, v in market["sector_laggards_20d"]))
     if focus and focus.get("focus"):
         f = focus["focus"]
         lines.append(f"\n🧭 <b>市场关注点</b>：{telegram.esc(f['headline'])}")
         lines += [f"{i}. {telegram.esc(t['title'])}" for i, t in enumerate(f.get("themes", []), 1)]
-        lines.append("（/sectors 查看板块详情）")
+    return "\n".join(lines)
+
+
+def scan_lines(candidates, transitions, saved: list[str]) -> list[str]:
+    """Opportunity status changes and today's rule hits (the last part of the digest)."""
+    pct = telegram.pct
+    lines = []
     if transitions:
         icon = {"triggered": "▶️", "hit_target": "🎯", "stopped": "🛑", "trailed": "🏁", "expired": "⌛", "expired_untriggered": "⌛"}
-        lines.append("\n<b>机会状态变化</b>")
+        lines.append("机会状态变化：")
         for t in transitions:
             ret = f" {pct(t.return_pct, 1, True)}" if t.return_pct is not None else ""
             lines.append(f"{icon.get(t.new, '•')} {t.ticker} → {telegram.STATUS_LABELS.get(t.new, t.new)}{ret}")
@@ -352,15 +367,15 @@ def render_eod_brief(asof: date, market: dict, candidates, transitions, saved: l
         by_det: dict[str, int] = {}
         for c in candidates:
             by_det[c.primary.label] = by_det.get(c.primary.label, 0) + 1
-        lines.append(f"\n今日触发 {len(candidates)} 个候选（{'，'.join(f'{k} {v}' for k, v in by_det.items())}），"
-                     f"入选 {len(saved)} 张卡片：")
+        lines.append(f"今日规则触发 {len(candidates)} 个候选（{'，'.join(f'{k} {v}' for k, v in by_det.items())}），"
+                     f"入选 {len(saved)} 张机会卡：")
         chosen = set(saved)
         for c in candidates:
             if c.id in chosen:
                 lines.append(f"• <b>{c.ticker}</b> {c.primary.label} {c.score:.2f}")
     else:
-        lines.append("\n今日没有规则触发。")
-    return "\n".join(lines)
+        lines.append("今日没有规则触发。")
+    return lines
 
 
 async def run_weekly(push: bool = True) -> dict:
