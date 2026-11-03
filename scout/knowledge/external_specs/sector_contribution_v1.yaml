@@ -1,0 +1,40 @@
+# Pre-registration of the sector contribution rotation, written 2026-11-03 before any result was computed.
+# Never edited after the run; a changed design is a new file with a new key. Run once:
+# `python -m scout.jobs.sector_contribution compute` (local only: Sharadar files, French T-bill rate; git-ignored output).
+key: sector_contribution_v1
+registered_on: '2026-11-03'
+requested_by: 用户 2026-11-03："买入热门上涨的板块，同时考虑 spy 中各个板块/个股贡献程度，选择持有最火的 K 个"；
+  用户选择：只选板块 ETF，K = 3，热度看近 3 个月，每月调仓，按贡献加权
+family: sector_rotation
+question: 每月持有"对 SPY 贡献最大"（SPY 内权重 × 近 3 个月涨幅）的 3 个板块 ETF、按贡献加权，是否好于 SPY，选板块是否好于随机？
+
+data:
+  etfs: Sharadar 基金日线 closeadj（含分红）：XLB XLE XLF XLI XLK XLP XLU XLV XLY（1998-12 起），XLRE（2015-10 起），XLC（2018-06 起）
+  weights: SPY 内板块权重的近似：每月最后一个交易日，Sharadar 市值前 500 的美国普通股（scout/sharadar_research.py 的口径），
+    按 Sharadar 行业归入 11 个 SPDR 板块（sharadar_exits.SECTOR_ETF），各板块市值占比。Sharadar 行业与标普 GICS 略有不同，报告中写明
+  cash: French 日度 T-bill
+  period: 1999-04（有 63 日历史后）到数据结束（约 2026-09）；两半 1999–2012 / 2013–
+
+rule:
+  score: 每月最后一个交易日收盘：贡献 = 板块权重 × 该板块 ETF 近 63 个交易日收益；ETF 还未上市的板块不参与
+  hold: 贡献 > 0 的板块中最大的 3 个；权重与贡献成正比；贡献为正的不足 3 个时只持有为正的（权重仍按贡献占"前 3 个的贡献之和"计，
+    其余现金）；全部 ≤ 0 时全部现金。这一条对应用户说的"不会持有不增长甚至下跌的"
+  trade: 下一个交易日收盘成交（只用到判断日为止的数据），月内不调整，单边成本 0.05%（敏感性 0.20%）按换手扣
+
+controls:
+  random: 每月从可用板块中随机选 3 个，按它们在 SPY 内的权重比例分配（不看涨幅），1000 次重复，固定种子；对照月收益 = 平均
+  benchmarks: SPY 买入持有、SPY + 大盘过滤、板块按 SPY 权重一直持有（即用这些 ETF 复制 SPY）
+
+pass:
+  rule: 同时满足：1 夏普前后两半都高于 SPY 买入持有；2 每月收益减随机对照，两半均值都 > 0，全样本 t ≥ 3.5；3 最大回撤不比 SPY 更深
+  multiple_testing: 板块轮动方向第 6 次尝试（板块轮动规则、换仓研究的行业过滤、ML 第 6 阶段板块层、象限 a / b），
+    双侧 0.0027 / 6 = 0.00045 → t ≥ 3.5
+  outcome: 通过 → 知识库条目 backtested，进入前向记录，由用户决定是否使用；不通过 → rejected，不换回看期、K 或加权方式重算
+
+report: 年化、波动、夏普、最大回撤、最差 12 个月，分两半；逐年收益；平均持有板块数和现金比例；各板块被持有的时间占比；年换手；
+  熊市时期（2000-03..2002-09、2007-10..2009-02、2020-02..03、2022-01..09）
+
+expected_failure: 贡献分数被权重主导，科技（2013 年后权重最大）几乎总在前 3，结果可能接近"集中持有大板块"；
+  此前板块轮动 5 次都没有优势；3 个月动量在板块层面的证据弱（CXO 对 SPDR 板块的检验、Moskowitz & Grinblatt 的 ETF 实现扣成本后为零）。
+disclosure: 登记前看过的：象限测试结果、2013 年后各板块 ETF 与 SPY 的对比、2013 年后各板块对前 500 家收益的贡献
+  （科技约 35%、前 7 家约 34%）、网上的板块轮动资料；没有看过任何按贡献排名的回测结果。
