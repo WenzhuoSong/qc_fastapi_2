@@ -1,0 +1,61 @@
+# Pre-registration of two low-turnover stock selections, written 2026-11-03 before any return of these designs was
+# computed. Never edited after the run; a changed design is a new file with a new key. Run once, local only
+# (Sharadar, git-ignored exports/slow_factors/): `python -m scout.jobs.slow_factors compute`.
+key: slow_factors_v1
+registered_on: '2026-11-03'
+requested_by: 用户 2026-11-03："好，两个都预登记然后跑吧"（我提议的：小盘价值 + 质量、每年调仓；低波动）
+why: small_cap_rankers_v1 显示小盘里月度调仓、持有 63 日的方法被往返约 1% 的成本吃掉；这两个是慢变量，每只股票持有一年，
+  成本摊薄到约四分之一
+
+portfolio:   # 两项共用
+  cohorts: 每 21 个交易日形成一个组合（第一个形成日 1999-07-01 之后的第一个交易日），每个组合持有 252 个交易日；任何时候有 12 个组合，
+    各占 1/12 资金（Jegadeesh & Titman 1993 的重叠组合）。组合内等权，按日再平衡（近似）
+  entry_exit: 形成日收盘冻结股票池和入选（只用当时可得的数据）；下一个交易日开盘买入，第 252 个交易日收盘卖出；
+    调仓次日没有开盘价的股票记为无法成交，不替补（同 small_cap_rankers_v1_run_note）
+  in_window: 停牌期间收益为 0；停止交易且有退市记录 → 最后收盘后一天计退市调整（表现型退市 −30%，sharadar_research.delisting_haircut），之后为现金（收益 0）
+  cost: 成本模型 small_cap_costs_v1（形成日所在月适用的估计），每只入选股票买入日扣单边、卖出日扣单边；敏感性：价差 × 2
+  benchmark_pool: 同样构造的"股票池组合"：每个形成日池内全部可成交股票等权，不扣成本（相当于被动持有这个池）
+  evaluation: 第 12 个组合形成后（约 2000-07）开始，按日复合成月收益；前后两半按日历 1999–2012 / 2013–；另报 2016 年起
+  universe_tradeable: 形成日所在月按成本模型可交易（上月日成交额 ≥ 100 万美元等）
+
+trials:
+  value_quality:
+    family: value_quality
+    prior_trials: 1（Codex 的 value_profitability_v1，前 1000、不同构造，未晋级）
+    literature: Fama & French (1992)；Novy-Marx (2013)："便宜且盈利好"的组合在小盘最强；Asness, Frazzini & Pedersen (2019) 质量
+    universe: Sharadar 点时市值第 1001–3000 名（同 small_cap_rankers_v1）；另报前 1000（只报告）
+    signal: 形成日池内两项百分位排名的平均：账面市值比 = 最近一期已申报的 ARQ equity（首次申报版本，申报日早于形成日，≤ 400 天）/ 形成日市值，
+      equity ≤ 0 不入选；毛利 / 总资产 = 最近已申报的 ART gp / assets（同样口径）。两项都有值才参与
+    picks: 综合分最高的 10%（按池内股票数计）
+    question: 扣成本后，这个组合的月收益是否高于股票池组合？
+    pass:
+      - 月度（组合 − 股票池组合）均值 t ≥ 3.0（族累计 2 次，gate.required_t(2) = 3.0），Newey-West（滞后 2 个月）t ≥ 2
+      - 前后两半均值都 > 0
+      - 价差 × 2 时全样本均值仍 > 0
+  low_volatility:
+    family: low_volatility
+    prior_trials: 0
+    literature: Haugen & Baker (1991)；Ang, Hodrick, Xing & Zhang (2006)；Blitz & van Vliet (2007)；Baker, Bradley & Wurgler (2011)：
+      低波动股票的风险调整后收益更高（收益接近、波动小得多），不一定是更高的收益
+    universe: Sharadar 点时市值前 1000（用户能交易的大中盘）；另报 1001–3000（只报告）
+    signal: 形成日之前 252 个交易日的日收益标准差（至少 200 个有效日），越低越好
+    picks: 最低的 10%
+    question: 扣成本后，低波动组合的风险调整后收益是否高于股票池组合？
+    pass:
+      - 夏普比率（月收益、减 French 日度 T-bill）前后两半都高于股票池组合
+      - 相对股票池组合的 alpha（月超额收益对股票池组合超额收益回归的截距）t ≥ 3.0（Newey-West 滞后 2 个月）
+      - 价差 × 2 时 alpha 仍 > 0
+    reported: 年化收益、波动、最大回撤、贝塔、最差 12 个月；与 SPY、SPY + 大盘过滤对照
+
+reported_only: 两项都报：不扣成本、价差 × 2、冲击 × 2；年化收益、波动、夏普、最大回撤；平均持股数、无法成交比例；
+  逐年；2016 年起；熊市时期（2000-03..2002-09、2007-10..2009-02、2020-02..03、2022-01..09）；另一个股票池的同样结果
+outcome: 通过 → 知识库条目 backtested，由用户决定是否前向记录；不通过 → rejected，不换比例、持有期、信号权重或股票池重算
+
+disclosure: |
+  登记前看过的：small_cap_rankers_v1 的全部结果（小盘毛利 / 总资产扣成本前每 63 日 +0.87%、t 3.58，扣成本后约 0；净回购类似；动量、公告漂移、
+  内部人不行）；Codex 的 value_profitability_v1（前 1000，价值 + 毛利，未晋级）和 net_payout_v1 的汇总；大盘资产增长、毛利、应计的否定；
+  OSAP 中价值、毛利、动量等信号 60 年的十分组结果；ML 风险模型（过去波动率能很好地排序未来波动，ml_risk_v1）；
+  按过去波动定仓位的描述性结果（夏普 0.57 对等权 0.49）。
+  价值 + 质量组合里的毛利一项在小盘的扣成本前结果已经看到，这部分证据会打折扣；账面市值比在小盘上、以及低波动选股，此前没有看过任何结果。
+expected_failure: 价值在 2007–2020 年长期落后（"价值的十年"）；低波动在牛市（尤其 2020–2021、2023–2024 的科技行情）明显落后，
+  夏普优势可能只来自 2000–2002、2008 两次熊市；股票池组合是等权的，2016 年后等权本身落后 SPY。
