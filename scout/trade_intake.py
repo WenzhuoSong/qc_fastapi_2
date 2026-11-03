@@ -166,6 +166,12 @@ async def earnings_lines(t: str, day: date) -> list[str]:
     rows = await db.fetch_all("SELECT ticker, event_date, payload FROM scout.market_events WHERE event_type = 'earnings' "
                               "AND event_date BETWEEN :a AND :b", {"a": day, "b": day + timedelta(days=7)})
     out = [f"⚠️ 自己 {r['event_date']:%m-%d} 发财报" for r in rows if r["ticker"] == t]
+    if out:
+        from scout import earnings_gaps, levels
+
+        s = await earnings_gaps.history(t)
+        if s:
+            out.append("⚠️ " + earnings_gaps.text(s, 1 - levels.TRAIL_KEEP))
     inst = await db.fetch_one("SELECT sector FROM scout.instruments WHERE ticker = :t", {"t": t}) or {}
     if inst.get("sector"):
         major = await premarket._tickers_ranked_by_liquidity()

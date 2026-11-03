@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from datetime import date
 
-from scout import db, opportunities, portfolio, sectors, universe
+from scout import db, earnings_gaps, opportunities, portfolio, sectors, universe
 from scout.telegram import esc, market_split_text, pct, sector_text
 
 NEAR_STOP_SIGMAS = 2.0      # a holding within this many daily sigmas of its stop needs attention
@@ -47,7 +47,12 @@ async def gather(asof: date, earnings: dict[str, list[dict]], prop_signals: list
         future = [e["date"] for e in evs if e["date"] > asof]
         if future and (future[0] - asof).days <= EARNINGS_DAYS:
             nxt[tk] = future[0]
-    return {"held_rows": held_rows, "watch": watch, "feats": feats, "news": news, "info": info, "earnings": nxt,
+    gaps = {}
+    for tk in set(held) & set(nxt):
+        s = await earnings_gaps.history(tk)
+        if s:
+            gaps[tk] = s
+    return {"held_rows": held_rows, "watch": watch, "feats": feats, "news": news, "info": info, "earnings": nxt, "gaps": gaps,
             "prop": prop_signals, "managed": {m["ticker"]: m["messages"] for m in managed}}
 
 
@@ -96,6 +101,8 @@ def holding_items(g: dict, asof: date) -> list[dict]:
         if tk in g["earnings"]:
             attention = True
             lines.append(f"📅 财报 {g['earnings'][tk]}（{(g['earnings'][tk] - asof).days} 天后）")
+            if tk in g.get("gaps", {}):
+                lines.append(f"⚠️ {esc(earnings_gaps.text(g['gaps'][tk], -m['to_stop'] if 'to_stop' in m else None))}")
         props = [s for s in g["prop"] if s["ticker"] == tk]
         if any(s["impact"] < 0 for s in props):
             attention = True
