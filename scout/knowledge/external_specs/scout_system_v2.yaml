@@ -1,0 +1,37 @@
+# Pre-registration of Scout's rule-based system v2 (rank-based holding), written 2026-11-03 after scout_system_v1's
+# result and before any v2 result was computed. Never edited after the run. Run once:
+# `python -m scout.jobs.scout_system_v2 compute` (local only; git-ignored output).
+key: scout_system_v2
+registered_on: '2026-11-03'
+requested_by: 用户 2026-11-03："不应该固定几天吧……前几名就继续持有呗？类似 b0 的交易算法那样，总是持有最强的"
+family: scout_system
+question: 突破回踩买入、只要相对强度仍在股票池前一半就继续持有的 5 只系统，是否好于 SPY + 大盘过滤和同样规则下的随机选股？
+
+same_as_v1: 数据、股票池（Sharadar 市值前 1000，含退市，每 21 个交易日更新，1999-01-04 起）、突破回踩信号和限价成交、
+  最多 5 只、每只占前一日净值 1/5、按信号日相对强度排序、当天腾出的空位次日起可用、大盘过滤只管新买入、
+  现金拿 T-bill、成本每边 0.05%（敏感性 0.20%）、日历两半（1999–2012 / 2013–）、停止交易的股票次日按结算价卖出。
+  组合模拟用 scout_system_v1 修正后的代码（scout/scout_system.py）
+
+exits:
+  rank: 主版本：某天收盘时它的相对强度（0.4 × 63 日 + 0.3 × 126 日 + 0.3 × 252 日收益，在当天股票池内的百分位，与买入条件相同）
+    < 0.5，或它已不在股票池里，下一个交易日开盘卖出。买入要求 ≥ 0.8，卖出线放宽到 0.5（缓冲区，Novy-Marx & Velikov 2016），
+    0.5 = 不再强于一般股票；不是从数据里选的
+  rank_trail: 同上，另外加用户的 20% 移动止损，两者先触发的为准
+  not_included: 满仓时不会为了更强的新信号卖掉现有持仓（只有排名掉出或止损才卖）
+
+controls:
+  random: 系统每次在某天接受 k 笔成交时，改为从当天股票池（不含已持有）随机买 k 只，按当天开盘价成交，用同样的出场规则
+    （随机股票自己的相对强度 / 移动止损），20 次重复，固定随机种子
+  benchmarks: SPY 买入持有、SPY + 大盘过滤
+  b0: B0 本地回放的汇总（exports/b0/sharadar_replay）只作描述性比较；另报两者逐年收益的相关系数（B0 回放只存了逐年收益）
+
+pass:
+  rule: 同 v1：1 夏普前后两半都高于 SPY + 大盘过滤；2 每月收益减随机对照，两半均值都 > 0，全样本 t ≥ 2.5；3 最大回撤不比 SPY 买入持有更深
+  multiple_testing: scout_system 家族第 3、4 次尝试（v1 的两个出场版本已否定）；双侧 0.05 / 4 → t ≥ 2.5
+  outcome: 通过 → 知识库条目 backtested，作为独立系统进入前向记录，由用户决定是否使用；不通过 → rejected，不调卖出线、持仓数或打分权重重算
+
+expected_failure: Scout 股票池上的动量排名（残差动量、52 周高点、frog-in-the-pan、Minervini 趋势模板）都没过检验关；
+  OSAP 60 年动量有效但 2015 年后变弱，2009 年 3–5 月动量崩盘；持有时间变长后，突破回踩的短期优势会被稀释，结果可能接近普通动量组合，
+  并与 B0 高度相关。
+disclosure: 登记前看过的：scout_system_v1 的全部结果（规则出场 t 2.82、后半夏普 0.49；20% 移动止损不如随机）、其出场原因分布
+  （止损 54%、中位数第 4 天）、2013 年后各板块 ETF 与 SPY 的对比、此前动量排名的否定结果；没有看过任何按排名持有的结果。
