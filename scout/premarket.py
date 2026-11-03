@@ -103,29 +103,37 @@ def eps_surprise(actual: float | None, estimate: float | None) -> float | None:
 REVENUE_INLINE = 0.005         # within ±0.5 % of the estimate counts as in line
 
 
-def revenue_verdict(actual: float | None, estimates: dict[str, float | None]) -> str | None:
-    """Revenue against consensus, decided in Python (the model only repeats it). `estimates` = {source: value};
-    Finnhub's calendar estimate can differ a lot from the usual consensus (Apple 2026-11-02: 115.7 vs 113.4 bn),
-    so sources pointing in opposite directions give no verdict."""
-    gaps = {s: actual / e - 1 for s, e in estimates.items() if actual and e}
-    if not gaps:
+def revenue_verdict(actual: float | None, estimate: float | None, source: str) -> str | None:
+    """Revenue against the pre-report consensus, decided in Python (the model only repeats it)."""
+    if not actual or not estimate:
         return None
-    sides = {0 if abs(g) < REVENUE_INLINE else (1 if g > 0 else -1) for g in gaps.values()}
-    detail = "，".join(f"{s} {_pct(g)}" for s, g in gaps.items())
-    if sides == {1} or sides == {-1}:
-        return f"{'高于' if 1 in sides else '低于'}预期（{detail}）"
-    if sides == {0}:
-        return f"基本持平（{detail}）"
-    return f"各家预期口径不一，不能下结论（{detail}）"
+    gap = actual / estimate - 1
+    if abs(gap) < REVENUE_INLINE:
+        return f"基本持平（{source} {_pct(gap)}）"
+    return f"{'高于' if gap > 0 else '低于'}预期（{source} {_pct(gap)}）"
 
 
-async def yahoo_quarter_revenue(ticker: str, report_day: date) -> float | None:
-    """Yahoo's current-quarter revenue consensus from the research snapshot before the report day (the research job
-    runs after the close, so a same-day snapshot of an after-close report has already rolled to the next quarter)."""
+async def yahoo_consensus(ticker: str, report_day: date) -> dict:
+    """Yahoo's current-quarter EPS and revenue consensus from the research snapshot before the report day (the
+    research job runs after the close, so a same-day snapshot of an after-close report has already rolled to the
+    next quarter). Only research-pool stocks have snapshots."""
     r = await db.fetch_one("SELECT payload FROM scout.research_snapshots WHERE ticker = :t AND kind = 'estimates' "
                            "AND asof < :d ORDER BY asof DESC LIMIT 1", {"t": ticker, "d": report_day})
-    v = (((r or {}).get("payload") or {}).get("revenue_estimate") or {}).get("0q", {}).get("avg")
-    return float(v) if v else None
+    pl = (r or {}).get("payload") or {}
+    eps = ((pl.get("earnings_estimate") or {}).get("0q") or {}).get("avg")
+    rev = ((pl.get("revenue_estimate") or {}).get("0q") or {}).get("avg")
+    return {"eps": float(eps) if eps is not None else None, "revenue": float(rev) if rev else None}
+
+
+def consensus(payload: dict, yahoo: dict) -> tuple[str, float | None, float | None] | None:
+    """(source, EPS estimate, revenue estimate) before the report: Yahoo's snapshot first; Finnhub's calendar only
+    when its estimates were kept from before the report day (`context.refresh_earnings`): afterwards they drift
+    toward the actuals (2026-11, 23 reports: median 0.25 % off the actual revenue, Yahoo 2.1 %; Finnhub 1.8 % higher)."""
+    if yahoo.get("eps") is not None or yahoo.get("revenue"):
+        return "Yahoo", yahoo.get("eps"), yahoo.get("revenue")
+    if payload.get("estimates_before_report"):
+        return "Finnhub", payload.get("eps_estimate"), payload.get("revenue_estimate")
+    return None
 
 
 _REVENUE_BEAT = ("营收超预期", "营收高于预期", "营收好于预期", "收入超预期", "收入高于预期")
@@ -288,21 +296,32 @@ async def build_pack(session: date) -> dict:
             return {}
         return {"盘前价": f"{q['last']:.2f}", "盘前较前收": _pct(q["change"])}
 
-    yahoo_rev = {e["ticker"]: await yahoo_quarter_revenue(e["ticker"], e["event_date"]) for e in reported}
+    yahoo = {e["ticker"]: await yahoo_consensus(e["ticker"], e["event_date"]) for e in reported}
 
     def earn_row(prefix: str, e: dict, when: str) -> dict:
         p = e["payload"] or {}
         row = {"key": f"{prefix}.{e['ticker']}", "代码": e["ticker"], "名称": names.get(e["ticker"]), "身份": ident(e["ticker"]),
-               "时间": when, "EPS 预期": _eps(p.get("eps_estimate"))}
-        if prefix == "er":
-            surprise = eps_surprise(p.get("eps_actual"), p.get("eps_estimate"))
-            row.update({"EPS 实际": _eps(p.get("eps_actual")) if p.get("eps_actual") is not None else "数据待更新",
-                        **({"EPS 超预期幅度": _pct(surprise)} if surprise is not None else {}),
-                        **({"营收实际": _revenue(p.get("revenue_actual"))} if p.get("revenue_actual") else {}), **pm(e["ticker"])})
-        if p.get("revenue_estimate"):
-            row["营收预期（Finnhub）"] = _revenue(p["revenue_estimate"])
-        verdict = revenue_verdict(p.get("revenue_actual"), {"Finnhub": p.get("revenue_estimate"),
-                                                              "Yahoo": yahoo_rev.get(e["ticker"])}) if prefix == "er" else None
+               "时间": when}
+        if prefix != "er":
+            row["EPS 预期"] = _eps(p.get("eps_estimate"))
+            if p.get("revenue_estimate"):
+                row["营收预期"] = _revenue(p["revenue_estimate"])
+            return row
+        row.update({"EPS 实际": _eps(p.get("eps_actual")) if p.get("eps_actual") is not None else "数据待更新",
+                    **({"营收实际": _revenue(p.get("revenue_actual"))} if p.get("revenue_actual") else {}), **pm(e["ticker"])})
+        pre = consensus(p, yahoo.get(e["ticker"], {}))
+        if not pre:
+            row["预期"] = "没有财报前的一致预期，不判断超预期与否"
+            return row
+        src, eps_est, rev_est = pre
+        row["预期来源"] = f"{src}（财报前）"
+        row["EPS 预期"] = _eps(eps_est)
+        surprise = eps_surprise(p.get("eps_actual"), eps_est)
+        if surprise is not None:
+            row["EPS 超预期幅度"] = _pct(surprise)
+        if rev_est:
+            row["营收预期"] = _revenue(rev_est)
+        verdict = revenue_verdict(p.get("revenue_actual"), rev_est, src)
         if verdict:
             row["营收对比预期"] = verdict
         return row
@@ -541,8 +560,9 @@ def render_text(b: PremarketBrief, pack: dict) -> str:
     if pack["earnings_reported"]:
         lines += ["", "已公布财报："]
         for e in pack["earnings_reported"]:
-            line = f"· {e['代码']} {e['时间']} EPS {e['EPS 实际']} vs 预期 {e['EPS 预期']}"
+            line = f"· {e['代码']} {e['时间']} EPS {e['EPS 实际']}" + (f" vs 预期 {e['EPS 预期']}" if e.get("EPS 预期") else "（无财报前预期）")
             line += f"（{e['EPS 超预期幅度']}）" if e.get("EPS 超预期幅度") else ""
+            line += f"，营收{e['营收对比预期']}" if e.get("营收对比预期") else ""
             line += f"，盘前 {e['盘前较前收']}" if e.get("盘前较前收") else ""
             lines.append(line)
     def peer(e: dict) -> str:

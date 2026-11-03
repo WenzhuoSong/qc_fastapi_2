@@ -53,7 +53,7 @@ Archived, not in this tree: the QC observer (git tag `qc-observer-final`, local 
 | `scout/pipeline.py` | `run_eod` (skips holidays, scans/pushes a session once; `--force` reruns; cards of rules the knowledge base rejects are saved and tracked but not pushed, `learned.held_back`), `run_weekly`, `prepare`, `ensure_base_rates` |
 | `scout/market_calendar.py` | US equity trading days / holidays |
 | `scout/web/` | FastAPI app (webhook + dashboard) and HTML views |
-| `scout/premarket.py` | Pre-market brief: overnight quotes, opportunity positions, earnings, economic calendar (Forex Factory feed), news → LLM + checks |
+| `scout/premarket.py` | Pre-market brief: overnight quotes, opportunity positions, earnings, economic calendar (Forex Factory feed), news → LLM + checks. Beat / miss is decided in Python against the pre-report consensus: Yahoo's research snapshot before the report day, else Finnhub's estimates only when kept from before the report (`context.refresh_earnings` freezes them from the report day on; afterwards they drift toward the actuals); a sentence calling revenue a beat / miss against that verdict fails validation |
 | `scout/events.py` | Abnormal moves (idio ≥ 3σ ex ante, ≥ 8%, or 3× volume): detection per ticker + post-event base rates over the universe |
 | `scout/event_cause.py` | Why it moved: dated news, SEC filings, insiders, earnings, web search → cause taxonomy, validated, cached in `scout.stock_events` |
 | `scout/fundamentals.py` | Finnhub free fundamentals / analyst mix / EPS surprises / insiders, cached daily (`scout.fundamentals`); raw calls in `scout/data/finnhub.py` |

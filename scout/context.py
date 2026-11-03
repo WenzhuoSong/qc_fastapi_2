@@ -9,6 +9,7 @@ import asyncio
 import logging
 import time
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from scout import db
 from scout.config import get_scout_settings
@@ -90,6 +91,9 @@ async def refresh_earnings(days_back: int = 10, days_ahead: int = 21) -> int:
     # Finnhub caps one response at 1500 rows and drops the earliest dates, so
     # a month in one call silently loses the nearest weeks of earnings season.
     today = date.today()
+    # From the report day on, Finnhub's estimates drift toward the actuals (2026-11: median 0.25 % off the actual
+    # revenue against 2.1 % for Yahoo's pre-report consensus), so the last pre-report estimates are kept.
+    today_et = datetime.now(ZoneInfo("America/New_York")).date()
     items: list[dict] = []
     complete: list[tuple[date, date]] = []    # windows fetched in full: stale dates in them can go
     start, end = today - timedelta(days=days_back), today + timedelta(days=days_ahead)
@@ -116,6 +120,7 @@ async def refresh_earnings(days_back: int = 10, days_ahead: int = 21) -> int:
                 "eps_actual": it.get("epsActual"),
                 "revenue_estimate": it.get("revenueEstimate"),
                 "revenue_actual": it.get("revenueActual"),
+                "estimates_before_report": date.fromisoformat(day) > today_et,
             }),
         })
     rows = list({(r["t"], r["d"]): r for r in rows}.values())    # one row per (ticker, date) for ON CONFLICT
@@ -124,9 +129,14 @@ async def refresh_earnings(days_back: int = 10, days_ahead: int = 21) -> int:
             """
             INSERT INTO scout.market_events (ticker, event_type, event_date, source, payload, updated_at)
             VALUES (:t, 'earnings', :d, 'finnhub', CAST(:p AS JSONB), now())
-            ON CONFLICT (ticker, event_type, event_date) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()
+            ON CONFLICT (ticker, event_type, event_date) DO UPDATE SET payload = CASE
+                WHEN market_events.event_date <= :today THEN EXCLUDED.payload || jsonb_build_object(
+                    'eps_estimate', market_events.payload->'eps_estimate',
+                    'revenue_estimate', market_events.payload->'revenue_estimate',
+                    'estimates_before_report', coalesce(market_events.payload->'estimates_before_report', 'false'::jsonb))
+                ELSE EXCLUDED.payload END, updated_at = now()
             """,
-            rows,
+            [{**r, "today": today_et} for r in rows],
         )
         await _drop_moved_earnings(rows, complete)
     return len(rows)

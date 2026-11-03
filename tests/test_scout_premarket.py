@@ -115,13 +115,18 @@ class ValidationTests(unittest.TestCase):
 
     def test_revenue_verdict(self):
         v = premarket.revenue_verdict
-        self.assertEqual(v(114.477e9, {"Yahoo": 113.4e9}), "高于预期（Yahoo +0.9%）")
-        self.assertTrue(v(114.477e9, {"Finnhub": 115.66e9, "Yahoo": 113.4e9}).startswith("各家预期口径不一"))  # Apple 2026-11-02
-        self.assertTrue(v(3.742e9, {"Finnhub": 3.822e9, "Yahoo": 3.744e9}).startswith("各家预期口径不一"))    # Shopify 2026-11-03
-        self.assertEqual(v(3.742e9, {"Finnhub": 3.744e9, "Yahoo": None}), "基本持平（Finnhub -0.1%）")
-        self.assertTrue(v(90.0, {"Finnhub": 100.0, "Yahoo": 99.0}).startswith("低于预期"))
-        self.assertIsNone(v(None, {"Finnhub": 100.0}))
-        self.assertIsNone(v(90.0, {"Finnhub": None}))
+        self.assertEqual(v(114.477e9, 113.27e9, "Yahoo"), "高于预期（Yahoo +1.1%）")          # Apple 2026-11-02
+        self.assertEqual(v(3.742e9, 3.744e9, "Yahoo"), "基本持平（Yahoo -0.1%）")             # Shopify 2026-11-03
+        self.assertTrue(v(90.0, 100.0, "Finnhub").startswith("低于预期"))
+        self.assertIsNone(v(None, 100.0, "Yahoo"))
+        self.assertIsNone(v(90.0, None, "Yahoo"))
+
+    def test_consensus_prefers_yahoo_and_distrusts_late_finnhub(self):
+        late = {"eps_estimate": 2.03, "revenue_estimate": 115.66e9}
+        self.assertEqual(premarket.consensus(late, {"eps": 1.99, "revenue": 113.27e9}), ("Yahoo", 1.99, 113.27e9))
+        self.assertIsNone(premarket.consensus(late, {}))
+        self.assertEqual(premarket.consensus({**late, "estimates_before_report": True}, {"eps": None, "revenue": None}),
+                         ("Finnhub", 2.03, 115.66e9))
 
     def test_revenue_claims_must_match_the_verdict(self):
         rows = [{"代码": "AAPL", "名称": "Apple Inc", "营收对比预期": "高于预期（Yahoo +0.9%）"},
