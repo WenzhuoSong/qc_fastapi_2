@@ -200,6 +200,20 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         summary["llm_usage"] = await llm_usage.check_alert(push)
     except Exception as exc:
         logger.warning("llm usage check failed: %s", exc)
+    try:                               # news passed along the supply chain (inference, scored in the ledger)
+        from scout import propagation
+
+        prop = await propagation.run(asof)
+        summary["propagation"] = {k: v for k, v in prop.items() if k != "signals_list"}
+        if push:
+            held = {t["ticker"] for t in await portfolio.trades(open_only=True)}
+            watch = {r["ticker"] for r in await universe.load_watchlist()}
+            text = propagation.push_text(prop["signals_list"], held, watch)
+            if text:
+                await telegram.send(text)
+    except Exception as exc:
+        logger.warning("propagation failed: %s", exc)
+        summary["propagation"] = f"failed: {type(exc).__name__}"
     mfilter = None
     try:                               # the user's market filter (no new buys while risk is off)
         from scout import intraday, market_filter

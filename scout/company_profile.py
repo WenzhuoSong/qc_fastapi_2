@@ -369,3 +369,27 @@ async def neighbours(ticker: str) -> dict[str, list[str]]:
                   "competitor": "竞争对手", "partner": "合作方"}[r["relation"]]
         out.setdefault(r["ticker"], []).append(mirror)
     return out
+
+
+MIRROR = {"customer": "supplier", "supplier": "customer", "competitor": "competitor", "partner": "partner"}
+
+
+async def links(ticker: str) -> list[dict]:
+    """Each related ticker with what it is to this company and the filing quote that says so:
+    [{target, relation (target seen from this company), quote, filing_of}], both directions, one row per target."""
+    p = await latest(ticker)
+    if not p:
+        return []
+    out: dict[tuple, dict] = {}
+    for r in p["relations"]:
+        if r["related_ticker"]:
+            out.setdefault((r["related_ticker"], r["relation"]),
+                           {"target": r["related_ticker"], "relation": r["relation"], "quote": r["quote"], "detail": r.get("detail"),
+                            "filing_of": p["ticker"]})
+    for r in p["named_by"]:                 # the other company's filing names this one: mirror the relation
+        rel = MIRROR[r["relation"]]
+        out.setdefault((r["ticker"], rel), {"target": r["ticker"], "relation": rel, "quote": r["quote"], "detail": r.get("detail"),
+                                            "filing_of": r["ticker"]})
+    # the strongest links first: a disclosed revenue share, then customers / suppliers, partners, competitors
+    order = {"supplier": 1, "customer": 1, "partner": 2, "competitor": 3}
+    return sorted(out.values(), key=lambda l: ("%" not in f"{l.get('detail') or ''}{l.get('quote') or ''}", order[l["relation"]]))

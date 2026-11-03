@@ -36,7 +36,7 @@ SYSTEM_PROMPT = f"""你是 Scout，一位美股研究助理，服务于一位有
 - 问到某个方法有没有用、某条规则是否通过：get_knowledge；问到前向验证、检验结果、研究进度：get_research。问到 Scout 过去判断准不准：get_ledger。
 - 问到大盘、板块轮动、哪个行业强弱：get_market_overview、get_sectors；问到 Scout 的行业观点：get_outlook。
 - 问到今天 / 盘前要注意什么：get_briefs（premarket / eod / market_focus / weekly）；本周数据和财报：get_calendar。
-- 问到机会卡 / 今天有什么机会：list_opportunities（会标明规则是否通过检验）。
+- 问到机会卡 / 今天有什么机会：list_opportunities（会标明规则是否通过检验）；问到新闻对上下游、竞争对手的影响：get_propagation。
 - 想全面了解一只股票（"X 怎么样""帮我分析 X"）：调 get_evidence，按下面"多视角证据"的写法逐个视角讲。
 - 问到"从各个策略看这只股票行不行""哪些股票被多个策略选中"：get_strategy_view；逐个策略说是否选中、排第几，并强调每个策略的检验状态
   （只有前向验证中 / 已确认的有经过检验的依据；否定的经检验无效；描述性筛选只说明现状）。
@@ -782,6 +782,23 @@ async def get_company_profile(ticker: str) -> dict:
 
 REL_BY = {"customer": "在年报里把它列为客户（它向对方采购，对方是它的供应商）", "supplier": "在年报里把它列为供应商（它向对方供货，对方是它的客户）",
           "competitor": "在年报里把它列为竞争对手", "partner": "在年报里把它列为合作方"}
+
+
+@tool("get_propagation", "产业链传导提示：最近的新闻（关于某公司的重要消息）对它的客户、供应商、竞争对手、合作方可能的利好 / 利空推断，"
+                         "含渠道、年报原文依据、当天关联公司的走势；给 ticker 时只看与它相关的（它是消息来源或受影响方）。推断，未经检验",
+      {"type": "object", "properties": {"ticker": {"type": "string"}, "days": {"type": "integer", "minimum": 1, "maximum": 60}}},
+      pages=("/",))
+async def get_propagation(ticker: str | None = None, days: int = 14) -> dict:
+    from scout import propagation
+
+    zh = propagation.REL_ZH
+    rows = await propagation.recent(ticker, days)
+    return {"说明": "推断，未经检验；每条都记入判断台账，5 / 20 / 60 个交易日后对照 SPY 和行业打分（用 get_ledger 看校准）",
+            "提示": [{"日期": str(r["asof"]), "消息来源": r["source_ticker"], "新闻": r["headline"], "受影响": r["target_ticker"],
+                    "关系": f"{r['target_ticker']} 是 {r['source_ticker']} 的{zh.get(r['relation'], r['relation'])}",
+                    "方向": "利好" if r["impact"] > 0 else "利空", "渠道": r["mechanism"], "置信度": r["confidence"],
+                    "年报依据": (r["relation_quote"] or "")[:200],
+                    "当天走势": {k: _p(v) for k, v in (r["reaction"] or {}).items() if v is not None}} for r in rows]}
 
 
 @tool("research_company", "联网检索公司和行业的真实现状（外部报道，未经核实）：主要产品和收入构成、主要客户与供应商、在行业里的地位和份额、"

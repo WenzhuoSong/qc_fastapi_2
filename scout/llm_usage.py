@@ -29,7 +29,8 @@ ALERT_USD = 3.0                 # a day above this is pushed once by the after-c
 PURPOSE_ZH = {"insight": "个股 AI 解读", "thesis": "机会卡论点", "agent": "问答助手", "trade_parse": "交易解析",
               "company_profile": "公司画像", "company_research": "联网检索公司", "event_cause": "异动归因",
               "event_search": "异动联网检索", "market_focus": "市场关注点", "premarket": "盘前简报", "outlook": "行业展望",
-              "gate_critique": "检验关批判", "news_summary": "新闻摘要"}
+              "gate_critique": "检验关批判", "news_summary": "新闻摘要",
+              "propagation": "产业链传导"}
 
 
 def price(model: str) -> tuple[float, float, float] | None:
