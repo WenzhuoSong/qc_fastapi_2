@@ -129,7 +129,8 @@ def signals(d: dict) -> list[dict]:
 
 def run_portfolio(d: dict, fills: dict[int, list[dict]], exit_key: str, cost: float, off: np.ndarray,
                   control: dict | None = None) -> tuple[np.ndarray, list[dict], dict[int, list[dict]]]:
-    """Daily value from `start`. `control` = {rng, buys: {day: [taken system trades]}}: buy random members instead.
+    """Daily value from `start`. `control` = {rng, buys: {day: [taken system trades]}, exit_fn?}: buy random members
+    instead (exit_fn(j, day) gives their exit; default: v1's rules).
     Returns (nav, closed trades, taken: {day: [system trades taken]})."""
     o, c, rf = d["o"], pd.DataFrame(d["c"]).ffill().to_numpy(), d["rf"]
     n, start = len(c), d["start"]
@@ -164,7 +165,9 @@ def run_portfolio(d: dict, fills: dict[int, list[dict]], exit_key: str, cost: fl
                 picks = control["rng"].choice(pool, size=min(k, free, len(pool)), replace=False) if k and pool else []
                 for j, s in zip(picks, control["buys"].get(t, [])):
                     j = int(j)
-                    if exit_key == "a":
+                    if control.get("exit_fn"):
+                        ex = control["exit_fn"](j, t)
+                    elif exit_key == "a":
                         ex = trail_exit(c, o, j, t, int(d["last_day"][j]) if "last_day" in d else None)
                     else:
                         e = s["exit"]["b"]
