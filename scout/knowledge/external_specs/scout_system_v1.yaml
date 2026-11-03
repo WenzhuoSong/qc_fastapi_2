@@ -1,0 +1,55 @@
+# Pre-registration of Scout's first complete rule-based system, written 2026-11-03 before any result was computed.
+# Never edited after the run; a changed design is a new file with a new key. Run once:
+# `python -m scout.jobs.scout_system compute` (local only: Sharadar files, French T-bill rate; git-ignored output).
+key: scout_system_v1
+registered_on: '2026-11-03'
+requested_by: 用户 2026-11-03："继续精细化你的买卖策略，类似B0那种方案"；角色：和 B0 并列的独立系统；最多持有 5 只
+family: scout_system
+question: 把有证据的部件（突破回踩选股、20% 移动止损、大盘过滤）组装成一套最多 5 只的完整规则系统，它作为独立组合是否好于 SPY + 大盘过滤，
+  选股本身是否好于同样规则下随机买入？
+
+data:
+  source: 本地 Sharadar（scout/sharadar_research.py 的口径）：美国本土普通股，NYSE / NASDAQ / NYSEMKT，未复权价 ≥ $5；
+    含之后退市的公司，退市按最后收盘结算，非并购退市 -30%（Shumway 1997）；价格用含分红复权
+  universe: 市值前 1000，每 21 个交易日更新一次（从 1999-01-04 起，与 B0 回放相同的节奏）
+  period: 1999-01-04 到数据结束（约 2026-09）；无风险利率 French 日度 T-bill
+  halves: 1999-01..2012-12 和 2013-01..结束（日历固定分割）
+
+system:
+  signal: Scout 的突破回踩（rules.py 的 D1_BREAKOUT 条件，在复权 OHLC 上计算）：收盘突破前 55 日最高价；量 ≥ 前 50 日均量 1.8 倍；
+    收盘 > 50 日线 > 200 日线；相对强度（0.4 × 63 日 + 0.3 × 126 日 + 0.3 × 252 日收益）在当天股票池内的百分位 ≥ 0.8；
+    收盘位于当日振幅上部 40%；开盘跳空 < 4%。信号当天必须是股票池成员
+  entry: 规则自己的价位（rules._breakout_retest_levels：突破位 ± 0.25 ATR14），信号后 10 个交易日内的限价单，
+    成交价 = 开盘价夹在区间内（scout/simulate.py，与检验关相同）；已持有的股票不重复买
+  slots: 最多 5 只；同一天成交的多于空位时，按信号当天相对强度百分位从高到低；当天卖出腾出的空位从下一个交易日起才能用
+  size: 每笔 = 前一日收盘的组合净值 / 5，不超过现金；不再平衡
+  market_filter: SPY 月末收盘低于 10 个月均值时不新买入（与 scout/market_filter.py 相同），已有持仓照常按出场规则
+  exits:
+    a: 主版本，用户的持仓计划：收盘低于买入以来最高收盘的 80%，下一个交易日开盘卖出
+    b: 规则自己的出场（scout/simulate.py FIXED_EXIT：止损在突破位下方 1.25 ATR 或更低，目标 2R，持有 20 个交易日）
+  cash: T-bill 利率
+  costs: 每边 0.05%；敏感性每边 0.20%
+
+controls:
+  random: 系统每次在某天接受 k 笔成交时，改为从当天股票池（不含已持有）随机买 k 只，按当天开盘价成交，仓位规则相同；
+    a 版本用同样的 20% 移动止损；b 版本在被替代的那笔交易卖出的同一天收盘卖出（持有时间相同）；20 次重复，固定随机种子；
+    对照的月收益 = 20 次的平均
+  benchmarks: SPY 买入持有；SPY + 大盘过滤（现行核心规则）
+  b0: B0 的本地回放结果（exports/b0/sharadar_replay，信号层面的近似，不同股票池）只作描述性比较，不参与判定
+
+pass:
+  rule: 一个出场版本通过需要同时满足：
+    1 夏普在前后两半都高于 SPY + 大盘过滤；
+    2 每月收益减随机对照的月收益，前后两半均值都 > 0，全样本 t ≥ 2；
+    3 最大回撤不比 SPY 买入持有更深
+  multiple_testing: 两个出场版本都计入 scout_system 家族；选股信号本身已过检验关（breakout_retest_selection），这里检验的是组合层面
+  outcome: 通过 → 知识库条目 backtested，作为独立系统进入前向记录（每天收盘按规则生成虚拟持仓），由用户决定是否使用；
+    不通过 → 记为 rejected，不调持仓数、止损幅度或排序规则重算
+
+report: 年化、波动、夏普、最大回撤、最差 63 日、每年收益、平均持仓数、平均现金比例、每年成交笔数、平均持有天数，分两半；
+  熊市时期（2000-03..2002-09、2007-10..2009-02、2020-02..03、2022-01..09）收益
+
+expected_failure: 突破回踩的优势集中在买入后 1–2 周且主要在后半段；20% 移动止损通常持有数月，会稀释它；只有 5 只，个股噪音大；
+  大盘过滤在 2012 年后有成本；信号需要强势市场，弱市时大多空仓（现金）。
+disclosure: 登记前看过的：突破回踩的检验关和期限结果（scout.gate、horizons、hold_cap）、20% 移动止损和大盘过滤的 Sharadar 复查、
+  B0 回放的汇总结果；没有看过这套组合（5 只、按相对强度排序、两种出场）的任何结果。
