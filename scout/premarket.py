@@ -69,6 +69,8 @@ def holding_label(price: float, t: dict, session: date | None = None) -> str:
     pnl = price / t["entry_price"] - 1
     text = f"较你的成本 {pnl * 100:+.1f}%"
     plan = t.get("plan") or {}
+    if plan.get("policy") == "core_filter":
+        return text + ("，大盘过滤已转为避险：核心仓按规则今天开盘卖出" if plan.get("filter_off") else "，核心仓（按大盘过滤管理）")
     if plan.get("stop_hit"):
         return text + f"，回落止损已在 {plan['stop_hit']} 收盘触发：按计划今天开盘卖出全部"
     if t.get("stop"):

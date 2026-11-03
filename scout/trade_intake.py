@@ -104,6 +104,8 @@ async def buy_checks(p: dict, day: date) -> list[str]:
     from scout import levels, market_filter, position_risk
 
     t, price, shares = p["ticker"], p["price"], p["shares"]
+    if levels.is_core(t):
+        return await core_buy_checks(t, price, shares)
     lines = []
     pm = await levels.get_map(t) or {}
     zone = next((e for e in pm.get("entries") or [] if e["zone_lo"] <= price <= e["zone_hi"]), None)
@@ -156,6 +158,20 @@ async def buy_checks(p: dict, day: date) -> list[str]:
     same = [x["ticker"] for x in held if inst.get("industry") and x.get("industry") == inst["industry"]]
     if same:
         lines.append(f"⚠️ 同一细分行业已有持仓：{'、'.join(same)}（走势高度相关，接近同一笔仓位）")
+    return lines
+
+
+async def core_buy_checks(t: str, price: float, shares: float) -> list[str]:
+    """A broad-market ETF is the core: the market filter is its rule; no trailing stop, no satellite room."""
+    from scout import market_filter
+
+    settings = await portfolio.get_settings()
+    acct = settings.get("account_size")
+    held = portfolio.core_value(await portfolio.trades(open_only=True))
+    lines = [f"核心仓（宽基指数 ETF）：不设回落 20% 止损，不占卫星仓额度；规则是大盘过滤，避险时下一个交易日开盘卖出转现金",
+             f"买入 ${shares * price:,.0f}" + (f"，买入后核心仓约 ${held + shares * price:,.0f}（占账户 {(held + shares * price) / acct:.1%}）" if acct else "")]
+    mf = await market_filter.current()
+    lines.append("⚠️ 大盘过滤处于避险：按核心仓规则这段时间持有现金，不买入" if mf and mf["off"] else "大盘过滤：正常，核心仓规则允许持有")
     return lines
 
 

@@ -37,7 +37,19 @@ async def get_settings() -> dict:
 
 
 def satellite_value(open_rows: list[dict]) -> float:
-    """Market value of the remaining shares of open trades (last close, else the fill)."""
+    """Market value of the remaining shares of open trades (last close, else the fill); core ETFs excluded."""
+    from scout import levels
+
+    return position_value([t for t in open_rows if not levels.is_core(t["ticker"])])
+
+
+def core_value(open_rows: list[dict]) -> float:
+    from scout import levels
+
+    return position_value([t for t in open_rows if levels.is_core(t["ticker"])])
+
+
+def position_value(open_rows: list[dict]) -> float:
     total = 0.0
     for t in open_rows:
         m = metrics(t)
@@ -151,6 +163,8 @@ async def manage_trade(t: dict) -> list[str]:
                               {"t": t["ticker"], "d": t["opened_on"]})
     asof = bars[-1]["date"] if bars else t["opened_on"]
     msgs: list[str] = []
+    if levels.is_core(t["ticker"]):
+        return await manage_core_trade(t, plan, asof)
     if plan.get("policy") != levels.TRAIL_POLICY:
         if "target1" in plan:                 # a trade from before 2026-10-31
             plan = levels.adopt_trail(plan, t["entry_price"], asof)
@@ -187,6 +201,23 @@ async def manage_trade(t: dict) -> list[str]:
             plan.setdefault("history", []).append({"date": asof.isoformat(), "text": m})
     await db.execute("UPDATE scout.trades SET stop = :s, target = NULL, plan = CAST(:p AS JSONB), updated_at = now() WHERE id = :id",
                      {"s": stop, "p": db.jsonb(plan), "id": t["id"]})
+    return msgs
+
+
+async def manage_core_trade(t: dict, plan: dict, asof: date) -> list[str]:
+    """A core ETF: moved to the core plan on its first run (a trailing-stop plan is kept under 'previous'), then
+    only the market filter decides."""
+    from scout import levels, market_filter
+
+    msgs: list[str] = []
+    if plan.get("policy") != levels.CORE_POLICY:
+        at_buy = await market_filter.current(date.fromordinal(t["opened_on"].toordinal() - 1))
+        plan = levels.core_plan(t["opened_on"], at_buy, previous=plan if plan.get("policy") else None)
+        msgs.append(f"{t['ticker']} 归入核心仓：不设回落 20% 止损、不占卫星仓额度，按大盘过滤管理（避险时卖出转现金）")
+        plan["history"].append({"date": asof.isoformat(), "text": msgs[-1]})
+    msgs += levels.manage_core(plan, await market_filter.current(asof), asof)
+    await db.execute("UPDATE scout.trades SET stop = NULL, target = NULL, plan = CAST(:p AS JSONB), updated_at = now() WHERE id = :id",
+                     {"p": db.jsonb(plan), "id": t["id"]})
     return msgs
 
 
@@ -314,7 +345,7 @@ def metrics(t: dict) -> dict:
     # R is measured against the initial stop; the stop the system has raised since only sets the open risk
     pl = t.get("plan") or {}
     first = (pl.get("previous") or {}).get("stop") or pl.get("stop") or t.get("stop")
-    if first and t["entry_price"] > first:
+    if first and t["entry_price"] > first and pl.get("policy") != "core_filter":
         out["r"] = pnl / ((t["entry_price"] - first) * t["shares"])
     if t.get("stop") and price and not t.get("closed_on"):
         out["open_risk"] = max(0.0, (price - t["stop"]) * remaining)

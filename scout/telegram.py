@@ -386,6 +386,8 @@ def next_step(t: dict, m: dict) -> str:
     from scout import levels
 
     pl = t.get("plan") or {}
+    if pl.get("policy") == levels.CORE_POLICY or levels.is_core(t["ticker"]):
+        return levels.core_step(pl)
     if pl.get("policy") != levels.TRAIL_POLICY:
         return ""
     for st in levels.exit_plan(pl, m["remaining"], t.get("stop")):
@@ -398,7 +400,7 @@ async def trades_text() -> str:
     held = await portfolio.trades(open_only=True)
     if not held:
         return "没有记录的持仓。在 Dashboard「我的交易」页记录买入后，这里和盘前简报会跟踪它们。"
-    lines = ["<b>我的持仓</b>（按最近收盘价；回落 20% 止损由系统每天收盘后更新）"]
+    lines = ["<b>我的持仓</b>（按最近收盘价；个股的回落 20% 止损由系统每天收盘后更新，核心仓按大盘过滤）"]
     total = 0.0
     for t in held:
         m = portfolio.metrics(t)
@@ -415,7 +417,12 @@ async def trades_text() -> str:
     lines.append(f"合计盈亏 {total:+,.0f}（含已实现）")
     from scout import market_filter
 
-    sat = portfolio.satellite(await portfolio.get_settings())
+    settings = await portfolio.get_settings()
+    sat = portfolio.satellite(settings)
+    core = portfolio.core_value(held)
+    if core:
+        acct = settings.get("account_size")
+        lines.append(f"核心仓（宽基指数 ETF）${core:,.0f}" + (f"，占账户 {core / acct * 100:.1f}%" if acct else "") + "，按大盘过滤管理")
     if sat:
         lines.append(f"卫星仓 ${sat['used']:,.0f}，占账户 {sat['pct'] * 100:.1f}%（上限 {sat['cap_pct'] * 100:.0f}%，"
                      + ("超出，按计划不新买入个股）" if sat["over"] else f"剩余额度 ${sat['room']:,.0f}）"))

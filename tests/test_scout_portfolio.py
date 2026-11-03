@@ -106,5 +106,39 @@ class OutcomeAndEventTests(unittest.TestCase):
         hit = {**t, "plan": {"stop_hit": "2026-10-30"}}
         self.assertIn("按计划今天开盘卖出全部", holding_label(96.0, hit))
 
+
+class CoreTests(unittest.TestCase):
+    def test_core_etfs_are_outside_the_satellite(self):
+        rows = [{"ticker": "SPY", "entry_price": 756.0, "shares": 100, "last_close": 760.0, "sells": []},
+                {"ticker": "XLU", "entry_price": 43.28, "shares": 500, "last_close": 44.0, "sells": []},
+                {"ticker": "MU", "entry_price": 900.0, "shares": 10, "last_close": 910.0, "sells": []}]
+        self.assertAlmostEqual(portfolio.satellite_value(rows), 500 * 44.0 + 10 * 910.0)
+        self.assertAlmostEqual(portfolio.core_value(rows), 100 * 760.0)
+
+    def test_core_plan_follows_the_market_filter(self):
+        from scout import levels
+
+        self.assertTrue(levels.is_core("spy") and levels.is_core("VOO"))
+        self.assertFalse(levels.is_core("QQQ") or levels.is_core("XLU"))
+        old = {"policy": "trail20", "stop": 604.8, "history": [{"date": "2026-11-03", "text": "x"}]}
+        plan = levels.core_plan(date(2026, 11, 3), {"off": False}, previous=old)
+        self.assertEqual((plan["policy"], plan["stop"], plan["previous"]["stop"]), ("core_filter", None, 604.8))
+        self.assertEqual(levels.manage_core(plan, {"off": False}, date(2026, 11, 4)), [])
+        msgs = levels.manage_core(plan, {"off": True}, date(2026, 12, 1))
+        self.assertIn("卖出", msgs[0])
+        self.assertEqual(levels.manage_core(plan, {"off": True}, date(2026, 12, 2)), [])      # once per episode
+        self.assertTrue(levels.core_step(plan).startswith("⚠️"))
+        self.assertIn("恢复", levels.manage_core(plan, {"off": False}, date(2027, 1, 4))[0])
+        self.assertNotIn("filter_off", plan)
+
+    def test_core_metrics_and_labels_have_no_stop(self):
+        t = {"ticker": "SPY", "entry_price": 756.0, "shares": 100, "last_close": 740.0, "stop": None, "sells": [],
+             "plan": {"policy": "core_filter", "stop": None, "previous": {"stop": 604.8}}}
+        m = portfolio.metrics(t)
+        self.assertNotIn("r", m)
+        self.assertNotIn("to_stop", m)
+        self.assertIn("核心仓", holding_label(740.0, t))
+
+
 if __name__ == "__main__":
     unittest.main()

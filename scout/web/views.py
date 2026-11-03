@@ -456,6 +456,8 @@ def holding_card(trades: list[dict], live: dict | None, close: float | None, tod
         if t.get("stop"):
             line += (f"<div class='small'><b>止损 {t['stop']:.2f}</b>（{escape(pl.get('stop_now_basis') or pl.get('stop_basis') or '')}"
                      + (f"，距现价 {signed(t['stop'] / price - 1)}" if price else "") + "）</div>")
+        if pl.get("policy") == levels.CORE_POLICY:
+            line += f"<div class='small'>{escape(levels.core_step(pl))}</div>"
         if pl.get("policy") == levels.TRAIL_POLICY:
             rows = []
             for st in levels.exit_plan(pl, m["remaining"], t.get("stop")):
@@ -671,6 +673,9 @@ def next_exit(t: dict, m: dict) -> str:
     from scout import levels
 
     pl = t.get("plan") or {}
+    if pl.get("policy") == levels.CORE_POLICY or levels.is_core(t["ticker"]):
+        step = levels.core_step(pl)
+        return f"<span class='warn'>{escape(step)}</span>" if step.startswith("⚠️") else "核心仓 · 大盘过滤"
     if pl.get("policy") != levels.TRAIL_POLICY:
         return f"{t['target']:.2f}" if t.get("target") else "—"
     for st in levels.exit_plan(pl, m["remaining"], t.get("stop")):

@@ -47,6 +47,13 @@ TIME_STOP = {"回调买点": 10, "突破买点": 20, "反转确认": 20}
 TRAIL_POLICY = "trail20"
 TRAIL_KEEP = 0.80
 TRAIL_BASIS = "买入以来最高收盘回落 20%"
+# Core (the user's correction of 2026-11-04: a recorded broad-market ETF is the core, not the satellite): the core
+# rule is SPY with the market filter (Faber's 10-month rule, `exit_redeploy.market_off`, the best risk-adjusted
+# holding of every study since 2026-10-28): held while the filter is on, sold to cash at the next open when it turns
+# off; no trailing stop, outside the satellite cap. QQQ and sector ETFs are tilts, so they stay satellite.
+CORE_POLICY = "core_filter"
+CORE_TICKERS = frozenset({"SPY", "VOO", "IVV", "SPLG", "VTI", "ITOT", "SCHB", "SCHX"})
+CORE_BASIS = "核心仓：大盘过滤避险时下一个交易日开盘卖出转现金，不设回落止损"
 # The plan before 2026-10-31 (exit study `chandelier_all_t1`): initial stop until target 1, then the
 # chandelier stop, at most HOLD_SESSIONS sessions. `plan_exit` still replays it for gate specs with `exit: plan`.
 CHANDELIER_ATR = 3.0
@@ -290,6 +297,44 @@ def adopt_trail(plan: dict, fill: float, asof: date) -> dict:
     new["history"].append({"date": asof.isoformat(), "text": "持仓计划改为回落 20% 卖出（2026-10-31 你的决定）："
                            "不再用初始止损、目标 1 和吊灯止损，也没有 60 日上限"})
     return new
+
+
+def is_core(ticker: str) -> bool:
+    return ticker.upper() in CORE_TICKERS
+
+
+def core_plan(opened_on: date, market: dict | None = None, previous: dict | None = None) -> dict:
+    plan = {"policy": CORE_POLICY, "stop": None, "stop_basis": CORE_BASIS, "opened_on": opened_on.isoformat(), "history": []}
+    if market:
+        plan["market_off_at_buy"] = bool(market["off"])
+    if previous:
+        plan["previous"] = {k: v for k, v in previous.items() if k != "history"}
+        plan["history"] = list(previous.get("history") or [])
+    return plan
+
+
+def manage_core(plan: dict, market: dict | None, asof: date) -> list[str]:
+    """The core's only exit: the market filter turning off (sell at the next open, to cash), recorded once per episode
+    as plan['filter_off']; cleared when it turns on again (the rule buys back)."""
+    msgs: list[str] = []
+    if not market:
+        return msgs
+    if market["off"] and not plan.get("filter_off"):
+        plan["filter_off"] = asof.isoformat()
+        msgs.append("大盘过滤转为避险（SPY 月末收盘低于 10 个月均值）：核心仓按规则下一个交易日开盘卖出、转现金，"
+                    "过滤恢复后再买回")
+    elif not market["off"] and plan.get("filter_off"):
+        plan["filter_off_previous"] = plan.pop("filter_off")
+        msgs.append("大盘过滤恢复正常：核心仓规则可以重新持有")
+    for m in msgs:
+        plan.setdefault("history", []).append({"date": asof.isoformat(), "text": m})
+    return msgs
+
+
+def core_step(plan: dict) -> str:
+    if plan.get("filter_off"):
+        return f"⚠️ 大盘过滤 {plan['filter_off']} 转为避险：核心仓按规则下一个交易日开盘卖出、转现金"
+    return "核心仓：持有，大盘过滤避险时才卖出（不设回落止损，不占卫星仓额度）"
 
 
 def manage(plan: dict, dates: list[date], closes: list[float], asof: date) -> tuple[float, str, list[str]]:
