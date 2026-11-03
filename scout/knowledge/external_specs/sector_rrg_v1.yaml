@@ -1,0 +1,44 @@
+# Pre-registration of the sector rotation-quadrant test, written 2026-11-03 before any result was computed.
+# Never edited after the run; a changed design is a new file with a new key. Run once:
+# `python -m scout.jobs.sector_rrg compute` (local only: Sharadar ETF prices and the French data library,
+# both git-ignored; summary numbers only leave exports/).
+key: sector_rrg_v1
+registered_on: '2026-11-03'
+requested_by: 用户 2026-11-03："简单策略：可以买入：当板块进入改善；卖出：当开始转弱。"离线测试长期历史
+family: sector_rotation
+question: 按 Scout 自己的板块轮动象限，板块进入"改善"时买入它的 ETF、进入"转弱"时卖出，是否跑赢同期其他板块和 SPY？
+
+data:
+  main: Sharadar 基金日线 closeadj（含分红），SPDR 板块 ETF XLB XLE XLF XLI XLK XLP XLU XLV XLY（1998-12 起），
+    XLRE（2015-10 起）、XLC（2018-06 起）满足计算窗口后加入；基准 SPY；到 2026-10-28
+  cash: French 日度 T-bill 利率
+  replication: 同一规则用于 French 12 行业价值加权日收益（基准 = 市场 Mkt-RF + RF），1926-07 到 1998-12-21（ETF 样本之前，互不重叠）。
+    Other 行业照常参与。只作外部印证，不参与通过判定
+  survivorship: 板块 ETF 和行业组合没有幸存者偏差
+
+signal:
+  rrg: 与 scout/sectors.py 完全相同，不调参数：rs = 板块 / 基准；rs_ratio = 100 × rs / rs 的 50 日均值；
+    rs_momentum = 100 × rs_ratio / 10 个交易日前的 rs_ratio；象限 领先（≥100, ≥100）、转弱（≥100, <100）、落后（<100, <100）、改善（<100, ≥100）
+  schedule: 每周最后一个交易日收盘后判断（本周与上周的象限），下一个交易日收盘成交（晚一天，只用到判断日为止的数据）
+  entry: 未持有，且本周象限为改善、上周不是改善
+  exit_a: 用户的规则：持有中，本周象限为转弱
+  exit_b: A，另外持有中掉回落后也卖出（改善失败）
+  variants: A 为主，B 为对照；两个都计入多重检验
+
+measure:
+  trades: 每笔（成交收盘到卖出收盘）收益，扣往返成本 0.10%；对照 = 同一时间窗内其他可用板块等权买入持有的平均收益（主要），以及 SPY（次要）；
+    超额按入场月份聚类求 t；按入场日期中位数分前后两半
+  portfolios: 每个持有的板块占 1 / 当周可用板块数（等于"只持有改善中的那部分板块等权"），剩余部分两种版本：
+    现金版（T-bill）和倾斜版（SPY）；单边成本 0.05%（敏感性 0.20%）按换手扣；对照：SPY 买入持有、板块等权一直持有、SPY + 大盘过滤（现行核心规则）；
+    年化、波动、夏普、最大回撤、最差 12 个月，按样本中点分前后两半
+
+pass:
+  rule: 一个版本通过需要同时满足：每笔相对其他板块的超额前后两半都 > 0；全样本月聚类 t ≥ 3.46；倾斜版夏普前后两半都高于 SPY
+  multiple_testing: 板块轮动这个方向此前已否定 3 次（板块轮动规则、换仓研究的行业过滤、ML 第 6 阶段的板块层），加本次 2 个版本共 5 次；
+    检验关的 t ≥ 3 对应双侧 0.0027，Bonferroni 除以 5 后为 0.00054，对应 t ≥ 3.46
+  outcome: 通过 → 知识库条目 backtested，进入前向记录，由用户决定是否使用；不通过 → 条目记为 rejected，不调参数、不换象限定义重算
+
+expected_failure: 此前三次板块轮动测试都没有效果；象限变化频繁，持有期可能只有几周，成本和噪音占比高；
+  "改善"是相对强度仍低于自身趋势、只是在加速，可能多数是反弹后再回落。
+disclosure: 登记前看过的：板块轮动规则、行业过滤和 ML 板块层的否定结果，以及 Scout 当前的板块象限页面；没有看过任何按象限交易的回测结果。
+  只看了数据的起止日期，没有计算任何收益。
