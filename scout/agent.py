@@ -36,7 +36,7 @@ SYSTEM_PROMPT = f"""你是 Scout，一位美股研究助理，服务于一位有
 - 问到某个方法有没有用、某条规则是否通过：get_knowledge；问到前向验证、检验结果、研究进度：get_research。问到 Scout 过去判断准不准：get_ledger。
 - 问到大盘、板块轮动、哪个行业强弱：get_market_overview、get_sectors；问到 Scout 的行业观点：get_outlook。
 - 问到今天 / 盘前要注意什么：get_briefs（premarket / eod / market_focus / weekly）；本周数据和财报：get_calendar。
-- 问到机会卡 / 今天有什么机会：list_opportunities（会标明规则是否通过检验）；问到新闻对上下游、竞争对手的影响：get_propagation。
+- 问到机会卡 / 今天有什么机会：list_opportunities（会标明规则是否通过检验）；问到新闻对上下游、竞争对手的影响：get_propagation；问到某条规则在什么板块 / 市况下更好、胜率更高的组合：get_conditional_rates。
 - 想全面了解一只股票（"X 怎么样""帮我分析 X"）：调 get_evidence，按下面"多视角证据"的写法逐个视角讲。
 - 问到"从各个策略看这只股票行不行""哪些股票被多个策略选中"：get_strategy_view；逐个策略说是否选中、排第几，并强调每个策略的检验状态
   （只有前向验证中 / 已确认的有经过检验的依据；否定的经检验无效；描述性筛选只说明现状）。
@@ -63,6 +63,8 @@ SYSTEM_PROMPT = f"""你是 Scout，一位美股研究助理，服务于一位有
 
 规则：
 - 回答里的数字必须来自工具结果，原样引用（工具已按中文格式化）；查不到就说查不到，不要编造价格、新闻或财报数据。
+- 只按这一次工具结果说话：不要说自己"之前漏掉了 / 之前说错了"，除非对话里能看到你之前的原话确实和工具结果矛盾；
+  工具里有某笔记录，就直接说有（含日期），不要推测它是刚补上的。
 - 指标带有 名称、数值、含义 和 读数（数据字典的标准解读），解读时以读数为准。
 - 解释涨跌先拆成三段：大盘（market_ret_*）、行业（sector_ret_*）、公司自身（own_ret_*）；idio_ret_* 只扣了大盘、仍含行业。
 - 行情是日线收盘数据，不是实时报价；注明数据日期。
@@ -799,6 +801,24 @@ async def get_propagation(ticker: str | None = None, days: int = 14) -> dict:
                     "方向": "利好" if r["impact"] > 0 else "利空", "渠道": r["mechanism"], "置信度": r["confidence"],
                     "年报依据": (r["relation_quote"] or "")[:200],
                     "当天走势": {k: _p(v) for k, v in (r["reaction"] or {}).items() if v is not None}} for r in rows]}
+
+
+@tool("get_conditional_rates", "规则在不同板块 × 市况下的历史条件统计（收缩估计，预登记、只跑一次）：每格笔数、扣费后上涨比例与同日随机股票对照、"
+                               "相对随机股票的收缩超额和 90% 区间。不给 detector 时返回各规则整体的统计",
+      {"type": "object", "properties": {"detector": {"type": "string", "description": "规则名（机会卡的 primary_detector）"},
+                                        "sector": {"type": "string"}, "regime": {"type": "string", "enum": ["uptrend", "mixed", "downtrend"]}}},
+      pages=("/scoreboard",))
+async def get_conditional_rates(detector: str | None = None, sector: str | None = None, regime: str | None = None) -> dict:
+    from scout import conditional_rates as cr
+
+    note = ("历史统计（当前成分股，有幸存者偏差），未经前向验证。2026-11-03 的结论：细分到板块 × 市况后，"
+            "各组合之间的差异没有超出抽样误差，组合不比规则整体提供更多信息；看规则整体即可")
+    if detector and (sector or regime):
+        return {"说明": note, "所在组合": cr.text(await cr.for_signal(detector, sector, regime))}
+    where, params = ("detector = :d AND layer <> 'vol'", {"d": detector}) if detector else ("layer = 'all'", {})
+    rows = await db.fetch_all(f"SELECT * FROM scout.conditional_rates WHERE run_on = (SELECT max(run_on) FROM scout.conditional_rates) "
+                              f"AND {where} ORDER BY layer = 'all' DESC, raw_edge DESC NULLS LAST LIMIT 60", params)
+    return {"说明": note, "组合": [{"规则": r["detector"], "层": r["layer"], "统计": cr.text(r)} for r in rows]}
 
 
 @tool("research_company", "联网检索公司和行业的真实现状（外部报道，未经核实）：主要产品和收入构成、主要客户与供应商、在行业里的地位和份额、"

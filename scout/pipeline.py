@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta
 
-from scout import (bars, base_rates, context, db, events, ledger, opportunities, portfolio, sectors, structure, telegram,
+from scout import (bars, base_rates, conditional_rates, context, db, events, ledger, opportunities, portfolio, sectors, structure, telegram,
                    thesis, tracker, universe)
 from scout.config import get_scout_settings
 from scout.data.provider import get_provider
@@ -268,6 +268,10 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         }
         ev = opportunities.evidence(c, market)
         th, source = await thesis.write_thesis(ev)
+        try:                           # history shown on the card, after the thesis (the LLM never sees it)
+            ev["conditional"] = await conditional_rates.for_signal(c.primary.name, c.sector, market.get("regime"))
+        except Exception as exc:
+            logger.warning("conditional rate for %s failed: %s", c.ticker, exc)
         await opportunities.save(c, ev, th.model_dump(), source)
         saved.append(c.id)
     summary["saved"] = saved

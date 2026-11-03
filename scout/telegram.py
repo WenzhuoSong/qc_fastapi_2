@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from scout import db, knowledge, portfolio, universe
+from scout import conditional_rates, db, knowledge, portfolio, universe
 from scout.config import get_scout_settings
 
 logger = logging.getLogger("scout.telegram")
@@ -185,6 +185,9 @@ def render_card(o: dict, settings: dict | None = None) -> str:
         outcome = outcome_text(br)
         if outcome:
             lines.append(f"🎯 {esc(outcome)}")
+    cond = conditional_rates.text(ev.get("conditional"))
+    if cond:
+        lines.append(f"🔬 {esc(cond)}")
     for flag in ev.get("event_flags") or []:
         lines.append(f"⚡ 事件驱动·{esc(flag['type'])}：{esc(flag['headline'])}（技术规则统计参考价值有限）")
     if settings is not None and o.get("status") in ("new", "triggered"):

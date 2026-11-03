@@ -6,7 +6,7 @@ from datetime import date
 from html import escape
 from typing import Any, Iterable
 
-from scout import knowledge, portfolio
+from scout import conditional_rates, knowledge, portfolio
 from scout.premarket import overnight_line
 from scout.sectors import QUADRANTS, rotation_read, rotation_reads
 from scout.telegram import (CONFIDENCE_LABELS, STATUS_LABELS, base_rate_text, market_split_text, outcome_text, pct,
@@ -145,6 +145,9 @@ def opp_card(o: dict, settings: dict | None = None, rejected: bool = False) -> s
     outcome = outcome_text(br)
     if outcome:
         base += f"<br>{e(outcome)}"
+    cond = conditional_rates.text(ev.get("conditional"))
+    if cond:
+        base += f"<br>{e(cond)}"
     sizing = ""
     if settings is not None and o.get("status") in ("new", "triggered"):
         sz = portfolio.size_text(portfolio.size((o["entry_lo"] + o["entry_hi"]) / 2, portfolio.holding_stop((o["entry_lo"] + o["entry_hi"]) / 2), settings,
