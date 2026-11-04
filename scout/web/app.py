@@ -1052,6 +1052,25 @@ async def knowledge_status(key: str, status_: str = Form(..., alias="status"), n
 
 
 
+@app.get("/views", response_class=HTMLResponse)
+async def views_page(_: str = Depends(require_auth)) -> str:
+    from scout import ledger, viewdesk
+
+    recs, seen = [], set()
+    for r in await viewdesk.latest(limit=60):
+        if r["ticker"] not in seen:
+            seen.add(r["ticker"])
+            recs.append(r)
+    rows = await db.fetch_all(
+        "SELECT j.ticker, j.asof, j.stance, o.excess_spy AS x20, o.hit AS hit20 FROM scout.judgments j "
+        "LEFT JOIN scout.judgment_outcomes o ON o.judgment_id = j.id AND o.horizon = 20 "
+        "WHERE j.kind = 'view' ORDER BY j.asof DESC LIMIT 300")
+    scored: dict[str, list[dict]] = {}
+    for r in rows:
+        scored.setdefault(r["ticker"], []).append({**r, "asof": str(r["asof"]), "stance": ledger.STANCE_ZH[r["stance"]].replace("偏", "看")})
+    return views.views_page(recs, scored)
+
+
 @app.get("/calendar", response_class=HTMLResponse)
 async def calendar_page(_: str = Depends(require_auth)) -> str:
     from scout import event_calendar

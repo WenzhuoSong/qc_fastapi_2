@@ -26,7 +26,7 @@ STANCE = {"偏多": 1, "中性": 0, "偏空": -1}
 STANCE_ZH = {1: "偏多", 0: "中性", -1: "偏空"}
 HEAT_STANCE = {"热": 1, "温": 0, "冷": -1}
 KIND_ZH = {"insight": "AI 解读·综合", "insight_lens": "AI 解读·视角", "opportunity": "规则机会卡", "sector_heat": "板块热度", "sector_thesis": "行业前景判断",
-           "user_thesis": "我的买入判断", "propagation": "产业链传导提示"}
+           "user_thesis": "我的买入判断", "propagation": "产业链传导提示", "view": "多来源观点"}
 
 
 def hit(stance: int, excess: float | None, horizon: int) -> bool | None:

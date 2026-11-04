@@ -59,7 +59,7 @@ ul.rrgread{list-style:none;padding:0;margin:6px 0}ul.rrgread li{padding:2px 0}
 
 def layout(title: str, active: str, body: str, head: str = "") -> str:
     nav = [("/", "today", "今日"), ("/market", "market", "市场全景"), ("/ideas", "ideas", "机会看板"), ("/screens", "screens", "策略筛选"), ("/scoreboard", "scoreboard", "记分板"),
-           ("/watchlist", "watchlist", "Watchlist"), ("/trades", "trades", "我的交易"), ("/calendar", "calendar", "事件日历"), ("/outlook", "outlook", "行业前景"), ("/ledger", "ledger", "判断台账"), ("/knowledge", "knowledge", "知识库"), ("/chat", "chat", "问答"), ("/data", "data", "数据")]
+           ("/watchlist", "watchlist", "Watchlist"), ("/trades", "trades", "我的交易"), ("/calendar", "calendar", "事件日历"), ("/views", "views", "多来源观点"), ("/outlook", "outlook", "行业前景"), ("/ledger", "ledger", "判断台账"), ("/knowledge", "knowledge", "知识库"), ("/chat", "chat", "问答"), ("/data", "data", "数据")]
     links = "".join(f'<a href="{h}" class="{"on" if k == active else ""}">{t}</a>' for h, k, t in nav)
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title)} · Scout</title>
@@ -1398,3 +1398,40 @@ def calendar_page(events: list[dict], notes: dict[str, dict], today) -> str:
     note = ("<p class='small muted'>日期来自规则（选举、三巫日、休市）、美联储官网日程、Forex Factory 本周经济日历和每周一次的网络检索（外部报道，未经核实）。"
             "重要性为“高”的事件在 5 天内会写事前解读并推送一次，反应日收盘后写事后复盘。解读不预测结果，历史统计来自 Scout 行情，样本少时只能参考。</p>")
     return layout("事件日历", "calendar", f"<h2>事件日历</h2>{note}{table}")
+
+
+def views_page(recs: list[dict], scored: dict[str, list[dict]]) -> str:
+    """Views desk: one card per subject (latest first), arguments with their check, the plain reading, the ledger record."""
+    icon = {"看多": "🟢", "中性": "⚪", "看空": "🔴"}
+    check_cls = {"Scout 数据一致": "up", "Scout 数据矛盾": "down"}
+    cards = []
+    for r in recs:
+        v = r["view"]
+
+        def args(xs):
+            return "".join(f"<li>{e(a['claim'])} <span class='small muted'>（{e(a['source_kind'])}·{e(a['outlet'])} {e(a['published'])}）</span>"
+                           f"<br><span class='small {check_cls.get(a['check'], 'muted')}'>{e(a['check'])}</span>"
+                           f"<span class='small'>：{e(a['check_note'])}</span></li>" for a in xs)
+        expl = "".join(f"<li><b>{e(x['what'])}</b>：{e(x['value'])}。{e(x['usually'])}<br><span class='small'>对你：{e(x['for_you'])}</span></li>"
+                       for x in v["explained"])
+        hist = scored.get(r["ticker"]) or []
+        hist_html = "".join(f"<li>{e(h['asof'])} {e(h['stance'])}：20 日相对 SPY {signed(h['x20'])}"
+                            + (f"，{'对' if h['hit20'] else '错'}" if h["hit20"] is not None else "，未到期") + "</li>" for h in hist)
+        mix = "、".join(f"{k} {n}" for k, n in r["mix"].items() if n)
+        src = "".join(f"<li><a href='{e(x['url'])}' target='_blank' rel='noopener'>{e(x['title'])}</a></li>" for x in r.get("sources", [])[:8])
+        cards.append(
+            f"<div class='card'><h3>{icon[v['stance']]} {e(r['name'])}（<a href='/ticker?t={e(r['ticker'])}'>{e(r['ticker'])}</a>）</h3>"
+            f"<div class='small muted'>{e(r['asof'])} · 未来 {v['horizon']} 个交易日相对 SPY <b>{e(v['stance'])}</b> · 把握{e(v['confidence'])}</div>"
+            f"<p>{e(v['summary'])}</p>"
+            f"<dl class='analysis'><dt>看多的理由</dt><dd><ul class='tight'>{args(v['bull'])}</ul></dd>"
+            f"<dt>看空的理由</dt><dd><ul class='tight'>{args(v['bear'])}</ul></dd>"
+            f"<dt>关键数据怎么读</dt><dd><ul class='tight'>{expl}</ul></dd>"
+            f"<dt>什么时候成立</dt><dd>{e(v['holds_when'])}</dd><dt>什么情况说明错了</dt><dd>{e(v['wrong_if'])}</dd>"
+            f"<dt>接下来看</dt><dd>{e(v['settle'])}</dd><dt>把握</dt><dd>{e(v['confidence'])}——{e(v['confidence_reason'])}</dd></dl>"
+            f"<details class='small'><summary>来源构成：{e(mix)}</summary><ul class='tight'>{src}</ul></details>"
+            + (f"<details class='small'><summary>过去的观点和结果</summary><ul class='tight'>{hist_html}</ul></details>" if hist_html else "")
+            + "</div>")
+    note = ("<p class='small muted'>每周为持仓、变化最大的自选股和最强 / 最弱的板块收集各类来源（新闻、分析师、公司自身、独立研究、投资者社区）"
+            "近 30 天的看多 / 看空论点，逐条用 Scout 数据核对。论点是外部报道，未经核实；方向记入判断台账，5 / 20 / 60 个交易日后对比 SPY 和所在行业打分，"
+            "样本够了才能说哪类观点值得听。也可以问助手「XX 各方怎么看」现写一份。</p>")
+    return layout("多来源观点", "views", f"<h2>多来源观点</h2>{note}<div class='grid'>{''.join(cards) or '<p>还没有观点。</p>'}</div>")

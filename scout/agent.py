@@ -38,6 +38,8 @@ SYSTEM_PROMPT = f"""你是 Scout，一位美股研究助理，服务于一位有
 - 问到今天 / 盘前要注意什么：get_briefs（premarket / eod / market_focus / weekly）；本周数据和财报、未来 30 天的美联储会议、选举、政策、行业和市场结构事件（含事前解读和事后复盘）：get_calendar。
 - 问到机会卡 / 今天有什么机会：list_opportunities（会标明规则是否通过检验）；问到新闻对上下游、竞争对手的影响：get_propagation；问到某条规则在什么板块 / 市况下更好、胜率更高的组合：get_conditional_rates。
 - 想全面了解一只股票（"X 怎么样""帮我分析 X"）：调 get_evidence，按下面"多视角证据"的写法逐个视角讲。
+- 问到"各方怎么看 X""市场上对 X 怎么说""多空分歧"：get_views（没有近期观点再用 research_views）；逐条讲看多 / 看空论点、
+  来源和日期、Scout 数据是证实还是否定；关键数据按"是什么 → 通常意味着什么 → 对你意味着什么"讲；最后说明这只是观点，方向记入判断台账。
 - 问到"从各个策略看这只股票行不行""哪些股票被多个策略选中"：get_strategy_view；逐个策略说是否选中、排第几，并强调每个策略的检验状态
   （只有前向验证中 / 已确认的有经过检验的依据；否定的经检验无效；描述性筛选只说明现状）。
 - 问到公司的业务和行业现状（主要产品、客户、是不是某行业的主要供应商、行业需求是否旺盛、竞争格局）：先调 get_company_profile
@@ -833,6 +835,37 @@ async def get_conditional_rates(detector: str | None = None, sector: str | None 
     rows = await db.fetch_all(f"SELECT * FROM scout.conditional_rates WHERE run_on = (SELECT max(run_on) FROM scout.conditional_rates) "
                               f"AND {where} ORDER BY layer = 'all' DESC, raw_edge DESC NULLS LAST LIMIT 60", params)
     return {"说明": note, "组合": [{"规则": r["detector"], "层": r["layer"], "统计": cr.text(r)} for r in rows]}
+
+
+@tool("get_views", "多来源观点：各类来源（新闻、分析师、公司自身、独立研究、投资者社区）近 30 天对一只股票或板块的看多 / 看空论点，"
+                   "每条用 Scout 数据核对（一致 / 矛盾 / 无法核对），关键数据的白话解读，成立条件、证伪条件、把握，以及记入判断台账的方向；"
+                   "不给 ticker 时列出最近的全部观点。只返回已有的，没有时用 research_views 现写",
+      {"type": "object", "properties": {"ticker": {"type": "string", "description": "可选"}}}, pages=("/views",))
+async def get_views(ticker: str | None = None) -> dict:
+    from scout import viewdesk
+
+    t = universe.yahoo_symbol(ticker) if ticker else None
+    recs = await viewdesk.latest(t, limit=3 if t else 20)
+    if not recs:
+        return {"note": f"{'这只' if t else '最近'}还没有多来源观点；可以用 research_views 现写一份"}
+    if not t:
+        return {"观点": [{"代码": r["ticker"], "日期": r["asof"], "方向": r["view"]["stance"], "期限": r["view"]["horizon"],
+                        "把握": r["view"]["confidence"], "结论": r["view"]["summary"]} for r in recs]}
+    return {"观点": [{**r["view"], "日期": r["asof"], "来源构成": r["mix"], "来源": r.get("sources", [])[:10],
+                    "说明": f"论点{viewdesk.EXTERNAL}；方向记入判断台账（kind view），get_ledger 可查过去的命中情况"} for r in recs]}
+
+
+@tool("research_views", "现写一份多来源观点（联网检索各类来源的看多 / 看空论点，用 Scout 数据逐条核对，白话解读，记入判断台账）；"
+                        "同一天同一只复用。用户问'各方怎么看''市场上怎么说''多空分歧'且 get_views 没有近期观点时用", TICKER, pages=("/views",))
+async def research_views(ticker: str) -> dict:
+    from scout import viewdesk
+
+    rec = await viewdesk.write(universe.yahoo_symbol(ticker))
+    if rec is None:
+        return {"error": f"{ticker} 不在 Scout 的标的池（没有数据）"}
+    if not rec.get("view"):
+        return {"error": "这次没能写出通过校验的观点（" + ("没有检索结果" if rec.get("source") == "none" else "未通过校验") + "）"}
+    return {**rec["view"], "来源构成": rec["mix"], "来源": rec.get("sources", [])[:10], "说明": f"论点{viewdesk.EXTERNAL}"}
 
 
 @tool("research_company", "联网检索公司和行业的真实现状（外部报道，未经核实）：主要产品和收入构成、主要客户与供应商、在行业里的地位和份额、"
