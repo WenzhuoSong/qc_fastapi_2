@@ -220,6 +220,8 @@ ECON_ZH = {
     "JOLTS Job Openings": "JOLTS 职位空缺", "ADP Non-Farm Employment Change": "ADP 就业人数",
     "Fed Chair Powell Speaks": "美联储主席讲话", "Empire State Manufacturing Index": "纽约联储制造业指数",
     "Philly Fed Manufacturing Index": "费城联储制造业指数", "Durable Goods Orders m/m": "耐用品订单月率",
+    "Prelim UoM Inflation Expectations": "密歇根通胀预期初值", "Congressional Elections": "美国国会选举",
+    "Presidential Election": "美国总统选举", "Core PCE Price Index y/y": "核心 PCE 物价指数年率", "PPI y/y": "PPI 年率",
 }
 
 

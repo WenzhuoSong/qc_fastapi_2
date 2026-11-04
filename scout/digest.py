@@ -155,6 +155,11 @@ def render(asof: date, market: dict, sector_rows: list[dict], focus: dict | None
         lines.append(f"🧭 市场关注点：{esc(f['headline'])}")
         lines += [f"{i}. {esc(t['title'])}" for i, t in enumerate(f.get("themes", []), 1)]
 
+    if g.get("events"):
+        from scout import event_calendar
+
+        lines += [esc(x) for x in event_calendar.digest_lines(g["events"])]
+
     lines.append("\n<b>二、板块</b>")
     rotation = sectors.rotation_line(sector_rows)
     if rotation:

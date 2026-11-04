@@ -59,7 +59,7 @@ ul.rrgread{list-style:none;padding:0;margin:6px 0}ul.rrgread li{padding:2px 0}
 
 def layout(title: str, active: str, body: str, head: str = "") -> str:
     nav = [("/", "today", "今日"), ("/market", "market", "市场全景"), ("/ideas", "ideas", "机会看板"), ("/screens", "screens", "策略筛选"), ("/scoreboard", "scoreboard", "记分板"),
-           ("/watchlist", "watchlist", "Watchlist"), ("/trades", "trades", "我的交易"), ("/outlook", "outlook", "行业前景"), ("/ledger", "ledger", "判断台账"), ("/knowledge", "knowledge", "知识库"), ("/chat", "chat", "问答"), ("/data", "data", "数据")]
+           ("/watchlist", "watchlist", "Watchlist"), ("/trades", "trades", "我的交易"), ("/calendar", "calendar", "事件日历"), ("/outlook", "outlook", "行业前景"), ("/ledger", "ledger", "判断台账"), ("/knowledge", "knowledge", "知识库"), ("/chat", "chat", "问答"), ("/data", "data", "数据")]
     links = "".join(f'<a href="{h}" class="{"on" if k == active else ""}">{t}</a>' for h, k, t in nav)
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title)} · Scout</title>
@@ -1362,3 +1362,39 @@ def angle_screen_panel(screen, rows: list[dict], asof, entry: dict | None) -> st
             + "</p></div>"
             + (table(["代码", "名称", "行业", "收盘", "20 日", "排序值", "毛利/资产", "应计", "资产同比", "股本同比"], body_rows)
                if body_rows else "<p class='muted'>现在没有符合条件的股票。</p>"))
+
+
+def calendar_page(events: list[dict], notes: dict[str, dict], today) -> str:
+    """Event calendar: upcoming first, with the preview / review written about each."""
+    wd = "一二三四五六日"
+    src = {"rule": "按规则确定", "fed": "美联储官网", "ff": "经济日历", "web": "外部报道（未经核实）"}
+    rows = []
+    for ev in events:
+        d = ev["event_date"]
+        nt, detail = notes.get(ev["key"], {}), ev["detail"] or {}
+        past = d < today
+        body = f"<div class='small muted'>{e(detail.get('why') or '')}</div>"
+        if detail.get("url"):
+            body += f"<div class='small'><a href='{e(detail['url'])}' target='_blank' rel='noopener'>来源</a></div>"
+        pv = (nt.get("preview") or {}).get("preview")
+        if pv:
+            sc = "".join(f"<li>{e(x['case'])}：{e(x['channel'])}（板块：{e(x['sectors'])}）</li>" for x in pv["scenarios"])
+            hd = "".join(f"<li>{e(h['ticker'])}：{e(h['channel'])}</li>" for h in pv["holdings"])
+            body += (f"<details class='small'><summary>事前解读</summary><dl class='analysis'><dt>是什么</dt><dd>{e(pv['what'])}</dd>"
+                     f"<dt>为什么重要</dt><dd>{e(pv['why'])}</dd><dt>市场预期</dt><dd>{e(pv['expectations'])}</dd>"
+                     f"<dt>可能的情形</dt><dd><ul class='tight'>{sc}</ul></dd><dt>历史上</dt><dd>{e(pv['history'])}</dd>"
+                     + (f"<dt>你的持仓</dt><dd><ul class='tight'>{hd}</ul></dd>" if hd else "")
+                     + f"<dt>事后看</dt><dd>{e(pv['watch'])}</dd></dl></details>")
+        rv = (nt.get("review") or {}).get("review")
+        if rv:
+            body += (f"<details class='small' open><summary>事后复盘</summary><dl class='analysis'><dt>结果</dt><dd>{e(rv['outcome'])}</dd>"
+                     f"<dt>市场</dt><dd>{e(rv['reaction'])}</dd><dt>持仓</dt><dd>{e(rv['holdings'])}</dd></dl></details>")
+        imp = "<span class='chip' style='background:var(--down);color:#fff'>高</span>" if ev["importance"] == "高" else "<span class='chip'>中</span>"
+        rows.append(f"<tr class='{'muted' if past else ''}'><td>{str(d)[5:]} 周{wd[d.weekday()]}<br><span class='small muted'>"
+                    f"{e(ev.get('time_et') or '')}</span></td><td>{imp}</td><td><b>{e(ev['title'])}</b>{body}</td>"
+                    f"<td class='small'>{e(ev['category'])}</td><td class='small muted'>{e(src.get(ev['source'], ev['source']))}</td></tr>")
+    table = ("<div class='scroll'><table><thead><tr><th>日期（美东）</th><th>重要性</th><th>事件</th><th>类别</th><th>来源</th></tr></thead>"
+             f"<tbody>{''.join(rows) or '<tr><td colspan=5>暂无事件</td></tr>'}</tbody></table></div>")
+    note = ("<p class='small muted'>日期来自规则（选举、三巫日、休市）、美联储官网日程、Forex Factory 本周经济日历和每周一次的网络检索（外部报道，未经核实）。"
+            "重要性为“高”的事件在 5 天内会写事前解读并推送一次，反应日收盘后写事后复盘。解读不预测结果，历史统计来自 Scout 行情，样本少时只能参考。</p>")
+    return layout("事件日历", "calendar", f"<h2>事件日历</h2>{note}{table}")

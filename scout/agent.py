@@ -35,7 +35,7 @@ SYSTEM_PROMPT = f"""你是 Scout，一位美股研究助理，服务于一位有
   get_fundamentals（财报、估值、预期、持股、期权）、get_events（异动及原因）、get_news、get_earnings，按问题选。
 - 问到某个方法有没有用、某条规则是否通过：get_knowledge；问到前向验证、检验结果、研究进度：get_research。问到 Scout 过去判断准不准：get_ledger。
 - 问到大盘、板块轮动、哪个行业强弱：get_market_overview、get_sectors；问到 Scout 的行业观点：get_outlook。
-- 问到今天 / 盘前要注意什么：get_briefs（premarket / eod / market_focus / weekly）；本周数据和财报：get_calendar。
+- 问到今天 / 盘前要注意什么：get_briefs（premarket / eod / market_focus / weekly）；本周数据和财报、未来 30 天的美联储会议、选举、政策、行业和市场结构事件（含事前解读和事后复盘）：get_calendar。
 - 问到机会卡 / 今天有什么机会：list_opportunities（会标明规则是否通过检验）；问到新闻对上下游、竞争对手的影响：get_propagation；问到某条规则在什么板块 / 市况下更好、胜率更高的组合：get_conditional_rates。
 - 想全面了解一只股票（"X 怎么样""帮我分析 X"）：调 get_evidence，按下面"多视角证据"的写法逐个视角讲。
 - 问到"从各个策略看这只股票行不行""哪些股票被多个策略选中"：get_strategy_view；逐个策略说是否选中、排第几，并强调每个策略的检验状态
@@ -571,8 +571,9 @@ async def get_research() -> dict:
             "说明": "本地数据（Sharadar 等）上的研究结论记在知识库条目和研究文档里，用 get_knowledge 查"}
 
 
-@tool("get_calendar", "本周日历：美国经济数据与美联储事件（美东 / 北京时间、重要性、预期、前值），以及持仓、自选和大市值股票的财报日期",
-      pages=("/",))
+@tool("get_calendar", "日历：本周美国经济数据（美东 / 北京时间、重要性、预期、前值）；未来 30 天的美联储会议、选举、政策与地缘、"
+      "行业事件和市场结构事件（外部报道的标明未经核实），以及事前解读（是什么、为什么重要、可能情形、历史上市场怎么动、对持仓的影响）"
+      "和事后复盘；持仓、自选和大市值股票的财报日期", pages=("/", "/calendar"))
 async def get_calendar() -> dict:
     from scout import premarket
 
@@ -584,7 +585,20 @@ async def get_calendar() -> dict:
     mine = {r["ticker"] for r in await db.fetch_all("SELECT ticker FROM scout.trades WHERE closed_on IS NULL "
                                                     "UNION SELECT ticker FROM scout.watchlist WHERE active")}
     hour = {"bmo": "盘前", "amc": "盘后"}
-    return {"经济数据": [{"事件": e["title_zh"], "日期": e["date"], "美东": e["time_et"], "北京": e["time_bj"], "重要性": e["impact"],
+    from scout import event_calendar
+
+    events = []
+    for e in await event_calendar.load(today - timedelta(days=3), today + timedelta(days=30)):
+        if e["source"] == "ff":
+            continue
+        notes = {n["note"]: n["payload"] for n in await db.fetch_all(
+            "SELECT DISTINCT ON (note) note, payload FROM scout.event_notes WHERE event_key = :k ORDER BY note, created_at DESC",
+            {"k": e["key"]})}
+        events.append({**event_calendar.event_row(e),
+                       **({"事前解读": notes["preview"]["preview"]} if "preview" in notes else {}),
+                       **({"事后复盘": notes["review"]["review"]} if "review" in notes else {})})
+    return {"事件": events,
+            "经济数据": [{"事件": e["title_zh"], "日期": e["date"], "美东": e["time_et"], "北京": e["time_bj"], "重要性": e["impact"],
                        "预期": e.get("forecast"), "前值": e.get("previous")} for e in econ],
             "财报": [{"代码": r["ticker"], "日期": str(r["event_date"]), "时间": hour.get((r["payload"] or {}).get("hour"), "未定"),
                     "身份": "持仓或自选" if r["ticker"] in mine else "大市值"}

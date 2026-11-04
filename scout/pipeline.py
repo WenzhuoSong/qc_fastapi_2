@@ -311,6 +311,12 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         from scout import digest
 
         g = await digest.gather(asof, earnings, prop_signals, managed if isinstance(managed, list) else [])
+        try:                           # reviews of today's events and tomorrow's lines
+            from scout import event_calendar
+
+            g["events"] = await event_calendar.run_eod(asof)
+        except Exception as exc:
+            logger.warning("event calendar failed: %s", exc)
         brief = digest.render(asof, market, sector_rows, focus, mfilter, g,
                               portfolio.satellite(await portfolio.get_settings()), scan)
     except Exception as exc:           # the digest must not cost the session its brief
@@ -397,6 +403,13 @@ async def run_weekly(push: bool = True) -> dict:
     except Exception as exc:
         logger.warning("company profiles failed: %s", exc)
         summary["company_profiles"] = f"failed: {type(exc).__name__}"
+    try:                               # event calendar: rule dates, the Fed's schedule, the week's web search
+        from scout import event_calendar
+
+        summary["calendar"] = await event_calendar.refresh(date.today(), web=True)
+    except Exception as exc:
+        logger.warning("event calendar failed: %s", exc)
+        summary["calendar"] = f"failed: {type(exc).__name__}"
     try:                               # industry outlook (v3 P4): drivers + at most three theses
         from scout import outlook
 

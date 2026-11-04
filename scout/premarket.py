@@ -390,6 +390,9 @@ async def build_pack(session: date) -> dict:
                 "重要性": e["impact"], **({"预期": e["forecast"]} if e["forecast"] else {}),
                 **({"前值": e["previous"]} if e["previous"] else {})}
 
+    from scout import event_calendar
+
+    calendar = [e for e in await event_calendar.load(session, session + timedelta(days=7)) if e["source"] != "ff"]
     return {
         "session": session.isoformat(), "weekday": f"周{WEEKDAYS[session.weekday()]}", "prev_session": prev.isoformat(),
         "overnight": [quote_row(s, n, quotes.get(s)) for s, n in OVERNIGHT],
@@ -410,13 +413,14 @@ async def build_pack(session: date) -> dict:
                         "时间（美东）": _stamp(m.get("datetime"))} for i, m in enumerate(macro)],
         "last_focus": ({"key": "focus", "日期": str(focus_rec["asof"]), "结论": (focus_rec["f"] or {}).get("headline"),
                         "主题": [t["title"] for t in (focus_rec["f"] or {}).get("themes", [])]} if focus_rec else None),
+        "calendar": [{"key": f"cal_{i + 1}", **event_calendar.event_row(e)} for i, e in enumerate(calendar)],
     }
 
 
 def evidence_keys(pack: dict) -> set[str]:
     keys = {"focus"} if pack.get("last_focus") else set()
     for part in ("overnight", "positions", "opportunities", "watchlist_moves", "earnings_reported", "earnings_today", "earnings_week",
-                 "economic_today", "economic_week", "news", "macro_news"):
+                 "economic_today", "economic_week", "news", "macro_news", "calendar"):
         keys |= {row["key"] for row in pack.get(part, [])}
     return keys
 
@@ -475,6 +479,8 @@ SYSTEM_PROMPT = """你是一名美股交易日开盘前的策略助理，基于 
 - 财报的营收是否超预期只能按"营收对比预期"表述（没有这一项就不要说营收超预期或不及预期，新闻里的说法也不行）；
   EPS 只能按"EPS 超预期幅度"表述（"财报超预期 / 不及预期"指 EPS）；财报后下跌不等于不及预期，原因多半在指引，要按新闻说明。
   提到公司时在名称后写代码，如 英特尔（INTC）。管理层展望要说清是哪一项（如营收增长、毛利率），并引用对应的新闻 key。
+- calendar 是未来 7 天的美联储、政治与政策、市场结构和外部报道的事件：今天或下一个交易日有重要性"高"的事件时，要点里要提到它，
+  按"为什么重要"说明可能怎么影响市场，不预测结果；来源是外部报道的写明"据外部报道"。
 - 期货和盘前价格不代表开盘价；不编造新闻或数据；没有数据的项不要提。
 - 中文、简洁；不给买卖指令，非投资建议。"""
 
@@ -586,6 +592,10 @@ def render_text(b: PremarketBrief, pack: dict) -> str:
                   for e in pack["economic_today"]] or ["· 今天没有重要数据"]
         if pack["economic_week"]:
             lines.append("本周后续：" + "；".join(f"{e['日期'][5:]} {e['美东时间']} {e['事件']}" for e in pack["economic_week"]))
+    if pack.get("calendar"):
+        lines += ["", "近期重要事件（7 天内，美东时间）："]
+        lines += [f"· {e['日期'][5:]}" + (f" {e['美东时间']}" if e.get("美东时间") else "") + f" [{e['重要性']}] {e['标题']}（{e['类别']}）"
+                  + ("（外部报道）" if e["来源"].startswith("据外部报道") else "") for e in pack["calendar"]]
     if pack["earnings_reported"]:
         lines += ["", "已公布财报："]
         for e in pack["earnings_reported"]:
@@ -642,6 +652,12 @@ async def run(push: bool = True, force: bool = False) -> dict:
         summary["earnings_rows"] = await context.refresh_earnings(days_back=3, days_ahead=7)
     except Exception as exc:            # stale earnings are better than no brief
         summary["earnings_rows"] = f"failed: {type(exc).__name__}"
+    from scout import event_calendar
+
+    try:                                # the calendar feeds the brief; a failure must not cost the brief
+        summary["calendar"] = await event_calendar.refresh(session)
+    except Exception as exc:
+        summary["calendar"] = f"failed: {type(exc).__name__}"
     record = await generate(session)
     summary.update(source=record["source"], opportunities=len(record["pack"]["opportunities"]),
                    economic=len(record["pack"]["economic_today"]), earnings=len(record["pack"]["earnings_reported"]))
@@ -652,4 +668,8 @@ async def run(push: bool = True, force: bool = False) -> dict:
         note = "" if record["source"] == "llm" else "\n（AI 简报未通过校验，要点为规则整理）"
         await telegram.send(telegram.esc(content) + note)
         summary["pushed"] = True
+    try:
+        summary["previews"] = await event_calendar.send_previews(session, push=push)
+    except Exception as exc:
+        summary["previews"] = f"failed: {type(exc).__name__}"
     return summary
