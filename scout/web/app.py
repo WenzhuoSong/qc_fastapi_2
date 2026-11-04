@@ -1068,7 +1068,9 @@ async def views_page(_: str = Depends(require_auth)) -> str:
     scored: dict[str, list[dict]] = {}
     for r in rows:
         scored.setdefault(r["ticker"], []).append({**r, "asof": str(r["asof"]), "stance": ledger.STANCE_ZH[r["stance"]].replace("偏", "看")})
-    return views.views_page(recs, scored)
+    from scout import weekly_view
+
+    return views.views_page(recs, scored, await weekly_view.latest())
 
 
 @app.get("/calendar", response_class=HTMLResponse)

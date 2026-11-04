@@ -410,10 +410,10 @@ async def run_weekly(push: bool = True) -> dict:
     except Exception as exc:
         logger.warning("event calendar failed: %s", exc)
         summary["calendar"] = f"failed: {type(exc).__name__}"
-    try:                               # views desk: what different sources argue, checked against Scout's data, ledger-scored
-        from scout import viewdesk
+    try:                               # the weekly market report: market → sectors → stocks, facts store + Scout data, ledger-scored
+        from scout import weekly_view
 
-        summary["views"] = await viewdesk.weekly(push=push)
+        summary["views"] = await weekly_view.run(push=push)
     except Exception as exc:
         logger.warning("views desk failed: %s", exc)
         summary["views"] = f"failed: {type(exc).__name__}"

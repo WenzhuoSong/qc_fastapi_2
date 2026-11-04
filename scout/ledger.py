@@ -146,7 +146,8 @@ async def score_due() -> int:
         spy_f = forward(spy, d["asof"], d["horizon"])
         sec = closes.get(d["sector_etf"]) if d["sector_etf"] else None
         sec_f = forward(sec, d["asof"], d["horizon"]) if sec is not None else None
-        ex_spy = ret - spy_f[1] if spy_f else None
+        # a view on SPY itself is judged on SPY's own move (its excess over SPY is always zero)
+        ex_spy = ret if d["ticker"] == universe.BENCHMARK else (ret - spy_f[1] if spy_f else None)
         rows.append({"id": d["id"], "h": d["horizon"], "end": end, "ret": ret, "spy": spy_f[1] if spy_f else None,
                      "sec": sec_f[1] if sec_f else None, "xs": ex_spy, "xsec": ret - sec_f[1] if sec_f else None,
                      "hit": hit(d["stance"], ex_spy, d["horizon"])})

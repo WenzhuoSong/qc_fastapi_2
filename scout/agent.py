@@ -857,7 +857,8 @@ async def get_external_facts(subject: str, days: int = 30) -> dict:
 @tool("get_views", "多来源观点：各类来源（新闻、分析师、公司自身、独立研究、投资者社区）近 30 天对一只股票或板块的看多 / 看空论点，"
                    "每条用 Scout 数据核对（一致 / 矛盾 / 无法核对），关键数据的白话解读，成立条件、证伪条件、把握，以及记入判断台账的方向；"
                    "不给 ticker 时列出最近的全部观点。只返回已有的，没有时用 research_views 现写",
-      {"type": "object", "properties": {"ticker": {"type": "string", "description": "可选"}}}, pages=("/views",))
+      {"type": "object", "properties": {"ticker": {"type": "string", "description": "可选；不填时还返回本周市场观点（市场、11 个板块、方向）"}}},
+      pages=("/views",))
 async def get_views(ticker: str | None = None) -> dict:
     from scout import viewdesk
 
@@ -866,7 +867,12 @@ async def get_views(ticker: str | None = None) -> dict:
     if not recs:
         return {"note": f"{'这只' if t else '最近'}还没有多来源观点；可以用 research_views 现写一份"}
     if not t:
-        return {"观点": [{"代码": r["ticker"], "日期": r["asof"], "方向": r["view"]["stance"], "期限": r["view"]["horizon"],
+        from scout import weekly_view
+
+        rep = await weekly_view.latest()
+        m = (rep or {}).get("market")
+        return {**({"本周市场观点": {**m, "日期": rep["asof"], "来源": rep.get("facts")}} if m else {}),
+                "观点": [{"代码": r["ticker"], "日期": r["asof"], "方向": r["view"]["stance"], "期限": r["view"]["horizon"],
                         "把握": r["view"]["confidence"], "结论": r["view"]["summary"]} for r in recs]}
     return {"观点": [{**r["view"], "日期": r["asof"], "来源构成": r["mix"], "来源": r.get("sources", [])[:10],
                     "说明": f"论点{viewdesk.EXTERNAL}；方向记入判断台账（kind view），get_ledger 可查过去的命中情况"} for r in recs]}

@@ -1400,7 +1400,36 @@ def calendar_page(events: list[dict], notes: dict[str, dict], today) -> str:
     return layout("事件日历", "calendar", f"<h2>事件日历</h2>{note}{table}")
 
 
-def views_page(recs: list[dict], scored: dict[str, list[dict]]) -> str:
+def weekly_market_html(rep: dict | None) -> str:
+    """The latest weekly market report: market, sector lines, the deeper sector / stock views below it."""
+    if not rep or not rep.get("market"):
+        return ""
+    m, facts = rep["market"], rep.get("facts") or {}
+    icon = {"看涨": "🟢", "中性": "⚪", "看跌": "🔴"}
+
+    def src(ids):
+        return "；".join(dict.fromkeys(facts[str(i)]["label"] for i in ids if str(i) in facts))
+
+    def args(xs):
+        return "".join(f"<li>{e(a['claim'])} <span class='small muted'>（{e(src(a['fact_ids']))}）</span>"
+                       f"<br><span class='small'>{e(a['check'])}：{e(a['check_note'])}</span></li>" for a in xs)
+    heat = {x["ETF"]: x.get("热度") for x in (rep.get("pack") or {}).get("sectors", [])}
+    hicon = {"热": "🔥", "温": "🌤", "冷": "🧊"}
+    sectors = "".join(f"<li>{hicon.get(heat.get(x['etf']), '·')} <b>{e(x['etf'])}</b>：{e(x['line'])}</li>" for x in m["sectors"])
+    drivers = "".join(f"<li><b>{e(d['driver'])}</b>：{e(d['explanation'])}"
+                      + (f" <span class='small muted'>（{e(src(d['fact_ids']))}）</span>" if d["fact_ids"] else "") + "</li>" for d in m["drivers"])
+    expl = "".join(f"<li><b>{e(x['what'])}</b>：{e(x['value'])}。{e(x['usually'])}<br><span class='small'>对你：{e(x['for_you'])}</span></li>"
+                   for x in m["explained"])
+    return (f"<div class='card' style='margin-bottom:12px'><h3>📊 本周市场观点 · {e(rep.get('asof'))}</h3><p>{e(m['week'])}</p>"
+            f"<dl class='analysis'><dt>本周主导因素</dt><dd><ul class='tight'>{drivers}</ul></dd>"
+            f"<dt>看涨的理由</dt><dd><ul class='tight'>{args(m['bull'])}</ul></dd><dt>看跌的理由</dt><dd><ul class='tight'>{args(m['bear'])}</ul></dd>"
+            f"<dt>Scout 的数据怎么读</dt><dd><ul class='tight'>{expl}</ul></dd>"
+            f"<dt>未来 20 个交易日 SPY</dt><dd>{icon[m['stance']]} {e(m['stance'])}（把握{e(m['confidence'])}）——{e(m['confidence_reason'])}</dd>"
+            f"<dt>什么情况说明错了</dt><dd>{e(m['wrong_if'])}</dd><dt>未来两周</dt><dd>{e(m['ahead'])}</dd>"
+            f"<dt>对你的组合</dt><dd>{e(m['for_you'])}</dd><dt>板块</dt><dd><ul class='tight'>{sectors}</ul></dd></dl></div>")
+
+
+def views_page(recs: list[dict], scored: dict[str, list[dict]], weekly: dict | None = None) -> str:
     """Views desk: one card per subject (latest first), arguments with their check, the plain reading, the ledger record."""
     icon = {"看多": "🟢", "中性": "⚪", "看空": "🔴"}
     check_cls = {"Scout 数据一致": "up", "Scout 数据矛盾": "down"}
@@ -1439,4 +1468,5 @@ def views_page(recs: list[dict], scored: dict[str, list[dict]]) -> str:
     note = ("<p class='small muted'>每周为持仓、变化最大的自选股和最强 / 最弱的板块收集各类来源（新闻、分析师、公司自身、独立研究、投资者社区）"
             "近 30 天的看多 / 看空论点，逐条用 Scout 数据核对。论点是外部报道，未经核实；方向记入判断台账，5 / 20 / 60 个交易日后对比 SPY 和所在行业打分，"
             "样本够了才能说哪类观点值得听。也可以问助手「XX 各方怎么看」现写一份。</p>")
-    return layout("多来源观点", "views", f"<h2>多来源观点</h2>{note}<div class='grid'>{''.join(cards) or '<p>还没有观点。</p>'}</div>")
+    return layout("多来源观点", "views", f"<h2>多来源观点</h2>{note}{weekly_market_html(weekly)}"
+                  f"<div class='grid'>{''.join(cards) or '<p>还没有观点。</p>'}</div>")
