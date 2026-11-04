@@ -82,6 +82,10 @@ def jsonb(value: Any) -> str:
 
 
 def _json_default(value: Any) -> Any:
+    from decimal import Decimal
+
+    if isinstance(value, Decimal):           # SQL numeric (avg, round …)
+        return float(value)
     if hasattr(value, "isoformat"):
         return value.isoformat()
     if hasattr(value, "item"):

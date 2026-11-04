@@ -850,11 +850,17 @@ async def get_conditional_rates(detector: str | None = None, sector: str | None 
 async def get_prediction_markets(topic: str | None = None, query: str | None = None) -> dict:
     from scout import prediction
 
-    events = await prediction.board(topic=topic if topic in ("calendar", "macro", "holding", "discovery") else None)
-    if query:
-        q = query.lower()
-        events = [e for e in events if q in (e["title"] or "").lower() or q in (e["title_en"] or "").lower()
-                  or q in " ".join(e["sectors"] or []).lower() or q in (e["link"] or "").lower()]
+    every = await prediction.board()
+    events = [e for e in every if not topic or e["topic"] == topic] or every
+    note = None
+    if query:                          # any word of the query in the Chinese or English title, sectors or link (all topics if needed)
+        words = [w for w in re.split(r"[\s,，、/]+", query.lower()) if len(w) >= 2]
+        hay = lambda e: " ".join([e["title"] or "", e["title_en"] or "", " ".join(e["sectors"] or []), e["link"] or ""]).lower()
+        hit = [e for e in events if any(w in hay(e) for w in words)] or [e for e in every if any(w in hay(e) for w in words)]
+        if hit:
+            events = hit
+        else:
+            events, note = every, f"没有标题含「{query}」的市场，下面是全部跟踪中的市场，请自己挑相关的"
     recent = await db.fetch_all("SELECT payload, created_at FROM scout.alerts WHERE kind = 'pm_move' AND created_at > now() - interval '7 days' "
                                 "ORDER BY created_at DESC LIMIT 10")
     if not events and not recent:
@@ -862,7 +868,7 @@ async def get_prediction_markets(topic: str | None = None, query: str | None = N
     return {"市场": [{**r, "主题": prediction.TOPIC_NAME.get(e["link"], e["topic"]), "链接": e["url"]}
                     for e in events[:25] for r in prediction.pack_rows([e])],
             "近 7 天的大幅变化": [{"日期": str(r["created_at"])[:10], "说明": prediction.move_line(r["payload"])} for r in recent],
-            "说明": "预测市场价格大致可看作市场认为的概率，不是 Scout 的判断；引用时写明来源和成交量"}
+            "说明": (note + "。" if note else "") + "预测市场价格大致可看作市场认为的概率，不是 Scout 的判断；引用时写明来源和成交量"}
 
 
 @tool("get_industry_kpis", "持仓或任意股票所在行业的核心指标（免费数据）：例如炼油的 3-2-1 炼油差价、油气的原油和天然气价格、公用事业的长期利率、"
