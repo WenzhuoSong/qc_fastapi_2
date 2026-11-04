@@ -62,5 +62,17 @@ class RenderTests(unittest.TestCase):
         self.assertIn("竞争对手/同业传导：Genmab 三期数据成功（据外部报道）", text)
 
 
+class RenderLabelTests(unittest.TestCase):
+    def test_card_alerts_say_they_are_not_holdings(self):
+        from datetime import datetime, timezone
+
+        alerts = [{"kind": "opp_stop", "ticker": "RRC", "payload": {"text": "跌破止损 53.05（收盘后按规则结算）", "price": 52.88,
+                                                                    "time_et": "09:30", "rule": "放量异动"}},
+                  {"kind": "trade_stop", "ticker": "SHOP", "payload": {"text": "盘中低于回落止损 133.51", "price": 130.0, "time_et": "09:31"}}]
+        text = intraday.render(alerts, datetime(2026, 11, 4, 14, 31, tzinfo=timezone.utc))
+        self.assertIn("RRC</b> 机会卡·放量异动（不是你的持仓）", text)
+        self.assertIn("SHOP</b> 你的持仓", text)
+
+
 if __name__ == "__main__":
     unittest.main()

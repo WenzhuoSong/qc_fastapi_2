@@ -130,9 +130,13 @@ async def scan(today: date) -> dict:
         "SELECT t.id, t.ticker, t.entry_price, t.shares, t.stop, t.target, t.plan, "
         "(SELECT coalesce(sum(shares), 0) FROM scout.trade_sells WHERE trade_id = t.id) AS sold_shares "
         "FROM scout.trades t WHERE t.closed_on IS NULL")
-    opps = await db.fetch_all(
+    from scout import learned
+
+    quiet = learned.held_back(await learned.current())
+    # cards of rules the knowledge base rejects are tracked, not pushed (as after the close): no intraday alerts either
+    opps = [o for o in await db.fetch_all(
         "SELECT id, ticker, status, asof, primary_detector, entry_lo, entry_hi, stop, current_stop, target1 "
-        "FROM scout.opportunities WHERE status IN ('new', 'triggered')")
+        "FROM scout.opportunities WHERE status IN ('new', 'triggered')") if o["primary_detector"] not in quiet]
     watch = {r["ticker"] for r in await universe.load_watchlist()}
     quotes = await latest_quotes(sorted({t["ticker"] for t in held} | {o["ticker"] for o in opps}), today)
     alerts = []
@@ -186,7 +190,7 @@ def render(alerts: list[dict], now: datetime) -> str | None:
             flags = f"⚡{'、'.join(p['flags'])} " if p["flags"] else ""
             lines.append(f"{ICON['news']} [{esc(p['tag'])}] <b>{esc(a['ticker'])}</b> {flags}{esc(p['headline'])}（{esc(p['source'])}）")
         else:
-            who = "你的持仓" if a["kind"].startswith("trade") else esc(p.get("rule", ""))
+            who = "你的持仓" if a["kind"].startswith("trade") else f"机会卡·{esc(p.get('rule', ''))}（不是你的持仓）"
             lines.append(f"{ICON[a['kind']]} <b>{esc(a['ticker'])}</b> {who}：{esc(p['text'])} · 现价 {p['price']:.2f}（{esc(p['time_et'])}）")
     lines.append("价格来自 Yahoo，可能有几分钟延迟；机会状态以收盘后结算为准。")
     return "\n".join(lines)
