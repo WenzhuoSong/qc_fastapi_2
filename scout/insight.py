@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import logging
 from datetime import date, timedelta
 from typing import Literal
@@ -542,7 +543,7 @@ def validate_synthesis(s, pack: dict) -> list[str]:
         issues.append(f"驱动力判定应为「{expected_driver}」（按 20 日公司自身 vs 大盘加行业的规则），实际写成「{s.driver}」")
     issues += swing_conflicts([s.headline, s.attribution], pack)
     has_split = "20 日" in str(((pack.get("context") or {}).get("scout_view") or {}).get("要点", {}).get("归因", ""))
-    if has_split and ("%" not in s.attribution or "20 日" not in s.attribution):
+    if has_split and len(re.findall(r"\d+(?:\.\d+)?\s*%", s.attribution)) < 2:     # the split's numbers, in any wording
         issues.append("attribution 要写明 20 日的三段数字（大盘、行业、公司自身各多少，见 scout_view.要点.归因）；"
                       "说今天的涨跌时另写「今日」，两个时间段不要混在一句结论里")
     ev = must_explain(pack)

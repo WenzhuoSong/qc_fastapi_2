@@ -114,6 +114,8 @@ class ValidationTests(unittest.TestCase):
         pack["context"]["scout_view"]["要点"]["归因"] = "20 日涨跌 +4.0% ≈ 扣除大盘后 +9.4% + 大盘贡献 -4.6%"
         issues = validate(_insight(attribution="近期波动主要由个股自身因素主导"), pack, "")
         self.assertTrue(any(i.startswith("attribution") for i in issues))
+        ok = validate(_insight(attribution="近20个交易日涨4.0%，其中扣除大盘后+9.4%，大盘贡献-4.6%，主要是公司自身"), pack, "")
+        self.assertFalse(any(i.startswith("attribution") for i in ok))
 
     def test_catches_invented_numbers_unknown_keys_and_driver(self):
         bad = _insight(headline="目标 250 美元", driver="公司自身",
