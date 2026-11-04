@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 
+from scout import responses
 from scout import context, db, llm_usage, universe
 from scout.config import get_scout_settings
 from scout.data.yahoo import latest_quotes
@@ -540,10 +541,7 @@ async def generate(session: date) -> dict:
                     {"role": "user", "content": json.dumps(pack, ensure_ascii=False, default=str)}]
         for attempt in (1, 2):
             try:
-                resp = await client.beta.chat.completions.parse(
-                    model=settings.scout_insight_model, messages=messages, response_format=PremarketBrief, temperature=0.2)
-                await llm_usage.record_sdk(resp, "premarket", settings.scout_insight_model)
-                parsed = resp.choices[0].message.parsed
+                parsed = await responses.parse(client, settings.scout_insight_model, messages, PremarketBrief, "premarket", temperature=0.2)
             except Exception as exc:
                 logger.warning("premarket LLM call failed: %s", exc)
                 history.append({"attempt": attempt, "issues": [f"LLM 调用失败：{type(exc).__name__}"]})

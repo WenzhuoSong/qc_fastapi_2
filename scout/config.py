@@ -16,7 +16,7 @@ class ScoutSettings(BaseSettings):
     scout_llm_model: str = "gpt-4o-mini"
     scout_llm_timeout_s: float = 45.0
     # The ticker "AI 解读" runs a few times a day: use a stronger model than the cards/Q&A.
-    scout_insight_model: str = "gpt-4o"
+    scout_insight_model: str = "gpt-6.1-terra"     # 2026-11-04: 100 % first-pass vs 75 % for gpt-4o, about a third of the cost
     # The Q&A agent (Telegram / dashboard chat): tool calling with reasoning, through /v1/responses.
     scout_agent_model: str = "gpt-6.1-sol"
     scout_agent_reasoning: str = "low"

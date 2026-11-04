@@ -650,21 +650,9 @@ def fallback_lenses(pack: dict) -> list[LensView]:
 
 
 async def _parse(client, model: str, messages: list, fmt):
-    if model.startswith("gpt-6"):             # the gpt-6 models: /v1/responses, strict schema, no temperature
-        from openai.lib._pydantic import to_strict_json_schema
+    from scout import responses
 
-        from scout import responses
-
-        system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
-        data = await responses.create({
-            "model": model, "reasoning": {"effort": "low"}, "instructions": system,
-            "input": [m for m in messages if m["role"] != "system"],
-            "text": {"format": {"type": "json_schema", "name": fmt.__name__, "schema": to_strict_json_schema(fmt), "strict": True}}},
-            timeout=240, purpose="insight")
-        return fmt.model_validate_json(responses.output_text(data))
-    resp = await client.beta.chat.completions.parse(model=model, messages=messages, response_format=fmt, temperature=0.2)
-    await llm_usage.record_sdk(resp, "insight", model)
-    return resp.choices[0].message.parsed
+    return await responses.parse(client, model, messages, fmt, "insight")
 
 
 async def run_group(client, model: str, name: str, pack: dict, tone: str) -> tuple[list[LensView], str, list]:

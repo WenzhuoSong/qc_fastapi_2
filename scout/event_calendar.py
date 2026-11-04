@@ -26,7 +26,7 @@ from typing import Literal
 import pandas as pd
 from pydantic import BaseModel, Field
 
-from scout import db, llm_usage
+from scout import db, llm_usage, responses
 from scout.config import get_scout_settings
 from scout.market_calendar import is_us_equity_trading_day, previous_us_equity_trading_day, us_equity_holiday_name
 from scout.thesis import allowed_numbers, unsupported_numbers
@@ -433,8 +433,8 @@ async def exposure() -> list[dict]:
         for key, t, label, up in (("macro_rate_10bp", "macro_rate_t", "10 年期利率每升 0.10 个百分点", "利率上升"),
                                   ("macro_oil_10pct", "macro_oil_t", "油价每涨 10%", "油价上涨"),
                                   ("macro_usd_1pct", "macro_usd_t", "美元每涨 1%", "美元走强")):
-            if sens.get(t) is not None and abs(sens[t]) >= 2:          # only the ones that are statistically clear
-                v = sens[key]
+            v = sens.get(key)
+            if sens.get(t) is not None and abs(sens[t]) >= 2 and v is not None and abs(v) >= 0.0005:   # clear and not negligible
                 row[label] = f"它平均 {_p(v, 1)}（{up}时它{'上涨' if v > 0 else '下跌'}，过去一年统计）"
         out.append(row)
     return out
@@ -548,10 +548,7 @@ async def preview(e: dict) -> dict:
                     {"role": "user", "content": json.dumps(pack, ensure_ascii=False, default=str)}]
         for attempt in (1, 2):
             try:
-                resp = await client.beta.chat.completions.parse(model=settings.scout_insight_model, messages=messages,
-                                                                response_format=Preview, temperature=0.2)
-                await llm_usage.record_sdk(resp, "calendar_preview", settings.scout_insight_model)
-                parsed = resp.choices[0].message.parsed
+                parsed = await responses.parse(client, settings.scout_insight_model, messages, Preview, "calendar_preview", temperature=0.2)
             except Exception as exc:
                 tries.append([f"LLM 调用失败：{type(exc).__name__}"])
                 break
@@ -694,10 +691,7 @@ async def review(e: dict, session: date) -> dict:
                     {"role": "user", "content": json.dumps(pack, ensure_ascii=False, default=str)}]
         for attempt in (1, 2):
             try:
-                resp = await client.beta.chat.completions.parse(model=settings.scout_insight_model, messages=messages,
-                                                                response_format=Review, temperature=0.2)
-                await llm_usage.record_sdk(resp, "calendar_review", settings.scout_insight_model)
-                parsed = resp.choices[0].message.parsed
+                parsed = await responses.parse(client, settings.scout_insight_model, messages, Review, "calendar_review", temperature=0.2)
             except Exception as exc:
                 tries.append([f"LLM 调用失败：{type(exc).__name__}"])
                 break

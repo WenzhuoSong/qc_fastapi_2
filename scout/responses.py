@@ -87,3 +87,23 @@ def function_calls(data: dict) -> list[dict]:
 def as_tool(fn: dict) -> dict:
     """A Chat Completions style function definition as a Responses tool."""
     return {"type": "function", "name": fn["name"], "description": fn["description"], "parameters": fn["parameters"]}
+
+
+async def parse(client, model: str, messages: list, fmt, purpose: str, temperature: float = 0.2):
+    """A structured answer as `fmt` (a pydantic model). The gpt-6 models go through /v1/responses with a strict schema and
+    no temperature (chat parse with temperature fails for them); older models through the SDK's chat parse."""
+    from scout import llm_usage
+
+    if model.startswith("gpt-6"):
+        from openai.lib._pydantic import to_strict_json_schema
+
+        system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
+        data = await create({
+            "model": model, "reasoning": {"effort": "low"}, "instructions": system,
+            "input": [m for m in messages if m["role"] != "system"],
+            "text": {"format": {"type": "json_schema", "name": fmt.__name__, "schema": to_strict_json_schema(fmt), "strict": True}}},
+            timeout=240, purpose=purpose)
+        return fmt.model_validate_json(output_text(data))
+    resp = await client.beta.chat.completions.parse(model=model, messages=messages, response_format=fmt, temperature=temperature)
+    await llm_usage.record_sdk(resp, purpose, model)
+    return resp.choices[0].message.parsed

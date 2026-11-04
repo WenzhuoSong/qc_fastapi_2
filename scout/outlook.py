@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field
 
+from scout import responses
 from scout import db, learned, ledger, llm_usage, research, sector_news, universe
 from scout.config import get_scout_settings
 from scout.thesis import allowed_numbers, unsupported_numbers
@@ -393,10 +394,7 @@ async def generate(p=None) -> dict:
         client = AsyncOpenAI(api_key=settings.openai_api_key, timeout=120)
         messages = [{"role": "system", "content": PROMPT}, {"role": "user", "content": json.dumps(pack, ensure_ascii=False, default=str)}]
         for attempt in (1, 2):
-            resp = await client.beta.chat.completions.parse(model=settings.scout_insight_model, messages=messages,
-                                                            response_format=Outlook, temperature=0.2)
-            await llm_usage.record_sdk(resp, "outlook", settings.scout_insight_model)
-            parsed = resolve(resp.choices[0].message.parsed, pack)
+            parsed = resolve(await responses.parse(client, settings.scout_insight_model, messages, Outlook, "outlook", temperature=0.2), pack)
             issues = validate(parsed, pack)
             history.append({"attempt": attempt, "issues": issues})
             if not issues:
