@@ -208,6 +208,16 @@ async def _search(prompt: str, purpose: str, model: str = SEARCH_MODEL) -> dict:
     return await external_facts.search(prompt, purpose, model)
 
 
+async def _odds(e: dict) -> list[dict] | None:
+    from scout import prediction
+
+    try:
+        return prediction.pack_rows(await prediction.board(link=e["key"])) or None
+    except Exception as exc:
+        logger.warning("prediction odds for %s failed: %s", e["key"], exc)
+        return None
+
+
 async def _facts(prompt: str, e: dict, purpose: str, today: date) -> dict:
     """A search through the facts store; the usable facts (verified, or unreachable with numbers masked) for the pack."""
     from scout import external_facts
@@ -471,6 +481,8 @@ web（外部检索，未经核实）。
 - 白话，专业词第一次出现时用半句话解释（例如"点阵图：每位美联储官员对未来利率的预测"）。
 - 不预测结果，不给买卖建议；scenarios 写 2–3 种可能结果，每种说清通过什么渠道影响股市、通常哪些板块受益或受压。
 - history 只用 history 里的数字；次数少于 10 次要写"样本少，只能参考"；没有 history 就写"Scout 还没有这类事件的历史统计"。
+- prediction 是预测市场（Polymarket / Kalshi）对这件事各结果的价格，大致可看作市场认为的概率：有的话在 expectations 里先写它
+  （"预测市场 X 认为……的概率约 …%，一周前 …%"，写明来源），再写报道；成交量小的要说明参考价值有限。
 - expectations 来自 web（外部事实：已核对 = Scout 打开来源找到了原文；未核对的数字已隐去），写明"据外部报道（未经核实）"、
   哪家来源和日期；只有未核对事实时写成"有报道称"；web 为空就写"没有检索到市场预期"。
 - holdings 每只持仓一条：有利率 / 油价 / 美元敏感度时按证据里写的方向说明（不要自己推断方向）、或板块直接相关时说明渠道；
@@ -537,7 +549,7 @@ async def preview(e: dict) -> dict:
     pack = {"event": event_row(e), "history": hist, "holdings": await exposure(),
             "market": {"大盘过滤": market_filter.text(mf) if mf else None,
                        "SPY 20 日": ((market or {}).get("payload") or {}).get("market", {}).get("spy_ret_20d")},
-            "web": web["pack"]}
+            "web": web["pack"], "prediction": await _odds(e)}
     settings = get_scout_settings()
     result, source, tries = None, "fallback", []
     if settings.openai_api_key:
@@ -574,6 +586,10 @@ def render_preview(e: dict, payload: dict) -> str:
     lines = [f"📅 事件前瞻：{e['title']}（{when}，{e['category']}）", f"是什么：{p['what']}", f"为什么重要：{p['why']}",
              f"市场预期：{p['expectations']}", "可能的情形："]
     lines += [f"{i}. {s['case']}：{s['channel']}（板块：{s['sectors']}）" for i, s in enumerate(p["scenarios"], 1)]
+    odds = pack.get("prediction") or []
+    if odds:
+        lines.append("预测市场（市场价格，不是 Scout 的判断）：" + "；".join(
+            f"{x['市场']}：" + "、".join(f"{o['结果']} {o['现在']}" for o in x["各结果概率"]) + f"（{x['来源']}）" for x in odds))
     lines.append(f"历史上：{p['history']}")
     if p["holdings"]:
         lines.append("你的持仓：")
@@ -638,6 +654,7 @@ class Review(BaseModel):
 REVIEW_PROMPT = """你在给没有金融背景的投资者复盘一个刚发生的事件。证据包：event、today（Python 算的反应日涨跌：大盘、板块 ETF、持仓）、
 history（过去同类事件当天的涨跌）、web（外部检索的结果报道，未经核实）。
 - outcome 只来自 web（外部事实，已核对 / 未核对），写明"据外部报道（未经核实）"和来源；web 为空写"没有检索到结果报道"。
+- prediction_before 是事件前预测市场对各结果的概率：结果出来后说明它是在预期之内还是意外（例如"预测市场事前只给 20%"）。
 - reaction 用 today 和 history 的数字比较：比过去同类事件和平常一天大还是小；不要把当天涨跌全部归因于这个事件，同一天可能还有其他消息。
 - 数字只能原样引用证据包里的数值；白话、中文；不给买卖建议。"""
 
@@ -680,7 +697,10 @@ async def review(e: dict, session: date) -> dict:
     web = await _facts(f"Today is {session}. What was the outcome of this event on {e['event_date']}: {e['title']} "
                         f"({(e['detail'] or {}).get('title_en') or e['category']}), and how did US stocks react? Use only reports "
                         f"published on or after {e['event_date']}, with their dates. 3-5 sentences.", e, "calendar_review_search", session)
-    pack = {"event": event_row(e), "today": today, "history": hist, "web": web["pack"]}
+    from scout import prediction
+
+    pack = {"event": event_row(e), "today": today, "history": hist, "web": web["pack"],
+            "prediction_before": prediction.pack_rows(await prediction.before_event(e["key"], e["event_date"])) or None}
     settings = get_scout_settings()
     result, source, tries = None, "fallback", []
     if settings.openai_api_key and today:

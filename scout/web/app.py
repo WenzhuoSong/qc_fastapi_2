@@ -1084,7 +1084,12 @@ async def calendar_page(_: str = Depends(require_auth)) -> str:
     for n in await db.fetch_all("SELECT DISTINCT ON (event_key, note) event_key, note, payload FROM scout.event_notes "
                                 "WHERE event_key = ANY(:k) ORDER BY event_key, note, created_at DESC", {"k": [ev["key"] for ev in events]}):
         notes.setdefault(n["event_key"], {})[n["note"]] = n["payload"]
-    return views.calendar_page(events, notes, today)
+    from scout import prediction
+
+    odds: dict[str, list[dict]] = {}
+    for x in await prediction.board():
+        odds.setdefault(x["link"] or "", []).append(x)
+    return views.calendar_page(events, notes, today, odds)
 
 
 @app.get("/outlook", response_class=HTMLResponse)

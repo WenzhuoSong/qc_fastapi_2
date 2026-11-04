@@ -317,6 +317,12 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
             g["events"] = await event_calendar.run_eod(asof)
         except Exception as exc:
             logger.warning("event calendar failed: %s", exc)
+        try:                           # prediction markets: snapshot everything followed, report the day's moves
+            from scout import prediction
+
+            g["prediction"] = (await prediction.run(asof, "eod")).get("moves") or []
+        except Exception as exc:
+            logger.warning("prediction markets failed: %s", exc)
         brief = digest.render(asof, market, sector_rows, focus, mfilter, g,
                               portfolio.satellite(await portfolio.get_settings()), scan)
     except Exception as exc:           # the digest must not cost the session its brief

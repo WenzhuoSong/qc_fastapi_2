@@ -75,13 +75,14 @@ class MarketWeek(BaseModel):
 
 PROMPT = """你在给没有金融背景的投资者写每周市场观点。证据包：market（Scout 自己的市场数据，每项有 字段、名称、数值、含义）、
 sectors（11 个板块的 Scout 数据）、facts（外部事实：已核对 = Scout 打开来源找到了原文；未核对 = 来源打不开，数字已隐去）、
-calendar（未来两周的事件）、portfolio（用户的组合结构）。
+calendar（未来两周的事件）、portfolio（用户的组合结构）、prediction（预测市场对宏观主题和大事的概率，市场价格，不是 Scout 的判断）。
 
 要求：
 1. week 和 drivers 写本周发生了什么、为什么；原因只能来自 facts（写明来源）或 Scout 数据，不要用你自己的知识补充新闻。
 2. bull / bear 各 1–4 条，只用 facts，fact_ids 必填；只有未核对事实支撑的写成"有报道称"，不带数字；每条用 market 数据核对。
 3. explained 选 2–4 个最关键的 market 数据，按"是什么 → 通常意味着什么 → 对你意味着什么"写，专业词用半句话解释。
 4. sectors 覆盖全部 11 个板块各一条（etf 用证据里的代码）。
+4b. 在 week、drivers 或 ahead 里引用 prediction 中最重要的一两项概率及一周变化，写明来源（Polymarket / Kalshi）；不要把概率写成确定的事。
 5. stance 是 SPY 未来 20 个交易日本身的涨跌方向，会被记账打分；证据不足时选"中性"。confidence 写"高"需要多条论点被 Scout 数据证实、
    且没有被否定的关键论点。
 6. for_you 结合 portfolio：大盘过滤的状态、卫星仓是否超限，不给买卖指令。
@@ -189,6 +190,21 @@ def validate(m: MarketWeek, pack: dict) -> list[str]:
     return issues
 
 
+async def odds_pack() -> dict:
+    """Prediction markets for the report: the macro topics and the week's largest changes."""
+    from scout import prediction
+
+    try:
+        macro = await prediction.board(topic="macro")
+        other = [e for e in await prediction.board() if e["topic"] != "macro"]
+    except Exception as exc:
+        logger.warning("prediction odds failed: %s", exc)
+        return {}
+    def swing(e):
+        return max((abs((o["prob"] or 0) - o["before"]) for o in e["outcomes"] if o.get("before") is not None), default=0)
+    return {"宏观主题": prediction.pack_rows(macro), "本周变化最大": prediction.pack_rows(sorted(other, key=swing, reverse=True)[:5])}
+
+
 async def market_week(today: date) -> dict | None:
     """Section 1 and the sector lines: search → facts → one structured call → checks → ledger."""
     from scout import event_calendar, responses
@@ -201,7 +217,8 @@ async def market_week(today: date) -> dict | None:
     cal = [event_calendar.event_row(e) for e in await event_calendar.load(today, today + timedelta(days=CALENDAR_DAYS))
            if e["importance"] == "高" or e["source"] != "ff"]
     pack = {"asof": today.isoformat(), "market": await market_items(today), "sectors": await sector_items(),
-            "facts": external_facts.pack_rows(rows), "calendar": cal, "portfolio": await portfolio_items()}
+            "facts": external_facts.pack_rows(rows), "calendar": cal, "portfolio": await portfolio_items(),
+            "prediction": await odds_pack()}
     out, tries = None, []
     if rows and settings.openai_api_key:
         messages = [{"role": "system", "content": PROMPT}, {"role": "user", "content": json.dumps(pack, ensure_ascii=False, default=str)}]

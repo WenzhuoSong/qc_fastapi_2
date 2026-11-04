@@ -38,6 +38,8 @@ SYSTEM_PROMPT = f"""你是 Scout，一位美股研究助理，服务于一位有
 - 问到今天 / 盘前要注意什么：get_briefs（premarket / eod / market_focus / weekly）；本周数据和财报、未来 30 天的美联储会议、选举、政策、行业和市场结构事件（含事前解读和事后复盘）：get_calendar。
 - 问到机会卡 / 今天有什么机会：list_opportunities（会标明规则是否通过检验）；问到新闻对上下游、竞争对手的影响：get_propagation；问到某条规则在什么板块 / 市况下更好、胜率更高的组合：get_conditional_rates。
 - 想全面了解一只股票（"X 怎么样""帮我分析 X"）：调 get_evidence，按下面"多视角证据"的写法逐个视角讲。
+- 问到某件事发生的可能性、市场怎么押注（美联储加息 / 降息、就业数据、衰退、关税、停摆、选举、地缘）：get_prediction_markets，
+  写明来源、概率、一周变化和成交量，说明这是市场价格不是 Scout 的判断。
 - 问到行业景气、行业核心数据（炼油差价、油价、天然气、利率对公用事业、银行利差、房贷利率等）或持仓为什么跟着行业动：get_industry_kpis。
 - 问到分析师评级 / 目标价变化、公司公告、合同订单、监管诉讼、政策这类 Scout 自己没有的外部信息：先查 get_external_facts（外部信息库，
   每条有来源、日期和是否核对过原文），没有再用 research_company 检索；只有"已核对"的事实能引用数字，"未核对"的只能说"有报道称"。
@@ -838,6 +840,29 @@ async def get_conditional_rates(detector: str | None = None, sector: str | None 
     rows = await db.fetch_all(f"SELECT * FROM scout.conditional_rates WHERE run_on = (SELECT max(run_on) FROM scout.conditional_rates) "
                               f"AND {where} ORDER BY layer = 'all' DESC, raw_edge DESC NULLS LAST LIMIT 60", params)
     return {"说明": note, "组合": [{"规则": r["detector"], "层": r["layer"], "统计": cr.text(r)} for r in rows]}
+
+
+@tool("get_prediction_markets", "预测市场（Polymarket / Kalshi，只读）对事件的概率：美联储议息、就业 / CPI 等数据、选举和政策、宏观主题（衰退、"
+                                "美联储路径、政府停摆、关税、伊朗、俄乌、油价、台海）、和持仓公司相关的市场，以及每日扫描发现的大事；"
+                                "每项有各结果的概率、一周前的概率、成交量，和最近的大幅变化及原因",
+      {"type": "object", "properties": {"topic": {"type": "string", "description": "可选：calendar | macro | holding | discovery"},
+                                        "query": {"type": "string", "description": "可选：按关键词筛选（中文或英文），如 美联储、衰退、PBF"}}})
+async def get_prediction_markets(topic: str | None = None, query: str | None = None) -> dict:
+    from scout import prediction
+
+    events = await prediction.board(topic=topic if topic in ("calendar", "macro", "holding", "discovery") else None)
+    if query:
+        q = query.lower()
+        events = [e for e in events if q in (e["title"] or "").lower() or q in (e["title_en"] or "").lower()
+                  or q in " ".join(e["sectors"] or []).lower() or q in (e["link"] or "").lower()]
+    recent = await db.fetch_all("SELECT payload, created_at FROM scout.alerts WHERE kind = 'pm_move' AND created_at > now() - interval '7 days' "
+                                "ORDER BY created_at DESC LIMIT 10")
+    if not events and not recent:
+        return {"note": "没有符合条件的预测市场（只跟踪成交量 ≥ 100 万的市场）"}
+    return {"市场": [{**r, "主题": prediction.TOPIC_NAME.get(e["link"], e["topic"]), "链接": e["url"]}
+                    for e in events[:25] for r in prediction.pack_rows([e])],
+            "近 7 天的大幅变化": [{"日期": str(r["created_at"])[:10], "说明": prediction.move_line(r["payload"])} for r in recent],
+            "说明": "预测市场价格大致可看作市场认为的概率，不是 Scout 的判断；引用时写明来源和成交量"}
 
 
 @tool("get_industry_kpis", "持仓或任意股票所在行业的核心指标（免费数据）：例如炼油的 3-2-1 炼油差价、油气的原油和天然气价格、公用事业的长期利率、"

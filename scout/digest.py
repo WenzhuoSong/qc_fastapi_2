@@ -174,6 +174,11 @@ def render(asof: date, market: dict, sector_rows: list[dict], focus: dict | None
         from scout import event_calendar
 
         lines += [esc(x) for x in event_calendar.digest_lines(g["events"])]
+    if g.get("prediction"):
+        from scout import prediction
+
+        lines.append("预测市场今天的大变化（市场价格，不是 Scout 的判断）：")
+        lines += [esc(prediction.move_line(m)) for m in g["prediction"]]
 
     lines.append("\n<b>二、板块</b>")
     rotation = sectors.rotation_line(sector_rows)

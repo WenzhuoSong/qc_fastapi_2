@@ -1364,7 +1364,14 @@ def angle_screen_panel(screen, rows: list[dict], asof, entry: dict | None) -> st
                if body_rows else "<p class='muted'>现在没有符合条件的股票。</p>"))
 
 
-def calendar_page(events: list[dict], notes: dict[str, dict], today) -> str:
+def odds_html(xs: list[dict]) -> str:
+    from scout import prediction
+
+    return "".join(f"<div class='small'>🎲 <a href='{e(x['url'])}' target='_blank' rel='noopener'>{e(prediction.event_text(x))}</a></div>"
+                   for x in xs)
+
+
+def calendar_page(events: list[dict], notes: dict[str, dict], today, odds: dict[str, list[dict]] | None = None) -> str:
     """Event calendar: upcoming first, with the preview / review written about each."""
     wd = "一二三四五六日"
     src = {"rule": "按规则确定", "fed": "美联储官网", "ff": "经济日历", "web": "外部报道（未经核实）"}
@@ -1373,7 +1380,7 @@ def calendar_page(events: list[dict], notes: dict[str, dict], today) -> str:
         d = ev["event_date"]
         nt, detail = notes.get(ev["key"], {}), ev["detail"] or {}
         past = d < today
-        body = f"<div class='small muted'>{e(detail.get('why') or '')}</div>"
+        body = f"<div class='small muted'>{e(detail.get('why') or '')}</div>" + odds_html((odds or {}).get(ev["key"], []))
         if detail.get("url"):
             body += f"<div class='small'><a href='{e(detail['url'])}' target='_blank' rel='noopener'>来源</a></div>"
         pv = (nt.get("preview") or {}).get("preview")
@@ -1397,7 +1404,17 @@ def calendar_page(events: list[dict], notes: dict[str, dict], today) -> str:
              f"<tbody>{''.join(rows) or '<tr><td colspan=5>暂无事件</td></tr>'}</tbody></table></div>")
     note = ("<p class='small muted'>日期来自规则（选举、三巫日、休市）、美联储官网日程、Forex Factory 本周经济日历和每周一次的网络检索（外部报道，未经核实）。"
             "重要性为“高”的事件在 5 天内会写事前解读并推送一次，反应日收盘后写事后复盘。解读不预测结果，历史统计来自 Scout 行情，样本少时只能参考。</p>")
-    return layout("事件日历", "calendar", f"<h2>事件日历</h2>{note}{table}")
+    from scout import prediction
+
+    topics = [x for k, xs in (odds or {}).items() if k in prediction.TOPIC_NAME for x in xs]
+    found = [x for x in (odds or {}).get("", [])]
+    side = ""
+    if topics or found:
+        side = ("<div class='card' style='margin:12px 0'><h3>预测市场：宏观主题和新发现的大事</h3>"
+                "<p class='small muted'>Polymarket / Kalshi 的市场价格，大致可看作市场认为的概率；只跟踪成交量 ≥ 100 万的市场。不是 Scout 的判断。</p>"
+                + "".join(f"<div class='small'><b>{e(prediction.TOPIC_NAME.get(x['link'], '新发现'))}</b></div>" + odds_html([x]) for x in topics + found)
+                + "</div>")
+    return layout("事件日历", "calendar", f"<h2>事件日历</h2>{note}{side}{table}")
 
 
 def weekly_market_html(rep: dict | None) -> str:

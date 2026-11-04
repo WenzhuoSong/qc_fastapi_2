@@ -296,6 +296,18 @@ async def run(push: bool = True, force: bool = False) -> dict:
     summary = {**result["checked"], "alerts": len(result["alerts"]),
                "kinds": sorted({a["kind"] for a in result["alerts"]})}
     text = render(result["alerts"], datetime.now(ET))
+    try:                               # prediction markets: near events and the holdings' markets, moves reported once
+        from scout import prediction
+
+        pm = await prediction.run(today, "intraday")
+        summary["prediction"] = {"refreshed": pm.get("refreshed"), "moves": len(pm.get("moves") or [])}
+        if pm.get("moves"):
+            from scout.telegram import esc
+
+            extra = "\n".join(esc(prediction.move_line(m)) for m in pm["moves"])
+            text = (text + "\n" + extra) if text else f"⏱ <b>盘中提醒</b> {datetime.now(ET):%H:%M} 美东\n" + extra
+    except Exception as exc:
+        logging.getLogger("scout.intraday").warning("prediction markets failed: %s", exc)
     if push and text:
         from scout import telegram
 

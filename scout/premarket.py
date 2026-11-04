@@ -394,6 +394,12 @@ async def build_pack(session: date) -> dict:
     from scout import event_calendar
 
     calendar = [e for e in await event_calendar.load(session, session + timedelta(days=7)) if e["source"] != "ff"]
+    from scout import prediction
+
+    odds = []
+    for e in await event_calendar.load(session, session + timedelta(days=7)):
+        if e["importance"] == "高":
+            odds += [{**x, "事件": e["title"]} for x in prediction.pack_rows(await prediction.board(link=e["key"]))]
     return {
         "session": session.isoformat(), "weekday": f"周{WEEKDAYS[session.weekday()]}", "prev_session": prev.isoformat(),
         "overnight": [quote_row(s, n, quotes.get(s)) for s, n in OVERNIGHT],
@@ -415,6 +421,7 @@ async def build_pack(session: date) -> dict:
         "last_focus": ({"key": "focus", "日期": str(focus_rec["asof"]), "结论": (focus_rec["f"] or {}).get("headline"),
                         "主题": [t["title"] for t in (focus_rec["f"] or {}).get("themes", [])]} if focus_rec else None),
         "calendar": [{"key": f"cal_{i + 1}", **event_calendar.event_row(e)} for i, e in enumerate(calendar)],
+        "prediction": odds,
     }
 
 
@@ -594,6 +601,10 @@ def render_text(b: PremarketBrief, pack: dict) -> str:
         lines += ["", "近期重要事件（7 天内，美东时间）："]
         lines += [f"· {e['日期'][5:]}" + (f" {e['美东时间']}" if e.get("美东时间") else "") + f" [{e['重要性']}] {e['标题']}（{e['类别']}）"
                   + ("（外部报道）" if e["来源"].startswith("据外部报道") else "") for e in pack["calendar"]]
+    if pack.get("prediction"):
+        lines += ["", "预测市场怎么看本周大事（市场价格，不是 Scout 的判断）："]
+        lines += [f"· {x['事件']}：" + "；".join(f"{o['结果']} {o['现在']}" for o in x["各结果概率"]) + f"（{x['来源']}，成交 {x['成交量']}）"
+                  for x in pack["prediction"]]
     if pack["earnings_reported"]:
         lines += ["", "已公布财报："]
         for e in pack["earnings_reported"]:
@@ -656,6 +667,12 @@ async def run(push: bool = True, force: bool = False) -> dict:
         summary["calendar"] = await event_calendar.refresh(session)
     except Exception as exc:
         summary["calendar"] = f"failed: {type(exc).__name__}"
+    try:                                # prediction markets: link to the calendar / topics / holdings, snapshot
+        from scout import prediction
+
+        summary["prediction"] = await prediction.run(session, "premarket")
+    except Exception as exc:
+        summary["prediction"] = f"failed: {type(exc).__name__}"
     record = await generate(session)
     summary.update(source=record["source"], opportunities=len(record["pack"]["opportunities"]),
                    economic=len(record["pack"]["economic_today"]), earnings=len(record["pack"]["earnings_reported"]))
