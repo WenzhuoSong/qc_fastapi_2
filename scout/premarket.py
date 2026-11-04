@@ -61,7 +61,7 @@ def position_label(price: float, o: dict) -> str:
         return f"盘前已跌破止损 {stop:.2f}"
     if price >= t1:
         return f"已到目标 1（{t1:.2f}）附近或以上"
-    return f"距止损 {(price / stop - 1) * 100:.1f}%，距目标 1 {(t1 / price - 1) * 100:.1f}%"
+    return f"距止损 {(1 - stop / price) * 100:.1f}%，距目标 1 {(t1 / price - 1) * 100:.1f}%"
 
 
 def holding_label(price: float, t: dict, session: date | None = None) -> str:
@@ -75,7 +75,7 @@ def holding_label(price: float, t: dict, session: date | None = None) -> str:
         return text + f"，回落止损已在 {plan['stop_hit']} 收盘触发：按计划今天开盘卖出全部"
     if t.get("stop"):
         text += (f"，盘前低于回落止损 {t['stop']:.2f}（按收盘判断）" if price <= t["stop"]
-                 else f"，距回落止损 {(price / t['stop'] - 1) * 100:.1f}%")
+                 else f"，距回落止损 {(1 - t['stop'] / price) * 100:.1f}%")      # share of the price, as on the digest
     return text
 
 
@@ -155,6 +155,31 @@ def revenue_claim_issues(texts: list[str], rows: list[dict]) -> list[str]:
                 beat, miss = any(c in sent for c in _REVENUE_BEAT), any(c in sent for c in _REVENUE_MISS)
                 if (beat and not verdict.startswith("高于")) or (miss and not verdict.startswith("低于")):
                     issues.append(f"{row['代码']} 的营收对比预期是「{verdict or '没有数据'}」，文中却写「{sent.strip()[:40]}」")
+    return issues
+
+
+_EPS_BEAT = ("财报超预期", "业绩超预期", "盈利超预期", "利润超预期", "EPS 超预期", "EPS超预期", "每股收益超预期")
+_EPS_MISS = ("财报不及预期", "业绩不及预期", "盈利不及预期", "利润不及预期", "EPS 不及预期", "EPS不及预期", "每股收益不及预期",
+             "财报低于预期", "业绩低于预期", "盈利低于预期")
+
+
+def eps_claim_issues(texts: list[str], rows: list[dict]) -> list[str]:
+    """Calling results a beat / miss follows the sign of `EPS 超预期幅度`; such a sentence must name the company by its code
+    (2026-10-30: "亚马逊和英特尔财报不及预期" while INTC beat by 30 %; the Chinese names escaped the check)."""
+    issues = []
+    for text in texts:
+        for sent in re.split(r"[。；;\n]", text):
+            beat, miss = any(c in sent for c in _EPS_BEAT), any(c in sent for c in _EPS_MISS)
+            if not (beat or miss):
+                continue
+            named = [r for r in rows if r["代码"] in sent or (r.get("名称") and r["名称"].split()[0] in sent)]
+            if not named:
+                issues.append(f"说财报超预期 / 不及预期时要写明公司代码（如 英特尔（INTC））：「{sent.strip()[:40]}」")
+            for r in named:
+                s = r.get("EPS 超预期幅度") or ""
+                if (beat and not s.startswith("+")) or (miss and not s.startswith("-")):
+                    issues.append(f"{r['代码']} 的 EPS 超预期幅度是「{s or '没有财报前预期'}」，文中却写「{sent.strip()[:40]}」"
+                                  "（股价下跌常因指引，不等于财报不及预期）")
     return issues
 
 
@@ -288,7 +313,7 @@ async def build_pack(session: date) -> dict:
     def ident(t: str) -> str:
         tags = [lbl for cond, lbl in ((t in {h["ticker"] for h in held}, "持仓"), (t in {o["ticker"] for o in opps}, "活跃机会"),
                                       (t in watch, "自选"),
-                                      (t in peers, f"持仓同行业（{'、'.join(sorted(set(peers.get(t, []))))}）"),
+                                      (t in peers, f"持仓同板块（{'、'.join(sorted(set(peers.get(t, []))))}）"),
                                       (t in chain, f"持仓产业链（{'；'.join(chain.get(t, []))}）")) if cond]
         return "、".join(tags) or "大市值"
 
@@ -430,7 +455,7 @@ SYSTEM_PROMPT = """你是一名美股交易日开盘前的策略助理，基于 
 - opportunities：Scout 正在跟踪的机会，含入场区间、止损、目标和"位置判断"（Python 根据盘前价计算）。
 - watchlist_moves：自选股中盘前涨跌幅较大的。
 - earnings_reported / earnings_today / earnings_week：昨日盘后与今日盘前已公布、今日待公布、本周后续的重要财报。
-  身份含"持仓同行业（X）"的是用户持仓 X 所在行业交易最活跃的公司：它的财报会带动整个行业，必须提到，并说明可能影响哪只持仓。
+  身份含"持仓同板块（X）"的是用户持仓 X 所在板块（GICS 一级行业，如信息技术）交易最活跃的公司，不一定是同一细分行业：它的财报可能带动整个板块，必须提到，并说明可能影响哪只持仓。
   身份含"持仓产业链（X 的客户 / 供应商 / 竞争对手）"的是年报里与持仓 X 有直接业务关系的公司：它的财报和指引会直接影响 X，必须提到。
 - economic_today / economic_week：今天和本周后续的美国经济数据与美联储事件（美东时间）。
 - news / macro_news：上一交易日收盘以来的个股新闻和宏观新闻。
@@ -448,7 +473,8 @@ SYSTEM_PROMPT = """你是一名美股交易日开盘前的策略助理，基于 
 - evidence 只能填证据包里出现的 key（如 q.ES=F、opp.NVDA、er.MSFT、econ_1、news_2、focus）。
 - 机会的位置只能按"位置判断"表述，不要自己推断是否跌破止损或追高。
 - 财报的营收是否超预期只能按"营收对比预期"表述（没有这一项就不要说营收超预期或不及预期，新闻里的说法也不行）；
-  EPS 只能按"EPS 超预期幅度"表述。管理层展望要说清是哪一项（如营收增长、毛利率），并引用对应的新闻 key。
+  EPS 只能按"EPS 超预期幅度"表述（"财报超预期 / 不及预期"指 EPS）；财报后下跌不等于不及预期，原因多半在指引，要按新闻说明。
+  提到公司时在名称后写代码，如 英特尔（INTC）。管理层展望要说清是哪一项（如营收增长、毛利率），并引用对应的新闻 key。
 - 期货和盘前价格不代表开盘价；不编造新闻或数据；没有数据的项不要提。
 - 中文、简洁；不给买卖指令，非投资建议。"""
 
@@ -475,6 +501,7 @@ def validate(b: PremarketBrief, pack: dict) -> list[str]:
             if wrong:
                 issues.append(f"{n.ticker} 的位置判断是「{labels[n.ticker]}」，文中却写「{'、'.join(wrong)}」")
     issues += revenue_claim_issues(texts, pack.get("earnings_reported", []))
+    issues += eps_claim_issues(texts, pack.get("earnings_reported", []))
     if not 2 <= len(b.points) <= 5:
         issues.append("要点数量必须在 2–5 个之间")
     return issues
@@ -568,7 +595,7 @@ def render_text(b: PremarketBrief, pack: dict) -> str:
             line += f"，盘前 {e['盘前较前收']}" if e.get("盘前较前收") else ""
             lines.append(line)
     def peer(e: dict) -> str:
-        return f"，{e['身份']}" if ("持仓同行业" in (e.get("身份") or "") or "持仓产业链" in (e.get("身份") or "")) else ""
+        return f"，{e['身份']}" if ("持仓同板块" in (e.get("身份") or "") or "持仓产业链" in (e.get("身份") or "")) else ""
 
     if pack["earnings_today"]:
         lines.append("今日待公布：" + "、".join(f"{e['代码']}（{e['时间']}{peer(e)}）" for e in pack["earnings_today"]))

@@ -92,6 +92,12 @@ class MarketFocusValidationTests(unittest.TestCase):
 
         self.assertTrue(any("板块热度" in i for i in validate(self._focus("x", ["XLK"], stance_xle="冷"), self._pack())))
 
+    def test_twenty_day_readings_are_not_called_todays_leaders(self):
+        from scout.market_focus import validate
+
+        issues = validate(self._focus("能源领涨，科技资金流向信号分歧", ["XLK"]), self._pack())
+        self.assertTrue(any("领涨" in i for i in issues))
+
     def test_labels(self):
         self.assertEqual(sectors.flow_label(0.10, 1.4), "流入")
         self.assertEqual(sectors.flow_label(-0.05, 0.8), "流出")

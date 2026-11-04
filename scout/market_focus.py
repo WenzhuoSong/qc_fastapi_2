@@ -71,7 +71,8 @@ SYSTEM_PROMPT = """你是一名美股策略分析师，基于 Python 计算好�
 硬性规则：
 - 数字只能原样引用证据包中出现的数值，不要自行计算。
 - evidence 只能填证据包里出现的 key（形如 XLE.rel_20、XLE.news_1、wrap_1、macro_2、market.regime）。
-- 资金流指标是日线代理，表述时不要说成"机构买入"之类确定的结论。
+- 资金流指标是日线代理，表述时不要说成"机构买入"之类确定的结论；也不要据此推断"投资者信心""经济复苏预期"这类证据包里没有的结论。
+- 热度、轮动象限、资金流都是 20 日左右的读数，不是今天的涨跌：写"近 20 日领先 / 落后"，不要写"领涨 / 领跌"或"今天走强 / 走弱"。
 - 不编造新闻或事实；中文、专业、简洁；不给买卖指令，非投资建议。"""
 
 
@@ -177,7 +178,14 @@ def validate(mf: MarketFocus, pack: dict) -> list[str]:
         issues.append(f"主题里出现了不存在的板块代码：{', '.join(bad_theme_sectors)}")
     if not 2 <= len(mf.themes) <= 5:
         issues.append("主题数量必须在 2–5 个之间")
+    daily = sorted({w for w in DAILY_WORDS if any(w in t for t in texts)})
+    if daily:
+        issues.append(f"板块读数是 20 日左右的，不是当天涨跌，不要用：{'、'.join(daily)}（写「近 20 日领先 / 落后」）")
     return issues
+
+
+# The sector readings are ~20-session ones; these words claim the day's move (2026-11-03: "防御板块领涨" on a day tech led).
+DAILY_WORDS = ("领涨", "领跌", "今日走强", "今日走弱", "今天走强", "今天走弱")
 
 
 # Phrases that assert a direction, checked against Python's per-sector labels.

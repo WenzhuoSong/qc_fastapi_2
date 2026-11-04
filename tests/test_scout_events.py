@@ -1,5 +1,7 @@
+import asyncio
 import unittest
 from datetime import date, timedelta
+from unittest import mock
 
 import numpy as np
 
@@ -119,6 +121,24 @@ class CauseValidationTests(unittest.TestCase):
     def test_fallback_without_evidence(self):
         pack = {**self.PACK, "news": [], "web": None}
         self.assertEqual(event_cause.fallback(pack, self.EV).cause_type, "无明确消息")
+
+
+class CauseCacheTests(unittest.TestCase):
+    def run_explain(self, cached_metrics, ev):
+        row = {"cause": {"cached": True}, "metrics": cached_metrics}
+        fresh = {"cached": False}
+        with mock.patch.object(event_cause.db, "fetch_one", mock.AsyncMock(return_value=row)), \
+             mock.patch.object(event_cause, "gather", mock.AsyncMock(side_effect=RuntimeError("searched"))):
+            try:
+                return asyncio.run(event_cause.explain("SHOP", "Shopify", ev))
+            except RuntimeError:
+                return fresh
+
+    def test_intraday_cache_is_replaced_by_the_days_bars(self):
+        day = {"date": "2026-11-03", "gap": -0.127, "intraday": 0.045}
+        self.assertEqual(self.run_explain({"live": True}, day), {"cached": False})
+        self.assertEqual(self.run_explain({"live": True}, {**day, "live": True}), {"cached": True})
+        self.assertEqual(self.run_explain({"gap": -0.127}, day), {"cached": True})
 
 
 class InsightEventTests(unittest.TestCase):

@@ -109,6 +109,12 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(validate(_insight(), _pack(), ""), [])
         self.assertIn("news", evidence_keys(_pack()))
 
+    def test_attribution_must_carry_the_twenty_day_split(self):
+        pack = _pack()
+        pack["context"]["scout_view"]["要点"]["归因"] = "20 日涨跌 +4.0% ≈ 扣除大盘后 +9.4% + 大盘贡献 -4.6%"
+        issues = validate(_insight(attribution="近期波动主要由个股自身因素主导"), pack, "")
+        self.assertTrue(any(i.startswith("attribution") for i in issues))
+
     def test_catches_invented_numbers_unknown_keys_and_driver(self):
         bad = _insight(headline="目标 250 美元", driver="公司自身",
                        lenses=[LensView(lens="trend_dow", verdict="偏多", points=["x"], evidence=["pe_ratio"])])

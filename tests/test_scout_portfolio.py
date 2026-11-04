@@ -102,7 +102,7 @@ class OutcomeAndEventTests(unittest.TestCase):
     def test_holding_label(self):
         t = {"entry_price": 100.0, "stop": 95.0}
         self.assertIn("盘前低于回落止损 95.00（按收盘判断）", holding_label(94.0, t))
-        self.assertIn("较你的成本 +2.0%，距回落止损 7.4%", holding_label(102.0, t))
+        self.assertIn("较你的成本 +2.0%，距回落止损 6.9%", holding_label(102.0, t))
         hit = {**t, "plan": {"stop_hit": "2026-10-30"}}
         self.assertIn("按计划今天开盘卖出全部", holding_label(96.0, hit))
 

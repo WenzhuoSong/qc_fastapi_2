@@ -241,9 +241,10 @@ async def explain(ticker: str, name: str, ev: dict, refresh: bool = False) -> di
     """Cause of one abnormal day, cached in scout.stock_events."""
     d = date.fromisoformat(ev["date"])
     if not refresh:
-        row = await db.fetch_one("SELECT cause FROM scout.stock_events WHERE ticker = :t AND event_date = :d AND cause IS NOT NULL",
+        row = await db.fetch_one("SELECT cause, metrics FROM scout.stock_events WHERE ticker = :t AND event_date = :d AND cause IS NOT NULL",
                                  {"t": ticker, "d": d})
-        if row:
+        # an intraday search had only the live change (no gap / market split): the day's bars replace it
+        if row and not ((row["metrics"] or {}).get("live") and not ev.get("live")):
             return row["cause"]
     facts = await gather(ticker, name, ev)
     pack = build_pack(ticker, name, ev, facts)

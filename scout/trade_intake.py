@@ -19,7 +19,7 @@ from scout.config import get_scout_settings
 
 logger = logging.getLogger("scout.trade_intake")
 
-INTENT = re.compile(r"^\s*(我)?(今天|昨天|刚才|刚刚)?\s*(买了|买入了?|卖了|卖出了?|加仓了?|减仓了?|清仓了?)")
+INTENT = re.compile(r"^\s*(我)?(今天|昨天|刚才|刚刚)?\s*(已经?)?\s*(完成)?\s*(买了|买入了?|购买了?|卖了|卖出了?|加仓了?|减仓了?|清仓了?)")
 QUESTION = re.compile(r"[？?吗呢么]\s*$")
 
 

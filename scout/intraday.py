@@ -109,7 +109,8 @@ async def _research_moves(moves: list[dict], today: date) -> None:
     async def one(m: dict) -> None:
         ch = m["payload"]["change"]
         ev = {"date": today.isoformat(), "ret": ch, "idio": ch, "sigma_mult": None, "gap": 0.0, "intraday": ch,
-              "timing": "盘中", "vol_ratio": None, "spy_ret": None, "sector_ret": None, "after_ret": 0.0, "sessions_ago": 0}
+              "timing": "盘中", "vol_ratio": None, "spy_ret": None, "sector_ret": None, "after_ret": 0.0, "sessions_ago": 0,
+              "live": True}
         try:
             c = await event_cause.explain(m["ticker"], names.get(m["ticker"]) or m["ticker"], ev)
             m["payload"]["cause"] = {"type": c["cause_type"], "summary": c["summary"],

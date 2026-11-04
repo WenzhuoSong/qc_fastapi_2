@@ -541,6 +541,10 @@ def validate_synthesis(s, pack: dict) -> list[str]:
     if expected_driver and s.driver != expected_driver:
         issues.append(f"驱动力判定应为「{expected_driver}」（按 20 日公司自身 vs 大盘加行业的规则），实际写成「{s.driver}」")
     issues += swing_conflicts([s.headline, s.attribution], pack)
+    has_split = "20 日" in str(((pack.get("context") or {}).get("scout_view") or {}).get("要点", {}).get("归因", ""))
+    if has_split and ("%" not in s.attribution or "20 日" not in s.attribution):
+        issues.append("attribution 要写明 20 日的三段数字（大盘、行业、公司自身各多少，见 scout_view.要点.归因）；"
+                      "说今天的涨跌时另写「今日」，两个时间段不要混在一句结论里")
     ev = must_explain(pack)
     if ev and (not s.recent_event or not any(m in s.recent_event for m in date_marks(ev["日期"]))):
         issues.append(f"近期有异常波动（{ev['日期']} {ev['当日涨跌']}，{ev['原因类型']}）：recent_event 必须解释它，"

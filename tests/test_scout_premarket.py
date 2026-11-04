@@ -136,6 +136,14 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual([i.split(" ")[0] for i in bad], ["AAPL", "SHOP", "PLTR"])
         self.assertEqual(premarket.revenue_claim_issues(["Apple 营收高于预期，毛利率指引偏低", "SHOP 盘前下跌"], rows), [])
 
+    def test_eps_claims_follow_the_surprise_and_name_the_company(self):
+        rows = [{"代码": "INTC", "名称": "Intel Corp", "EPS 超预期幅度": "+30.1%"},
+                {"代码": "AMZN", "名称": "Amazon.com Inc", "EPS 超预期幅度": "-5.5%"}]
+        bad = premarket.eps_claim_issues(["亚马逊和英特尔财报不及预期，导致纳指期货大跌。", "英特尔（INTC）财报不及预期"], rows)
+        self.assertTrue(bad[0].startswith("说财报超预期"))
+        self.assertTrue(bad[1].startswith("INTC"))
+        self.assertEqual(premarket.eps_claim_issues(["亚马逊（AMZN）财报不及预期；英特尔（INTC）财报超预期但指引偏弱"], rows), [])
+
     def test_point_count(self):
         self.assertTrue(any("2–5" in i for i in premarket.validate(brief(points=[Point(text="x", evidence=[])]), PACK)))
 
