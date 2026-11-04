@@ -146,3 +146,30 @@ class ValidationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ParseRouteTests(unittest.TestCase):
+    def test_gpt6_goes_through_responses_with_a_strict_schema(self):
+        import asyncio
+        from unittest import mock
+
+        from pydantic import BaseModel
+
+        from scout import insight, responses
+
+        class Out(BaseModel):
+            x: str
+
+        seen = {}
+
+        async def fake(body, timeout=None, purpose="other"):
+            seen.update(body)
+            return {"output": [{"type": "message", "content": [{"type": "output_text", "text": '{"x": "ok"}'}]}]}
+
+        with mock.patch.object(responses, "create", fake):
+            got = asyncio.run(insight._parse(None, "gpt-6.1-terra", [{"role": "system", "content": "s"},
+                                                                     {"role": "user", "content": "u"}], Out))
+        self.assertEqual(got.x, "ok")
+        self.assertEqual(seen["instructions"], "s")
+        self.assertNotIn("temperature", seen)
+        self.assertTrue(seen["text"]["format"]["strict"])
