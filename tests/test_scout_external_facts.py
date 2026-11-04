@@ -52,6 +52,17 @@ class PackTests(unittest.TestCase):
         self.assertEqual(xf.clean_url("https://a.com/x?utm_source=openai"), "https://a.com/x")
 
 
+class StoreTests(unittest.TestCase):
+    def test_store_commits_its_insert(self):
+        fact = {"subject": "SHOP", "fact_type": "其他", "claim": "c", "value": None, "unit": None, "quote": "q" * 30,
+                "url": "https://r.com/a", "outlet": "o", "published": None, "status": "verified", "match": "exact"}
+        with mock.patch.object(xf.db, "execute_returning", mock.AsyncMock(return_value={"id": 1, **fact})) as w, \
+             mock.patch.object(xf.db, "fetch_one", mock.AsyncMock(side_effect=AssertionError("fetch_one rolls inserts back"))):
+            rows = asyncio.run(xf.store([fact], "test"))
+        self.assertEqual(rows[0]["id"], 1)
+        w.assert_awaited_once()
+
+
 class ExtractTests(unittest.TestCase):
     def test_keeps_cited_quoted_facts_only(self):
         from scout import responses

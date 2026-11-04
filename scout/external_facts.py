@@ -200,7 +200,7 @@ async def store(facts: list[dict], purpose: str) -> list[dict]:
     """Insert new facts, touch the ones seen before; returns the stored rows (with ids)."""
     out = []
     for f in facts:
-        row = await db.fetch_one(
+        row = await db.execute_returning(           # fetch_one would roll the insert back
             "INSERT INTO scout.external_facts (fingerprint, subject, subject_kind, fact_type, claim, value, unit, quote, url, outlet, "
             "published, status, match, purpose) VALUES (:fp, :subject, :kind, :fact_type, :claim, :value, :unit, :quote, :url, :outlet, "
             ":published, :status, :match, :purpose) "
