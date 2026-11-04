@@ -2,7 +2,9 @@ import unittest
 
 from scout import viewdesk as vd
 
-PACK = {"subject": {"代码": "SHOP"}, "debate": {"内容": "Analysts cut targets to 150 after GMV missed 120.96 billion"},
+PACK = {"subject": {"代码": "SHOP"},
+        "facts": {"已核对": [{"id": 7, "内容": "分析师把目标价下调到 150 美元", "原文": "cut its target to $150"}],
+                  "未核对（来源打不开，数字已隐去，不可引用数字）": [{"id": 8, "内容": "GMV 低于预期 …"}]},
         "evidence": [{"字段": "eps_rev_90d", "名称": "EPS 预期 90 日修正", "含义": "x", "数值": "+3.6%", "读数": "上调"},
                      {"字段": "idio_ret_20d", "名称": "20 日扣除大盘后", "含义": "x", "数值": "-10.9%", "读数": "大幅跑输"},
                      {"字段": "pe_ratio", "名称": "市盈率", "含义": "x", "数值": "106.4", "读数": "很高"}],
@@ -10,7 +12,7 @@ PACK = {"subject": {"代码": "SHOP"}, "debate": {"内容": "Analysts cut target
 
 
 def arg(check="Scout 数据一致", fields=("eps_rev_90d",), kind="分析师", note="EPS 预期 90 日修正 +3.6%"):
-    return vd.Argument(claim="c", source_kind=kind, outlet="o", published="2026-11-03", check=check, check_note=note, fields=list(fields))
+    return vd.Argument(claim="c", source_kind=kind, fact_ids=[7], check=check, check_note=note, fields=list(fields))
 
 
 def view(**over):
@@ -47,11 +49,17 @@ class ViewValidationTests(unittest.TestCase):
         v = view()
         self.assertEqual(vd.source_mix(v)["分析师"], 1)
         self.assertEqual(vd.source_mix(v)["新闻媒体"], 1)
-        rec = {"ticker": "SHOP", "name": "Shopify", "view": v.model_dump(), "mix": vd.source_mix(v)}
+        rec = {"ticker": "SHOP", "name": "Shopify", "view": v.model_dump(), "mix": vd.source_mix(v),
+               "facts": {"7": {"label": "Reuters 2026-11-03", "url": "u", "status": "verified"}}}
         text = vd.render_text(rec)
         self.assertIn("未来 60 个交易日相对 SPY 中性", text)
         self.assertIn("看空的理由", text)
         self.assertIn("据外部报道（未经核实）", text)
+        self.assertIn("Reuters 2026-11-03", text)
+
+    def test_arguments_must_cite_known_facts(self):
+        bad = view(bull=[vd.Argument(claim="c", source_kind="分析师", fact_ids=[99], check="无法用 Scout 数据核对", check_note="n", fields=[])])
+        self.assertTrue(any("fact_ids" in i for i in vd.validate(bad, PACK)))
 
     def test_schema_is_strict(self):
         schema = vd.strict_schema(vd.View)

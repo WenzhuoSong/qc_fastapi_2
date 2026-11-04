@@ -38,6 +38,8 @@ SYSTEM_PROMPT = f"""你是 Scout，一位美股研究助理，服务于一位有
 - 问到今天 / 盘前要注意什么：get_briefs（premarket / eod / market_focus / weekly）；本周数据和财报、未来 30 天的美联储会议、选举、政策、行业和市场结构事件（含事前解读和事后复盘）：get_calendar。
 - 问到机会卡 / 今天有什么机会：list_opportunities（会标明规则是否通过检验）；问到新闻对上下游、竞争对手的影响：get_propagation；问到某条规则在什么板块 / 市况下更好、胜率更高的组合：get_conditional_rates。
 - 想全面了解一只股票（"X 怎么样""帮我分析 X"）：调 get_evidence，按下面"多视角证据"的写法逐个视角讲。
+- 问到分析师评级 / 目标价变化、公司公告、合同订单、监管诉讼、政策这类 Scout 自己没有的外部信息：先查 get_external_facts（外部信息库，
+  每条有来源、日期和是否核对过原文），没有再用 research_company 检索；只有"已核对"的事实能引用数字，"未核对"的只能说"有报道称"。
 - 问到"各方怎么看 X""市场上对 X 怎么说""多空分歧"：get_views（没有近期观点再用 research_views）；逐条讲看多 / 看空论点、
   来源和日期、Scout 数据是证实还是否定；关键数据按"是什么 → 通常意味着什么 → 对你意味着什么"讲；最后说明这只是观点，方向记入判断台账。
 - 问到"从各个策略看这只股票行不行""哪些股票被多个策略选中"：get_strategy_view；逐个策略说是否选中、排第几，并强调每个策略的检验状态
@@ -837,6 +839,21 @@ async def get_conditional_rates(detector: str | None = None, sector: str | None 
     return {"说明": note, "组合": [{"规则": r["detector"], "层": r["layer"], "统计": cr.text(r)} for r in rows]}
 
 
+@tool("get_external_facts", "外部信息库：联网检索时找到、Scout 无法从自己的数据里得到的事实（分析师评级和目标价、业绩指引、合同订单、"
+                            "监管诉讼、并购、管理层、政策、宏观、行业），每条有来源、日期、原文摘录，以及 Scout 是否打开来源核对过原文",
+      {"type": "object", "properties": {"subject": {"type": "string", "description": "股票或板块 ETF 代码；宏观、政策、市场整体用 MACRO"},
+                                        "days": {"type": "integer", "description": "回看天数，默认 30"}},
+       "required": ["subject"]})
+async def get_external_facts(subject: str, days: int = 30) -> dict:
+    from scout import external_facts
+
+    s = "MACRO" if subject.upper() in ("MACRO", "宏观", "市场") else universe.yahoo_symbol(subject)
+    rows = await external_facts.recall([s], days=min(max(days, 1), 365))
+    if not rows:
+        return {"note": f"外部信息库里近 {days} 天没有 {s} 的事实；可以用 research_company 或 research_views 检索"}
+    return {**external_facts.pack_rows(rows), "对象": s}
+
+
 @tool("get_views", "多来源观点：各类来源（新闻、分析师、公司自身、独立研究、投资者社区）近 30 天对一只股票或板块的看多 / 看空论点，"
                    "每条用 Scout 数据核对（一致 / 矛盾 / 无法核对），关键数据的白话解读，成立条件、证伪条件、把握，以及记入判断台账的方向；"
                    "不给 ticker 时列出最近的全部观点。只返回已有的，没有时用 research_views 现写",
@@ -891,18 +908,17 @@ async def research_company(ticker: str, question: str | None = None) -> dict:
               "end markets and the latest company guidance; (6) the main risks. Distinguish reported facts from estimates and analyst opinion; "
               "say plainly when something is not disclosed. Answer in Chinese."
               + (f" Specific question: {q}" if q else ""))
+    from scout import external_facts
+
     settings = get_scout_settings()
-    data = await responses.create({"model": settings.scout_agent_model, "reasoning": {"effort": "low"},
-                                   "tools": [{"type": "web_search"}], "input": prompt}, timeout=150, purpose="company_research")
-    sources = []
-    for item in data.get("output") or []:
-        for part in item.get("content") or [] if item.get("type") == "message" else []:
-            for ann in part.get("annotations") or []:
-                if ann.get("type") == "url_citation" and ann.get("url") and ann["url"] not in [s["url"] for s in sources]:
-                    sources.append({"标题": ann.get("title"), "url": ann["url"]})
+    found = await external_facts.collect(prompt, [t], "company_research", model=settings.scout_agent_model)
+    facts = found["facts"]
     result = {"代码": t, "检索日期": date.today().isoformat(), "标注": "据外部报道（未经核实）",
-              "内容": responses.output_text(data)[:12000], "来源": sources[:12],
-              "说明": "外部报道，不是 Scout 的数据；引用时写明'据外部报道'，并用 get_evidence 的财务数据（收入增速、加速度、预期修正）和 get_outlook 的行业数据核对"}
+              "内容": found["text"][:12000], "来源": [{"标题": x["title"], "url": x["url"]} for x in found["sources"][:12]],
+              "外部事实": external_facts.pack_rows([f for f in facts if f["status"] in ("verified", "unreachable")]),
+              "核对": {k: sum(f["status"] == k for f in facts) for k in ("verified", "unreachable", "mismatch")},
+              "说明": "外部报道，不是 Scout 的数据。'内容'是检索模型写的总结，其中的数字只有出现在'外部事实·已核对'里的才能引用（Scout 打开来源找到了原文）；"
+                      "未核对的只能说'有报道称'。引用时写明来源和日期，并用 get_evidence 的财务数据和 get_outlook 的行业数据核对"}
     await db.execute("INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('company_research', CURRENT_DATE, :c, CAST(:p AS JSONB))",
                      {"c": result["内容"][:4000], "p": db.jsonb({"ticker": t, "question": q, "result": result})})
     return result

@@ -202,30 +202,20 @@ WEB_SCHEMA = {
 
 
 async def _search(prompt: str, purpose: str, model: str = SEARCH_MODEL) -> dict:
-    """One web search; {"text", "sources": [{"title","url"}]} or {}."""
-    from scout import responses
+    """One web search (see `external_facts.search`)."""
+    from scout import external_facts
 
-    if not get_scout_settings().openai_api_key:
-        return {}
-    try:
-        tool = "web_search_preview" if model == SEARCH_MODEL else "web_search"      # the reasoning models take the newer tool
-        body = {"model": model, "tools": [{"type": tool}], "input": prompt}
-        if model != SEARCH_MODEL:
-            body["reasoning"] = {"effort": "low"}
-        data = await responses.create(body, timeout=240, purpose=purpose)
-    except Exception as exc:
-        logger.warning("web search (%s) failed: %s %s", purpose, type(exc).__name__, exc)
-        return {}
-    sources, seen = [], set()
-    for item in data.get("output") or []:
-        for part in item.get("content") or [] if item.get("type") == "message" else []:
-            for ann in part.get("annotations") or []:
-                url = (ann.get("url") or "").split("?utm_source")[0]
-                if ann.get("type") == "url_citation" and url and url not in seen:
-                    seen.add(url)
-                    sources.append({"title": ann.get("title") or url, "url": url})
-    text = responses.output_text(data).strip()
-    return {"text": text, "sources": sources} if text else {}
+    return await external_facts.search(prompt, purpose, model)
+
+
+async def _facts(prompt: str, e: dict, purpose: str, today: date) -> dict:
+    """A search through the facts store; the usable facts (verified, or unreachable with numbers masked) for the pack."""
+    from scout import external_facts
+
+    found = await external_facts.collect(prompt, ["MACRO", *((e["detail"] or {}).get("tickers") or [])], purpose, today=today)
+    usable = [r for r in found["facts"] if r["status"] in ("verified", "unreachable")]
+    return {"pack": external_facts.pack_rows(usable) if usable else None, "sources": found["sources"],
+            "status": {k: sum(r["status"] == k for r in found["facts"]) for k in ("verified", "unreachable", "mismatch")}}
 
 
 def web_events(parsed: list[dict], cited: set[str], text: str, start: date, end: date) -> list[dict]:
@@ -481,7 +471,8 @@ web（外部检索，未经核实）。
 - 白话，专业词第一次出现时用半句话解释（例如"点阵图：每位美联储官员对未来利率的预测"）。
 - 不预测结果，不给买卖建议；scenarios 写 2–3 种可能结果，每种说清通过什么渠道影响股市、通常哪些板块受益或受压。
 - history 只用 history 里的数字；次数少于 10 次要写"样本少，只能参考"；没有 history 就写"Scout 还没有这类事件的历史统计"。
-- expectations 来自 web，写明"据外部报道（未经核实）"和报道日期；web 说没有近期报道或为空，就写"没有检索到市场预期"。
+- expectations 来自 web（外部事实：已核对 = Scout 打开来源找到了原文；未核对的数字已隐去），写明"据外部报道（未经核实）"、
+  哪家来源和日期；只有未核对事实时写成"有报道称"；web 为空就写"没有检索到市场预期"。
 - holdings 每只持仓一条：有利率 / 油价 / 美元敏感度时按证据里写的方向说明（不要自己推断方向）、或板块直接相关时说明渠道；
   否则写"没有直接关联，主要随大盘"。
 - 数字只能原样引用证据包里出现的数值，不要自己计算。中文。"""
@@ -538,15 +529,15 @@ async def preview(e: dict) -> dict:
     market = await db.fetch_one("SELECT payload FROM scout.briefs WHERE kind = 'eod' ORDER BY id DESC LIMIT 1")
     mf = await market_filter.current(date.today())
     today = date.today()
-    web = await _search(f"Today is {today}. What do markets expect from this event on {e['event_date']}: {e['title']} "
+    web = await _facts(f"Today is {today}. What do markets expect from this event on {e['event_date']}: {e['title']} "
                         f"({(e['detail'] or {}).get('title_en') or e['category']})? Consensus, the scenarios analysts discuss, "
                         f"and what each would mean for US stocks and sectors. Use only reports published between {today - timedelta(days=14)} "
                         f"and {today}, and give each fact's publication date. If there are no recent reports, say so plainly. "
-                        "4-6 sentences.", "calendar_preview_search")
+                        "4-6 sentences.", e, "calendar_preview_search", today)
     pack = {"event": event_row(e), "history": hist, "holdings": await exposure(),
             "market": {"大盘过滤": market_filter.text(mf) if mf else None,
                        "SPY 20 日": ((market or {}).get("payload") or {}).get("market", {}).get("spy_ret_20d")},
-            "web": {"内容": web["text"][:3000], "说明": EXTERNAL} if web else None}
+            "web": web["pack"]}
     settings = get_scout_settings()
     result, source, tries = None, "fallback", []
     if settings.openai_api_key:
@@ -574,7 +565,7 @@ async def preview(e: dict) -> dict:
     if result is None:
         result = fallback_preview(pack)
     payload = {"preview": result.model_dump(), "source": source, "validation": tries, "pack": pack,
-               "web_sources": (web or {}).get("sources", [])[:6]}
+               "web_sources": web["sources"][:6], "facts_found": web["status"]}
     await db.execute("INSERT INTO scout.event_notes (event_key, note, payload) VALUES (:k, 'preview', CAST(:p AS JSONB))",
                      {"k": e["key"], "p": db.jsonb(payload)})
     return payload
@@ -649,7 +640,7 @@ class Review(BaseModel):
 
 REVIEW_PROMPT = """你在给没有金融背景的投资者复盘一个刚发生的事件。证据包：event、today（Python 算的反应日涨跌：大盘、板块 ETF、持仓）、
 history（过去同类事件当天的涨跌）、web（外部检索的结果报道，未经核实）。
-- outcome 只来自 web，写明"据外部报道（未经核实）"；web 为空写"没有检索到结果报道"。
+- outcome 只来自 web（外部事实，已核对 / 未核对），写明"据外部报道（未经核实）"和来源；web 为空写"没有检索到结果报道"。
 - reaction 用 today 和 history 的数字比较：比过去同类事件和平常一天大还是小；不要把当天涨跌全部归因于这个事件，同一天可能还有其他消息。
 - 数字只能原样引用证据包里的数值；白话、中文；不给买卖建议。"""
 
@@ -689,10 +680,10 @@ async def review(e: dict, session: date) -> dict:
                  "板块": {f"{etf_zh[t]}（{t}）": float(r[t]) for t in SECTOR_ETFS.values() if t in r and not pd.isna(r[t])},
                  "持仓": {t: float(r[t]) for t in held if t in r and not pd.isna(r[t])}}
     hist = await history(e["kind"], e["event_date"])
-    web = await _search(f"Today is {session}. What was the outcome of this event on {e['event_date']}: {e['title']} "
+    web = await _facts(f"Today is {session}. What was the outcome of this event on {e['event_date']}: {e['title']} "
                         f"({(e['detail'] or {}).get('title_en') or e['category']}), and how did US stocks react? Use only reports "
-                        f"published on or after {e['event_date']}, with their dates. 3-5 sentences.", "calendar_review_search")
-    pack = {"event": event_row(e), "today": today, "history": hist, "web": {"内容": web["text"][:3000], "说明": EXTERNAL} if web else None}
+                        f"published on or after {e['event_date']}, with their dates. 3-5 sentences.", e, "calendar_review_search", session)
+    pack = {"event": event_row(e), "today": today, "history": hist, "web": web["pack"]}
     settings = get_scout_settings()
     result, source, tries = None, "fallback", []
     if settings.openai_api_key and today:
@@ -719,11 +710,11 @@ async def review(e: dict, session: date) -> dict:
                          {"role": "user", "content": "校验未通过，请修正后完整重写：\n" + "\n".join(issues)}]
     if result is None:
         spy = today.get("大盘", {}).get("SPY") if today else None
-        result = Review(outcome="没有检索到结果报道" if not web else f"{EXTERNAL}：见来源",
+        result = Review(outcome="没有检索到结果报道" if not web["pack"] else f"{EXTERNAL}：见来源",
                         reaction=f"SPY 当天 {spy * 100:+.1f}%" if spy is not None else "行情未更新",
                         holdings="见收盘汇总")
     payload = {"review": result.model_dump(), "source": source, "validation": tries, "pack": pack,
-               "web_sources": (web or {}).get("sources", [])[:6]}
+               "web_sources": web["sources"][:6], "facts_found": web["status"]}
     await db.execute("INSERT INTO scout.event_notes (event_key, note, payload) VALUES (:k, 'review', CAST(:p AS JSONB))",
                      {"k": e["key"], "p": db.jsonb(payload)})
     return payload

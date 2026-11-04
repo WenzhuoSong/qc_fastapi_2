@@ -48,8 +48,7 @@ would settle the debate. Do not invent arguments; say plainly when a kind of sou
 class Argument(BaseModel):
     claim: str = Field(description="论点，中文白话，一句")
     source_kind: Literal["新闻媒体", "分析师", "公司自身", "独立研究", "投资者社区"]
-    outlet: str = Field(description="来源名称，如 Reuters、摩根士丹利、公司 10-Q、Reddit r/stocks")
-    published: str = Field(description="发布日期 YYYY-MM-DD")
+    fact_ids: list[int] = Field(description="支撑这个论点的外部事实 id（facts 里的 id），至少一个")
     check: Literal["Scout 数据一致", "Scout 数据矛盾", "无法用 Scout 数据核对"]
     check_note: str = Field(description="核对说明：一致或矛盾时写出对应的 Scout 数据（名称和数值）；无法核对写为什么")
     fields: list[str] = Field(description="核对用到的 Scout 证据字段（evidence 里的 字段）；无法核对时为空")
@@ -77,17 +76,19 @@ class View(BaseModel):
     confidence_reason: str
 
 
-VIEW_PROMPT = """你是给没有金融背景的投资者写"多来源观点"的研究员。证据包：subject（标的）、debate（外部检索：各类来源的看多 / 看空论点，
-未经核实）、evidence（Scout 自己的数据，每项有 字段、名称、含义、数值、读数）、context（Scout 的规则读数、大盘、行业、近期判断）。
+VIEW_PROMPT = """你是给没有金融背景的投资者写"多来源观点"的研究员。证据包：subject（标的）、facts（外部事实：已核对 = Scout 打开来源
+找到了原文；未核对 = 来源打不开，数字已隐去）、evidence（Scout 自己的数据，每项有 字段、名称、含义、数值、读数）、context（Scout 的规则读数、
+大盘、行业、近期判断）。
 
 要求：
-1. bull 和 bear 各写 1–4 条，只用 debate 里出现的论点，不要自己编；保留来源类型、来源名称和日期。每条用 evidence 核对：
+1. bull 和 bear 各写 1–4 条，只用 facts 里的事实，不要自己编；每条在 fact_ids 填支撑它的事实 id，source_kind 按来源判断。
+   只有未核对事实支撑的论点，要写成"有报道称……"，不能写成确定的事实，也不能带数字。每条再用 evidence 核对：
    一致 / 矛盾时写出对应的 Scout 数据（名称和数值）并在 fields 填字段；核对不了就选"无法用 Scout 数据核对"并说明原因。
 2. explained 选 2–4 个对结论最关键的 Scout 数据，按"是什么 → 通常意味着什么 → 对你意味着什么"写白话，专业词用半句话解释。
 3. stance 是未来 horizon 个交易日相对 SPY 的方向，会被记账打分；两边论点势均力敌或 Scout 数据不支持任何一边时选"中性"。
 4. confidence：只有至少两条论点被 Scout 数据证实、且没有被 Scout 数据否定的关键论点时才能写"高"；外部论点大多无法核对时最多"中"。
 5. wrong_if 要具体可观察；settle 写接下来会给出答案的数据或事件。
-6. 数字只能原样引用证据包里的数值，不要自己计算；外部报道里的数字要说明来自报道。不给买卖指令。中文。"""
+6. 数字只能原样引用证据包里的数值，不要自己计算；外部事实里的数字要说明来自哪家报道。不给买卖指令。中文。"""
 
 
 def strict_schema(model: type[BaseModel]) -> dict:
@@ -111,6 +112,10 @@ def validate(v: View, pack: dict) -> list[str]:
     bad = unsupported_numbers("\n".join(texts), allowed_numbers(pack))
     if bad:
         issues.append(f"以下数字不在证据包中：{', '.join(sorted(set(bad)))}")
+    ids = {x["id"] for part in pack["facts"].values() if isinstance(part, list) for x in part}
+    cited = [a for a in v.bull + v.bear if not set(a.fact_ids) <= ids or not a.fact_ids]
+    if cited:
+        issues.append("每条论点的 fact_ids 都要填 facts 里存在的 id（至少一个）")
     if not v.bull or not v.bear:
         issues.append("bull 和 bear 都至少要有一条（某一边确实没有论点时，写一条说明'近期没有检索到看多 / 看空的论点'，选无法核对）")
     known = {x["字段"] for x in pack["evidence"]}
@@ -131,12 +136,15 @@ def validate(v: View, pack: dict) -> list[str]:
     return issues
 
 
-async def debate(subject: str, today: date) -> dict:
-    """The web search: arguments with citations; {} when nothing came back."""
-    from scout.event_calendar import _search
+async def debate(subject: str, ticker: str, today: date) -> dict:
+    """The web search through the facts store; returns the usable facts about the subject (this search and earlier ones)."""
+    from scout import external_facts
 
-    return await _search(SEARCH_PROMPT.format(today=today, since=today - timedelta(days=30), subject=subject),
-                         "view_search", model=get_scout_settings().scout_agent_model)
+    found = await external_facts.collect(SEARCH_PROMPT.format(today=today, since=today - timedelta(days=30), subject=subject),
+                                         [ticker], "view_search", model=get_scout_settings().scout_agent_model, today=today)
+    rows = await external_facts.recall([ticker], days=30, today=today)
+    return {"rows": rows, "sources": found["sources"], "new": len(found["facts"]),
+            "status": {k: sum(r["status"] == k for r in found["facts"]) for k in ("verified", "unreachable", "mismatch")}}
 
 
 async def evidence(ticker: str) -> dict | None:
@@ -167,13 +175,15 @@ async def write(ticker: str, today: date | None = None, sector: str | None = Non
     if ev is None:
         return None
     label = f"{ev['name']} ({ticker})" + (f", the {sector} sector ETF" if sector else "")
-    found = await debate(label, today)
+    from scout import external_facts
+
+    found = await debate(label, ticker, today)
     pack = {"subject": {"代码": ticker, "名称": ev["name"], "类型": ev["type"], "数据日期": ev["data_date"]},
-            "debate": {"内容": found.get("text", "")[:6000], "说明": EXTERNAL} if found else None,
+            "facts": external_facts.pack_rows(found["rows"]),
             "evidence": ev["evidence"], "context": ev["context"]}
     settings = get_scout_settings()
     view, source, tries = None, "none", []
-    if found and settings.openai_api_key:
+    if found["rows"] and settings.openai_api_key:
         messages = [{"role": "user", "content": json.dumps(pack, ensure_ascii=False, default=str)}]
         for attempt in (1, 2):
             try:
@@ -195,12 +205,13 @@ async def write(ticker: str, today: date | None = None, sector: str | None = Non
                          {"role": "user", "content": "校验未通过，请修正后完整重写：\n" + "\n".join(issues)}]
     if view is None:                       # no unchecked prose goes out; the failure is stored for the record
         await db.execute("INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('view', :d, :c, CAST(:p AS JSONB))",
-                         {"d": today, "c": f"{ticker}：未生成（{'没有检索结果' if not found else '未通过校验'}）",
+                         {"d": today, "c": f"{ticker}：未生成（{'没有可用的外部事实' if not found['rows'] else '未通过校验'}）",
                           "p": db.jsonb({"ticker": ticker, "source": source, "validation": tries})})
         return {"ticker": ticker, "source": source, "validation": tries}
     record = {"ticker": ticker, "name": ev["name"], "asof": today.isoformat(), "data_date": ev["data_date"], "source": source,
               "model": settings.scout_agent_model, "view": view.model_dump(), "mix": source_mix(view),
-              "sources": found.get("sources", [])[:20], "validation": tries, "pack": pack}
+              "sources": found.get("sources", [])[:20], "search": found["status"], "validation": tries, "pack": pack,
+              "facts": {str(r["id"]): {"label": external_facts.label(r), "url": r["url"], "status": r["status"]} for r in found["rows"]}}
     await db.execute("INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('view', :d, :c, CAST(:p AS JSONB))",
                      {"d": today, "c": render_text(record), "p": db.jsonb(record)})
     etf = None if sector else await _sector_etf(ticker)        # a sector ETF is scored against SPY only
@@ -260,10 +271,10 @@ def render_text(rec: dict) -> str:
     lines = [f"{ICON[v['stance']]} {rec['name']}（{rec['ticker']}）· 未来 {v['horizon']} 个交易日相对 SPY {v['stance']} · 把握{v['confidence']}",
              v["summary"], "看多的理由："]
     for a in v["bull"]:
-        lines.append(f"· {a['claim']}（{a['source_kind']}·{a['outlet']} {a['published']}）→ {a['check']}：{a['check_note']}")
+        lines.append(f"· {a['claim']}（{a['source_kind']}·{sources_text(rec, a)}）→ {a['check']}：{a['check_note']}")
     lines.append("看空的理由：")
     for a in v["bear"]:
-        lines.append(f"· {a['claim']}（{a['source_kind']}·{a['outlet']} {a['published']}）→ {a['check']}：{a['check_note']}")
+        lines.append(f"· {a['claim']}（{a['source_kind']}·{sources_text(rec, a)}）→ {a['check']}：{a['check_note']}")
     lines.append("关键数据怎么读：")
     for x in v["explained"]:
         lines.append(f"· {x['what']}：{x['value']}。{x['usually']}；对你：{x['for_you']}")
@@ -271,6 +282,12 @@ def render_text(rec: dict) -> str:
               f"把握：{v['confidence']}——{v['confidence_reason']}",
               "来源构成：" + "、".join(f"{k} {n}" for k, n in rec["mix"].items() if n) + f"（论点{EXTERNAL}；方向记入判断台账打分）"]
     return "\n".join(lines)
+
+
+def sources_text(rec: dict, a: dict) -> str:
+    """Outlet and date of the facts behind an argument, filled by Python from the store (never written by the LLM)."""
+    facts = rec.get("facts") or {}
+    return "；".join(dict.fromkeys(facts[str(i)]["label"] for i in a.get("fact_ids", []) if str(i) in facts)) or "来源见列表"
 
 
 def digest_text(recs: list[dict]) -> str:

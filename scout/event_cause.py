@@ -81,41 +81,20 @@ def window(ev_date: date) -> tuple[int, int]:
 
 
 async def web_search(name: str, ticker: str, ev_date: date, ret: float) -> dict:
-    """One web search for the cause; {"text", "sources": [{"title","url"}]} or {}."""
-    key = get_scout_settings().openai_api_key
-    if not key:
-        return {}
+    """One web search for the cause, through the facts store: {"text": the usable facts, "sources"} or {}.
+    Only facts whose source Scout opened (numbers kept) or could not open (numbers masked) reach the pack."""
+    from scout import external_facts
+
     move = f"{'fell' if ret < 0 else 'rose'} about {abs(ret) * 100:.0f}%"
     prompt = (f"Why did {name} ({ticker}) stock {move} on {ev_date.isoformat()}? Identify the specific catalyst: company news, "
               "a competitor/customer/supplier event (read-through), an analyst action, or a sector/macro move. "
               "Answer in 2-4 sentences with dates, and say if no specific reason was reported.")
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post("https://api.openai.com/v1/responses", headers={"Authorization": f"Bearer {key}"},
-                                     json={"model": SEARCH_MODEL, "tools": [{"type": "web_search_preview"}], "input": prompt})
-        if resp.status_code != 200:
-            logger.warning("web search HTTP %s for %s", resp.status_code, ticker)
-            return {}
-        data = resp.json()
-        await llm_usage.record_responses(data, "event_search", SEARCH_MODEL)
-    except Exception as exc:
-        logger.warning("web search failed for %s: %s", ticker, exc)
+    found = await external_facts.collect(prompt, [ticker], "event_search", model=SEARCH_MODEL, today=max(ev_date, date.today()))
+    usable = [r for r in found["facts"] if r["status"] in ("verified", "unreachable")]
+    if not usable:
         return {}
-    text, sources = "", []
-    for item in data.get("output") or []:
-        if item.get("type") != "message":
-            continue
-        for part in item.get("content") or []:
-            text += part.get("text", "")
-            for ann in part.get("annotations") or []:
-                if ann.get("type") == "url_citation" and ann.get("url"):
-                    sources.append({"title": ann.get("title") or ann["url"], "url": ann["url"].split("?utm_source")[0]})
-    seen, unique = set(), []
-    for s in sources:
-        if s["url"] not in seen:
-            seen.add(s["url"])
-            unique.append(s)
-    return {"text": text.strip(), "sources": unique[:6]} if text.strip() else {}
+    return {"text": json.dumps(external_facts.pack_rows(usable), ensure_ascii=False, default=str),
+            "sources": [{"title": f"{r['outlet'] or r['url']}（{external_facts.STATUS_ZH[r['status']]}）", "url": r["url"]} for r in usable][:6]}
 
 
 async def gather(ticker: str, name: str, ev: dict) -> dict:

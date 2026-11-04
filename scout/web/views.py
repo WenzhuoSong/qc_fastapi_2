@@ -1405,11 +1405,16 @@ def views_page(recs: list[dict], scored: dict[str, list[dict]]) -> str:
     icon = {"看多": "🟢", "中性": "⚪", "看空": "🔴"}
     check_cls = {"Scout 数据一致": "up", "Scout 数据矛盾": "down"}
     cards = []
+    from scout.viewdesk import sources_text
+
     for r in recs:
         v = r["view"]
 
+        def src_of(a, r=r):          # views before the facts store carried the outlet themselves
+            return f"{a['outlet']} {a.get('published', '')}" if a.get("outlet") else sources_text(r, a)
+
         def args(xs):
-            return "".join(f"<li>{e(a['claim'])} <span class='small muted'>（{e(a['source_kind'])}·{e(a['outlet'])} {e(a['published'])}）</span>"
+            return "".join(f"<li>{e(a['claim'])} <span class='small muted'>（{e(a['source_kind'])}·{e(src_of(a))}）</span>"
                            f"<br><span class='small {check_cls.get(a['check'], 'muted')}'>{e(a['check'])}</span>"
                            f"<span class='small'>：{e(a['check_note'])}</span></li>" for a in xs)
         expl = "".join(f"<li><b>{e(x['what'])}</b>：{e(x['value'])}。{e(x['usually'])}<br><span class='small'>对你：{e(x['for_you'])}</span></li>"
