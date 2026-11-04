@@ -14,6 +14,7 @@ from datetime import date
 from scout import db, earnings_gaps, opportunities, portfolio, sectors, universe
 from scout.telegram import esc, market_split_text, pct, sector_text
 
+KPI_LINES = 2               # industry metrics shown per holding on the digest
 NEAR_STOP_SIGMAS = 2.0      # a holding within this many daily sigmas of its stop needs attention
 EARNINGS_DAYS = 7           # calendar days ahead that count as "earnings soon"
 WATCH_MOVE = 0.03           # a watchlist name's company-own move that counts as a change
@@ -52,7 +53,17 @@ async def gather(asof: date, earnings: dict[str, list[dict]], prop_signals: list
         s = await earnings_gaps.history(tk)
         if s:
             gaps[tk] = s
-    return {"held_rows": held_rows, "watch": watch, "feats": feats, "news": news, "info": info, "earnings": nxt, "gaps": gaps,
+    from scout import industry_kpis
+
+    kpis = {}
+    for tk in held:
+        try:
+            k = await industry_kpis.for_ticker(tk, today=asof)
+        except Exception:                 # a metric must not cost the digest
+            k = None
+        if k:
+            kpis[tk] = k
+    return {"held_rows": held_rows, "watch": watch, "feats": feats, "news": news, "info": info, "earnings": nxt, "gaps": gaps, "kpis": kpis,
             "prop": prop_signals, "managed": {m["ticker"]: m["messages"] for m in managed}}
 
 
@@ -87,6 +98,10 @@ def holding_items(g: dict, asof: date) -> list[dict]:
         split = market_split_text(f)
         if split:
             lines.append(f"📈 {esc(split)}")
+        k = g.get("kpis", {}).get(tk)
+        if k:
+            shown = [m["text"] for m in k["metrics"] if m.get("reading")][:KPI_LINES]
+            lines.append(f"🏭 行业（{esc(k['industry'])}）：" + (esc("；".join(shown)) if shown else f"缺少免费数据（{esc(k['missing'])}）"))
         step = next_step(t, m) if "pnl" in m else ""
         sigma = (f.get("vol_63") or 0) / 252 ** 0.5
         if "to_stop" in m and sigma and -m["to_stop"] < NEAR_STOP_SIGMAS * sigma:

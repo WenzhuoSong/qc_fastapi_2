@@ -73,6 +73,16 @@ class RenderLabelTests(unittest.TestCase):
         self.assertIn("RRC</b> 机会卡·放量异动（不是你的持仓）", text)
         self.assertIn("SHOP</b> 你的持仓", text)
 
+    def test_holding_move_line_gives_peers_sector_market_and_verdict(self):
+        a = {"kind": "hold_move", "ticker": "PBF", "payload": {
+            "change": -0.045, "price": 74.28, "time_et": "09:40", "sigmas": 2.1, "peers": {"VLO": -0.048, "MPC": -0.050},
+            "etf": "XLE", "etf_change": -0.029, "live": ["3-2-1 炼油差价 今日 -3.0%"], "spy": 0.017, "beta": -0.14,
+            "industry": "炼油", "verdict": "行业"}}
+        line = intraday.hold_move_line(a)
+        for part in ("[你的持仓] <b>PBF</b> 盘中 -4.5%", "约 2.1 倍日常波动", "同行 VLO -4.8%、MPC -5.0%", "板块 XLE -2.9%",
+                     "3-2-1 炼油差价 今日 -3.0%", "大盘 SPY +1.7%", "主要是整个行业在动", "盘中不需要操作"):
+            self.assertIn(part, line)
+
 
 if __name__ == "__main__":
     unittest.main()

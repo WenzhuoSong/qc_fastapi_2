@@ -21,8 +21,73 @@ from scout.market_calendar import is_us_equity_trading_day, us_equity_market_sta
 
 ET = ZoneInfo("America/New_York")
 NEWS_LOOKBACK_S = 3 * 3600        # a missed run (or a slow news cron) is caught by the next one
-BIG_MOVE = 0.08                   # session move of a holding / idea that gets a cause search
+BIG_MOVE = 0.08                   # session move of an idea that gets a cause search
 MAX_CAUSE_SEARCHES = 3
+HOLD_SIGMAS = 1.5                 # a holding moving this many of its own daily sigmas (63-day vol) is reported, with context,
+HOLD_ABS_MOVE = 0.05              # or this much whatever its volatility (a 5 % day is news to the holder),
+HOLD_MIN_MOVE = 0.02              # never below this
+PEERS = 4
+SHARE = 0.6                       # a part carrying this share of the move (same sign) names the cause
+
+
+def move_verdict(change: float, beta: float | None, spy: float | None, peers: list[float]) -> str:
+    """Which part carries the holding's move: its industry (peers' median), the market (β × SPY), or itself."""
+    import statistics
+
+    if peers:
+        med = statistics.median(peers)
+        if med * change > 0 and abs(med) >= SHARE * abs(change):
+            return "行业"
+    if beta is not None and spy is not None and beta * spy * change > 0 and abs(beta * spy) >= SHARE * abs(change):
+        return "大盘"
+    return "公司自身"
+
+
+async def holding_moves(held: list[dict], quotes: dict, today: date) -> list[dict]:
+    """Holdings that moved ≥ HOLD_SIGMAS daily sigmas or ≥ HOLD_ABS_MOVE (never below HOLD_MIN_MOVE): peers, sector ETF, the industry's live metrics,
+    the market, and which of them carries the move — the comparison a desk makes before reading any news."""
+    from scout import industry_kpis, premarket
+
+    tickers = sorted({t["ticker"] for t in held})
+    feats = {r["ticker"]: r["payload"] or {} for r in await db.fetch_all(
+        "SELECT DISTINCT ON (ticker) ticker, payload FROM scout.features_daily WHERE ticker = ANY(:t) ORDER BY ticker, date DESC",
+        {"t": tickers})} if tickers else {}
+    movers = []
+    for t in tickers:
+        q, vol = quotes.get(t), (feats.get(t) or {}).get("vol_63")
+        if not q or q["stale"] or q["change"] is None or not vol:
+            continue
+        sigma = vol / 252 ** 0.5
+        if abs(q["change"]) >= max(min(HOLD_SIGMAS * sigma, HOLD_ABS_MOVE), HOLD_MIN_MOVE):
+            movers.append((t, q, sigma))
+    if not movers:
+        return []
+    inst = {r["ticker"]: r for r in await db.fetch_all(
+        "SELECT ticker, sector, industry FROM scout.instruments WHERE ticker = ANY(:t)", {"t": [m[0] for m in movers]})}
+    rank = await premarket._tickers_ranked_by_liquidity()
+    peers: dict[str, list[str]] = {}
+    for t, _, _ in movers:
+        ind = (inst.get(t) or {}).get("industry")
+        same = [r["ticker"] for r in await db.fetch_all(
+            "SELECT ticker FROM scout.instruments WHERE industry = :i AND ticker <> :t", {"i": ind, "t": t})] if ind else []
+        peers[t] = sorted((x for x in same if x in rank), key=lambda x: rank[x])[:PEERS]
+    etf = {t: universe.SECTOR_ETFS.get((inst.get(t) or {}).get("sector")) for t, _, _ in movers}
+    extra = industry_kpis.live_symbols({t: (inst.get(t) or {}).get("industry") for t, _, _ in movers})
+    more = await latest_quotes(sorted({x for v in peers.values() for x in v} | {e for e in etf.values() if e} | set(extra)), today)
+    spy = (quotes.get("SPY") or more.get("SPY") or {}).get("change")
+    out = []
+    for t, q, sigma in movers:
+        pq = {x: more[x]["change"] for x in peers[t] if more.get(x) and more[x].get("change") is not None and not more[x]["stale"]}
+        beta = (feats.get(t) or {}).get("beta_60")
+        kpis = await industry_kpis.for_ticker(t, more, today)
+        live = [m["name"] + f" 今日 {m['live']['pct_change'] * 100:+.1f}%" for m in (kpis or {}).get("metrics", [])
+                if m.get("live") and m["live"].get("pct_change") is not None]
+        e = etf.get(t)
+        out.append({"key": f"hold_move:{t}:{today}", "kind": "hold_move", "ticker": t, "payload": {
+            "change": q["change"], "price": q["last"], "time_et": q["time_et"], "sigmas": abs(q["change"]) / sigma,
+            "peers": pq, "etf": e, "etf_change": (more.get(e) or {}).get("change") if e else None, "spy": spy, "beta": beta,
+            "industry": (kpis or {}).get("industry"), "live": live, "verdict": move_verdict(q["change"], beta, spy, list(pq.values()))}})
+    return out
 
 
 def sessions_since(start: date, end: date) -> int:
@@ -154,7 +219,9 @@ async def scan(today: date) -> dict:
                 alerts.append({"key": f"{kind}:{o['id']}", "kind": kind, "ticker": o["ticker"],
                                "payload": {"text": text, "price": q["last"], "time_et": q["time_et"],
                                            "rule": det.label if det else o["primary_detector"]}})
-    tracked = {t["ticker"]: "持仓" for t in held} | {o["ticker"]: "机会" for o in opps if o["ticker"] not in {t["ticker"] for t in held}}
+    alerts += await holding_moves(held, quotes, today)
+    held_set = {t["ticker"] for t in held}
+    tracked = {o["ticker"]: "机会" for o in opps if o["ticker"] not in held_set}    # holdings: `holding_moves`
     for tk, tag in tracked.items():
         q = quotes.get(tk)
         if q and not q["stale"] and q["change"] is not None and abs(q["change"]) >= BIG_MOVE:
@@ -163,14 +230,36 @@ async def scan(today: date) -> dict:
     alerts += await _news_alerts({t["ticker"] for t in held}, {o["ticker"] for o in opps}, watch,
                                  int(time.time()) - NEWS_LOOKBACK_S)
     fresh = await _claim(alerts)
-    await _research_moves([a for a in fresh if a["kind"] == "big_move"], today)
+    await _research_moves([a for a in fresh if a["kind"] == "big_move" or (a["kind"] == "hold_move" and a["payload"]["verdict"] == "公司自身")],
+                          today)
     return {"checked": {"trades": len(held), "opportunities": len(opps), "quotes": len(quotes)},
             "alerts": fresh}
 
 
 ICON = {"trade_stop": "🔻", "trade_target": "🎯", "opp_stop": "🔻", "opp_target": "🎯", "opp_zone": "🟦", "opp_void": "⚪",
-        "big_move": "⚡", "news": "📰"}
-ORDER = ("trade_stop", "trade_target", "big_move", "opp_stop", "opp_target", "opp_zone", "opp_void", "news")
+        "big_move": "⚡", "news": "📰", "hold_move": "📊"}
+ORDER = ("trade_stop", "trade_target", "hold_move", "big_move", "opp_stop", "opp_target", "opp_zone", "opp_void", "news")
+
+
+def hold_move_line(a: dict) -> str:
+    from scout.telegram import esc
+
+    p = a["payload"]
+    pct = lambda x: f"{x * 100:+.1f}%"
+    parts = []
+    if p["peers"]:
+        parts.append("同行 " + "、".join(f"{t} {pct(c)}" for t, c in p["peers"].items()))
+    if p.get("etf") and p.get("etf_change") is not None:
+        parts.append(f"板块 {p['etf']} {pct(p['etf_change'])}")
+    parts += p.get("live") or []
+    if p.get("spy") is not None:
+        parts.append(f"大盘 SPY {pct(p['spy'])}" + (f"（它的 β {p['beta']:.1f}）" if p.get("beta") is not None else ""))
+    why = {"行业": "主要是整个行业在动，不是公司自己的消息", "大盘": "主要是跟着大盘",
+           "公司自身": "同行和大盘解释不了，多半是公司自己的原因"}[p["verdict"]]
+    c = p.get("cause")
+    cause = f"；原因：{esc(c['type'])}——{esc(c['summary'])}" + ("（据外部报道）" if c.get("external") else "") if c else ""
+    return (f"{ICON['hold_move']} [你的持仓] <b>{esc(a['ticker'])}</b> 盘中 {pct(p['change'])}（{p['price']:.2f}，{esc(p['time_et'])}，"
+            f"约 {p['sigmas']:.1f} 倍日常波动）\n  " + esc(" · ".join(parts)) + f"\n  → {why}{cause}。止损按收盘判断，盘中不需要操作")
 
 
 def render(alerts: list[dict], now: datetime) -> str | None:
@@ -181,7 +270,9 @@ def render(alerts: list[dict], now: datetime) -> str | None:
     lines = [f"⏱ <b>盘中提醒</b> {now.astimezone(ET):%H:%M} 美东"]
     for a in sorted(alerts, key=lambda a: ORDER.index(a["kind"])):
         p = a["payload"]
-        if a["kind"] == "big_move":
+        if a["kind"] == "hold_move":
+            lines.append(hold_move_line(a))
+        elif a["kind"] == "big_move":
             c = p.get("cause")
             why = (f"{esc(c['type'])}：{esc(c['summary'])}" + ("（据外部报道）" if c.get("external") else "")) if c else "原因未查到"
             lines.append(f"{ICON['big_move']} [{esc(p['tag'])}] <b>{esc(a['ticker'])}</b> 盘中 {p['change'] * 100:+.1f}%"

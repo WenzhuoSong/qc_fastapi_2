@@ -38,6 +38,7 @@ SYSTEM_PROMPT = f"""你是 Scout，一位美股研究助理，服务于一位有
 - 问到今天 / 盘前要注意什么：get_briefs（premarket / eod / market_focus / weekly）；本周数据和财报、未来 30 天的美联储会议、选举、政策、行业和市场结构事件（含事前解读和事后复盘）：get_calendar。
 - 问到机会卡 / 今天有什么机会：list_opportunities（会标明规则是否通过检验）；问到新闻对上下游、竞争对手的影响：get_propagation；问到某条规则在什么板块 / 市况下更好、胜率更高的组合：get_conditional_rates。
 - 想全面了解一只股票（"X 怎么样""帮我分析 X"）：调 get_evidence，按下面"多视角证据"的写法逐个视角讲。
+- 问到行业景气、行业核心数据（炼油差价、油价、天然气、利率对公用事业、银行利差、房贷利率等）或持仓为什么跟着行业动：get_industry_kpis。
 - 问到分析师评级 / 目标价变化、公司公告、合同订单、监管诉讼、政策这类 Scout 自己没有的外部信息：先查 get_external_facts（外部信息库，
   每条有来源、日期和是否核对过原文），没有再用 research_company 检索；只有"已核对"的事实能引用数字，"未核对"的只能说"有报道称"。
 - 问到"各方怎么看 X""市场上对 X 怎么说""多空分歧"：get_views（没有近期观点再用 research_views）；逐条讲看多 / 看空论点、
@@ -837,6 +838,24 @@ async def get_conditional_rates(detector: str | None = None, sector: str | None 
     rows = await db.fetch_all(f"SELECT * FROM scout.conditional_rates WHERE run_on = (SELECT max(run_on) FROM scout.conditional_rates) "
                               f"AND {where} ORDER BY layer = 'all' DESC, raw_edge DESC NULLS LAST LIMIT 60", params)
     return {"说明": note, "组合": [{"规则": r["detector"], "层": r["layer"], "统计": cr.text(r)} for r in rows]}
+
+
+@tool("get_industry_kpis", "持仓或任意股票所在行业的核心指标（免费数据）：例如炼油的 3-2-1 炼油差价、油气的原油和天然气价格、公用事业的长期利率、"
+                           "银行的利差和信用利差、住宅建筑的房贷利率和新屋开工、电商的零售销售；每项有最新值、20 期变化、一年分位、含义，"
+                           "盘中有期货的给出实时变化；没有免费数据的行业会说明缺什么", TICKER)
+async def get_industry_kpis(ticker: str) -> dict:
+    from scout import industry_kpis
+    from scout.data.yahoo import latest_quotes
+
+    t = universe.yahoo_symbol(ticker)
+    inst = await db.fetch_one("SELECT industry FROM scout.instruments WHERE ticker = :t", {"t": t}) or {}
+    quotes = await latest_quotes(industry_kpis.live_symbols({t: inst.get("industry")}), date.today())
+    k = await industry_kpis.for_ticker(t, quotes)
+    if not k:
+        return {"note": f"{t} 所在行业（{inst.get('industry') or '未知'}）还没有登记核心指标"}
+    return {"行业": k["industry"], "细分行业": k["gics"], "缺少的数据": k["missing"] or "无",
+            "指标": [{"名称": m["name"], "单位": m["unit"], "含义": m["meaning"], "读数": m["text"]} for m in k["metrics"]],
+            "代表 ETF": k["proxies"], "说明": "描述性指标，不是买卖信号；FRED / EIA 日度数据通常滞后约一周，期货实时值来自 Yahoo"}
 
 
 @tool("get_external_facts", "外部信息库：联网检索时找到、Scout 无法从自己的数据里得到的事实（分析师评级和目标价、业绩指引、合同订单、"

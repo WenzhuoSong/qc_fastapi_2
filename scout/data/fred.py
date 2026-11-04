@@ -16,6 +16,10 @@ SERIES = {
     "T10Y2Y": "10 年 − 2 年期利差", "DFF": "联邦基金有效利率", "DTWEXBGS": "美元指数（广义）",
     "DCOILWTICO": "WTI 原油", "VIXCLS": "VIX", "BAMLH0A0HYM2": "高收益债利差",
     "CPIAUCSL": "CPI（月）", "UNRATE": "失业率（月）",
+    # industry metrics (scout/industry_kpis.py)
+    "DGASNYH": "纽约港汽油", "DDFUELNYH": "纽约港超低硫柴油", "DCOILBRENTEU": "布伦特原油", "DHHNGSP": "亨利港天然气",
+    "MORTGAGE30US": "30 年期房贷利率", "HOUST": "新屋开工", "RSXFS": "零售销售（不含餐饮）", "ECOMPCTSA": "电商占零售比例",
+    "IPG3344S": "半导体和电子元件工业产值",
 }
 
 
