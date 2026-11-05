@@ -278,3 +278,43 @@ class SectorTrendRenderTests(unittest.TestCase):
         many = [{**self.ROW, "name": f"s{i}"} for i in range(8)]
         self.assertEqual(len(trend_lines(many)), 7)
         self.assertIn("另有 2 项", trend_lines(many)[-1])
+
+
+class MarketFocusPackDateTests(unittest.TestCase):
+    def test_pack_never_takes_an_older_sessions_market(self):
+        import asyncio
+        from datetime import date
+        from unittest import mock
+
+        from scout import market_focus
+
+        queries = []
+
+        async def fetch_one(sql, params=None):
+            queries.append((sql, params))
+            return None
+
+        async def fetch_all(*_a, **_k):
+            return []
+
+        async def empty(*_a, **_k):
+            return {}
+
+        async def latest():
+            return date(2026, 11, 4), []
+
+        async def none(*_a, **_k):
+            return []
+
+        with mock.patch.object(market_focus.sectors, "latest", latest), \
+                mock.patch.object(market_focus.sector_news, "by_sector", empty), \
+                mock.patch.object(market_focus.sector_news, "market_wraps", none), \
+                mock.patch.object(market_focus.sector_news, "macro_headlines", none), \
+                mock.patch.object(market_focus.db, "fetch_one", fetch_one), \
+                mock.patch.object(market_focus.db, "fetch_all", fetch_all):
+            pack = asyncio.run(market_focus.build_pack({"spy_ret_20d": -0.0134}))
+            self.assertEqual(pack["market"]["SPY 20 日"], "-1.3%")
+            self.assertEqual(queries, [])                       # the given market is used as is
+            asyncio.run(market_focus.build_pack())
+            self.assertIn("asof = :d", queries[-1][0])
+            self.assertEqual(queries[-1][1], {"d": date(2026, 11, 4)})

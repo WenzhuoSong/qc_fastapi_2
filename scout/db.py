@@ -44,6 +44,14 @@ def _async_url(url: str) -> str:
     )
 
 
+def connect_args() -> dict:
+    settings = get_scout_settings()
+    args: dict = {"timeout": 10, "command_timeout": settings.scout_db_command_timeout}
+    if settings.scout_db_read_only:           # Postgres refuses every write in these sessions
+        args["server_settings"] = {"default_transaction_read_only": "on"}
+    return args
+
+
 @lru_cache()
 def get_engine() -> AsyncEngine:
     return create_async_engine(
@@ -52,7 +60,7 @@ def get_engine() -> AsyncEngine:
         max_overflow=5,
         pool_pre_ping=True,
         pool_recycle=300,
-        connect_args={"timeout": 10, "command_timeout": get_scout_settings().scout_db_command_timeout},
+        connect_args=connect_args(),
     )
 
 

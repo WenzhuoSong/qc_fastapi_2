@@ -294,7 +294,7 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     try:                               # an LLM hiccup must not fail the scan
         from scout import market_focus
 
-        focus = await market_focus.generate()
+        focus = await market_focus.generate(market)
         summary["market_focus"] = focus["source"] if focus else None
     except Exception as exc:
         logger.warning("market focus failed: %s", exc)

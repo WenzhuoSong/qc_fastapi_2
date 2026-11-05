@@ -87,7 +87,9 @@ def _metric(key: str, value) -> dict:
     return knowledge.evidence(key, value).as_dict()
 
 
-async def build_pack() -> dict | None:
+async def build_pack(market: dict | None = None) -> dict | None:
+    """`market` = the session's market context; without it, the after-close brief of the same data date (never an
+    older one: the after-close job writes the focus before that day's brief, 2026-11-05)."""
     asof, rows = await sectors.latest()
     if asof is None:
         return None
@@ -97,8 +99,10 @@ async def build_pack() -> dict | None:
         "WHERE h.asof = :d AND (h.payload->>'live')::boolean GROUP BY i.sector", {"d": asof},
     )
     hits_by_sector = {r["sector"]: r["n"] for r in hits}
-    brief = await db.fetch_one("SELECT payload FROM scout.briefs WHERE kind = 'eod' ORDER BY asof DESC, id DESC LIMIT 1")
-    market = ((brief or {}).get("payload") or {}).get("market") or {}
+    if market is None:
+        brief = await db.fetch_one("SELECT payload FROM scout.briefs WHERE kind = 'eod' AND asof = :d ORDER BY id DESC LIMIT 1",
+                                   {"d": asof})
+        market = ((brief or {}).get("payload") or {}).get("market") or {}
 
     sector_blocks = []
     for r in sorted((x for x in rows if x["kind"] == "sector"), key=lambda x: -(x.get("heat") or 0)):
@@ -297,8 +301,8 @@ def fallback(pack: dict) -> MarketFocus:
                        confidence_reason="AI 总结未通过校验，以下为规则读数。")
 
 
-async def generate() -> dict | None:
-    pack = await build_pack()
+async def generate(market: dict | None = None) -> dict | None:
+    pack = await build_pack(market)
     if pack is None:
         return None
     settings = get_scout_settings()
