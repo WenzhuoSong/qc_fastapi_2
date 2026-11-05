@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from scout import responses
-from scout import db, knowledge, llm_usage, opportunities, sector_news, sectors
+from scout import db, knowledge, llm_usage, opportunities, sector_news, sector_trend, sectors
 from scout.config import get_scout_settings
 from scout.thesis import allowed_numbers, unsupported_numbers
 
@@ -55,6 +56,7 @@ SYSTEM_PROMPT = """你是一名美股策略分析师，基于 Python 计算好�
 
 证据包：
 - market：大盘状态与主要指数。
+- sectors / themes 的 trend：相对 SPY 的趋势确认，分最新 5 日、短期 10 日、中期 20 日、较长 63 日，每个周期有状态、确认度、走势质量、成分股跑赢比例。
 - sectors：11 个行业板块。每个板块有轮动象限（RRG 开放近似：领先→转弱→落后→改善）、热度 heat_label（Python 规则计算）、
   宽度、资金流代理指标（涨跌日量比、CMF，基于日线，不是真实买卖单）、成交额热度与占比、新闻关注度和情绪、头条新闻、今日规则命中数。
   每个指标都带 数值（已格式化）、含义 和 读数（标准解读）。
@@ -66,13 +68,17 @@ SYSTEM_PROMPT = """你是一名美股策略分析师，基于 Python 计算好�
 2. 把新闻和数据对上：新闻解释了什么价格行为？哪些板块"新闻很多但价格不跟"，哪些"价格在动但没有新闻"（后者值得警惕或提前关注）？
 3. 提炼 2–5 个主题（例如板块轮动方向、宏观驱动、资金集中或撤离），每个主题引用证据 key。
 4. 每个行业板块写一条：stance 必须等于该板块的 heat_label；view 说明它为什么热/冷、处在轮动的哪个阶段。
-5. 资金流向只能按 flow_label 表述（流入 / 流出 / 信号分歧：CMF 与涨跌日量比方向不一致时要明说"分歧"）；
+5. 趋势只能按 trend 里的「状态」表述（确认跑赢 / 确认跑输 / 初现跑赢 / 初现跑输 / 噪音），并说明周期（短期 10 日 / 中期 20 日 / 较长 63 日）：
+   「确认」= 超出该板块平时相对波动 2 倍以上、成分股多数同向、相邻周期同向；「初现」要写成"初现"或"尚未确认"；「噪音」不要写成趋势。
+   写「确认」的句子只放状态为确认的板块，确认和未确认的板块分句写。
+6. 资金流向只能按 flow_label 表述（流入 / 流出 / 信号分歧：CMF 与涨跌日量比方向不一致时要明说"分歧"）；
    新闻关注度只能按 attention_label 表述（上升 / 正常 / 下降 / 基线不足）。一个主题涉及多个板块时，不要把标签不同的板块写成同一个结论。
 
 硬性规则：
 - 数字只能原样引用证据包中出现的数值，不要自行计算。
 - evidence 只能填证据包里出现的 key（形如 XLE.rel_20、XLE.news_1、wrap_1、macro_2、market.regime）。
 - 资金流指标是日线代理，表述时不要说成"机构买入"之类确定的结论；也不要据此推断"投资者信心""经济复苏预期"这类证据包里没有的结论。
+- 趋势确认只说明走势不像偶然，不是预测：不要写"将延续""会继续""有望继续"之类，可以写"是否延续待观察"。
 - 热度、轮动象限、资金流都是 20 日左右的读数，不是今天的涨跌：写"近 20 日领先 / 落后"，不要写"领涨 / 领跌"或"今天走强 / 走弱"。
 - 不编造新闻或事实；中文、专业、简洁；不给买卖指令，非投资建议。"""
 
@@ -106,6 +112,7 @@ async def build_pack() -> dict | None:
             "quadrant": {"字段": f"{k}.quadrant", "数值": sectors.QUADRANTS.get(r.get("quadrant"), r.get("quadrant")),
                          "上周": sectors.QUADRANTS.get(r.get("quadrant_prev"), r.get("quadrant_prev"))},
             "metrics": [{**_metric(m, r.get(m)), "字段": f"{k}.{m}"} for m in SECTOR_METRICS if r.get(m) is not None],
+            "trend": trend_block(k, r),
             "rule_hits_today": hits_by_sector.get(r.get("sector"), 0),
         }
         if n:
@@ -121,7 +128,8 @@ async def build_pack() -> dict | None:
         sector_blocks.append(block)
 
     themes = [{"key": f"{r['key']}.quadrant", "ETF": r["key"], "主题": r["name"],
-               "象限": sectors.QUADRANTS.get(r.get("quadrant")), "20 日涨跌": knowledge.fmt("ret_20d", r.get("ret_20d"))}
+               "象限": sectors.QUADRANTS.get(r.get("quadrant")), "20 日涨跌": knowledge.fmt("ret_20d", r.get("ret_20d")),
+               "trend": trend_block(r["key"], r)}
               for r in rows if r["kind"] == "theme"]
     wraps = await sector_news.market_wraps()
     macro = await sector_news.macro_headlines(8)
@@ -139,8 +147,24 @@ async def build_pack() -> dict | None:
     }
 
 
+def trend_block(key: str, row: dict) -> list[dict]:
+    """Per horizon: state, strength, quality, breadth — each with its meaning (sector_trend)."""
+    out = []
+    for c in row.get("trend") or []:
+        item = {"字段": f"{key}.trend_{c['h']}", "周期": sector_trend.NAMES[c["h"]], "状态": c["label"],
+                "相对 SPY": knowledge.fmt("trend_rel", c.get("rel")),
+                "确认度": _metric("trend_z", c.get("z")), "走势质量": _metric("trend_er", c.get("er"))}
+        if c.get("breadth") is not None:
+            item["成分股跑赢 SPY 的比例"] = _metric("trend_breadth", c["breadth"])
+        if c.get("missing"):
+            item["未确认的原因"] = c["missing"]
+        out.append(item)
+    return out
+
+
 def evidence_keys(pack: dict) -> set[str]:
     keys = {"market.regime"}
+    keys |= {t["字段"] for s in pack["sectors"] + pack["themes"] for t in s.get("trend") or []}
     for s in pack["sectors"]:
         keys |= {s["key"], f"{s['key']}.quadrant", f"{s['key']}.heat"}
         keys |= {m["字段"] for m in s["metrics"]}
@@ -174,6 +198,7 @@ def validate(mf: MarketFocus, pack: dict) -> list[str]:
     if wrong:
         issues.append("板块热度必须与规则计算一致：" + "；".join(wrong))
     issues += label_conflicts(mf, pack)
+    issues += trend_conflicts(mf, pack)
     bad_theme_sectors = sorted({x for t in mf.themes for x in t.sectors} - set(expected) - {t["ETF"] for t in pack["themes"]})
     if bad_theme_sectors:
         issues.append(f"主题里出现了不存在的板块代码：{', '.join(bad_theme_sectors)}")
@@ -221,6 +246,37 @@ def label_conflicts(mf: MarketFocus, pack: dict) -> list[str]:
     return sorted(set(issues))
 
 
+# A confirmed trend is not a forecast (sector rotation failed the gate; sector-ETF momentum is weak after 2000).
+FORECAST_WORDS = ("将延续", "会延续", "有望延续", "将继续", "会继续", "有望继续", "将持续", "会持续")
+_CLAUSE = re.compile(r"[。；;！!？?\n]")
+
+
+def trend_conflicts(mf: MarketFocus, pack: dict) -> list[str]:
+    """Trend claims checked against Python's states: '确认' only for a sector with a confirmed horizon in that
+    direction (per clause, so confirmed and unconfirmed sectors must be written apart); no forecasts."""
+    blocks = {s["key"]: (s["name"], s.get("trend") or []) for s in pack["sectors"]}
+    blocks |= {t["ETF"]: (t["主题"], t.get("trend") or []) for t in pack["themes"]}
+    texts = [mf.headline, mf.regime_view, *mf.watch, *mf.risks] + [t.summary for t in mf.themes] + [s.view for s in mf.sectors]
+    issues = []
+    for text in texts:
+        for clause in _CLAUSE.split(text.replace("确认度", "")):
+            if "确认" not in clause or "未确认" in clause or "尚未确认" in clause:
+                continue
+            for k, (name, trend) in blocks.items():
+                if k not in clause and name not in clause:
+                    continue
+                confirmed = {t["状态"] for t in trend if t["状态"].startswith("确认")}
+                if not confirmed:
+                    issues.append(f"{k} 没有任何周期是「确认」，文中却写确认：{clause[:40]}")
+                for word in ("确认跑赢", "确认跑输"):
+                    if word in clause and word not in confirmed and confirmed:
+                        issues.append(f"{k} 的确认方向是「{'、'.join(sorted(confirmed))}」，文中却写「{word}」")
+    words = sorted({w for w in FORECAST_WORDS for t in texts if w in t})
+    if words:
+        issues.append(f"趋势确认不是预测，不要写：{'、'.join(words)}（可以写「是否延续待观察」）")
+    return sorted(set(issues))
+
+
 def fallback(pack: dict) -> MarketFocus:
     """Deterministic version: heat ranking and quadrants, no narrative."""
     hot = [s for s in pack["sectors"] if s["heat_label"] == "热"]
@@ -229,7 +285,12 @@ def fallback(pack: dict) -> MarketFocus:
                     sectors=[s["key"] for s in hot], evidence=[f"{s['key']}.heat" for s in hot]),
               Theme(title="冷门板块", summary="、".join(s["name"] for s in cold) or "无",
                     sectors=[s["key"] for s in cold], evidence=[f"{s['key']}.heat" for s in cold])]
-    views = [SectorView(sector=s["key"], stance=s["heat_label"], view=f"轮动象限：{s['quadrant']['数值']}（上周 {s['quadrant']['上周']}）",
+    def trend(s: dict) -> str:
+        parts = [f"{t['周期']}{t['状态']}" for t in s.get("trend") or [] if not t["周期"].startswith("最新")]
+        return f"；相对 SPY：{'，'.join(parts)}" if parts else ""
+
+    views = [SectorView(sector=s["key"], stance=s["heat_label"],
+                        view=f"轮动象限：{s['quadrant']['数值']}（上周 {s['quadrant']['上周']}）{trend(s)}",
                         evidence=[f"{s['key']}.quadrant"]) for s in pack["sectors"]]
     return MarketFocus(headline="市场关注点（规则读数）", regime_view=pack["market"].get("大盘状态") or "—", themes=themes,
                        sectors=views, watch=["见板块表"], risks=["见板块表"], confidence="low",

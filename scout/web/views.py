@@ -582,9 +582,10 @@ RRG_GUIDE = """<details class='small' style='margin-top:8px'><summary><b>怎么�
 <li><b>左右看强弱</b>：横轴是相对 SPY 的强度与自身 50 日平均之比，中线右侧 = 近期跑赢大盘，左侧 = 跑输。</li>
 <li><b>上下看加减速</b>：纵轴是这种相对强度比 10 个交易日前高还是低，上方 = 在变强，下方 = 在变弱。</li>
 <li><b>四个象限</b>：领先（右上）强且在加强；转弱（右下）还强但在减速；落后（左下）弱且在走弱；改善（左上）弱但开始变强。</li>
-<li><b>看箭头方向比看位置更重要</b>：板块通常顺时针走 改善 → 领先 → 转弱 → 落后 → 改善。箭头是最近一周的移动，指向它下一步可能进入的象限。</li>
-<li><b>离中心越远趋势越明确</b>；贴近中心时象限切换意义不大。</li>
-<li><b>用法</b>：规则信号出现在「领先」或「改善→领先」的板块里，有板块顺风；出现在「落后」里多半是逆流。</li>
+<li><b>箭头是最近一周的移动</b>：板块常按顺时针 改善 → 领先 → 转弱 → 落后 走，但经常停住、掉头或跳过象限，箭头不是预测。尾巴越长说明这周动得越猛（解读里会注明比平时快多少）。</li>
+<li><b>离中心越远读数越明确</b>；贴近中心时象限切换意义不大。</li>
+<li><b>这是中期视角</b>（约 10 周，和常见的周线 RRG 相当），转向要几周才显示；最近一两周谁在动、动得算不算数，看下方「趋势确认」。</li>
+<li><b>只描述现状</b>：Scout 把"进入改善买、进入转弱卖"当交易规则检验过，没有通过（知识库 sector_rrg_quadrants_no_edge），所以象限不是买卖信号。</li>
 </ol>
 <p class='muted'>悬停或点选板块可看 8 周完整轨迹（越淡越早）。这是 JdK RRG 的开放近似，原版公式未公开。</p></details>"""
 
@@ -611,6 +612,55 @@ def rrg_panel(rows: list[dict]) -> str:
         f"<a href='#{escape(x['key'])}'>{escape(x['name'])}</a> <span class='muted'>{escape(x['key'])}</span> "
         f"{'<b>' if x['changed'] else ''}{escape(x['detail'])}{'</b>' if x['changed'] else ''}</li>" for x in reads)
     return (f"{rrg_svg(rows)}{controls}<ul class='rrgread small'>{items}</ul>{RRG_GUIDE}{RRG_SCRIPT}")
+
+
+TREND_COLORS = {("confirmed", 1): ("var(--up)", True), ("confirmed", -1): ("var(--down)", True),
+                ("emerging", 1): ("var(--up)", False), ("emerging", -1): ("var(--down)", False)}
+
+TREND_GUIDE = """<details class='small' style='margin-top:8px'><summary><b>怎么读这张表</b></summary>
+<ol class='tight'>
+<li><b>确认度</b> = 相对 SPY 的涨跌 ÷ 这个板块平时的相对波动（换算到同样天数）。超过 2 倍，说明这段走势不像偶然；1–2 倍是「初现」；1 倍以内是正常波动，记为「噪音」。</li>
+<li><b>确认</b>还要同时满足：成分股里跑赢（跑输）SPY 的过半——不是一两只大票撑起来的；相邻周期同向。缺哪条会在悬停说明里写出来。</li>
+<li><b>（震荡）</b>：走势质量（效率比）低于 0.3，净变化不小但来回反复。</li>
+<li><b>最新 5 日</b>只看动向；<b>短期 10 日、中期 20 日、较长 63 日</b>是趋势。短期先变、中期跟上，才是更可信的轮动。</li>
+<li><b>确认不等于会延续</b>：板块轮动当交易规则在 Scout 检验了 6 次都没通过，2000 年后的研究里板块 ETF 动量也很弱。每条新确认会记进判断台账，5 / 20 / 60 日后打分，用记录回答它到底有没有延续性。</li>
+</ol>
+<p class='muted'>方法：Lempérière 等（2014）的波动标准化趋势信号、Kaufman 效率比、成分股参与度。门槛按统计惯例固定，不按历史收益调整。</p></details>"""
+
+
+def trend_cell(c: dict | None) -> str:
+    if not c:
+        return "<td class='muted'>—</td>"
+    color, bold = TREND_COLORS.get((c["state"], c["dir"]), ("var(--muted)", False))
+    tip = [f"相对 SPY {knowledge.fmt('trend_rel', c.get('rel'))}", f"确认度 {knowledge.fmt('trend_z', c.get('z'))}",
+           f"走势质量 {knowledge.fmt('trend_er', c.get('er'))}"]
+    if c.get("breadth") is not None:
+        tip.append(f"成分股跑赢 SPY {knowledge.fmt('trend_breadth', c['breadth'])}")
+    tip += [f"未确认：{m}" for m in c.get("missing") or []]
+    text = c["label"] + ("（震荡）" if c.get("choppy") else "")
+    text = f"<b>{escape(text)}</b>" if bold else escape(text)
+    return (f"<td style='color:{color}' title='{escape(' · '.join(tip))}'>{text}"
+            f"<div class='small muted'>{knowledge.fmt('trend_rel', c.get('rel'))} · {knowledge.fmt('trend_z', c.get('z'))}</div></td>")
+
+
+def trend_table(rows: list[dict]) -> str:
+    """Trend confirmation per sector / theme and horizon (sector_trend)."""
+    from scout import sector_trend
+
+    body = []
+    for r in rows:
+        t = sector_trend.by_h(r)
+        if not t:
+            continue
+        changed = [sector_trend.change_text(r["name"], ch) for ch in r.get("trend_changes") or []]
+        body.append(f"<tr><td><a href='#{escape(r['key'])}'>{escape(r['name'])}</a> <span class='small muted'>{escape(r['key'])}</span>"
+                    + (f"<div class='small'><b>{escape('；'.join(changed))}</b></div>" if changed else "") + "</td>"
+                    + "".join(trend_cell(t.get(n)) for n in sector_trend.HORIZONS) + "</tr>")
+    if not body:
+        return "<p class='muted small'>下一次收盘扫描后生成。</p>"
+    head = "".join(f"<th>{sector_trend.NAMES[n]}</th>" for n in sector_trend.HORIZONS)
+    return (f"<div class='scroll'><table><thead><tr><th>相对 SPY</th>{head}</tr></thead><tbody>{''.join(body)}</tbody></table></div>"
+            f"{TREND_GUIDE}")
 
 
 def heat_cell(value, rank: float | None, text: str) -> str:

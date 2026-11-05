@@ -160,3 +160,121 @@ class SectorDisplayTests(unittest.TestCase):
         self.assertIn("显示全部轨迹", html)
         self.assertIn("怎么读这张图", html)
         self.assertLess(html.index("信息技术</a>"), html.index("能源</a>"))
+
+
+class SectorTrendTests(unittest.TestCase):
+    def _series(self, moves, sigma=0.01, seed=1, n=400):
+        rng = np.random.default_rng(seed)
+        d = rng.normal(0, sigma, n)
+        d[-len(moves):] = moves
+        return pd.Series(np.cumsum(d))
+
+    def test_strength_is_move_over_ex_ante_noise(self):
+        from scout import sector_trend
+
+        log_rs = self._series([0.01] * 10)
+        s = sector_trend.stats(log_rs, len(log_rs) - 1, 10)
+        sigma = log_rs.diff().iloc[-10 - 252:-10].std()
+        self.assertAlmostEqual(s["z"], 0.1 / (sigma * 10 ** 0.5), places=6)
+        self.assertAlmostEqual(s["er"], 1.0)                   # a straight line
+        self.assertAlmostEqual(s["rel"], np.expm1(0.1), places=9)
+
+    def test_choppy_path_has_low_efficiency(self):
+        from scout import sector_trend
+
+        s = sector_trend.stats(self._series([0.02, -0.018] * 5), 399, 10)
+        self.assertLess(s["er"], sector_trend.ER_CHOPPY)
+
+    def test_labels(self):
+        from scout import sector_trend
+
+        cell = lambda z, b=None: {"z": z, "er": 0.6, "rel": 0.05, "breadth": b}
+        out = sector_trend.label({5: cell(1.2), 10: cell(2.5, 0.7), 20: cell(2.1, 0.4), 63: cell(0.3)})
+        self.assertEqual(out[10]["label"], "确认跑赢")
+        self.assertEqual(out[20]["state"], "emerging")         # breadth not on its side
+        self.assertIn("成分股跑赢 SPY 的比例未过半", out[20]["missing"])
+        self.assertEqual(out[63]["label"], "噪音")
+        self.assertEqual(out[63]["dir"], 0)
+        lone = sector_trend.label({10: cell(-2.5), 20: cell(0.5)})
+        self.assertEqual(lone[10]["label"], "初现跑输")        # no neighbour agrees
+        self.assertEqual(lone[10]["missing"], ["相邻周期没有同向"])
+        theme = sector_trend.label({10: cell(-2.2), 20: cell(-1.4)})
+        self.assertEqual(theme[10]["label"], "确认跑输")       # no members: breadth not required
+
+    def test_compute_on_panel(self):
+        from scout import sector_trend
+
+        p = _panel(n=400)
+        asof = p.dates[-1]
+        members = [t for t in p.stocks if p.sectors.get(t) == "Energy"]
+        cells = sector_trend.compute(p, "XLE", members, asof)
+        self.assertEqual([c["h"] for c in cells], list(sector_trend.HORIZONS))
+        self.assertTrue(all(c["breadth"] is None for c in cells))   # 2 members < MIN_MEMBERS
+        row = {r["key"]: r for r in sectors.compute(p, asof)}["XLE"]
+        self.assertEqual(row["trend"], cells)
+        self.assertIn("velocity", row)
+
+    def test_changes_and_new_confirmations(self):
+        from scout import sector_trend
+
+        c = lambda h, state, d: {"h": h, "state": state, "dir": d, "label": {"confirmed": "确认", "emerging": "初现", "noise": "噪音"}[state]
+                                 + ({1: "跑赢", -1: "跑输"}.get(d, "")), "choppy": False, "z": 2.4 * d, "er": 0.5, "rel": 0.03}
+        prev = {"trend": [c(10, "emerging", 1), c(20, "confirmed", 1), c(63, "noise", 0)]}
+        now = {"name": "金融", "trend": [c(10, "confirmed", 1), c(20, "confirmed", 1), c(63, "emerging", 1)]}
+        ch = sector_trend.changes(prev, now)
+        self.assertEqual([x["h"] for x in ch], [10])          # 63 noise → emerging is not reported
+        self.assertEqual(sector_trend.change_text("金融", ch[0]), "金融：短期由初现跑赢转为确认跑赢")
+        self.assertIsNone(sector_trend.changes({}, now))       # first run: baseline, no changes
+        self.assertEqual([x["h"] for x in sector_trend.new_confirmations(prev, now)], [10])
+        self.assertEqual([x["h"] for x in sector_trend.new_confirmations(None, now)], [10, 20])
+        self.assertEqual(sector_trend.summary(now), "短期确认跑赢 · 中期确认跑赢 · 较长初现跑赢")
+
+    def test_trend_features_are_in_the_dictionary(self):
+        for key in ("trend_z", "trend_er", "trend_breadth", "trend_rel", "trend_state", "rrg_velocity_ratio"):
+            self.assertIn(key, knowledge.features(), key)
+        self.assertEqual(knowledge.fmt("trend_z", 2.34), "+2.3σ")
+
+    def test_focus_trend_claims_are_checked(self):
+        from scout.market_focus import MarketFocus, SectorView, Theme, trend_conflicts
+
+        trend = lambda label: [{"字段": "x", "周期": "短期 10 日", "状态": label}]
+        pack = {"sectors": [{"key": "XLF", "name": "金融", "trend": trend("确认跑赢")},
+                            {"key": "XLK", "name": "信息技术", "trend": trend("初现跑输")}], "themes": []}
+
+        def focus(*texts):
+            return MarketFocus(headline="h", regime_view="r", themes=[Theme(title="t", summary=x, sectors=[], evidence=[]) for x in texts],
+                               sectors=[SectorView(sector="XLF", stance="热", view="v", evidence=[])], watch=[], risks=[],
+                               confidence="low", confidence_reason="c")
+
+        self.assertEqual(trend_conflicts(focus("金融短期确认跑赢；信息技术跑输尚未确认，确认度不足"), pack), [])
+        issues = "\n".join(trend_conflicts(focus("金融和信息技术确认跑赢", "金融确认跑输", "金融将继续跑赢"), pack))
+        self.assertIn("XLK 没有任何周期是「确认」", issues)
+        self.assertIn("文中却写「确认跑输」", issues)
+        self.assertIn("将继续", issues)
+
+
+class SectorTrendRenderTests(unittest.TestCase):
+    ROW = {"key": "XLF", "name": "金融", "kind": "sector",
+           "trend": [{"h": 10, "state": "confirmed", "dir": 1, "label": "确认跑赢", "choppy": False, "z": 2.4, "er": 0.51,
+                      "rel": 0.065, "breadth": 0.72, "missing": []},
+                     {"h": 63, "state": "emerging", "dir": -1, "label": "初现跑输", "choppy": True, "z": -1.4, "er": 0.2,
+                      "rel": -0.03, "breadth": 0.45, "missing": []}],
+           "trend_changes": [{"h": 10, "from": "初现跑赢", "to": "确认跑赢", "entered": True, "dir": 1}]}
+
+    def test_table(self):
+        from scout.web.views import trend_table
+
+        html = trend_table([self.ROW, {"key": "GLD", "name": "黄金", "kind": "theme"}])
+        self.assertIn("<b>确认跑赢</b>", html)
+        self.assertIn("初现跑输（震荡）", html)
+        self.assertIn("金融：短期由初现跑赢转为确认跑赢", html)
+        self.assertIn("+2.4σ", html)
+        self.assertNotIn("黄金", html)                         # no trend yet
+
+    def test_digest_lines(self):
+        from scout.digest import trend_lines
+
+        self.assertEqual(trend_lines([self.ROW]), ["金融：短期由初现跑赢转为确认跑赢"])
+        many = [{**self.ROW, "name": f"s{i}"} for i in range(8)]
+        self.assertEqual(len(trend_lines(many)), 7)
+        self.assertIn("另有 2 项", trend_lines(many)[-1])

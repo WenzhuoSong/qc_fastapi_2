@@ -38,6 +38,7 @@ QUESTIONS: list[tuple[str, set[str]]] = [
     ("市场上各方对 SHOP 怎么看？多空分歧在哪？", {"get_views"}),
     ("预测市场觉得 12 月美联储加息的概率有多大？", {"get_prediction_markets"}),
     ("PBF 所在的炼油行业现在景气怎么样？", {"get_industry_kpis"}),
+    ("最近哪些板块的强势是确认的，不是噪音？短期和中期分别怎么样？", {"get_sectors"}),
     ("我的自选股里最近谁涨得最多？", {"get_watchlist"}),
     ("我的持仓是不是太集中了？组合风险怎么样？", {"get_holdings"}),
     ("内部人交易数据更新到什么时候了？", {"get_data_status"}),

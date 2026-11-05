@@ -35,6 +35,7 @@ SYSTEM_PROMPT = f"""你是 Scout，一位美股研究助理，服务于一位有
   get_fundamentals（财报、估值、预期、持股、期权）、get_events（异动及原因）、get_news、get_earnings，按问题选。
 - 问到某个方法有没有用、某条规则是否通过：get_knowledge；问到前向验证、检验结果、研究进度：get_research。问到 Scout 过去判断准不准：get_ledger。
 - 问到大盘、板块轮动、哪个行业强弱：get_market_overview、get_sectors；问到 Scout 的行业观点：get_outlook。
+  板块"趋势"按 get_sectors 的趋势确认状态回答，并说明周期（短期 10 日 / 中期 20 日 / 较长 63 日）：确认只说明走势不像偶然，不说会延续。
 - 问到今天 / 盘前要注意什么：get_briefs（premarket / eod / market_focus / weekly）；本周数据和财报、未来 30 天的美联储会议、选举、政策、行业和市场结构事件（含事前解读和事后复盘）：get_calendar。
 - 问到机会卡 / 今天有什么机会：list_opportunities（会标明规则是否通过检验）；问到新闻对上下游、竞争对手的影响：get_propagation；问到某条规则在什么板块 / 市况下更好、胜率更高的组合：get_conditional_rates。
 - 想全面了解一只股票（"X 怎么样""帮我分析 X"）：调 get_evidence，按下面"多视角证据"的写法逐个视角讲。
@@ -475,10 +476,11 @@ async def get_briefs(kind: str) -> dict:
             "全文": (row["content"] or "")[:8000]}
 
 
-@tool("get_sectors", "板块全景：每个行业和主题 ETF 的热度、轮动象限（领涨 / 转弱 / 落后 / 改善）及上周象限、相对 SPY、"
+@tool("get_sectors", "板块全景：每个行业和主题 ETF 的热度、轮动象限（领先 / 转弱 / 落后 / 改善）及上周象限、相对 SPY、"
+                     "趋势确认（最新 5 日、短期 10 日、中期 20 日、较长 63 日：确认 / 初现 / 噪音，确认度、走势质量、成分股参与度）、"
                      "站上 50 日线比例、净新高、资金流、新闻关注度", pages=("/market",))
 async def get_sectors() -> dict:
-    from scout import sector_news
+    from scout import sector_news, sector_trend
     from scout import sectors as sec
 
     asof, rows = await sec.latest()
@@ -493,10 +495,18 @@ async def get_sectors() -> dict:
                 "上周象限": sec.QUADRANTS.get(r.get("quadrant_prev"), r.get("quadrant_prev")),
                 "20 日相对 SPY": _p(r.get("rel_20")), "站上 50 日线": _p(r.get("pct_above_50"), 0).lstrip("+"),
                 "净新高": r.get("net_new_highs"), "资金流 CMF": r.get("cmf_20"), "成交额热度": r.get("rel_dollar_vol"),
-                "新闻关注度": sec.attention_label(n.get("news_attention"))}
+                "新闻关注度": sec.attention_label(n.get("news_attention")),
+                "趋势确认": [{"周期": sector_trend.NAMES[c["h"]], "状态": c["label"] + ("（震荡）" if c.get("choppy") else ""),
+                             "相对 SPY": _p(c.get("rel")), "确认度": knowledge.fmt("trend_z", c.get("z")),
+                             "走势质量": knowledge.fmt("trend_er", c.get("er")),
+                             **({"成分股跑赢 SPY": _p(c["breadth"], 0).lstrip("+")} if c.get("breadth") is not None else {}),
+                             **({"未确认原因": c["missing"]} if c.get("missing") else {})} for c in r.get("trend") or []],
+                "轮动速度（相对过去一年）": r.get("velocity_ratio")}
 
     sectors = sorted((r for r in rows if r.get("kind") == "sector"), key=lambda r: -(r.get("heat") or 0))
-    return {"数据日期": str(asof), "行业": [row(r) for r in sectors], "主题": [row(r) for r in rows if r.get("kind") == "theme"]}
+    return {"数据日期": str(asof), "行业": [row(r) for r in sectors], "主题": [row(r) for r in rows if r.get("kind") == "theme"],
+            "趋势确认的含义": "确认 = 相对 SPY 的走势超过该板块平时相对波动的 2 倍、成分股过半同向、相邻周期同向；初现 = 1–2 倍或条件不全；"
+                         "噪音 = 1 倍以内。只说明不像偶然，不预测延续：板块轮动在 Scout 检验 6 次未通过。"}
 
 
 @tool("get_outlook", "每周行业展望：当前市场驱动、AI 的行业判断（目标 ETF、方向、期限、依据方法、证伪条件）以及历次行业判断事后的打分",

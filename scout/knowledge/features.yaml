@@ -468,6 +468,48 @@ quadrant:
   zh: 轮动象限
   unit: label
   definition: 领先（比 ≥100、动量 ≥100）→ 转弱（比 ≥100、动量 <100）→ 落后（都 <100）→ 改善（比 <100、动量 ≥100），通常按顺时针轮动。
+trend_z:
+  zh: 趋势确认度
+  unit: sigma
+  definition: 板块（或主题 ETF）相对 SPY 的对数涨跌 ÷（窗口之前 252 个交易日相对 SPY 每日波动的标准差 × √天数），即这段相对走势是平时正常波动的几倍。按 Lempérière 等（2014）的波动标准化趋势信号。只说明走势是否超出噪音，不预测是否延续。
+  readings:
+    - {max: -2.0, text: 跑输超出正常波动 2 倍以上，不像偶然}
+    - {max: -1.0, text: 跑输初现，仍在正常波动的 1–2 倍之间}
+    - {max: 1.0, text: 在正常波动之内，属于噪音}
+    - {max: 2.0, text: 跑赢初现，仍在正常波动的 1–2 倍之间}
+    - {min: 2.0, text: 跑赢超出正常波动 2 倍以上，不像偶然}
+trend_er:
+  zh: 走势质量（效率比）
+  unit: num
+  definition: Kaufman 效率比：相对 SPY 强弱线在窗口内的净变化 ÷ 每天变化绝对值之和。1 = 几乎一条直线，0 = 来回震荡；低于 0.3 按惯例视为震荡。
+  readings:
+    - {max: 0.3, text: 来回震荡，走势不稳}
+    - {max: 0.6, text: 有方向但有反复}
+    - {min: 0.6, text: 走势稳定，接近单边}
+trend_breadth:
+  zh: 成分股跑赢 SPY 的比例
+  unit: score01
+  definition: 板块流动性足够的成分股中，同一窗口涨幅超过 SPY 的比例。过半说明不是一两只大票撑起来的。
+  readings:
+    - {max: 0.4, text: 多数成分股跑输 SPY}
+    - {max: 0.6, text: 跑赢和跑输大致各半}
+    - {min: 0.6, text: 多数成分股跑赢 SPY}
+trend_rel:
+  zh: 相对 SPY 强弱变化
+  unit: pct
+  definition: 窗口内（ETF / SPY）比值的变化，即相对 SPY 多涨或少涨了多少。
+trend_state:
+  zh: 趋势状态
+  unit: label
+  definition: 确认 = 确认度绝对值 ≥ 2、成分股跑赢（跑输）比例过半、相邻周期同向且确认度 ≥ 1；初现 = 确认度绝对值 ≥ 1 但不满足全部条件；噪音 = 确认度绝对值 < 1。门槛按统计惯例固定，不按历史收益调。只描述走势是否超出噪音，不代表会延续。
+rrg_velocity_ratio:
+  zh: 轮动速度（相对过去一年）
+  unit: ratio
+  definition: 轮动图上本周一步的移动距离 ÷ 过去一年平均每周移动距离（de Kempenaer 的 RRG-Velocity）。大于 1 表示比平时动得快。
+  readings:
+    - {max: 0.5, text: 几乎没动}
+    - {max: 1.5, text: 正常速度}
+    - {min: 1.5, text: 移动明显快于平时}
 pct_above_50:
   zh: 站上 50 日线比例
   unit: score01

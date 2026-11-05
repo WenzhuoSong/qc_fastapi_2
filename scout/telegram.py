@@ -501,6 +501,9 @@ async def sectors_text() -> str:
             f"{sectors.HEAT_ICON.get(r.get('heat_label'), '')} <b>{esc(r['name'])}</b> {r['key']} · {move}{sectors.QUADRANTS.get(r.get('quadrant'))}"
             f" · 相对 SPY {pct(r.get('rel_20'), 1, True)} · 站上50日线 {pct(r.get('pct_above_50'), 0)} · 资金{esc(r.get('flow_label') or '')}"
         )
+        trend = sectors.sector_trend.summary(r)
+        if trend:
+            lines.append(f"   趋势：{esc(trend)}")
     focus = await market_focus.latest()
     if focus:
         lines.append("")

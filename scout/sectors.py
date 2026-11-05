@@ -18,7 +18,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-from scout import db, universe
+from scout import db, sector_trend, universe
 from scout.features import FeaturePanel
 
 BENCH = "SPY"
@@ -26,6 +26,7 @@ RATIO_WINDOW = 50
 MOMENTUM_LAG = 10
 TAIL_POINTS = 8
 TAIL_STEP = 5            # one point per week
+VELOCITY_WEEKS = 52      # the weekly step is compared with its average over the past year
 
 QUADRANTS = {
     "leading": "领先", "weakening": "转弱", "lagging": "落后", "improving": "改善",
@@ -64,8 +65,23 @@ def rotation(p: FeaturePanel, tickers: list[str], asof: date) -> dict[str, dict]
         out[t] = {
             "rs_ratio": r, "rs_momentum": m, "quadrant": quadrant(r, m),
             "quadrant_prev": quadrant(prev[0], prev[1]) if prev else None, "tail": tail,
+            **velocity(ratio, mom, end),
         }
     return out
+
+
+def velocity(ratio: pd.Series, mom: pd.Series, end: int) -> dict:
+    """RRG-Velocity (de Kempenaer): the distance of the last weekly step, and that step over the average weekly
+    step of the past year (> 1: moving faster than usual)."""
+    idx = [end - k * TAIL_STEP for k in range(VELOCITY_WEEKS, -1, -1) if end - k * TAIL_STEP >= 0]
+    pts = [(ratio.iloc[i], mom.iloc[i]) for i in idx]
+    pts = [x for x in pts if np.isfinite(x[0]) and np.isfinite(x[1])]
+    steps = [float(np.hypot(b[0] - a[0], b[1] - a[1])) for a, b in zip(pts, pts[1:])]
+    if not steps:
+        return {}
+    past = steps[:-1]
+    avg = float(np.mean(past)) if len(past) >= 12 else None
+    return {"velocity": round(steps[-1], 3), "velocity_ratio": round(steps[-1] / avg, 3) if avg else None}
 
 
 def _cmf(p: FeaturePanel, members: list[str], end: int, n: int = 20) -> float | None:
@@ -119,7 +135,8 @@ def compute(p: FeaturePanel, asof: date) -> list[dict]:
         if not members or etf not in p["close"].columns:
             continue
         row = {"key": etf, "kind": "sector", "sector": sector, "name": universe.SECTOR_ZH.get(sector, sector),
-               **_etf_returns(p, etf, asof), **rot.get(etf, {}), **breadth(p, members, asof)}
+               **_etf_returns(p, etf, asof), **rot.get(etf, {}), **breadth(p, members, asof),
+               "trend": sector_trend.compute(p, etf, members, asof)}
         total_dv5 += row["dollar_vol_5d"]
         rows.append(row)
     for r in rows:
@@ -129,7 +146,7 @@ def compute(p: FeaturePanel, asof: date) -> list[dict]:
     for etf in THEME_RRG:
         if etf in p["close"].columns and etf in rot:
             rows.append({"key": etf, "kind": "theme", "name": universe.THEME_ETFS.get(etf, etf),
-                         **_etf_returns(p, etf, asof), **rot[etf]})
+                         **_etf_returns(p, etf, asof), **rot[etf], "trend": sector_trend.compute(p, etf, [], asof)})
     return rows
 
 
@@ -184,7 +201,8 @@ def card_context(r: dict) -> dict:
     return {"板块": r["name"], "ETF": r["key"], "热度": r.get("heat_label"),
             "轮动象限": QUADRANTS.get(r.get("quadrant"), r.get("quadrant")),
             "上周象限": QUADRANTS.get(r.get("quadrant_prev"), r.get("quadrant_prev")),
-            "资金流向": r.get("flow_label"), "站上 50 日线比例": r.get("pct_above_50"), "20 日相对 SPY": r.get("rel_20")}
+            "资金流向": r.get("flow_label"), "站上 50 日线比例": r.get("pct_above_50"), "20 日相对 SPY": r.get("rel_20"),
+            "相对 SPY 趋势": sector_trend.summary(r)}
 
 
 QUADRANT_MEANING = {
@@ -203,6 +221,7 @@ _HINTS = (
     ("improving", 1, -1, "动量回落，可能重新落后"),
 )
 NEAR_CENTER = 1.0        # distance from (100, 100) below which the reading is weak
+FAST_STEP = 1.5          # a weekly step this many times the past year's average is called out
 QUADRANT_ORDER = ("leading", "improving", "weakening", "lagging")
 
 
@@ -223,6 +242,9 @@ def rotation_read(r: dict) -> dict | None:
     detail = f"{f'本周由{QUADRANTS[prev]}转入。' if changed else ''}{QUADRANT_MEANING[q]}，{hint}"
     if near:
         detail += "；贴近中心，信号偏弱"
+    v = r.get("velocity_ratio")
+    if v is not None and v >= FAST_STEP:
+        detail += f"；本周移动幅度是过去一年平均的 {v:.1f} 倍"
     return {"key": r["key"], "name": r.get("name", r["key"]), "quadrant": q, "changed": changed,
             "near_center": near, "detail": detail, "text": f"{QUADRANTS[q]}：{detail}"}
 
@@ -254,6 +276,15 @@ async def store(asof: date, rows: list[dict]) -> int:
         "INSERT INTO scout.sector_daily (asof, key, kind, payload) VALUES (:d, :k, :kind, CAST(:p AS JSONB))",
         [{"d": asof, "k": r["key"], "kind": r["kind"], "p": db.jsonb(r)} for r in rows],
     )
+
+
+async def before(asof: date) -> dict[str, dict]:
+    """The previous stored session's rows by key (for state changes)."""
+    row = await db.fetch_one("SELECT max(asof) AS d FROM scout.sector_daily WHERE asof < :d", {"d": asof})
+    d = (row or {}).get("d")
+    if not d:
+        return {}
+    return {r["key"]: r["payload"] for r in await db.fetch_all("SELECT key, payload FROM scout.sector_daily WHERE asof = :d", {"d": d})}
 
 
 async def latest(kind: str | None = None) -> tuple[date | None, list[dict]]:

@@ -461,7 +461,10 @@ async def market_page(view: str = "sectors", _: str = Depends(require_auth)) -> 
     tabs = " ".join(f"<a class='chip' style='{'background:var(--accent);color:#fff' if view == v else ''}' href='/market?view={v}'>{lbl}</a>"
                     for v, lbl in (("sectors", "行业板块"), ("themes", "主题 ETF")))
     rrg_rows = sector_rows if view != "themes" else theme_rows
-    rrg_html = f"<div class='card'><h3>相对轮动图 {tabs}</h3>{views.rrg_panel(rrg_rows)}</div>"
+    rrg_html = (f"<div class='card'><h3>相对轮动图 <span class='small muted'>中期视角（约 10 周）</span> {tabs}</h3>"
+                f"{views.rrg_panel(rrg_rows)}</div>")
+    trend_html = (f"<div class='card'><h3>趋势确认 <span class='small muted'>相对 SPY · 数据日期 {e(asof)}</span></h3>"
+                  f"{views.trend_table(sector_rows + theme_rows)}</div>")
 
     # ── heat table ──
     cols = [("rel_20", "相对SPY"), ("pct_above_50", "站上50日线"), ("net_new_highs", "净新高"), ("updown_vol_20", "涨跌量比"),
@@ -518,7 +521,7 @@ async def market_page(view: str = "sectors", _: str = Depends(require_auth)) -> 
     macro = await sector_news.macro_headlines(8)
     mnews = "".join(f"<li><a href='{e(x['url'])}' target='_blank' rel='noopener'>{e(x['headline'])}</a> "
                     f"<span class='small muted'>{e(x.get('source'))} {e(x.get('published'))}</span></li>" for x in wraps + macro)
-    body = (f"<h2>市场全景</h2><div class='duo'>{focus_html}{rrg_html}</div>{table_html}"
+    body = (f"<h2>市场全景</h2><div class='duo'>{focus_html}{rrg_html}</div>{trend_html}{table_html}"
             f"<h2>板块详情</h2><div class='grid'>{''.join(cards)}</div>"
             f"<h2>全市场新闻</h2><div class='card'><ul class='tight'>{mnews or '<li class=muted>暂无</li>'}</ul></div>")
     return layout("市场全景", "market", body)
@@ -987,7 +990,8 @@ async def ledger_page(h: int = 20, kind: str = "", _: str = Depends(require_auth
     judg_rows = []
     for j in recent:
         p = j["payload"] or {}
-        what = p.get("headline") or ("；".join(p.get("points") or [])[:80]) or (f"热度 {p.get('heat')}" if j["kind"] == "sector_heat" else "")
+        what = (p.get("headline") or ("；".join(p.get("points") or [])[:80]) or (f"热度 {p.get('heat')}" if j["kind"] == "sector_heat" else "")
+                or (f"{j['lens']} 确认度 {p['z']:+.1f}σ" if j["kind"] == "sector_trend" and p.get("z") is not None else ""))
         lens = titles.get(j["lens"], j["lens"])
         rating = {1: "👍", -1: "👎"}.get(j["human_rating"], "")
         form = (f"<form method='post' action='/ledger/{j['id']}/rate' style='display:inline'>"

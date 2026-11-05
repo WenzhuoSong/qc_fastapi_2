@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from datetime import date
 
-from scout import db, earnings_gaps, opportunities, portfolio, sectors, universe
+from scout import db, earnings_gaps, opportunities, portfolio, sector_trend, sectors, universe
 from scout.telegram import esc, market_split_text, pct, sector_text
 
 KPI_LINES = 2               # industry metrics shown per holding on the digest
@@ -153,6 +153,16 @@ def watch_items(g: dict, asof: date) -> list[dict]:
     return sorted(out, key=lambda x: x["rank"])
 
 
+TREND_MAX = 6
+
+
+def trend_lines(rows: list[dict]) -> list[str]:
+    """Sector / theme trend states that entered or left 确认 since the previous session, sectors first."""
+    ordered = sorted(rows, key=lambda r: r.get("kind") != "sector")
+    out = [sector_trend.change_text(r["name"], ch) for r in ordered for ch in r.get("trend_changes") or []]
+    return out[:TREND_MAX] + ([f"另有 {len(out) - TREND_MAX} 项见 Dashboard「市场全景」"] if len(out) > TREND_MAX else [])
+
+
 def render(asof: date, market: dict, sector_rows: list[dict], focus: dict | None, mfilter: dict | None,
            g: dict, satellite: dict | None, scan_lines: list[str]) -> str:
     from scout import market_filter
@@ -184,14 +194,19 @@ def render(asof: date, market: dict, sector_rows: list[dict], focus: dict | None
     rotation = sectors.rotation_line(sector_rows)
     if rotation:
         lines.append(esc(rotation))
+    trend = trend_lines(sector_rows)
+    if trend:
+        lines.append("趋势确认变化（相对 SPY，超出正常波动 2 倍且参与面广；不代表会延续）：")
+        lines += [f"• {esc(x)}" for x in trend]
     held = holding_items(g, asof)
     by_sector = {r["sector"]: r for r in sector_rows if r.get("kind") == "sector"}
     mine = sorted({h["sector"] for h in held if h.get("sector") in by_sector})
     for s in mine:
         r = by_sector[s]
         names = "、".join(h["ticker"] for h in held if h.get("sector") == s)
+        trend = sector_trend.summary(r)
         lines.append(f"• {esc(sector_text(sectors.card_context(r)) or r['name'])}；当日 {pct(r.get('ret_1d'), 1, True)}，"
-                     f"20 日相对 SPY {pct(r.get('rel_20'), 1, True)}（持有 {esc(names)}）")
+                     f"20 日相对 SPY {pct(r.get('rel_20'), 1, True)}" + (f"；趋势 {esc(trend)}" if trend else "") + f"（持有 {esc(names)}）")
     if not mine:
         lines.append("（持仓所在板块：无持仓）" if not held else "（持仓所在板块暂无数据）")
 

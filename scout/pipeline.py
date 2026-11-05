@@ -4,8 +4,8 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta
 
-from scout import (bars, base_rates, conditional_rates, context, db, events, ledger, opportunities, portfolio, sectors, structure, telegram,
-                   thesis, tracker, universe)
+from scout import (bars, base_rates, conditional_rates, context, db, events, ledger, opportunities, portfolio, sector_trend, sectors,
+                   structure, telegram, thesis, tracker, universe)
 from scout.config import get_scout_settings
 from scout.data.provider import get_provider
 from scout.features import SNAPSHOT_FEATURES, FeaturePanel, build_panel
@@ -161,6 +161,9 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         raise RuntimeError(f"bar for {session} not available yet (latest {asof}); data source may be lagging")
     summary["features"] = await store_features(p, asof)
     sector_rows = sectors.compute(p, asof)
+    sector_prev = await sectors.before(asof)
+    for r in sector_rows:              # trend states that changed since the previous session (digest)
+        r["trend_changes"] = sector_trend.changes(sector_prev.get(r["key"]), r)
     summary["sectors"] = await sectors.store(asof, sector_rows)
     sector_ctx = {r["sector"]: sectors.card_context(r) for r in sector_rows if r["kind"] == "sector"}
 
@@ -234,6 +237,7 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         summary["market_filter"] = f"failed: {type(exc).__name__}"
     try:                               # the ledger must never block the scan
         summary["ledger"] = {"sector_heat": await ledger.record_sector_heat(sector_rows, asof),
+                             "sector_trend": await ledger.record_sector_trend(sector_rows, sector_prev, asof),
                              "scored": await ledger.score_due()}
     except Exception as exc:
         logger.warning("ledger update failed: %s", exc)
