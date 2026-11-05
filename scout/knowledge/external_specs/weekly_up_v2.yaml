@@ -1,0 +1,99 @@
+# Pre-registration of the weekly "up call" test v2, written 2026-11-06 before any v2 feature, model or score was
+# computed. Never edited after the run; a changed design is a new file with a new key. Run once (local only:
+# Sharadar files in exports/sharadar/, French data in exports/research_data/, FRED and Federal Reserve pages fetched
+# at run time; results in exports/weekly_up/, summary numbers only leave it).
+key: weekly_up_v2
+registered_on: '2026-11-06'
+requested_by: >-
+  用户 2026-11-06："我只需要你的实测准确度能到 60% 以上，比概率学好就行。然后我希望你专业一些，不要设计太简单你自己会推翻的"；
+  "判断涨，先不管跌"
+family: short_term_reversal
+supersedes_design_of: weekly_direction_v1（已否定；本方案修正其特征设计：收益未按波动标准化、相对强弱未扣贝塔、期限单一、缺成交量 / 跨资产 / 日历类，以及正则强度固定）
+question: >-
+  对 SPY 和 SPDR 板块 ETF，模型在周末给出"下周会涨"的判断时，实际上涨的比例能否稳定达到 60% 以上，并明显高于平时的上涨比例？
+  其余的周不表态。
+
+data:
+  assets: SPY、SPDR 板块 ETF XLB XLE XLF XLI XLK XLP XLU XLV XLY（1998-12 起）、XLRE（2015-10 起）、XLC（2018-06 起）；Sharadar SFP 日线（open、high、low、close、closeadj、volume）
+  members: 板块成分股：Sharadar 市值前 1000（价格 ≥ 5 美元），按 sector 对应 SPDR（与 risk_warning_v1 相同）；SPY 与全市场指标用市值前 500
+  macro: FRED VIXCLS、VXVCLS（VIX3M，2007-12 起，之前缺失）、BAA10Y、T10Y2Y、DGS10、DCOILWTICO、DTWEXBGS（2006 起；之前用 DTWEXM 的变化接续），一律取判断日前一个交易日的值
+  fomc: 美联储网站 FOMC 日历页（近年）与各年历史页（2000 年起）的会议声明日期；某年取不到则该年的 FOMC 特征缺失（缺失标记），在结果中写明
+  cash: French 日度 RF；本地数据最后一天 2026-09-30
+  weeks: 每周最后一个交易日收盘判断；目标 = 下一周（下一周最后交易日收盘 / 本周收盘 − 1，复权）
+
+label: y = 1 当且仅当下一周收益 > 0
+
+features:
+  rule: >-
+    只用判断日收盘为止的数据。收益类与距离类特征一律按该资产当时的波动标准化（σ63 = 过去 63 日对数收益标准差）。
+    训练集内按特征逐个在 1% / 99% 分位缩尾，再用训练集的均值和标准差标准化；缺失用训练集中位数，并为在训练集中出现过缺失的特征加缺失标记。
+    资产代码不作为特征。
+  A_trend: >-
+    z_n = n 日对数收益 / (σ63 × √n)，n = 5、10、21、63、126、252；12-1 个月 z（第 252 至第 22 日）；
+    到 20、50、100、200 日均线的距离 / σ63；50 日与 200 日均线 20 日斜率 / σ63；距 252 日最高收盘的回撤（/σ63 与百分比）；距 252 日最低收盘的距离 / σ63；
+    Kaufman 效率比（10 日日步长；63 日 6 日步长）
+  B_relative: >-
+    仅板块（SPY 为缺失并带标记）：对 SPY 的 252 日贝塔与 63 日相关；残差收益（板块 − β × SPY）5、21、63 日之和 / (残差日标准差 × √n)
+  C_volatility: >-
+    σ5、σ21、σ63、σ252（年化）；σ5/σ63、σ21/σ252；Parkinson 与 Garman-Klass 21 日波动；63 日下行半方差波动；
+    σ21 在过去 252 日中的标准差（波动的波动）；63 日偏度、峰度；21 日最大单日跌幅 / σ63；21 日平均隔夜跳空绝对值 / σ63；σ21 在自身 756 日中的分位
+  D_volume_flow: >-
+    20 日 CMF、20 日涨跌日成交量比、5 日 / 60 日成交量、21 日 / 126 日成交额；CMF 与涨跌日成交量比在自身 1260 日中的分位
+  E_breadth: 成分股中收盘高于 50 日、200 日均线的比例；创 20 日新高减新低的比例；高于 50 日均线比例的 20 日变化
+  F_market: >-
+    SPY 的 z_21、z_63、z_252；前 500 只中高于 200 日均线的比例；板块 21 日收益的截面标准差（分化）；板块之间 63 日平均两两相关；
+    VIX、VIX 相对过去 252 日的 z、VIX / VIX3M；BAA10Y 的 z（252）；T10Y2Y 水平及 20 日变化；DGS10 的 20 日变化；原油、美元 20 日涨跌
+  G_calendar: >-
+    目标周是否包含月末最后一个交易日或月初前三个交易日（turn of month，Ariel 1987、McConnell & Xu 2008）；
+    是否包含 FOMC 声明日（Lucca & Moench 2015）；目标周交易日数 < 5（节假日周）；目标周所在月份的 sin / cos；
+    该资产以往各年同一月份的平均月收益（至少 5 年）
+
+models:
+  common: >-
+    所有资产合并训练。每年 1 月重训，只用"下周结果在上年 12 月 31 日前已知"的周。
+    内部选择用时间顺序交叉验证：训练期最后 5 个完整年份各作一次验证折，每折只用其之前的数据训练，两者之间隔 1 周（标签长度）；
+    选择标准 = 5 折验证对数损失的平均，相对"训练集基础比例"；若没有任何配置优于基础比例，当年模型就是基础比例（不表态）。
+    第一次预测需要 1 年以上训练 + 5 个验证年份，样本外约从 2007 年起
+  M1: 弹性网逻辑回归（saga，l1_ratio 0.5），C ∈ {0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 1}
+  M2: >-
+    LightGBM 二分类：num_leaves ∈ {7, 15} × min_data_in_leaf ∈ {200, 500}，learning_rate 0.02，feature_fraction 0.7，
+    bagging_fraction 0.7（每轮），lambda_l2 10，seed 7，deterministic；每折提前停止（最多 1000 棵，耐心 100），
+    最终树数 = 所选配置 5 折最优树数的中位数
+  M3: M1 与 M2 概率的平均（任一为基础比例时即用另一个与基础比例的平均）
+
+up_call:
+  rule: 模型概率 ≥ 0.62 即判断"下周会涨"；其余不表态。阈值在登记时固定（留出约 2 个百分点给样本外的退化），不按结果调整
+  benchmarks_reported: >-
+    同样输出"会涨"判断的简单规则（只报告，不参与判定）：B1 收盘高于 200 日均线；B2 CMF 在自身 1260 日中处于最低五分之一；
+    B3 目标周包含月初（turn of month）
+
+evaluation:
+  oos: 第一次预测到 2026-09；按样本外期间中点分前后两半；另报告各年
+  precision: 判断"会涨"的资产-周中，下周实际上涨的比例
+  vs_base: 同一批资产-周里，(实际上涨 − 训练集基础比例) 的平均；按周平均后 Newey-West t（滞后 4）
+  frequency: 每个资产平均每年的"会涨"判断次数
+  no_harm: 全部资产-周的样本外对数损失，相对基础比例
+  calibration: 按预测概率分十组的预测均值与实际比例；校准斜率
+  economic_descriptive: 只在"会涨"的周持有、否则现金 vs 一直持有（年化、夏普、最大回撤；单边成本 0.05%），只报告
+
+pass:
+  rule: >-
+    一个模型通过需要同时满足：
+    (1) 判断"会涨"的准确率全样本 ≥ 60%，前后两半都 ≥ 60%；
+    (2) 比基础比例高 ≥ 4 个百分点，t ≥ 3.64；
+    (3) 平均每个资产每年 ≥ 6 次判断；
+    (4) 全部周的样本外对数损失前后两半都不高于基础比例（不表态时等于基础比例，所以只要求不更差）。
+  multiple_testing: 短期反转族此前 7 次（含 weekly_direction_v1 的 2 个模型），本次 3 个模型，共 10 次；检验关 t ≥ 3 对应双侧 0.0027，Bonferroni 除以 10 为 0.00027，对应 t ≥ 3.64
+  outcome: >-
+    通过 → 知识库条目 backtested；Scout 每周末对 SPY 和各板块计算，只在"会涨"时显示，附历史准确率与次数，每条进入判断台账（kind weekly_up）前向打分；
+    多个模型通过时用 M3。不通过 → 条目 rejected，不改特征、阈值或模型重算；Scout 不显示周度方向。
+
+expected_failure: >-
+  weekly_direction_v1 的样本外诊断显示几乎没有可学的信息（事后最优校准只比基础好 0.001）；更丰富的特征可能只是提供更多拟合噪音的机会，
+  交叉验证会把多数年份收缩到基础比例，导致判断次数不足；月初效应与 FOMC 效应在文献中真实但幅度小，且近年可能减弱；
+  "会涨"的判断可能集中在牛市年份，准确率高只是因为那几年本来就常涨（与基础比例的比较用于排除这一点）。
+disclosure: >-
+  登记前看过的：weekly_direction_v1 的全部结果与事后诊断（两个模型样本外均差于基础比例；高置信组 55.4% / 58.2%；逐年校准斜率正负各半）；
+  2026-11-05 的周度探索（按过去 1、4、12 周收益、CMF、涨跌日成交量比分五组的下周上涨比例；CMF 最低五分之一 62–66%，主要在 2013 年后）；
+  risk_warning_v1、sector_forecast_v1 与机器学习第 1–6 阶段的否定结论。没有计算过本方案新增的任何特征（波动标准化收益、残差强弱、多期限波动、
+  跨资产、市场分化与相关、日历、FOMC）与下周收益的关系。
