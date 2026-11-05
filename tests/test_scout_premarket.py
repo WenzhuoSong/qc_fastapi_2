@@ -172,6 +172,18 @@ class RenderTests(unittest.TestCase):
         self.assertIn("谘商会消费者信心", html)
         self.assertIn("<details", premarket_card(rec, current=False))
 
+    def test_card_without_pre_report_consensus(self):
+        from copy import deepcopy
+
+        from scout.web.views import premarket_card
+
+        pack = deepcopy(PACK)
+        for e in pack["earnings_reported"]:
+            e.pop("EPS 预期", None)
+            e.pop("EPS 超预期幅度", None)
+        html = premarket_card({"source": "llm", "model": "m", "brief": brief().model_dump(), "pack": pack}, current=True)
+        self.assertIn("无财报前预期", html)
+
 
 class PremarketWindowTests(unittest.TestCase):
     def test_one_of_the_two_utc_firings_runs_in_each_season(self):

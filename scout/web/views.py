@@ -640,7 +640,8 @@ def premarket_card(rec: dict | None, current: bool) -> str:
 
     earn = []
     for e in p["earnings_reported"]:
-        s = f"{tl(e['代码'])} {escape(e['时间'])} EPS {escape(e['EPS 实际'])} vs {escape(e['EPS 预期'])}"
+        s = f"{tl(e['代码'])} {escape(e['时间'])} EPS {escape(e['EPS 实际'])}"
+        s += f" vs 预期 {escape(e['EPS 预期'])}" if e.get("EPS 预期") else "（无财报前预期）"
         s += f"（{escape(e['EPS 超预期幅度'])}）" if e.get("EPS 超预期幅度") else ""
         s += f"，盘前 {escape(e['盘前较前收'])}" if e.get("盘前较前收") else ""
         earn.append(s)
