@@ -1,0 +1,78 @@
+# Pre-registration of the weekly-direction test, written 2026-11-05 before any model was fitted or scored.
+# Never edited after the run; a changed design is a new file with a new key. Run once (local only: Sharadar
+# files in exports/sharadar/, French data in exports/research_data/, FRED fetched at run time; results in
+# exports/weekly_direction/, summary numbers only leave it).
+key: weekly_direction_v1
+registered_on: '2026-11-05'
+requested_by: 用户 2026-11-05："再加上其他的指标呢？目前已有的所有信息，能 boost 吗"；"好，先写预注册方案"
+family: short_term_reversal
+question: >-
+  用 Scout 现有、有历史的全部信息（价格、成交量代理的买卖盘、波动、宽度、宏观、季节性）合起来，
+  能否找出 SPY 和 SPDR 板块 ETF"下周上涨概率明显高于平时"的那些周？预测的概率是否可靠（校准）？只在这些周持有是否更好？
+why: >-
+  2026-11-05 的探索（见 disclosure）：单个指标分组时下周上涨概率都在平时（约 56%）附近，资金流 CMF 最弱的五分之一约 62–66%，
+  但只在 2013 年以后明显。这里把所有有历史的信息合在一个预先固定的模型里，一次检验，回答"合起来能不能给出可靠的周度方向"。
+
+data:
+  assets: SPY 与 SPDR 板块 ETF XLB XLE XLF XLI XLK XLP XLU XLV XLY（1998-12 起）、XLRE（2015-10 起）、XLC（2018-06 起），Sharadar SFP 日线（closeadj、high、low、close、volume）
+  members: 板块成分股宽度与 risk_warning_v1 相同（Sharadar 前 1000，按 sector 对应 SPDR；SPY 用市值前 500）
+  macro: FRED VIXCLS、BAA10Y、T10Y2Y（取判断日前一个交易日的值）；French 日度 RF（现金收益）
+  end: 本地数据最后一周（French RF 到 2026-09-30）
+  weeks: 每周最后一个交易日收盘判断；目标周 = 下一周（下一个周最后交易日收盘 / 本周收盘 − 1）
+
+target:
+  primary: 下周收益 > 0（"上涨"）
+  descriptive: 板块下周收益 > SPY 下周收益（只报告）
+
+features:
+  rule: 全部只用判断日收盘为止的数据；每个特征在训练集上做标准化（均值、标准差都只来自训练集）；缺失用训练集中位数并加缺失标记
+  price: 过去 1、4、12、52 周收益；相对 SPY 的过去 1、4、12 周收益（SPY 自身为 0）；收盘 / 200 日均线 − 1
+  volatility: 21 日实现波动在自身过去 756 日中的分位（至少 504 日）；21 日实现波动的水平
+  flow_proxies: 20 日资金流 CMF、20 日涨跌日成交量比，以及两者在自身过去 1260 日中的分位（至少 756 日）
+  breadth: 成分股中收盘高于 50 日均线的比例；该比例的 4 周变化
+  macro: VIX 水平与其 4 周变化；BAA10Y 相对过去 252 个观测的 z 值；T10Y2Y 水平
+  seasonality: 该 ETF 过去各年同一日历月份的平均月收益（至少 5 年，否则缺失）
+  excluded: 资产代码本身不作为特征（避免记住某个板块）；新闻、预测市场、分析师修正没有历史，不进入
+
+models:
+  M0: 基础比例：训练集中下周上涨的比例
+  M1: L2 正则逻辑回归，C = 0.1，固定，不调
+  M2: LightGBM 二分类，固定配置：num_leaves 15、min_data_in_leaf 100、learning_rate 0.03、300 棵树、feature_fraction 0.8、bagging_fraction 0.8（每 1 次）、seed 7；不提前停止、不调参
+  refit: 每年 1 月用"下周结果在上年 12 月 31 日前已知"的所有周重新训练；至少 4 年训练数据后开始预测（约 2006 年起），之后为样本外
+  pooling: 所有资产合并成一个训练集
+
+evaluation:
+  oos_period: 第一次预测到最后一周；按样本外期间中点分前后两半
+  probability: >-
+    对数损失与 Brier 相对 M0 的改善；每周把各资产的损失差取平均，得到周度序列，Newey-West t（滞后 4）；
+    校准：按预测概率分十组的预测均值与实际比例，校准斜率（实际 ~ 预测 logit 的回归）
+  high_confidence: >-
+    预测概率 ≥ 0.65 的资产-周：实际上涨比例、与同一批资产-周的 M0 概率之差（周度平均后 Newey-West t，滞后 4）、
+    平均每年出现的次数（每个资产）、前后两半
+  economic: >-
+    每周每个资产：预测概率高于该资产当年训练集的基础比例时持有下一周，否则持有现金；资产等权；单边成本 0.05%（敏感性 0.20%）；
+    对照 = 同样资产一直持有、等权。夏普、最大回撤、年化，前后两半
+
+pass:
+  rule: >-
+    一个模型通过需要同时满足：
+    (1) 样本外对数损失低于 M0，全样本周度 t ≥ 3.55，前后两半都低于 M0；
+    (2) 高置信度组（p ≥ 0.65）实际上涨比例比 M0 高 ≥ 5 个百分点，t ≥ 3.55，前后两半都 > 0，平均每个资产每年 ≥ 4 次；
+    (3) 经济检验的夏普前后两半都不低于一直持有；校准斜率在 [0.5, 1.5]。
+  multiple_testing: >-
+    记入短期反转族（此前 5 次：短期反转、高波动版本、质量公司冲击反转等），本次 2 个模型，共 7 次；
+    检验关 t ≥ 3 对应双侧 0.0027，Bonferroni 除以 7 为 0.00039，对应 t ≥ 3.55。
+    资金流这个想法是在 50 个分组格子里事后看到的（disclosure），门槛不再另加，但结论里必须写明
+  outcome: >-
+    通过 → 知识库条目 backtested；Scout 每周末为 SPY 和板块计算下周上涨概率，只在高置信度（≥ 0.65）时显示，附历史命中率，
+    每条进入判断台账（kind weekly_direction）前向打分；用户决定是否据此操作。
+    不通过 → 条目 rejected，不调参数、不换特征重算；Scout 不显示周度方向，只显示正常波动范围。
+
+expected_failure: >-
+  多数特征都在描述"最近跌了多少"，合并后信息不会成倍增加；探索中的效果主要在 2013 年以后，样本外前半段可能没有；
+  同一周的板块高度相关，有效样本远小于观测数；LightGBM 在小样本上容易学到噪音；高置信度的周可能很少。
+disclosure: >-
+  登记前看过的（2026-11-05 探索，Sharadar 1999-06 至 2026-09 周线，全样本或过去 5 年分界）：SPY 与 9 个板块 ETF 合并的下周上涨基础概率
+  （约 56% / 55%）；按过去 1、4、12 周收益、CMF、涨跌日成交量比分五组的下周上涨比例与平均收益；这些量与下周收益的相关（约 −0.05 至 −0.11，两个时期都为负）；
+  CMF 最低 / 最高五分之一（过去 5 年分界）的上涨比例及其前后两半（SPY 最低组 66%，前 58% / 后 71%；板块最低组 62%，前 56% / 后 64%）。
+  另外看过：risk_warning_v1、sector_forecast_v1 的结果与 Scout 机器学习第 1–6 阶段的否定结论。没有拟合过任何模型，没有看过 VIX、信用利差、宽度、季节性等特征与下周收益的关系。
