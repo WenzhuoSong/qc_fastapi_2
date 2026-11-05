@@ -1,0 +1,83 @@
+# Pre-registration of the risk-warning test, written 2026-11-05 before any warning, drawdown or strategy return
+# was computed. Never edited after the run; a changed design is a new file with a new key. Run once (local only:
+# Sharadar prices in the git-ignored exports/sharadar/, FRED and French data in exports/research_data/; results in
+# exports/risk_warning/, summary numbers only leave it).
+key: risk_warning_v1
+registered_on: '2026-11-05'
+requested_by: 用户 2026-11-05："你能让 scout 也有类似的预警能力吗"（一条推文称其风控模型 10 月 6 日对半导体和存储发出预警，随后板块大跌）；"好，先写预注册方案"
+family: risk_warning
+question: >-
+  几个固定的、有文献依据的"风险环境"条件同时出现时（预警），之后 63 个交易日内出现大回撤的概率是否明显高于平时？
+  按预警把敞口降到现金，扣掉成本和错过的涨幅后，回撤和风险调整收益是否在前后两半都更好？分两个层面：行业板块（SPDR 板块 ETF）和大盘（SPY）。
+why: >-
+  Scout 现有工具只能事后确认下跌（板块趋势确认、20% 移动止损），大盘过滤只看 SPY 的 10 个月均线，对板块级下跌不起作用；
+  个股层面的暴跌概率模型（ml_risk_v1）没能胜过"过去的波动"。这次检验的是板块和大盘层面、由几个条件组合的预警。
+
+literature:
+  - Faber (2007)：价格低于长期均线时持有现金，主要降低回撤，不提高收益（Scout 的大盘过滤即来自此）
+  - Moreira & Muir (2017, JF)，Volatility-Managed Portfolios：近期波动高时降低敞口，风险调整收益提高；Cederburg 等 (2020, JFE) 认为样本外多数不成立——两边都写明
+  - Daniel & Moskowitz (2016, JFE)，Momentum Crashes：动量领涨部分在高波动、市场回撤后容易集中暴跌
+  - 宽度背离（指数接近高点而成分股参与度下降）：从业者常用（StockCharts、Investors Intelligence），学术证据弱，只作为条件之一
+  - 信用利差扩大先于股市下跌：Gilchrist & Zakrajšek (2012, AER) 的超额债券溢价；这里用 ICE BofA 高收益利差作免费代理
+
+data:
+  prices: Sharadar SFP（funds）closeadj，日线；SPDR 板块 ETF XLB XLE XLF XLI XLK XLP XLU XLV XLY（1998-12 起），XLRE（2015-10 起）、XLC（2018-06 起）满足窗口后加入；SPY
+  members: Sharadar SEP 日线（含已退市股票），每日按市值取前 1000（价格 ≥ 5 美元）；板块按 Sharadar 的 sector 字段对应 SPDR：
+    Technology→XLK、Healthcare→XLV、Financial Services→XLF、Consumer Cyclical→XLY、Consumer Defensive→XLP、Energy→XLE、Industrials→XLI、
+    Basic Materials→XLB、Utilities→XLU、Real Estate→XLRE、Communication Services→XLC（XLC 上市前该组股票不参与任何板块）。
+    Sharadar 的 sector 是当前分类而非历史分类，写明为已知偏差
+  credit: FRED BAMLH0A0HYM2（ICE BofA 美国高收益利差，1996-12 起），用前一个交易日的值
+  cash: French 日度 RF
+  end: 2026-10-28（本地 Sharadar 最后一天）；样本 1999-01-04 起（ETF 有足够历史后）。两半按样本中点日期切分
+  extra_descriptive: SOXX（2001-07 起，半导体）按板块层面同样计算，只描述，不参与判定（用户关心的板块；SPDR 没有单独的半导体 ETF）
+
+conditions:
+  note: 全部在收盘后用到当天为止的数据判断；参数按惯例固定，在看任何结果之前写死
+  sector:
+    S1_trend_break: ETF 收盘 < 自身 200 日均线
+    S2_vol_expansion: ETF 21 日实现波动处于自身过去 756 个交易日分布的最高五分之一（至少 504 日历史）
+    S3_overextended: ETF 收盘 / 200 日均线 处于自身过去 1260 个交易日分布的最高 5%（至少 756 日历史）
+    S4_breadth_divergence: ETF 收盘 ≥ 过去 252 日最高收盘 × 0.95，且对应成分股中收盘高于自身 50 日均线的比例 < 50%（成分股 ≥ 10 只）
+    S5_credit_stress: 高收益利差高于其过去 252 日均值 2 个标准差以上（市场共用条件）
+  market:
+    M1_trend_break: SPY 收盘 < 200 日均线
+    M2_vol_expansion: SPY 21 日实现波动处于自身过去 756 日的最高五分之一
+    M3_overextended: SPY 收盘 / 200 日均线 处于自身过去 1260 日的最高 5%
+    M4_breadth_divergence: SPY ≥ 252 日最高 × 0.95，且前 500 只（市值）中高于 50 日均线的比例 < 50%
+    M5_credit_stress: 同 S5
+  warning: 同一层面上有 ≥ 2 个条件同时成立即为预警；少于 2 个即解除（不设缓冲）
+  single_conditions: 每个条件单独的结果全部报告，只作描述，不参与判定（避免事后挑选）
+
+measure:
+  outcome_drawdown: 从判断日收盘起，未来 63 个交易日内的最低收盘 / 判断日收盘 − 1；"大回撤" = 板块 ≤ −15%、SPY ≤ −10%
+  outcome_returns: 未来 21 / 63 日收益（描述）
+  predictive: >-
+    每个层面：预警日与非预警日的大回撤比例之差和比值（lift）；按判断月份聚类求 t（样本日重叠，月聚类为主，另报 Newey-West 63 滞后）；
+    板块层面把所有板块的日观测合并（同日各板块相关，按月聚类已覆盖）；前后两半分别报告
+  false_alarms: 预警次数（预警从无到有算一次）、每年处于预警的天数比例、预警后 63 日内没有出现大回撤的比例、预警期间错过的上涨
+  exposure_test: >-
+    板块层面：每个板块各自持有，处于预警时次日收盘换成现金，解除后次日收盘买回；所有可用板块等权合成，每月再平衡；单边成本 0.05%（敏感性 0.20%）。
+    对照 = 同样板块一直持有（等权）。大盘层面：SPY 同样处理，对照 = SPY 买入持有，以及 SPY + 现行大盘过滤（10 个月均线）；
+    另报"大盘过滤 + 预警"相对"只用大盘过滤"（用户现行规则之上是否还有增量）。
+    指标：年化、波动、夏普、最大回撤、最差 12 个月、处于现金的时间比例，前后两半
+
+pass:
+  rule: >-
+    一个层面通过需要同时满足：
+    (1) 预测：大回撤比例之差全样本月聚类 t ≥ 3.21，lift ≥ 1.5，前后两半差值都 > 0；
+    (2) 经济：降敞口版本的夏普前后两半都高于对照，最大回撤前后两半都更小；
+    大盘层面另需"大盘过滤 + 预警"的夏普前后两半都不低于"只用大盘过滤"，否则只算"可替代现行过滤"，不算增量。
+  multiple_testing: 新方向 risk_warning，本次 2 个检验（板块、大盘）；检验关 t ≥ 3 对应双侧 0.0027，Bonferroni 除以 2 为 0.00135，对应 t ≥ 3.21
+  outcome: >-
+    通过 → 知识库条目 backtested，Scout 实时计算并推送预警（大盘层面推送给所有人；板块层面优先推送持仓和自选股所在板块），进入前向记录，由用户决定是否据此减仓；
+    不通过 → 条目 rejected，不调参数、不换条件重算；Scout 只把这些条件作为描述性"风险仪表盘"展示，附历史上同样读数之后大回撤的比例，不推送"预警"。
+    无论结果如何，上线后每条预警都记入判断台账（kind risk_warning），5 / 20 / 60 日后打分，包括虚惊
+
+expected_failure: >-
+  均线和波动条件在下跌已经开始后才成立，可能只是"确认"而不是"预警"，降敞口后又错过反弹（2018 年底、2020 年 3 月这类急跌急涨）；
+  过热条件在强趋势中会长期成立（领涨板块常年偏离均线），虚惊多；宽度和信用条件样本少；板块之间高度相关，独立样本远少于观测数。
+disclosure: >-
+  登记前看过的：2026-09-15 至 2026-11-04 SMH、MU、SPY 的少数读数（SMH 10 月 6 日高于 200 日均线 26%，相对自身两年历史只高 0.2 个标准差；
+  21 日波动低于一年波动；10 月 6 日至 11 月 4 日 SMH −23.8%），以及 Scout 新的板块趋势确认在 10 月 9 日、16 日对 SMH 的读数；
+  这些日期在本地数据中只覆盖到 10 月 28 日。另外看过：板块轮动 6 次否定、ml_risk_v1 的否定结果、大盘过滤（exit_redeploy）的结果。
+  没有计算过任何预警条件在历史上的命中率、回撤或策略收益。
