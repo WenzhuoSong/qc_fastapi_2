@@ -1,0 +1,86 @@
+# Pre-registration of the sector-forecast test, written 2026-11-05 before any signal, forecast or strategy return
+# was computed. Never edited after the run; a changed design is a new file with a new key. Run once (local only:
+# Sharadar files in exports/sharadar/, French data library in exports/research_data/; results in
+# exports/sector_forecast/, summary numbers only leave it).
+key: sector_forecast_v1
+registered_on: '2026-11-05'
+requested_by: 用户 2026-11-05："我想要它，能够给出未来一段时间还会上涨/开始下跌的信息"；"好，先写预注册方案"
+family: sector_rotation
+question: >-
+  三个不靠近期价格排名的信号，能否预测行业未来 1 个月（主要）和 3 个月（次要）的表现，并给出校准的概率？
+  F1 行业基本面加速 → 相对大盘；F2 行业同月季节性 → 相对大盘；F3 行业自身 12 个月趋势 → 自身是涨是跌（超过无风险利率）。
+why: >-
+  Scout 现有板块读数（热度、轮动、趋势确认、风险条件）都由过去价格算出，2026-11-05 测得它们与之后 1–4 周相对表现的相关性约为 0；
+  板块轮动方向已否定 6 次，都是价格的截面排名。这次换成价格以外的信息（F1）、日历规律（F2），以及板块自身而非相互比较的趋势（F3）。
+
+literature:
+  F1:
+    - Chan, Jegadeesh & Lakonishok (1996, JF)，Momentum Strategies：盈利动量（SUE、预期修正）独立于价格动量
+    - Novy-Marx (2015, NBER w20984)，Fundamentally, Momentum is Fundamental：价格动量主要来自盈利动量
+    - Scout 知识库假设 method_revenue_acceleration（行业收入增速拐点），至今无证据
+  F2:
+    - Heston & Sadka (2008, JFE)，Seasonality in the Cross-Section of Stock Returns：同一日历月份的收益在多年间重复
+    - Keloharju, Linnainmaa & Nyberg (2016, JF)，Return Seasonalities：行业、国家、因子层面同样存在
+  F3:
+    - Moskowitz, Ooi & Pedersen (2012, JFE)，Time Series Momentum：过去 12 个月超额收益为正的资产，下个月超额收益倾向为正，股票指数上成立
+  known_against:
+    - 2000 年以后行业动量、板块 ETF 动量明显减弱（CXO、Zhao 2014、Tse 2015）；Scout 的板块轮动 6 次否定；
+      Hurst 等提到 2009 年后趋势策略整体平淡
+
+data:
+  french: Kenneth French 49 行业价值加权月收益（1926-07 至 2026-09，−99.99 视为缺失），市场 = Mkt-RF + RF，无风险 = RF；用于 F2、F3（主要）
+  sharadar_industries: >-
+    Sharadar SEP 月末 closeadj（含已退市股票），每月末按市值取前 1000（价格 ≥ 5 美元），按 Sharadar industry 字段分组，
+    当月有 ≥ 5 只成分股的行业组成市值加权组合（权重用月末市值，持有到下月末）；1999-01 至 2026-09；用于 F1（主要），F2、F3 作描述
+  spdr: SPDR 板块 ETF 月末 closeadj（XLB XLE XLF XLI XLK XLP XLU XLV XLY 1999 起，XLRE 2015-10 起，XLC 2018-06 起），基准 SPY；
+    成分股按 Sharadar sector 对应（与 risk_warning_v1 相同）；三个信号都在这里报告，只作描述（只有 11 个，统计力不足），是 Scout 页面上实际会显示的层面
+  fundamentals: Sharadar SF1 ARQ（单季度、按原始申报），只用申报日（date 字段）严格早于月末的记录；同一季度的修订按当时可见的版本
+  known_bias: Sharadar 的 industry / sector 是当前分类而非历史分类
+
+signals:
+  timing: 每个月最后一个交易日收盘后计算，只用到该日为止的数据；持有下一个月（月末到月末）
+  F1_fundamental_acceleration: >-
+    每只成分股取最近一次已申报的季度（申报日在过去 135 个日历日内，否则视为缺失）：
+    (a) SUE = (本季 EPS − 去年同季 EPS) / 过去 8 个季度这一差值的标准差（至少 6 个），缩尾到 [−5, 5]；
+    (b) 收入加速 = 最近 4 季收入同比增速 − 上一季度时的最近 4 季收入同比增速 > 0。
+    行业信号 = 当月各行业之间的两个排名的平均：成分股 SUE 的中位数的排名、收入加速成分股占比的排名；
+    行业要有 ≥ 5 只成分股两项都可用
+  F2_same_month_seasonality: 行业过去 20 年同一日历月份收益的平均（滞后 12、24 …… 240 个月；至少 5 个），按行业之间排名
+  F3_own_trend: 行业过去 12 个月的累计超额收益（相对无风险，含最近一个月）的符号；正 = 预测下个月超额收益为正
+
+tests:
+  cross_section_F1_F2: >-
+    每月按信号把行业分五组；主要统计 = 最高一组等权组合 − 全部行业等权的下月收益（"相对大盘"的超额，扣单边 0.05% × 换手）；
+    月度序列的 Newey-West t（滞后 2；3 个月期限用重叠持有、滞后 4）；另报秩相关 IC 与最低一组。
+  time_series_F3: >-
+    每个行业-月份一个观测：下月超额收益对信号符号的回归（信号为正 vs 为负的均值差），按月聚类 t；
+    组合版本 = 每个行业信号为正时持有、为负时持有现金，行业等权，与全部行业等权一直持有比较（夏普、最大回撤）。
+  probability: >-
+    每个信号一个扩展窗口逻辑回归（每年 1 月用到上年 12 月为止的数据重新拟合，至少 10 年数据后开始）：
+    F1 / F2 预测 P(下月行业收益 > 全部行业等权收益)，输入为信号排名；F3 预测 P(下月超额收益 > 0)，输入为信号符号与过去 12 个月超额收益的 z 值；
+    样本外对数损失、Brier 与"只用历史基础比例"的基线比较，并按预测概率分十组报告校准（预测均值 vs 实际比例）。
+  horizons: 1 个月为主要；3 个月为次要（同一信号，持有 3 个月，重叠）
+  splits: >-
+    F1：Sharadar 1999-2026 按中点分两半。F2、F3：French 1926-2026 按中点分两半，另报 2000 年以后、各个十年。
+    SPDR 层面三个信号都只作描述。
+
+pass:
+  per_signal: >-
+    一个信号通过需要同时满足：(1) 主要统计（1 个月）全样本 t ≥ 3.62，前后两半都 > 0；F2、F3 另需 2000 年以后 > 0；
+    (2) 概率模型样本外对数损失低于基线，前后两半都满足；校准斜率在 [0.5, 1.5]。
+  multiple_testing: >-
+    记入板块轮动族（此前 6 次否定），本次 3 个信号，共 9 次；检验关 t ≥ 3 对应双侧 0.0027，Bonferroni 除以 9 为 0.0003，对应 t ≥ 3.62
+  outcome: >-
+    通过的信号 → 知识库条目 backtested，Scout 每月末计算，在市场全景对每个 SPDR 板块显示"下个月跑赢大盘 / 上涨的概率"（只显示通过的信号，
+    附依据与历史校准），每条预测记入判断台账（kind sector_forecast）前向打分；用户决定是否据此操作。
+    不通过 → 条目 rejected（F1 同时更新 method_revenue_acceleration 的证据），不调参数、不换窗口重算；页面不显示任何板块预测。
+
+expected_failure: >-
+  F1：行业内公司多数已被分析师和价格提前反映，季度频率信息少；Sharadar 前 1000 中每个行业成分股不多，行业中位数噪音大。
+  F2：季节性在单个行业层面可能被少数年份驱动，2000 年后可能消失。
+  F3：在行业层面接近"大盘过滤"的效果，可能只是降低回撤、不预测相对表现；急跌急涨时来回止损。
+  所有信号：月度预测的命中率即使成立也只会在 50% 出头，概率模型很可能只比基础比例好一点。
+disclosure: >-
+  登记前看过的：2026-11-05 测量的板块热度及其各分项与之后 1–4 周相对表现的相关性（约为 0）；risk_warning_v1 的结果；
+  板块轮动 6 次否定的结论；cross_asset_trend_v1 的设计（未看其行业层面结果——它不在行业层面）。
+  只检查了数据文件的列与格式（Sharadar fundamentals 的字段、French 49 行业文件结构）；没有计算过任何信号或其之后的收益。
