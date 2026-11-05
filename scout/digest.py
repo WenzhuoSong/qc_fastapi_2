@@ -63,7 +63,14 @@ async def gather(asof: date, earnings: dict[str, list[dict]], prop_signals: list
             k = None
         if k:
             kpis[tk] = k
+    from scout import norms
+
+    try:
+        hist = await norms.for_tickers(held) if held else {}
+    except Exception:                     # a description must not cost the digest
+        hist = {}
     return {"held_rows": held_rows, "watch": watch, "feats": feats, "news": news, "info": info, "earnings": nxt, "gaps": gaps, "kpis": kpis,
+            "norms": hist,
             "prop": prop_signals, "managed": {m["ticker"]: m["messages"] for m in managed}}
 
 
@@ -102,6 +109,11 @@ def holding_items(g: dict, asof: date) -> list[dict]:
         if k:
             shown = [m["text"] for m in k["metrics"] if m.get("reading")][:KPI_LINES]
             lines.append(f"🏭 行业（{esc(k['industry'])}）：" + (esc("；".join(shown)) if shown else f"缺少免费数据（{esc(k['missing'])}）"))
+        from scout import norms
+
+        nl = norms.line(g.get("norms", {}).get(tk), to_stop=m.get("to_stop"))
+        if nl:
+            lines.append(f"📊 {esc(nl)}")
         step = next_step(t, m) if "pnl" in m else ""
         sigma = (f.get("vol_63") or 0) / 252 ** 0.5
         if "to_stop" in m and sigma and -m["to_stop"] < NEAR_STOP_SIGMAS * sigma:

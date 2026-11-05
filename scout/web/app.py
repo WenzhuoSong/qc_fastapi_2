@@ -294,6 +294,12 @@ async def _side_panel(t: str, opp: dict | None, f: dict, struct: dict, bars: lis
     except Exception:
         logger.exception("price map for %s failed", t)
         pm = {}
+    try:
+        from scout import norms
+
+        pm = {**pm, "norms": await norms.for_ticker(t)}
+    except Exception:
+        logger.exception("norms for %s failed", t)
     panel = views.price_panel(pm, live, settings, opp=active, today=today, tracking_html=tracking, ticker=t)
     if active and active["primary_detector"] in learned.held_back(await learned.current()):
         panel = views.REJECTED_NOTE + panel
@@ -423,7 +429,7 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
 
 
 @app.get("/market", response_class=HTMLResponse)
-async def market_page(view: str = "sectors", _: str = Depends(require_auth)) -> str:
+async def market_page(view: str = "sectors", norms: int = 21, _: str = Depends(require_auth)) -> str:
     import pandas as pd
 
     from scout import knowledge, market_focus, sector_news
@@ -521,7 +527,13 @@ async def market_page(view: str = "sectors", _: str = Depends(require_auth)) -> 
     macro = await sector_news.macro_headlines(8)
     mnews = "".join(f"<li><a href='{e(x['url'])}' target='_blank' rel='noopener'>{e(x['headline'])}</a> "
                     f"<span class='small muted'>{e(x.get('source'))} {e(x.get('published'))}</span></li>" for x in wraps + macro)
-    body = (f"<h2>市场全景</h2><div class='duo'>{focus_html}{rrg_html}</div>{trend_html}{table_html}"
+    from scout import norms as nm
+
+    norms_asof, norms_rows = await nm.latest()
+    names = {"SPY": "S&P 500", **{r["key"]: r["name"] for r in rows}}
+    norms_html = (f"<div class='card' id='norms'><h3>历史常态 <span class='small muted'>未来一段时间通常会怎样 · 不是预测 · {e(norms_asof)}</span></h3>"
+                  f"{views.norms_card(norms_rows, names, norms if norms in nm.HORIZONS else nm.DEFAULT_H)}</div>")
+    body = (f"<h2>市场全景</h2><div class='duo'>{focus_html}{rrg_html}</div>{norms_html}{trend_html}{table_html}"
             f"<h2>板块详情</h2><div class='grid'>{''.join(cards)}</div>"
             f"<h2>全市场新闻</h2><div class='card'><ul class='tight'>{mnews or '<li class=muted>暂无</li>'}</ul></div>")
     return layout("市场全景", "market", body)

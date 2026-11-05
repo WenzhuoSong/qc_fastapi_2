@@ -165,6 +165,13 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     for r in sector_rows:              # trend states that changed since the previous session (digest)
         r["trend_changes"] = sector_trend.changes(sector_prev.get(r["key"]), r)
     summary["sectors"] = await sectors.store(asof, sector_rows)
+    try:                               # historical norms of SPY, sectors and themes (descriptive)
+        from scout import norms
+
+        summary["norms"] = await norms.store(asof)
+    except Exception as exc:
+        logger.warning("norms failed: %s", exc)
+        summary["norms"] = f"failed: {type(exc).__name__}"
     sector_ctx = {r["sector"]: sectors.card_context(r) for r in sector_rows if r["kind"] == "sector"}
 
     transitions = await tracker.update_all()

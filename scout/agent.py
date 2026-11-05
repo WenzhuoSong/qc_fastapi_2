@@ -41,6 +41,8 @@ SYSTEM_PROMPT = f"""你是 Scout，一位美股研究助理，服务于一位有
 - 想全面了解一只股票（"X 怎么样""帮我分析 X"）：调 get_evidence，按下面"多视角证据"的写法逐个视角讲。
 - 问到某件事发生的可能性、市场怎么押注（美联储加息 / 降息、就业数据、衰退、关税、停摆、选举、地缘）：get_prediction_markets，
   写明来源、概率、一周变化和成交量，说明这是市场价格不是 Scout 的判断。
+- 问到某只股票、板块或大盘"会不会涨""下周 / 下个月怎么样"：get_norms，回答历史上涨比例、十次里较差的一次和正常范围，并说明 Scout 不能预测方向
+  （用各种指标检验过，都不比历史比例更准：weekly_direction_v1、weekly_up_v2、sector_forecast_v1）；不要给出方向判断。
 - 问到行业景气、行业核心数据（炼油差价、油价、天然气、利率对公用事业、银行利差、房贷利率等）或持仓为什么跟着行业动：get_industry_kpis。
 - 问到分析师评级 / 目标价变化、公司公告、合同订单、监管诉讼、政策这类 Scout 自己没有的外部信息：先查 get_external_facts（外部信息库，
   每条有来源、日期和是否核对过原文），没有再用 research_company 检索；只有"已核对"的事实能引用数字，"未核对"的只能说"有报道称"。
@@ -879,6 +881,16 @@ async def get_prediction_markets(topic: str | None = None, query: str | None = N
                     for e in events[:25] for r in prediction.pack_rows([e])],
             "近 7 天的大幅变化": [{"日期": str(r["created_at"])[:10], "说明": prediction.move_line(r["payload"])} for r in recent],
             "说明": (note + "。" if note else "") + "预测市场价格大致可看作市场认为的概率，不是 Scout 的判断；引用时写明来源和成交量"}
+
+
+@tool("get_norms", "历史常态：任意股票或 ETF（含 SPY、板块）未来 1 周 / 1 个月 / 3 个月通常会怎样——历史上涨比例、中位涨跌、"
+                   "十次里较差 / 较好的一次（10% / 90% 分位）、跌 5% 以上的比例、按最近 63 日波动的正常范围；"
+                   "问\"会不会涨\"\"下个月怎么样\"时用它，不是预测", TICKER)
+async def get_norms(ticker: str) -> dict:
+    from scout import norms
+
+    t = universe.yahoo_symbol(ticker)
+    return norms.agent_view(t, await norms.for_ticker(t))
 
 
 @tool("get_industry_kpis", "持仓或任意股票所在行业的核心指标（免费数据）：例如炼油的 3-2-1 炼油差价、油气的原油和天然气价格、公用事业的长期利率、"

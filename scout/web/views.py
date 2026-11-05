@@ -1025,6 +1025,7 @@ def price_panel(pm: dict, live: dict | None, settings: dict | None, opp: dict | 
     if checks:
         out.append("<div class='small muted' style='margin-top:4px'>" + "<br>".join(checks) + "</div>")
     out.append(risk_block(pm))
+    out.append(norms_block(pm.get("norms")))
 
     entries = pm.get("entries") or []
     for en, es in zip(entries, st["entries"]):
@@ -1076,6 +1077,56 @@ def risk_block(pm: dict) -> str:
             + (f"<div class='small'>{escape(tier)}</div>" if tier else "")
             + "<div class='small muted'>按过去 63 日波动推算（风险研究里没有模型比它更准），实际涨跌的尾部比正态更厚："
               "超出 2σ 的情况比 1/20 更常见，尤其在财报和市场危机时。止损如果落在 1 个月的 1σ 范围内，更容易被正常波动触发。</div>")
+
+
+def norms_block(s: dict | None) -> str:
+    """Ticker page: what usually happens over 1 week / 1 month / 3 months (scout.norms)."""
+    from scout import norms
+
+    if not s:
+        return ""
+    rows = "".join(f"<tr><td>{norms.HORIZONS[int(h)]}</td><td>{x['up'] * 100:.0f}%</td><td>{norms.pct(x['median'])}</td>"
+                   f"<td>{norms.pct(x['p10'])} / {norms.pct(x['p90'])}</td><td>{x['drop5'] * 100:.0f}%</td></tr>"
+                   for h, x in s["h"].items())
+    calm = norms.calm_note(s)
+    return (f"<div style='margin-top:8px'><b>历史常态</b> <span class='small muted'>{escape(s['since'])} 起约 {s['years']} 年</span></div>"
+            "<table class='small'><thead><tr><th>期限</th><th>上涨比例</th><th>中位涨跌</th><th>十次里较差 / 较好的一次</th><th>跌 5% 以上</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table>"
+            + (f"<div class='small'>{escape(calm)}</div>" if calm else "")
+            + (f"<div class='small'>{escape(norms.history_note(s))}。</div>" if norms.history_note(s) else "")
+            + f"<div class='small muted'>{escape(norms.SOURCE_NOTE)}。</div>")
+
+
+NORMS_GUIDE = ("<details class='small' style='margin-top:8px'><summary><b>怎么读</b></summary><ol class='tight'>"
+               "<li><b>上涨比例</b>：历史上任意一天买入、持有这么久之后上涨的比例，主要来自股市长期向上的趋势，不代表 Scout 认为接下来会涨。</li>"
+               "<li><b>十次里较差 / 较好的一次</b>：10% 和 90% 分位，大约每十次里有一次比它更差 / 更好。</li>"
+               "<li><b>正常范围</b>：按最近 63 个交易日的波动推算的 ±1σ，大约三次中有两次落在这个区间；实际的大涨大跌比正态分布更常见。</li>"
+               "<li>Scout 检验过用价格、成交量、宽度、宏观、季节性等指标判断涨跌，都没能比这些历史比例更准"
+               "（知识库 weekly_direction_v1、weekly_up_v2、sector_forecast_v1）。</li></ol></details>")
+
+
+def norms_card(rows: dict[str, dict], names: dict[str, str], h: int) -> str:
+    """Market page: SPY, sectors and themes for one horizon."""
+    from scout import norms
+
+    tabs = " ".join(f"<a class='chip' style='{'background:var(--accent);color:#fff' if h == k else ''}' href='/market?norms={k}#norms'>{v}</a>"
+                    for k, v in norms.HORIZONS.items())
+    body = []
+    for t, s in rows.items():
+        x = s["h"].get(str(h))
+        if not x:
+            continue
+        body.append(f"<tr><td><a href='/ticker/{escape(t)}'>{escape(names.get(t, t))}</a> <span class='small muted'>{escape(t)} {s['close']:.2f}</span></td>"
+                    f"<td>{x['up'] * 100:.0f}%</td><td>{norms.pct(x['median'])}</td><td>{norms.pct(x['p10'])} / {norms.pct(x['p90'])}</td>"
+                    f"<td>{x['drop5'] * 100:.0f}%</td><td>±{x['sigma'] * 100:.1f}% <span class='small muted'>{x['lo']:.2f}–{x['hi']:.2f}</span></td></tr>")
+    if not body:
+        return "<p class='muted small'>下一次收盘扫描后生成。</p>"
+    spy = rows.get("SPY")
+    calm = norms.calm_note(spy) if spy else None
+    return (f"<div class='small' style='margin-bottom:6px'>{tabs}</div><div class='scroll'><table><thead><tr><th></th><th>历史上涨比例</th><th>中位涨跌</th>"
+            f"<th>十次里较差 / 较好的一次</th><th>跌 5% 以上</th><th>按最近波动的正常范围（±1σ）</th></tr></thead><tbody>{''.join(body)}</tbody></table></div>"
+            + (f"<div class='small'>SPY：{escape(calm)}。</div>" if calm else "")
+            + (f"<div class='small'>{escape(norms.history_note(spy))}。</div>" if norms.history_note(spy) else "") + NORMS_GUIDE)
 
 
 def holdings_risk_html(hr: dict, account: float | None) -> str:
