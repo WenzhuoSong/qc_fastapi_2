@@ -1,0 +1,9 @@
+# Run note for risk_warning_v1, written 2026-11-05 before any condition, outcome or strategy return was computed.
+key: risk_warning_v1_run_note
+amends: risk_warning_v1
+registered_on: '2026-11-05'
+credit_series: >-
+  登记写的 FRED BAMLH0A0HYM2（ICE BofA 高收益利差）在 FRED 上只能取到最近 3 年（2023-11 起，ICE 的授权限制），覆盖不了样本。
+  改用 FRED BAA10Y（穆迪 Baa 公司债收益率 − 10 年期美债，1986 年起，Scout 的 ML 第 6 阶段用过同一序列）作为信用压力的代理；
+  条件不变：前一个交易日的值高于其过去 252 个观测的均值 2 个标准差以上。发现于只加载数据（成分股数量、序列起止日期）之后、任何结果计算之前。
+data_check_seen: 只看了每个板块成分股的数量（例如 2000-02 XLK 268 只、2026-10 XLK 174 只）和信用序列的起止日期，没有看任何条件成立的频率或收益。
