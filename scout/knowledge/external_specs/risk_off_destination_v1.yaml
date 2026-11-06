@@ -1,0 +1,71 @@
+# Pre-registration of the risk-off destination test, written 2026-11-06 before any return of any destination during
+# a risk-off period was computed. Never edited after the run; a changed design is a new file with a new key. Run once
+# (local only: Sharadar ETF prices in the git-ignored exports/sharadar/, French RF in exports/research_data/; results
+# in exports/risk_off_destination/, summary numbers only leave it).
+key: risk_off_destination_v1
+registered_on: '2026-11-06'
+requested_by: 用户 2026-11-06："引入更多的市场和交易选择，是否可以在美股崩盘的时候及时转移"；"好，做避险时钱放哪里的检验"
+family: risk_off_destination
+question: >-
+  用户的大盘过滤（SPY 月末收盘低于过去 10 个月末收盘的均值）转为避险期间，核心仓的钱放在短期国债（SHY）、中期国债（IEF）、
+  长期国债（TLT）或黄金（GLD），而不是现金（1 个月美国国债利率），扣掉成本后风险调整收益是否在前后两半都更好、回撤不更大？
+why: >-
+  大盘过滤是 Scout 用户采用的择时（scout_system_v1 报告：1999–2026 年 SPY 回撤 -55%，SPY + 大盘过滤 -25%，年化 +8.7% / +8.4%）；避险时现在拿现金。
+  文献里股灾时国债和黄金常被当作避险资产，但股债相关性会随通胀环境改变符号（2022 年股债同跌），所以要实测。
+  跨资产趋势跟踪已在 cross_asset_trend_v1 检验过（没有方案通过），这里不重复，只问"避险期间放哪里"。
+
+literature:
+  - Faber (2007, JWM)：价格低于 10 个月均线时持有现金，主要降低回撤（Scout 的大盘过滤即来自此）
+  - Ilmanen (2003, JFI)，Stock-Bond Correlations：股债相关性在低通胀、增长冲击主导时为负，在通胀冲击主导时为正
+  - Campbell, Sunderam & Viceira (2017, Critical Finance Review)，Inflation Bets or Deflation Hedges?：美国名义国债的股票贝塔在 2000 年后转为负，此前多为正
+  - Baur & Lucey (2010, Financial Review)；Baur & McDermott (2010, JBF)：黄金在股市极端下跌时短期起避险作用，但不稳定
+  - 反面：2022 年加息熊市中长期国债和股票同跌；黄金有长达多年的横盘（2011–2019）
+
+data:
+  prices: Sharadar SFP（funds 表）的 closeadj（含分红复权，已扣管理费），逐日；SPY SHY IEF TLT GLD
+  cash: Kenneth French 数据库日度 RF（1 个月美国国债）
+  sample: >-
+    主样本 2004-12-01 至 2026-10-28（GLD 2004-11-18 上市，第一个完整月末之后起；本地 Sharadar 最后一天 2026-10-28）；
+    信号用 SPY 自 1997-12 起的月末收盘，所以从第一天起就有 10 个月末。前后两半按主样本月份的中点切分。
+  descriptive: 只含国债的版本从 2002-08-01 起（多出 2002 年熊市的尾段），只描述，不参与判定
+
+rule:
+  signal: 每个月最后一个交易日收盘后，SPY closeadj 低于包括当月在内最近 10 个月末收盘的均值 = 避险，否则 = 持有（与 exit_redeploy.market_off 相同，用 closeadj）
+  holding: 持有时 100% SPY；避险时 100% 放在目的地（现金 = 按 RF 计息）；下一个交易日收盘成交
+  cost: 每次换仓按换手单边 0.05%（敏感性 0.20%），换成现金也收（货币基金 / 短债 ETF 的成交成本）
+  known_differences: 线上的大盘过滤用 Scout 的复权收盘、下一个交易日开盘卖出；这里用 Sharadar closeadj、次日收盘成交，是已知近似
+
+trials:
+  note: 目的地在看任何避险期收益之前固定，不按结果增删；同一个信号，只换避险时放钱的地方
+  SHY: 短期国债（1–3 年）
+  IEF: 中期国债（7–10 年）
+  TLT: 长期国债（20 年以上）
+  GLD: 黄金
+control: 避险时拿现金（即现行核心仓规则）
+also_reported: SPY 买入持有（只描述）
+
+measure:
+  per_strategy: 年化、波动、夏普（相对 RF）、最大回撤、最差 12 个月、换手，全样本和前后两半；每年收益
+  versus_control: 月度收益差（目的地版本 − 现金版本）的均值和 t（普通 t 与 Newey-West 3 阶），全样本和前后两半
+  spells: >-
+    每一段避险期（从转为避险的下一个交易日收盘到恢复持有的下一个交易日收盘）：起止日期、月数、SPY、现金、每个目的地的收益；
+    以及每个目的地最差的一段。只描述
+  cost_high: 成本 0.20% 时每个版本的年化和夏普（只描述）
+
+pass:
+  rule: >-
+    一个目的地通过需要同时满足：(1) 夏普前后两半都高于现金版本；(2) 最大回撤在全样本和前后两半都不比现金版本差 2 个百分点以上；
+    (3) 月度收益差全样本 t ≥ 3.40（普通 t 与 Newey-West t 中较小的那个）。多个通过时取全样本夏普最高的。
+  multiple_testing: 新族 risk_off_destination，本次 4 个检验；检验关 t ≥ 3 对应双侧 0.0027，Bonferroni 除以 4 为 0.000675，对应 t ≥ 3.40
+  outcome: >-
+    通过 → 知识库条目 backtested，大盘过滤的说明（/trades、收盘汇总、Telegram）写明避险时历史上放在哪里更好，由用户决定是否照做，进入前向记录；
+    不通过 → 条目 rejected，现金保持不变，不调参数、不换目的地重算；每段避险期的表格作为描述保留，供 Scout 在大盘过滤转为避险时引用。
+
+expected_failure: >-
+  22 年里避险期只有大约十段，月度收益差绝大多数月份为零，t ≥ 3.40 很难达到；2022 年国债和股票同跌，长期国债可能在那一段亏得很多；
+  黄金在 2011–2019 年长期横盘；过滤常在没有崩盘的震荡里转为避险，这时任何有波动的目的地都只增加风险。
+disclosure: >-
+  登记前看过的：这些 ETF 的起止日期；我在对话里凭一般知识描述的 2008、2020 年 3 月、2022 年各类资产的大致表现（未用本地数据计算）；
+  exit_redeploy 和 exit_vs_hold 的结论、scout_system_v1 报告里 SPY 与 SPY + 大盘过滤的年化 / 夏普 / 回撤；
+  cross_asset_trend_v1 的判定结果（各方案是否通过的布尔值，没有看收益数字）。
+  没有计算过任何目的地在避险期间的收益，也没有看过 cross_asset 结果里各资产的收益序列。
