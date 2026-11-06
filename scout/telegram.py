@@ -469,8 +469,7 @@ async def premarket_text() -> str:
     rec = await premarket.latest()
     if rec is None:
         return "还没有盘前简报，交易日北京时间 21:00 左右生成。"
-    note = "" if rec.get("source") == "llm" else "\n（AI 简报未通过校验，要点为规则整理）"
-    return esc(rec["content"]) + note
+    return esc(rec["content"]) + premarket.SOURCE_NOTE.get(rec.get("source"), "")
 
 
 async def why_text(ticker: str) -> str:

@@ -3,7 +3,7 @@ from datetime import date
 
 from scout import portfolio
 from scout.context import event_flags
-from scout.premarket import holding_label
+from scout.premarket import holding_record
 from scout.telegram import outcome_text
 
 SET = {"account_size": 100_000, "risk_pct": 0.01, "max_position_pct": 0.20}
@@ -99,12 +99,10 @@ class OutcomeAndEventTests(unittest.TestCase):
         self.assertEqual(kinds, ["并购/出售", "增发/融资"])
         self.assertEqual(event_flags([{"headline": "Shares rally on guidance"}]), [])
 
-    def test_holding_label(self):
-        t = {"entry_price": 100.0, "stop": 95.0}
-        self.assertIn("盘前低于回落止损 95.00（按收盘判断）", holding_label(94.0, t))
-        self.assertIn("较你的成本 +2.0%，距回落止损 6.9%", holding_label(102.0, t))
-        hit = {**t, "plan": {"stop_hit": "2026-10-30"}}
-        self.assertIn("按计划今天开盘卖出全部", holding_label(96.0, hit))
+    def test_premarket_holding_below_its_stop(self):
+        t = {"ticker": "PBF", "entry_price": 100.0, "shares": 10, "stop": 95.0, "last_close": 97.0, "plan": {}}
+        self.assertTrue(holding_record(t, {"last": 94.0, "change": -0.03, "stale": False}, {}, None)["below"])
+        self.assertFalse(holding_record(t, {"last": 102.0, "change": 0.05, "stale": False}, {}, None)["below"])
 
 
 class CoreTests(unittest.TestCase):
@@ -137,7 +135,7 @@ class CoreTests(unittest.TestCase):
         m = portfolio.metrics(t)
         self.assertNotIn("r", m)
         self.assertNotIn("to_stop", m)
-        self.assertIn("核心仓", holding_label(740.0, t))
+        self.assertIn("核心仓位", holding_record(t, None, {}, None)["row"]["止损"])
 
 
 if __name__ == "__main__":
