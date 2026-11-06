@@ -318,6 +318,7 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     if muted:
         scan.append(f"今天有 {len(muted)} 张规则机会卡只记录、不推送：这些规则没有通过公平基准检验"
                     "（见 Dashboard「知识库」），仍在机会看板和判断台账里跟踪。")
+    g: dict = {}
     try:
         from scout import digest
 
@@ -334,14 +335,21 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
             g["prediction"] = (await prediction.run(asof, "eod")).get("moves") or []
         except Exception as exc:
             logger.warning("prediction markets failed: %s", exc)
-        brief = digest.render(asof, market, sector_rows, focus, mfilter, g,
-                              portfolio.satellite(await portfolio.get_settings()), scan)
+        user = await portfolio.get_settings()
+        try:                           # a big SPY day gets its own block (rarity, history, breadth, holdings, cause)
+            from scout import market_day
+
+            g["market_day"] = await market_day.build(p, asof, sector_rows, digest.held_moves(g), user.get("account_size"))
+        except Exception as exc:
+            logger.warning("market day failed: %s", exc)
+        brief = digest.render(asof, market, sector_rows, focus, mfilter, g, portfolio.satellite(user), scan)
     except Exception as exc:           # the digest must not cost the session its brief
         logger.warning("digest failed: %s", exc)
         brief = "\n\n".join([render_eod_brief(asof, market, sector_rows, focus), *deferred, "\n".join(scan)])
     await db.execute(
         "INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('eod', :d, :c, CAST(:p AS JSONB))",
-        {"d": asof, "c": brief, "p": db.jsonb({"market": market, "saved": saved, "candidates": len(candidates)})},
+        {"d": asof, "c": brief, "p": db.jsonb({"market": market, "saved": saved, "candidates": len(candidates),
+                                        "market_day": g.get("market_day")})},
     )
     if push:
         await telegram.send(brief)

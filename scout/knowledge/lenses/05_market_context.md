@@ -1,7 +1,7 @@
 ---
 id: market_context
 title: 大盘与板块
-fields: [beta_60, corr_60, market_ret_1d, idio_ret_1d, idio_ret_5d, idio_ret_20d, market_ret_20d, sector_ret_1d, sector_ret_5d, sector_ret_20d, own_ret_1d, own_ret_5d, own_ret_20d, sector_rel_20]
+fields: [beta, corr_252, market_ret_1d, idio_ret_1d, idio_ret_5d, idio_ret_20d, market_ret_20d, sector_ret_1d, sector_ret_5d, sector_ret_20d, own_ret_1d, own_ret_5d, own_ret_20d, sector_rel_20]
 sources:
   - 道氏理论：平均指数必须相互验证
   - CAPM / 市场模型：系统性收益与特质收益的分解

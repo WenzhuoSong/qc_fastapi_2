@@ -1,7 +1,7 @@
 ---
 id: macro
 title: 宏观敏感度
-fields: [macro_rate_10bp, macro_rate_t, macro_usd_1pct, macro_usd_t, macro_oil_10pct, macro_oil_t, beta_60, corr_60]
+fields: [macro_rate_10bp, macro_rate_t, macro_usd_1pct, macro_usd_t, macro_oil_10pct, macro_oil_t, beta, corr_252]
 sources:
   - 多因子回归：控制大盘后对利率、美元、油价的暴露
   - FRED 宏观数据（10 年期美债、美元指数、WTI 原油）

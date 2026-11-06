@@ -74,6 +74,16 @@ async def gather(asof: date, earnings: dict[str, list[dict]], prop_signals: list
             "prop": prop_signals, "managed": {m["ticker"]: m["messages"] for m in managed}}
 
 
+def held_moves(g: dict) -> list[dict]:
+    """Value and today's move per open trade, for the big-day block (`market_day.holdings_day`)."""
+    out = []
+    for t in g["held_rows"]:
+        m, f = portfolio.metrics(t), g["feats"].get(t["ticker"], {})
+        out.append({"value": (m.get("price") or 0) * m.get("remaining", 0), "ret_1d": f.get("ret_1d"),
+                    "market_ret_1d": f.get("market_ret_1d")})
+    return out
+
+
 def _news_lines(items: list[dict]) -> list[str]:
     icon = {"positive": "🟢", "negative": "🔴"}
     items = sorted(items, key=lambda r: (not r.get("is_hard_event"), -(r.get("datetime_utc") or 0)))[:NEWS_MAX]
@@ -185,6 +195,10 @@ def render(asof: date, market: dict, sector_rows: list[dict], focus: dict | None
              f"SPY 当日 {pct(market.get('spy_ret_1d'), 1, True)}，20 日 {pct(market.get('spy_ret_20d'), 1, True)} | "
              f"QQQ 20 日 {pct(market.get('qqq_ret_20d'), 1, True)} | IWM 20 日 {pct(market.get('iwm_ret_20d'), 1, True)} | "
              f"SMH 20 日 {pct(market.get('smh_ret_20d'), 1, True)}"]
+    if g.get("market_day"):
+        from scout import market_day
+
+        lines += [esc(x) for x in market_day.lines(g["market_day"])]
     if mfilter:
         lines.append(("🛑 " if mfilter["off"] else "🟢 ") + esc(market_filter.text(mfilter)))
     if focus and focus.get("focus"):

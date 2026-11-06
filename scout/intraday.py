@@ -78,7 +78,7 @@ async def holding_moves(held: list[dict], quotes: dict, today: date) -> list[dic
     out = []
     for t, q, sigma in movers:
         pq = {x: more[x]["change"] for x in peers[t] if more.get(x) and more[x].get("change") is not None and not more[x]["stale"]}
-        beta = (feats.get(t) or {}).get("beta_60")
+        beta = (feats.get(t) or {}).get("beta")
         kpis = await industry_kpis.for_ticker(t, more, today)
         live = [m["name"] + f" 今日 {m['live']['pct_change'] * 100:+.1f}%" for m in (kpis or {}).get("metrics", [])
                 if m.get("live") and m["live"].get("pct_change") is not None]

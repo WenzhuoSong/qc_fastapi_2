@@ -438,7 +438,7 @@ async def exposure() -> list[dict]:
         {"t": [h["ticker"] for h in held]})}
     out = []
     for h in held:
-        row = {"代码": h["ticker"], "板块": SECTOR_ZH.get(h["sector"], h["sector"] or "—"), "β": feats.get(h["ticker"], {}).get("beta_60")}
+        row = {"代码": h["ticker"], "板块": SECTOR_ZH.get(h["sector"], h["sector"] or "—"), "β": feats.get(h["ticker"], {}).get("beta")}
         sens = research.macro_sensitivity(await research._closes(h["ticker"], since), spy, macro) if len(spy) else {}
         for key, t, label, up in (("macro_rate_10bp", "macro_rate_t", "10 年期利率每升 0.10 个百分点", "利率上升"),
                                   ("macro_oil_10pct", "macro_oil_t", "油价每涨 10%", "油价上涨"),

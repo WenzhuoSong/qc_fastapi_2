@@ -5,7 +5,7 @@ from scout.analysis import scout_view, trend_state
 
 BASE = {
     "close": 110.0, "sma50": 100.0, "sma200": 90.0, "rs_pct": 0.92, "sector_rs_pct": 0.8,
-    "ret_1d": 0.02, "market_ret_1d": 0.005, "idio_ret_1d": 0.015, "idio_ret_20d": 0.08, "beta_60": 1.2,
+    "ret_1d": 0.02, "market_ret_1d": 0.005, "idio_ret_1d": 0.015, "idio_ret_20d": 0.08, "beta": 1.2,
     "zscore_20": 0.5, "dist_52w_high": -0.03, "vol_20": 0.35, "max_dd_60": -0.08, "atr_pct": 0.025,
     "vol_ratio": 1.1, "rsi2": 55.0,
 }

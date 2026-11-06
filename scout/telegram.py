@@ -50,7 +50,7 @@ def pct(x: float | None, digits: int = 1, sign: bool = False) -> str:
 
 
 def market_split_text(price: dict) -> str | None:
-    """'Is it the stock, its sector or the market?' — today's move split by 60-day betas."""
+    """'Is it the stock, its sector or the market?' — today's move split by the adjusted market beta and the sector beta."""
     if price.get("idio_ret_1d") is None or price.get("market_ret_1d") is None:
         return None
     if price.get("sector_ret_1d") is not None and price.get("own_ret_1d") is not None:
@@ -63,8 +63,8 @@ def market_split_text(price: dict) -> str | None:
         text += f" · 20 日公司自身 {pct(price['own_ret_20d'], 1, True)}"
     elif price.get("idio_ret_20d") is not None:
         text += f" · 20 日扣除大盘后 {pct(price['idio_ret_20d'], 1, True)}"
-    if price.get("beta_60") is not None:
-        text += f" · β {price['beta_60']:.2f}"
+    if price.get("beta") is not None:
+        text += f" · β {price['beta']:.2f}"
     return text
 
 

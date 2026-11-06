@@ -108,8 +108,8 @@ def _structure(s: dict) -> Line | None:
 
 def _risk(f: dict) -> Line | None:
     parts = []
-    if f.get("beta_60") is not None:
-        parts.append(f"β {f['beta_60']:.2f}")
+    if f.get("beta") is not None:
+        parts.append(f"β {f['beta']:.2f}")
     if f.get("vol_20") is not None:
         parts.append(f"年化波动 {pct(f['vol_20'], 0)}")
     if f.get("vol_63_pct") is not None:

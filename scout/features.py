@@ -10,6 +10,9 @@ import pandas as pd
 
 from scout.universe import BENCHMARK, SECTOR_ETFS
 
+BETA_WINDOW, BETA_MIN = 252, 120          # market and sector betas (see the split below)
+BLUME = 0.67
+
 # Features persisted per ticker for the dashboard / Q&A agent.
 SNAPSHOT_FEATURES = (
     "close", "ret_1d", "ret_5d", "ret_20d", "ret_63d", "ret_252d", "sma20", "sma50", "sma200",
@@ -17,7 +20,7 @@ SNAPSHOT_FEATURES = (
     "macd_pct", "macd_hist_pct", "macd_cross_days",
     "wk_dist_sma30", "wk_sma30_slope_4w", "wk_rsi14", "wk_macd_hist_pct", "wk_macd_hist_chg", "wk_vol_ratio",
     "gap_pct", "close_loc", "rs_pct", "sector_rs_pct", "sector_rel_20",
-    "beta_60", "corr_60", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d", "market_ret_20d",
+    "beta", "corr_252", "market_ret_1d", "idio_ret_1d", "idio_ret_5d", "idio_ret_20d", "market_ret_20d",
     "sector_ret_1d", "sector_ret_5d", "sector_ret_20d", "own_ret_1d", "own_ret_5d", "own_ret_20d",
     "zscore_20", "bb_pct", "vol_20", "max_dd_60", "vol_63", "vol_63_pct",
 )
@@ -184,16 +187,20 @@ def build_panel(
     f.update(weekly(c, v))
     f["force_index_2"] = ((c - prev_c) * v).ewm(span=2, adjust=False, min_periods=2).mean()   # Elder: 2-day EMA of Δclose × volume
 
-    # Is it the stock or the market? 60-day beta/correlation to SPY; the move is
-    # split into the market part (yesterday's beta × SPY return) and the rest.
+    # Is it the stock or the market? The move is split into the market part (beta × SPY return) and the rest.
+    # Beta = Blume-adjusted 252-session slope (0.67 × OLS + 0.33, the Bloomberg convention), estimated through
+    # the previous session; `beta` is that value, so the shown beta is the one used. Chosen 2026-11-06 over the
+    # 60-session slope on the Sharadar top 500, 1999–2026: smaller squared residual on |SPY| ≥ 2.5 % days in
+    # both halves, and "fell > 3 % but company-own > +3 %" on down days 1.0 % vs 2.3 % (calm-period 60-day betas
+    # of 3–4 overshot the 2026-11-05 drop).
     r, spy_r = f["ret_1d"], f["ret_1d"][BENCHMARK]
-    roll = {"window": 60, "min_periods": 40}
+    roll = {"window": BETA_WINDOW, "min_periods": BETA_MIN}
     mean_r, mean_s = r.rolling(**roll).mean(), spy_r.rolling(**roll).mean()
     cov = r.mul(spy_r, axis=0).rolling(**roll).mean() - mean_r.mul(mean_s, axis=0)
     var_s = spy_r.rolling(**roll).var(ddof=0)
-    f["beta_60"] = cov.div(var_s, axis=0)
-    f["corr_60"] = cov.div(r.rolling(**roll).std(ddof=0).mul(np.sqrt(var_s), axis=0))
-    f["market_ret_1d"] = f["beta_60"].shift(1).mul(spy_r, axis=0)
+    f["beta"] = (BLUME * cov.div(var_s, axis=0) + (1 - BLUME)).shift(1)
+    f["corr_252"] = cov.div(r.rolling(**roll).std(ddof=0).mul(np.sqrt(var_s), axis=0))
+    f["market_ret_1d"] = f["beta"].mul(spy_r, axis=0)
     f["idio_ret_1d"] = r - f["market_ret_1d"]
     f["idio_ret_5d"] = f["idio_ret_1d"].rolling(5, min_periods=5).sum()
     f["idio_ret_20d"] = f["idio_ret_1d"].rolling(20, min_periods=20).sum()
@@ -233,8 +240,9 @@ def build_panel(
     f["sector_rel_20_prev5"] = f["sector_rel_20"].shift(5)
     f["sector_rel_63"] = _full(pd.DataFrame(rel63_cols, index=c.index))
 
-    # The part left after the market split once more: the stock's 60-day beta to its sector ETF's excess over
-    # SPY, applied to today's excess (the sector part), and the rest (the company's own move). Without a
+    # The part left after the market split once more: the stock's 252-session beta (plain OLS: shrinking did not
+    # help here in the same check) to its sector ETF's excess over SPY, applied to today's excess (the sector
+    # part), and the rest (the company's own move). Without a
     # sector or its ETF both stay missing, and idio_ret_* (after the market only) is unchanged.
     sec_part: dict[str, pd.Series] = {}
     for sector, etf in SECTOR_ETFS.items():

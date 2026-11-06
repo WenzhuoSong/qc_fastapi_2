@@ -226,19 +226,19 @@ sector_rel_20:
     - {min: -0.03, text: 行业略弱于大盘}
     - {max: -0.03, text: 行业明显跑输大盘}
 
-beta_60:
-  zh: β（60 日）
+beta:
+  zh: β（调整后）
   unit: beta
-  definition: 近 60 日个股日收益对 SPY 日收益的回归斜率。β = 1.5 表示大盘涨跌 1% 时它平均涨跌 1.5%。
+  definition: 近 252 个交易日（约一年）个股日收益对 SPY 日收益的回归斜率，再往 1 收缩（0.67 × 斜率 + 0.33，彭博的调整 β 做法），用到前一交易日为止的数据。β = 1.5 表示大盘涨跌 1% 时它平均涨跌约 1.5%；大盘部分的涨跌拆分（market_ret_1d）就用这个 β。
   readings:
     - {max: 0.0, text: 与大盘负相关（避险或独立行情）}
     - {max: 0.8, text: 低弹性}
     - {max: 1.3, text: 与大盘同步}
     - {min: 1.3, text: 高弹性：大盘回撤时跌得更多}
-corr_60:
+corr_252:
   zh: 与 SPY 相关性
   unit: corr
-  definition: 近 60 日个股与 SPY 日收益的相关系数（−1 到 1）。
+  definition: 近 252 个交易日个股与 SPY 日收益的相关系数（−1 到 1）。
   readings:
     - {max: 0.3, text: 走势基本独立于大盘}
     - {max: 0.6, text: 与大盘中度相关}
@@ -246,7 +246,7 @@ corr_60:
 market_ret_1d:
   zh: 今日大盘贡献
   unit: pct
-  definition: 前一日的 β（60 日）× SPY 今日涨跌，即"如果它只跟着大盘走，今天应该涨跌多少"。
+  definition: 调整后 β（252 日，往 1 收缩，到前一日为止）× SPY 今日涨跌，即"如果它只跟着大盘走，今天应该涨跌多少"。
 market_ret_20d:
   zh: 20 日大盘贡献
   unit: pct
@@ -276,7 +276,7 @@ idio_ret_20d:
 sector_ret_1d:
   zh: 今日行业贡献
   unit: pct
-  definition: 前一日的行业 β（60 日，个股扣除大盘后的收益对所属行业 ETF 相对 SPY 超额收益的回归系数）× 今日行业 ETF 相对 SPY 的超额，即"扣掉大盘后，跟着自己行业走应该涨跌多少"。没有行业或行业 ETF 时缺失。
+  definition: 前一日的行业 β（252 日，个股扣除大盘后的收益对所属行业 ETF 相对 SPY 超额收益的回归系数）× 今日行业 ETF 相对 SPY 的超额，即"扣掉大盘后，跟着自己行业走应该涨跌多少"。没有行业或行业 ETF 时缺失。
   readings:
     - {max: -0.02, text: 行业今天明显拖累（−2% 以上）}
     - {max: 0.02, text: 行业影响不大}
