@@ -1292,6 +1292,34 @@ def outlook_page(rec: dict | None, theses: list[dict]) -> str:
     return layout("行业前景", "outlook", body)
 
 
+# ── signal board: every rule signal by stage ────────────────────────────
+
+def _verdict_chip(verdict: str) -> str:
+    color = "var(--down)" if verdict in ("否定", "已失效") else "var(--accent)" if verdict == "已确认" else ""
+    return f"<span class='chip' style='{f'background:{color};color:#fff' if color else ''}'>{e(verdict)}</span>"
+
+
+def signal_board_panel(board: dict) -> str:
+    from scout import signal_board as sb
+
+    if not board["rows"]:
+        return "<p class='muted'>还没有规则信号。</p>"
+    out = [f"<p class='small muted'>数据日期 {e(board['asof'])}。价位以前向检验跟踪的那笔为准：同一只股票 10 个交易日内只记第一次信号。"
+           "止损是规则的初始止损（跟进止损的规则之后会上移）。标签是这条规则在知识库里的状态；「否定」的规则排在后面，只做记录，不是买入理由。"
+           "这里只记录规则的表现，不是推荐。</p>"]
+    for key, title in sb.STAGES.items():
+        rows = [r for r in board["rows"] if r["stage"] == key]
+        out.append(f"<h3 style='margin-top:16px'>{title} {len(rows)} <span class='small muted'>{e(sb.STAGE_NOTE[key])}</span></h3>")
+        if not rows:
+            out.append("<p class='muted small'>暂无。</p>")
+            continue
+        out.append(table(["代码", "规则", "检验", "信号日", "买入区", "止损", "目标", "收盘", "状态"], [
+            [tlink(r["ticker"]), e(r["label"]), _verdict_chip(r["verdict"]), f"{r['asof']:%m-%d}",
+             f"{r['entry_lo']:.2f}–{r['entry_hi']:.2f}", f"{r['stop']:.2f}", f"{r['target1']:.2f}",
+             f"{r['close']:.2f}" if r.get("close") else "—", e(r["text"])] for r in rows]))
+    return "".join(out)
+
+
 # ── the user's B0 ranking ───────────────────────────────────────────────
 
 def b0_rank_panel(rk: dict | None, latest: date | None = None) -> str:

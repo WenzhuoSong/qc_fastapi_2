@@ -585,7 +585,7 @@ async def screens_page(s: str = "", _: str = Depends(require_auth)) -> str:
     current = next((x for x in screens if x.id == s), None) or next(
         (x for x in screens if x.detector is not None and x.detector.live and count_of(x)), screens[0])
     # the rule / signal row is highlighted only when the page shows one of its screens (not B0 or a fundamentals screen)
-    shows_rule = s != "b0" and not any(x.id == s for x in sc.ANGLE_SCREENS)
+    shows_rule = s not in ("b0", "board") and not any(x.id == s for x in sc.ANGLE_SCREENS)
     nav = ""
     for group in ("规则", "技术信号", "事件"):
         chips = "".join(
@@ -604,6 +604,15 @@ async def screens_page(s: str = "", _: str = Depends(require_auth)) -> str:
     nav += ("<div style='margin:4px 0'><span class='small muted'>基本面与事件：</span>" + "".join(
         f"<a class='chip' style='{'background:var(--accent);color:#fff' if x.id == s else ''}' href='/screens?s={e(x.id)}'>"
         f"{e(x.title)} {len(sc.run_angle(x, angle_rows))}</a>" for x in sc.ANGLE_SCREENS) + "</div>")
+    from scout import signal_board
+
+    board = await signal_board.load()
+    nav = (f"<div style='margin:4px 0'><span class='small muted'>信号阶段：</span><a class='chip' "
+           f"style='{'background:var(--accent);color:#fff' if s == 'board' else ''}' href='/screens?s=board'>"
+           f"信号看板 候选 {board['counts']['candidate']} · 触发 {board['counts']['triggered']} · 完成 {board['counts']['done']}</a></div>"
+           + nav) if board["rows"] else nav
+    if s == "board":
+        return layout("策略筛选", "screens", f"<h2>策略筛选</h2>{nav}" + views.signal_board_panel(board))
     if on:
         return layout("策略筛选", "screens", f"<h2>策略筛选</h2>{nav}" + views.b0_rank_panel(b0_rank, asof))
     angle = next((x for x in sc.ANGLE_SCREENS if x.id == s), None)
@@ -626,6 +635,13 @@ async def screens_page(s: str = "", _: str = Depends(require_auth)) -> str:
     else:
         stats_html = "<p class='small muted'>描述性筛选：只说明「现在符合什么条件」，没有历史优势统计。</p>"
     note = f"<p class='small'>{e(current.note)}</p>" if current.note else ""
+    if current.detector is not None:
+        kept = await signal_board.tracked(current.detector.name, [r["ticker"] for r in found], asof)
+        if kept:
+            note += ("<p class='small warn'>以下股票 10 个交易日内已有这条规则的信号，前向检验沿用第一次信号的价位（见"
+                     "<a href='/screens?s=board'>信号看板</a>）：" + "；".join(
+                         f"{e(t)} {k['asof']:%m-%d} 买入区 {k['entry_lo']:.2f}–{k['entry_hi']:.2f}，止损 {k['stop']:.2f}"
+                         for t, k in sorted(kept.items())) + "</p>")
 
     def pos_chip(r: dict) -> str:
         why = r.get("why") or {}

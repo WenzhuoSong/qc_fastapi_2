@@ -67,7 +67,7 @@ SYSTEM_PROMPT = f"""你是 Scout，一位美股研究助理，服务于一位有
   3. 用户的理由站不站得住：和数据对照（例如说"板块强"，要看行业贡献和公司自身是否一致）；没有经过检验的方法要说明"未经检验"；
   4. 如果要做：建议写下的证伪条件和验证期、需要提前知道的事件；卖出时说明持仓计划怎么规定、这样卖算不算提前离场。
   不要给出"买"或"卖"的结论，最后一句说明决定由用户做。
-- 问到符合某种条件的股票（内部人买入、毛利高、接近新高、7 天内财报、B0 打分）：get_screens；按单个指标排序：screen。
+- 问到符合某种条件的股票（内部人买入、毛利高、接近新高、7 天内财报、B0 打分）：get_screens；按单个指标排序：screen；某个规则信号成交了没有、还在等回踩吗：get_screens(screen_id="board")。
 - 问到自选股、今天的提醒：get_watchlist；数据更新到哪天、某个任务有没有跑：get_data_status。
 - 可以并行调用多个工具；需要就多调几次，宁可多查一步，也不要凭印象回答。
 
@@ -529,8 +529,8 @@ async def get_outlook() -> dict:
                        "60 日是否符合": None if r["hit60"] is None else ("符合" if r["hit60"] else "不符合")} for r in rows]}
 
 
-@tool("get_screens", "预设筛选：不给 screen_id 时列出全部筛选（规则、技术信号、事件、基本面与事件角度、B0 动量打分）和今天的数量；"
-                     "给 screen_id 时返回符合条件的股票",
+@tool("get_screens", "预设筛选：不给 screen_id 时列出全部筛选（规则、技术信号、事件、基本面与事件角度、B0 动量打分、信号看板）和今天的数量；"
+                     "给 screen_id 时返回符合条件的股票；screen_id='board' 返回每条规则信号的阶段（候选 / 触发 / 完成）",
       {"type": "object", "properties": {"screen_id": {"type": "string", "description": "筛选 id，先不带参数调用一次查看可用 id"}}},
       pages=("/screens",))
 async def get_screens(screen_id: str | None = None) -> dict:
@@ -549,7 +549,17 @@ async def get_screens(screen_id: str | None = None) -> dict:
         listing += [{"id": x.id, "名称": x.title, "分组": "基本面与事件", "条件": list(x.criteria),
                      "今天数量": len(sc.run_angle(x, angle_rows))} for x in sc.ANGLE_SCREENS]
         listing.append({"id": "b0", "名称": "B0 动量打分", "分组": "我的策略", "条件": ["B0 自己的动量排名和大盘过滤（只作信息）"]})
+        listing.append({"id": "board", "名称": "信号看板", "分组": "信号阶段",
+                        "条件": ["每条规则信号所处的阶段：候选区（等回到买入区）、触发区（已成交）、完成区（已结束或作废）"]})
         return {"数据日期": str(asof), "筛选": listing}
+    if screen_id == "board":
+        from scout import signal_board
+
+        board = await signal_board.load()
+        return {"数据日期": str(board["asof"]), "说明": "价位以前向检验跟踪的那笔为准；「否定」的规则只做记录，不是买入理由；只记录规则表现，不是推荐",
+                "信号": [{"阶段": signal_board.STAGES[r["stage"]], "代码": r["ticker"], "规则": r["label"], "规则检验": r["verdict"],
+                        "信号日": str(r["asof"]), "买入区": f"{r['entry_lo']:.2f}–{r['entry_hi']:.2f}", "止损": r["stop"],
+                        "目标": r["target1"], "现价": r["close"], "状态": r["text"]} for r in board["rows"][:40]]}
     if screen_id == "b0":
         rk = await b0.latest_b0_rank()
         return rk or {"note": "B0 打分未开启（SCOUT_B0_SCORE 未设置）"}
