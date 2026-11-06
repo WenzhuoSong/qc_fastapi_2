@@ -336,12 +336,7 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         except Exception as exc:
             logger.warning("prediction markets failed: %s", exc)
         user = await portfolio.get_settings()
-        try:                           # a big SPY day gets its own block (rarity, history, breadth, holdings, cause)
-            from scout import market_day
-
-            g["market_day"] = await market_day.build(p, asof, sector_rows, digest.held_moves(g), user.get("account_size"))
-        except Exception as exc:
-            logger.warning("market day failed: %s", exc)
+        g = await digest.enrich(g, p, asof, sector_rows, user.get("account_size"))
         brief = digest.render(asof, market, sector_rows, focus, mfilter, g, portfolio.satellite(user), scan)
     except Exception as exc:           # the digest must not cost the session its brief
         logger.warning("digest failed: %s", exc)
@@ -349,7 +344,8 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     await db.execute(
         "INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('eod', :d, :c, CAST(:p AS JSONB))",
         {"d": asof, "c": brief, "p": db.jsonb({"market": market, "saved": saved, "candidates": len(candidates),
-                                        "market_day": g.get("market_day")})},
+                                        "market_day": g.get("market_day"),
+                                        "notes": g.get("notes"), "steps": g.get("steps")})},
     )
     if push:
         await telegram.send(brief)

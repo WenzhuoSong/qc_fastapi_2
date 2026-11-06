@@ -98,7 +98,9 @@ def _prop_lines(signals: list[dict]) -> list[str]:
 
 
 def holding_items(g: dict, asof: date) -> list[dict]:
-    """One item per open trade with its lines; attention first, then by position value."""
+    """One item per open trade with its data and lines; attention first, then by position value. Uses the
+    analyst notes, earnings previews and norms in `g` when `enrich` has filled them."""
+    from scout import holding_notes, levels, norms
     from scout.telegram import next_step
 
     out = []
@@ -106,22 +108,24 @@ def holding_items(g: dict, asof: date) -> list[dict]:
         tk = t["ticker"]
         m = portfolio.metrics(t)
         f = g["feats"].get(tk, {})
+        note = (g.get("notes") or {}).get(tk)
         lines, attention = [], False
         if "pnl" in m:
             stop = f" · 止损 {t['stop']:.2f}（{pct(m['to_stop'], 1, True)}）" if "to_stop" in m else ""
             head = (f"<b>{esc(tk)}</b> {m['price']:.2f} · 持仓 {pct(m['pnl_pct'], 1, True)}（{m['pnl']:+,.0f}）{stop}")
         else:
             head = f"<b>{esc(tk)}</b> · 无行情"
+        if note and note.get("status"):
+            lines.append(f"💬 {esc(note['status'])}")
         split = market_split_text(f)
         if split:
             lines.append(f"📈 {esc(split)}")
         k = g.get("kpis", {}).get(tk)
-        if k:
-            shown = [m["text"] for m in k["metrics"] if m.get("reading")][:KPI_LINES]
-            lines.append(f"🏭 行业（{esc(k['industry'])}）：" + (esc("；".join(shown)) if shown else f"缺少免费数据（{esc(k['missing'])}）"))
-        from scout import norms
-
-        nl = norms.line(g.get("norms", {}).get(tk), to_stop=m.get("to_stop"))
+        shown = [x["text"] for x in k["metrics"] if x.get("reading")][:KPI_LINES] if k else []
+        if shown:                         # an industry without free data says nothing here (the agent explains it)
+            lines.append(f"🏭 行业（{esc(k['industry'])}）：" + esc("；".join(shown)))
+        hist = g.get("norms", {}).get(tk)
+        nl = norms.line(hist, to_stop=m.get("to_stop"))
         if nl:
             lines.append(f"📊 {esc(nl)}")
         step = next_step(t, m) if "pnl" in m else ""
@@ -135,7 +139,11 @@ def holding_items(g: dict, asof: date) -> list[dict]:
         for msg in g["managed"].get(tk, []):
             attention = True
             lines.append(f"📌 {esc(msg)}")
-        if tk in g["earnings"]:
+        preview = (g.get("previews") or {}).get(tk)
+        if preview:
+            attention = True
+            lines += [esc(x) for x in holding_notes.preview_lines(preview)]
+        elif tk in g["earnings"]:
             attention = True
             lines.append(f"📅 财报 {g['earnings'][tk]}（{(g['earnings'][tk] - asof).days} 天后）")
             if tk in g.get("gaps", {}):
@@ -144,11 +152,54 @@ def holding_items(g: dict, asof: date) -> list[dict]:
         if any(s["impact"] < 0 for s in props):
             attention = True
         lines += _prop_lines(props)
-        lines += _news_lines(g["news"].get(tk, []))
+        raw = sorted(g["news"].get(tk, []), key=lambda r: (not r.get("is_hard_event"), -(r.get("datetime_utc") or 0)))
+        lines += [esc(x) for x in holding_notes.news_lines(note, raw)]
         value = (m.get("price") or 0) * m.get("remaining", 0)
+        x = (hist or {}).get("h", {}).get("21") or {}
         out.append({"ticker": tk, "sector": t.get("sector"), "head": head, "lines": lines, "attention": attention,
-                    "value": value, "pnl": m.get("pnl")})
+                    "value": value, "pnl": m.get("pnl"), "m": m, "trade": t, "stop": t.get("stop"), "step": step,
+                    "core": levels.is_core(tk), "sigma21": x.get("sigma"), "sigma_day": sigma or None, "ret_1d": f.get("ret_1d"),
+                    "preview": preview, "news": raw, "norm_line": nl,
+                    "hard_bad": sum(1 for r in raw if r.get("is_hard_event") and r.get("sentiment") == "negative")})
     return sorted(out, key=lambda x: (not x["attention"], -x["value"]))
+
+
+async def enrich(g: dict, p, asof: date, sector_rows: list[dict], account: float | None) -> dict:
+    """The analyst layer: big market day, portfolio risk, earnings previews, then the model's notes (each step
+    on its own: a failure costs only that part)."""
+    import logging
+
+    from scout import holding_notes, market_day
+
+    log = logging.getLogger("scout.digest")
+    steps = {}
+    try:
+        g["market_day"] = await market_day.build(p, asof, sector_rows, held_moves(g), account)
+    except Exception as exc:
+        log.warning("market day failed: %s", exc)
+    try:
+        g["risk"] = await holding_notes.portfolio_risk(g, account)
+    except Exception as exc:
+        log.warning("portfolio risk failed: %s", exc)
+    previews = {}
+    for t in g["held_rows"]:
+        tk = t["ticker"]
+        if tk in g["earnings"] and tk not in previews:
+            try:
+                previews[tk] = await holding_notes.earnings_preview(tk, g["earnings"][tk], asof, portfolio.metrics(t).get("to_stop"),
+                                                                    g.get("gaps", {}).get(tk))
+            except Exception as exc:
+                log.warning("earnings preview %s failed: %s", tk, exc)
+    g["previews"] = previews
+    try:
+        res = await holding_notes.write(g, holding_items(g, asof))
+        g["notes"] = res["notes"]
+        steps["notes"] = {"source": res["source"], "validation": res["validation"]}
+    except Exception as exc:
+        log.warning("holding notes failed: %s", exc)
+        steps["notes"] = {"source": f"failed: {type(exc).__name__}"}
+    g["steps"] = steps
+    return g
 
 
 def watch_items(g: dict, asof: date) -> list[dict]:
@@ -187,56 +238,16 @@ def trend_lines(rows: list[dict]) -> list[str]:
 
 def render(asof: date, market: dict, sector_rows: list[dict], focus: dict | None, mfilter: dict | None,
            g: dict, satellite: dict | None, scan_lines: list[str]) -> str:
-    from scout import market_filter
+    from scout import holding_notes, market_filter
     from scout.propagation import PUSH_CONFIDENCE, REL_ZH
 
-    lines = [f"📋 <b>Scout 收盘汇总 {asof}</b>", "\n<b>一、市场</b>",
-             esc(opportunities.state_text(market, detail=True)),
-             f"SPY 当日 {pct(market.get('spy_ret_1d'), 1, True)}，20 日 {pct(market.get('spy_ret_20d'), 1, True)} | "
-             f"QQQ 20 日 {pct(market.get('qqq_ret_20d'), 1, True)} | IWM 20 日 {pct(market.get('iwm_ret_20d'), 1, True)} | "
-             f"SMH 20 日 {pct(market.get('smh_ret_20d'), 1, True)}"]
-    if g.get("market_day"):
-        from scout import market_day
-
-        lines += [esc(x) for x in market_day.lines(g["market_day"])]
-    if mfilter:
-        lines.append(("🛑 " if mfilter["off"] else "🟢 ") + esc(market_filter.text(mfilter)))
-    if focus and focus.get("focus"):
-        f = focus["focus"]
-        lines.append(f"🧭 市场关注点：{esc(f['headline'])}")
-        lines += [f"{i}. {esc(t['title'])}" for i, t in enumerate(f.get("themes", []), 1)]
-
-    if g.get("events"):
-        from scout import event_calendar
-
-        lines += [esc(x) for x in event_calendar.digest_lines(g["events"])]
-    if g.get("prediction"):
-        from scout import prediction
-
-        lines.append("预测市场今天的大变化（市场价格，不是 Scout 的判断）：")
-        lines += [esc(prediction.move_line(m)) for m in g["prediction"]]
-
-    lines.append("\n<b>二、板块</b>")
-    rotation = sectors.rotation_line(sector_rows)
-    if rotation:
-        lines.append(esc(rotation))
-    trend = trend_lines(sector_rows)
-    if trend:
-        lines.append("趋势确认变化（相对 SPY，超出正常波动 2 倍且参与面广；不代表会延续）：")
-        lines += [f"• {esc(x)}" for x in trend]
     held = holding_items(g, asof)
-    by_sector = {r["sector"]: r for r in sector_rows if r.get("kind") == "sector"}
-    mine = sorted({h["sector"] for h in held if h.get("sector") in by_sector})
-    for s in mine:
-        r = by_sector[s]
-        names = "、".join(h["ticker"] for h in held if h.get("sector") == s)
-        trend = sector_trend.summary(r)
-        lines.append(f"• {esc(sector_text(sectors.card_context(r)) or r['name'])}；当日 {pct(r.get('ret_1d'), 1, True)}，"
-                     f"20 日相对 SPY {pct(r.get('rel_20'), 1, True)}" + (f"；趋势 {esc(trend)}" if trend else "") + f"（持有 {esc(names)}）")
-    if not mine:
-        lines.append("（持仓所在板块：无持仓）" if not held else "（持仓所在板块暂无数据）")
+    lines = [f"📋 <b>Scout 收盘汇总 {asof}</b>", "\n<b>【今天最重要的】</b>"]
+    keys = holding_notes.key_items(g, held, g.get("market_day"), mfilter, satellite, asof)
+    lines += [f"{i}. {esc(x)}" for i, x in enumerate(keys, 1)] or ["今天没有需要你处理的事：持仓都在计划内。"]
 
-    lines.append("\n<b>三、我的持仓</b>（需要注意的在前，其余按市值）")
+    lines.append("\n<b>一、我的持仓</b>（需要注意的在前，其余按市值）")
+    lines += [esc(x) for x in holding_notes.risk_lines(g.get("risk"))]
     if not held:
         lines.append("没有记录的持仓。")
     for h in held:
@@ -248,6 +259,48 @@ def render(asof: date, market: dict, sector_rows: list[dict], focus: dict | None
     if satellite:
         lines.append(f"卫星仓 ${satellite['used']:,.0f}，占账户 {satellite['pct'] * 100:.1f}%（上限 {satellite['cap_pct'] * 100:.0f}%"
                      + ("，超出，按计划不新买入个股）" if satellite["over"] else f"，剩余额度 ${satellite['room']:,.0f}）"))
+    missing = [h["ticker"] for h in held if not h["core"] and not ((h["trade"].get("plan") or {}).get("thesis") or {}).get("reason")
+               and not h["trade"].get("note")]
+    if missing:
+        lines.append(f"（{'、'.join(missing)} 没有记录买入理由，新闻没法对照你的判断；买入时把理由一起发给 Scout 就会记下）")
+
+    lines += ["\n<b>二、市场</b>", esc(opportunities.state_text(market, detail=True)),
+              f"SPY 当日 {pct(market.get('spy_ret_1d'), 1, True)}，20 日 {pct(market.get('spy_ret_20d'), 1, True)} | "
+              f"QQQ 20 日 {pct(market.get('qqq_ret_20d'), 1, True)} | IWM 20 日 {pct(market.get('iwm_ret_20d'), 1, True)} | "
+              f"SMH 20 日 {pct(market.get('smh_ret_20d'), 1, True)}"]
+    if g.get("market_day"):
+        from scout import market_day
+
+        lines += [esc(x) for x in market_day.lines(g["market_day"])]
+    if mfilter:
+        lines.append(("🛑 " if mfilter["off"] else "🟢 ") + esc(market_filter.text(mfilter)))
+    if focus and focus.get("focus"):
+        f = focus["focus"]
+        lines.append(f"🧭 市场关注点：{esc(f['headline'])}")
+        lines += [f"{i}. {esc(t['title'])}" for i, t in enumerate(f.get("themes", []), 1)]
+    if g.get("events"):
+        from scout import event_calendar
+
+        lines += [esc(x) for x in event_calendar.digest_lines(g["events"])]
+
+    lines.append("\n<b>三、板块</b>")
+    rotation = sectors.rotation_line(sector_rows)
+    if rotation:
+        lines.append(esc(rotation))
+    trend = trend_lines(sector_rows)
+    if trend:
+        lines.append("趋势确认变化（相对 SPY，超出正常波动 2 倍且参与面广；不代表会延续）：")
+        lines += [f"• {esc(x)}" for x in trend]
+    by_sector = {r["sector"]: r for r in sector_rows if r.get("kind") == "sector"}
+    mine = sorted({h["sector"] for h in held if h.get("sector") in by_sector})
+    for s in mine:
+        r = by_sector[s]
+        names = "、".join(h["ticker"] for h in held if h.get("sector") == s)
+        trend = sector_trend.summary(r)
+        lines.append(f"• {esc(sector_text(sectors.card_context(r)) or r['name'])}；当日 {pct(r.get('ret_1d'), 1, True)}，"
+                     f"20 日相对 SPY {pct(r.get('rel_20'), 1, True)}" + (f"；趋势 {esc(trend)}" if trend else "") + f"（持有 {esc(names)}）")
+    if not mine:
+        lines.append("（持仓所在板块：无持仓）" if not held else "（持仓所在板块暂无数据）")
 
     watched = watch_items(g, asof)
     if watched:
@@ -261,10 +314,16 @@ def render(asof: date, market: dict, sector_rows: list[dict], focus: dict | None
     mine_or_watch = {h["ticker"] for h in held} | set(g["watch"])
     others = [s for s in g["prop"] if s["ticker"] not in mine_or_watch and s.get("confidence") in PUSH_CONFIDENCE]
     lines.append("\n<b>五、其他</b>")
+    if g.get("prediction"):
+        from scout import prediction
+
+        lines.append("预测市场今天的大变化（市场价格，不是 Scout 的判断）：")
+        lines += [esc(prediction.move_line(m)) for m in g["prediction"]]
     if others:
         lines.append(f"🔗 产业链传导提示 {len(others)} 条（推断，未经检验，记入判断台账打分），例如：")
         for s in others[:OTHER_PROP_MAX]:
             lines.append(f"• <b>{esc(s['ticker'])}</b>（{esc(s['src']['ticker'])} 的{REL_ZH[s['link']['relation']]}）"
                          f"{'🟢 利好' if s['impact'] > 0 else '🔴 利空'}：{esc(s['mechanism'])}")
     lines += scan_lines
+    lines.append("\n" + esc(holding_notes.GLOSSARY))
     return "\n".join(lines)

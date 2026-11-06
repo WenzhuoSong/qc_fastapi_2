@@ -53,8 +53,12 @@ class DigestTests(unittest.TestCase):
         sector_rows = [{"kind": "sector", "sector": "Energy", "name": "能源", "key": "XLE", "ret_1d": -0.01, "rel_20": -0.03,
                         "heat_label": "冷", "quadrant": "lagging"}]
         text = digest.render(ASOF, market, sector_rows, None, None, gathered(), None, ["今日没有规则触发。"])
-        for part in ("一、市场", "二、板块", "三、我的持仓", "四、自选股变化", "五、其他"):
+        parts = ("【今天最重要的】", "一、我的持仓", "二、市场", "三、板块", "四、自选股变化", "五、其他", "术语：")
+        for part in parts:
             self.assertIn(part, text)
+        self.assertEqual([text.index(x) for x in parts], sorted(text.index(x) for x in parts))
+        self.assertIn("1. PBF 11-06 发财报（3 天后）", text)
+        self.assertIn("没有记录买入理由", text)
         self.assertIn("持有 PBF", text)
         self.assertIn("财报 2026-11-06（3 天后）", text)
         self.assertIn("AMKR", text)                       # another stock's hint under 其他

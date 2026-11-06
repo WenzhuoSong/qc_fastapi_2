@@ -113,9 +113,12 @@ def cause_lines(facts: list[dict], asof: date) -> list[dict]:
     return out[:CAUSE_MAX]
 
 
-async def cause(asof: date, spy: float, qqq: float | None) -> list[dict]:
+async def cause(asof: date, spy: float, qqq: float | None) -> list[dict] | None:
     from scout import external_facts
+    from scout.config import get_scout_settings
 
+    if not get_scout_settings().openai_api_key:        # no search ran: say nothing rather than "nothing found"
+        return None
     way = "fell" if spy < 0 else "rose"
     nq = f", the Nasdaq-100 (QQQ) {qqq * 100:+.1f}%" if qqq is not None else ""
     found = await external_facts.collect(
