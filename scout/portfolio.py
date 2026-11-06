@@ -143,7 +143,39 @@ def size_text(sz: dict | None) -> str | None:
 
 # ── Journal ──
 
+def merge_lot(held: dict, t: dict) -> dict:
+    """A core ETF bought again joins the open position (user's request 2026-11-07): shares added, entry = the
+    weighted average cost, first buy date kept; every buy stays listed in plan['lots']."""
+    plan = dict(held.get("plan") or {})
+    lots = list(plan.get("lots") or [{"date": held["opened_on"].isoformat(), "price": held["entry_price"],
+                                      "shares": held["shares"], "note": held.get("note")}])
+    lots.append({"date": t["opened_on"].isoformat(), "price": t["entry_price"], "shares": t["shares"], "note": t.get("note") or None})
+    shares = held["shares"] + t["shares"]
+    entry = (held["entry_price"] * held["shares"] + t["entry_price"] * t["shares"]) / shares
+    plan["lots"] = lots
+    plan.setdefault("history", []).append({"date": t["opened_on"].isoformat(), "text":
+                                           f"加仓 {t['shares']:g} 股 @ {t['entry_price']:.2f}，合并后 {shares:g} 股，平均成本 {entry:.2f}"})
+    note = "；".join(x for x in (held.get("note"), f"{t['opened_on']:%m-%d} 加仓：{t['note']}" if t.get("note") else None) if x)
+    return {"shares": shares, "entry_price": entry, "plan": plan, "note": note or None}
+
+
 async def add_trade(t: dict) -> int:
+    """Record a buy; a core ETF already held (with no partial sells, whose P&L the average cost would change)
+    is added to that position instead of opening a second one."""
+    from scout import levels
+
+    ticker = t["ticker"].upper().strip()
+    if levels.is_core(ticker):
+        held = await db.fetch_one(
+            "SELECT * FROM scout.trades t WHERE ticker = :t AND closed_on IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM scout.trade_sells s WHERE s.trade_id = t.id) ORDER BY opened_on, id LIMIT 1",
+            {"t": ticker})
+        if held:
+            m = merge_lot(held, {**t, "ticker": ticker})
+            await db.execute("UPDATE scout.trades SET shares = :n, entry_price = :p, note = :note, plan = CAST(:plan AS JSONB), "
+                             "updated_at = now() WHERE id = :id",
+                             {"n": m["shares"], "p": m["entry_price"], "note": m["note"], "plan": db.jsonb(m["plan"]), "id": held["id"]})
+            return held["id"]
     row = await db.execute_returning(
         "INSERT INTO scout.trades (ticker, opportunity_id, opened_on, entry_price, shares, stop, target, note, plan) "
         "VALUES (:ticker, :opp, :opened, :entry, :shares, :stop, :target, :note, CAST(:plan AS JSONB)) RETURNING id",

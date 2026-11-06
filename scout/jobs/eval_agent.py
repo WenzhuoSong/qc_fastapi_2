@@ -33,6 +33,7 @@ QUESTIONS: list[tuple[str, set[str]]] = [
     ("Scout 现在看好哪个行业？之前的行业判断准吗？", {"get_outlook"}),
     ("最近有内部人集中买入的股票吗？", {"get_screens"}),
     ("突破回踩的前向验证进行到哪一步了？", {"get_research"}),
+    ("BDX 的突破回踩信号成交了吗？还在等回踩吗？", {"get_screens"}),
     ("这周有什么重要的经济数据和财报？", {"get_calendar"}),
     ("下周美联储开会或者选举这类大事对我的持仓有什么影响？", {"get_calendar"}),
     ("市场上各方对 SHOP 怎么看？多空分歧在哪？", {"get_views"}),

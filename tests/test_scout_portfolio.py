@@ -129,6 +129,20 @@ class CoreTests(unittest.TestCase):
         self.assertIn("恢复", levels.manage_core(plan, {"off": False}, date(2027, 1, 4))[0])
         self.assertNotIn("filter_off", plan)
 
+    def test_a_second_core_buy_joins_the_position_at_average_cost(self):
+        held = {"opened_on": date(2026, 11, 3), "entry_price": 756.0, "shares": 100.0, "note": "主力仓位建立",
+                "plan": {"policy": "core_filter", "history": []}}
+        m = portfolio.merge_lot(held, {"opened_on": date(2026, 11, 6), "entry_price": 738.5, "shares": 100.0, "note": "主力仓位补充"})
+        self.assertEqual(m["shares"], 200.0)
+        self.assertAlmostEqual(m["entry_price"], 747.25)
+        self.assertEqual([(x["date"], x["price"], x["shares"]) for x in m["plan"]["lots"]],
+                         [("2026-11-03", 756.0, 100.0), ("2026-11-06", 738.5, 100.0)])
+        self.assertEqual(m["plan"]["policy"], "core_filter")
+        self.assertIn("平均成本 747.25", m["plan"]["history"][-1]["text"])
+        self.assertEqual(m["note"], "主力仓位建立；11-06 加仓：主力仓位补充")
+        again = portfolio.merge_lot({**held, **m}, {"opened_on": date(2026, 11, 9), "entry_price": 750.0, "shares": 50.0})
+        self.assertEqual((again["shares"], len(again["plan"]["lots"])), (250.0, 3))
+
     def test_core_metrics_and_labels_have_no_stop(self):
         t = {"ticker": "SPY", "entry_price": 756.0, "shares": 100, "last_close": 740.0, "stop": None, "sells": [],
              "plan": {"policy": "core_filter", "stop": None, "previous": {"stop": 604.8}}}

@@ -315,14 +315,16 @@ async def decide(draft_id: int, ok: bool) -> str:
                                               "shares": p["shares"], "note": note or None, "plan": {"thesis": thesis}})
         row = await db.fetch_one("SELECT * FROM scout.trades WHERE id = :i", {"i": trade_id})
         msgs = await portfolio.manage_trade(row)
-        row = await db.fetch_one("SELECT stop FROM scout.trades WHERE id = :i", {"i": trade_id})
+        row = await db.fetch_one("SELECT stop, shares, entry_price FROM scout.trades WHERE id = :i", {"i": trade_id})
         inst = await db.fetch_one("SELECT sector FROM scout.instruments WHERE ticker = :t", {"t": p["ticker"]}) or {}
         try:
             await ledger.record("user_thesis", p["ticker"], day, 1, sector_etf=universe.SECTOR_ETFS.get(inst.get("sector") or ""),
                                 source_ref=f"trade:{trade_id}", payload=thesis)
         except Exception:
             logger.exception("ledger entry for trade %s failed", trade_id)
-        text = (f"✅ 已记录：{esc(p['ticker'])} 买入 {p['shares']:g} 股 @ {p['price']:.2f}（{day}），系统止损 {row['stop']:.2f}。"
+        merged = f"，与已有持仓合并为 {row['shares']:g} 股，平均成本 {row['entry_price']:.2f}" if row["shares"] > p["shares"] + 1e-9 else ""
+        stop = f"系统止损 {row['stop']:.2f}" if row["stop"] is not None else "核心仓不设止损，按大盘过滤管理"
+        text = (f"✅ 已记录：{esc(p['ticker'])} 买入 {p['shares']:g} 股 @ {p['price']:.2f}（{day}）{merged}，{stop}。"
                 + ("\n" + "\n".join(f"• {esc(m)}" for m in msgs) if msgs else "")
                 + "\n理由已写进这笔交易，并登记进判断台账（之后 5 / 20 / 60 个交易日对照 SPY 和行业打分）。")
     await db.execute("UPDATE scout.trade_drafts SET status = 'confirmed', trade_id = :t, decided_at = now() WHERE id = :i",
