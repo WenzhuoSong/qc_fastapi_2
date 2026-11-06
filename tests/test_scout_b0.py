@@ -128,11 +128,15 @@ class RankTests(unittest.TestCase):
         close, volume = self._frames()
         rows = b0.b0_scores(close, volume, ["UP"], self.CFG)
         cfg = self.CFG
-        html = views.b0_rank_panel({"asof": "2026-10-27", "gate": b0.b0_gate(close, cfg), "universe": 1, "scored": 1,
-                                    "rows": [{**rows[0], "indexes": ["ndx"], "name": "Up Inc", "sector": "Information Technology"}],
-                                    "weights": [list(w) for w in cfg.weights], "trend_horizon": cfg.trend_horizon,
-                                    "min_dollar_volume": cfg.min_dollar_volume, "per_index": cfg.per_index,
-                                    "indexes": list(cfg.indexes), "target_holdings": cfg.target_holdings})
+        rk = {"asof": "2026-10-27", "gate": b0.b0_gate(close, cfg), "universe": 1, "scored": 1,
+              "rows": [{**rows[0], "indexes": ["ndx"], "name": "Up Inc", "sector": "Information Technology"}],
+              "weights": [list(w) for w in cfg.weights], "trend_horizon": cfg.trend_horizon,
+              "min_dollar_volume": cfg.min_dollar_volume, "per_index": cfg.per_index,
+              "indexes": list(cfg.indexes), "target_holdings": cfg.target_holdings}
+        html = views.b0_rank_panel(rk, date(2026, 10, 27))
+        self.assertIn("· 2026-10-27 收盘</h3>", html)
+        self.assertNotIn("⚠️", html)
+        self.assertIn("这是 2026-10-27 收盘的排名，最新数据已到 2026-11-05", views.b0_rank_panel(rk, date(2026, 11, 5)))
         self.assertIn("大盘过滤未通过", html)
         self.assertIn("不是 B0 的持仓", html)
         self.assertIn("Nasdaq-100", html)

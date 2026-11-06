@@ -1296,7 +1296,8 @@ def outlook_page(rec: dict | None, theses: list[dict]) -> str:
 
 # ── the user's B0 ranking ───────────────────────────────────────────────
 
-def b0_rank_panel(rk: dict | None) -> str:
+def b0_rank_panel(rk: dict | None, latest: date | None = None) -> str:
+    """`latest`: the newest data date; an older ranking says so at the top (the after-close job did not update it)."""
     from scout.universe import SECTOR_ZH
 
     if not rk:
@@ -1325,7 +1326,11 @@ def b0_rank_panel(rk: dict | None) -> str:
                     + [signed(r["returns"].get(str(n))) for n in horizons]
                     + [f"${r['dollar_volume'] / 1e9:.1f}B" if r["dollar_volume"] >= 1e9 else f"${r['dollar_volume'] / 1e6:.0f}M",
                        " / ".join(idx.get(i, e(i)) for i in r.get("indexes") or [])])
-    return (f"<div class='card' style='margin-top:12px'><h3>B0 动量打分（Scout 按 B0 的参数近似计算）</h3>"
+    stale = ""
+    if latest and rk["asof"] < str(latest):
+        stale = (f"<p class='warn'>⚠️ 这是 {e(rk['asof'])} 收盘的排名，最新数据已到 {e(str(latest))}：收盘扫描没有更新 B0 打分，"
+                 "排名和大盘过滤都已过时（收盘任务记录见 /data）。</p>")
+    return (f"<div class='card' style='margin-top:12px'><h3>B0 动量打分（Scout 按 B0 的参数近似计算）· {e(rk['asof'])} 收盘</h3>{stale}"
             f"<p>{' '.join(gate_chip(t, v) for t, v in g['tickers'].items())}</p><p class='small'>{state}</p>"
             "<ul class='tight small'>"
             f"<li>分数 = {e(w)}的对数收益；{rk['trend_horizon']} 日收益须为正，20 日平均成交额 ≥ ${rk['min_dollar_volume'] / 1e6:.0f}M。</li>"

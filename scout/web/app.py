@@ -597,7 +597,7 @@ async def screens_page(s: str = "", _: str = Depends(require_auth)) -> str:
         f"<a class='chip' style='{'background:var(--accent);color:#fff' if x.id == s else ''}' href='/screens?s={e(x.id)}'>"
         f"{e(x.title)} {len(sc.run_angle(x, angle_rows))}</a>" for x in sc.ANGLE_SCREENS) + "</div>")
     if on:
-        return layout("策略筛选", "screens", f"<h2>策略筛选</h2>{nav}" + views.b0_rank_panel(b0_rank))
+        return layout("策略筛选", "screens", f"<h2>策略筛选</h2>{nav}" + views.b0_rank_panel(b0_rank, asof))
     angle = next((x for x in sc.ANGLE_SCREENS if x.id == s), None)
     if angle:
         entry = await learned.get(angle.strategy)
