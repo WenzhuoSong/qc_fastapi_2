@@ -578,10 +578,12 @@ async def screens_page(s: str = "", _: str = Depends(require_auth)) -> str:
 
     current = next((x for x in screens if x.id == s), None) or next(
         (x for x in screens if x.detector is not None and x.detector.live and count_of(x)), screens[0])
+    # the rule / signal row is highlighted only when the page shows one of its screens (not B0 or a fundamentals screen)
+    shows_rule = s != "b0" and not any(x.id == s for x in sc.ANGLE_SCREENS)
     nav = ""
     for group in ("规则", "技术信号", "事件"):
         chips = "".join(
-            f"<a class='chip' style='{'background:var(--accent);color:#fff' if x.id == current.id else ''}' "
+            f"<a class='chip' style='{'background:var(--accent);color:#fff' if shows_rule and x.id == current.id else ''}' "
             f"href='/screens?s={e(x.id)}'>{e(x.title)} {count_of(x)}</a>"
             for x in screens if x.group == group)
         nav += f"<div style='margin:4px 0'><span class='small muted'>{group}：</span>{chips}</div>"
