@@ -67,6 +67,20 @@ async def current(on: date | None = None) -> dict | None:
     return summary([r["date"] for r in rows], [r["close"] for r in rows])
 
 
+def month_end_bar(dates: list[date], closes: list[float], today: date) -> float | None:
+    """The close SPY must stay at or above at this month's end for the filter to stay on: off when the month-end
+    close c < mean(previous MONTHS − 1 month ends + c), i.e. c < mean of the previous MONTHS − 1."""
+    ends = [float(c) for t, (d, c) in enumerate(zip(dates, closes))
+            if c is not None and (d.year, d.month) != (today.year, today.month) and d < today and _month_end(dates, t)]
+    return sum(ends[-(MONTHS - 1):]) / (MONTHS - 1) if len(ends) >= MONTHS - 1 else None
+
+
+async def bar_for(today: date) -> float | None:
+    rows = await db.fetch_all("SELECT date, close FROM scout.bars_daily WHERE ticker = :t AND date < :d ORDER BY date",
+                              {"t": BENCHMARK, "d": today})
+    return month_end_bar([r["date"] for r in rows], [r["close"] for r in rows], today)
+
+
 def text(s: dict | None) -> str:
     if not s:
         return "大盘过滤：SPY 历史不足 10 个月末，暂无状态"

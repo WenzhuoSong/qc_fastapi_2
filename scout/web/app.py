@@ -141,7 +141,10 @@ async def today(_: str = Depends(require_auth)) -> str:
     if warn:
         body += "<div class='card small warn' style='margin:12px 0'>⚠️ 集中度：" + "<br>".join(e(w) for w in warn) + "</div>"
     body += "<h2>活跃机会</h2>"
-    body += (f'<div class="grid">{"".join(opp_card(o, settings) for o in live)}</div>' if live
+    from scout import market_filter
+
+    mf = await market_filter.current()
+    body += (f'<div class="grid">{"".join(opp_card(o, settings, mfilter=mf) for o in live)}</div>' if live
              else "<p class='muted'>暂无活跃机会。</p>")
     if demoted:
         body += (f"<details style='margin-top:12px'><summary class='muted'>未通过检验或已降为候选的规则仍在跟踪的机会（{len(demoted)}）"
@@ -411,7 +414,10 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
     except Exception as exc:
         logger.warning("company profile for %s unavailable: %s", t, exc)
     if latest:
-        body += opp_card(latest)
+        from scout import market_filter
+
+        body += opp_card(latest, await portfolio.get_settings(), rejected=latest["primary_detector"] in learned.held_back(await learned.current()),
+                         mfilter=await market_filter.current())
     body += await sector_members_card(t)
     body += (f'<details class="card"><summary>全部特征 <span class="small muted">{e((feat or {}).get("date"))}</span></summary>'
              f'<p class="small muted">鼠标悬停指标名可查看定义（数据字典 scout/knowledge/features.yaml）</p>'

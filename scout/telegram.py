@@ -89,17 +89,6 @@ def position_text(why: dict) -> str | None:
     return text
 
 
-def score_text(why: dict) -> str | None:
-    parts = (why or {}).get("score_parts") or []
-    if not parts:
-        return None
-    text = " + ".join(f"{p['label']} {p['value']:.2f}×{p['weight']:.2f}" for p in parts)
-    adj = "；".join(f"{a['label']} {a['value']:+.2f}" if a["key"] != "feedback_weight" and a["key"] != "watch"
-                   else a["label"] if a["key"] == "watch" else f"{a['label']} ×{a['value']:.2f}"
-                   for a in why.get("adjustments") or [])
-    return f"评分 {why['score']:.2f} = {text}" + (f"（调整：{adj}）" if adj else "")
-
-
 def exit_text(o: dict) -> str:
     """One line: how this trade is exited, with the live trailing stop if any."""
     ex = (o.get("evidence") or {}).get("exit") or {}
@@ -141,29 +130,60 @@ def outcome_text(br: dict) -> str | None:
     return text
 
 
-def render_card(o: dict, settings: dict | None = None) -> str:
+REJECTED_TEXT = ("⛔ 规则未通过检验：和同一天的其他股票相比没有可靠优势（见 Dashboard「知识库」）。"
+                 "这张卡只为继续记录规则的表现，不是买入建议。")
+DEMOTED_TEXT = "⚠️ 该规则已降为候选（回放扣费后跑输持有），只跟踪到结束，不建议据此新开仓。"
+
+
+def plan_text(o: dict, settings: dict | None, mfilter: dict | None, usable: bool) -> str | None:
+    """What the user's plan says about buying this card: the rule's verdict, the market filter, the satellite room, the size."""
+    if o.get("status") not in ("new", "triggered"):
+        return None
+    if not usable:
+        return "按你的计划：这条规则没有通过检验，不按它买入"
+    if mfilter and mfilter.get("off"):
+        return "按你的计划：大盘过滤为避险，不新买入"
+    if settings is None:
+        return None
+    sat = portfolio.satellite(settings)
+    if sat and sat["room"] <= 0:
+        return f"按你的计划：卫星仓已到上限（{sat['pct'] * 100:.0f}% / {sat['cap_pct'] * 100:.0f}%），不新买个股"
+    mid = (o["entry_lo"] + o["entry_hi"]) / 2
+    sz = portfolio.size_text(portfolio.size(mid, portfolio.holding_stop(mid), settings, portfolio.opp_vol(o)))
+    return (f"按你的计划可以考虑：{sz}" if sz else "按你的计划可以考虑") + \
+        "；买入后按持仓计划管理（回落 20% 止损，没有目标价），卡上的止损和目标只用于规则回放"
+
+
+def render_card(o: dict, settings: dict | None = None, *, rejected: bool = False, mfilter: dict | None = None) -> str:
+    """The card: the rule's verdict and the plan first, then levels, why, the rule's history and the text."""
     ev, th, br = o.get("evidence") or {}, knowledge.humanize_obj(o.get("thesis") or {}), o.get("base_rate") or {}
     setup = ev.get("setup") or {}
     labels = setup.get("label") or o["primary_detector"]
     extra = [d for d in (o.get("detectors") or []) if d != o["primary_detector"]]
-    head = f"🟢 <b>{esc(o['ticker'])}</b> · {esc(labels)}"
-    if extra:
-        head += f" +{len(extra)}"
-    head += f"　评分 {o['score']:.2f}"
+    head = f"🟢 <b>{esc(o['ticker'])}</b> · {esc(labels)}" + (f" +{len(extra)}" if extra else "")
+    head += f" · {STATUS_LABELS.get(o.get('status'), o.get('status'))} · {esc(o.get('asof'))} 信号"
     if ev.get("theme"):
         head += f"　#{esc(ev['theme'])}"
     lines = [head]
     from scout.detectors import registry
 
-    if o.get("status") in ("new", "triggered") and not any(d.name == o["primary_detector"] and d.live for d in registry()):
-        lines.append("⚠️ 该规则已降为候选（回放跑输持有），只跟踪到结束，不建议据此新开仓。")
+    active = o.get("status") in ("new", "triggered")
+    live = any(d.name == o["primary_detector"] and d.live for d in registry())
+    if active and rejected:
+        lines.append(esc(REJECTED_TEXT))
+    elif active and not live:
+        lines.append(esc(DEMOTED_TEXT))
+    plan = plan_text(o, settings, mfilter, live and not rejected)
+    if plan:
+        lines.append(f"👉 {esc(plan)}")
     if th.get("headline"):
         lines.append(f"<i>{esc(th['headline'])}</i>")
     trailing = (ev.get("exit") or {}).get("kind") == "trail_low"
     lines.append(
-        f"入场 {o['entry_lo']:.2f}–{o['entry_hi']:.2f} | 保护性止损 {o['stop']:.2f} | "
+        f"规则价位：入场 {o['entry_lo']:.2f}–{o['entry_hi']:.2f} | 止损 {o['stop']:.2f} | "
         f"{'参考目标' if trailing else '目标'} {o['target1']:.2f}"
         + (f" / {o['target2']:.2f}" if (o.get("target2") or 0) > o["target1"] else "")
+        + f" · 回放的出场：{esc(exit_text(o))}"
     )
     move = market_split_text(ev.get("price") or {})
     if move:
@@ -179,7 +199,8 @@ def render_card(o: dict, settings: dict | None = None) -> str:
     sec = sector_text(ev.get("sector_context"))
     if sec:
         lines.append(f"🗺 {esc(sec)}")
-    lines.append(f"出场：{esc(exit_text(o))} | R:R {o.get('risk_reward') or 0:.1f} | 状态 {STATUS_LABELS.get(o.get('status'), o.get('status'))}")
+    for flag in ev.get("event_flags") or []:
+        lines.append(f"⚡ 事件驱动·{esc(flag['type'])}：{esc(flag['headline'])}（技术规则统计参考价值有限）")
     if br.get("n"):
         lines.append(f"📊 {base_rate_text(br)}")
         outcome = outcome_text(br)
@@ -188,16 +209,6 @@ def render_card(o: dict, settings: dict | None = None) -> str:
     cond = conditional_rates.text(ev.get("conditional"))
     if cond:
         lines.append(f"🔬 {esc(cond)}")
-    for flag in ev.get("event_flags") or []:
-        lines.append(f"⚡ 事件驱动·{esc(flag['type'])}：{esc(flag['headline'])}（技术规则统计参考价值有限）")
-    if settings is not None and o.get("status") in ("new", "triggered"):
-        sz = portfolio.size_text(portfolio.size((o["entry_lo"] + o["entry_hi"]) / 2, portfolio.holding_stop((o["entry_lo"] + o["entry_hi"]) / 2), settings,
-                                                portfolio.opp_vol(o)))
-        if sz:
-            lines.append(f"📐 {esc(sz)}")
-    score = score_text(why)
-    if score:
-        lines.append(f"🧮 {esc(score)}")
     if th.get("thesis"):
         lines.append(f"\n📌 {esc(th['thesis'])}")
     for c in th.get("catalysts") or []:
@@ -262,7 +273,10 @@ async def send(text: str, *, reply_markup: dict | None = None, chat_id: str | No
 
 
 async def push_card(o: dict) -> int | None:
-    message_id = await send(render_card(o, await portfolio.get_settings()), reply_markup=feedback_keyboard(o["id"]))
+    from scout import market_filter
+
+    text = render_card(o, await portfolio.get_settings(), mfilter=await market_filter.current())
+    message_id = await send(text, reply_markup=feedback_keyboard(o["id"]))
     if message_id:
         await db.execute(
             "UPDATE scout.opportunities SET pushed_at = now(), tg_message_id = :m WHERE id = :id",
@@ -534,7 +548,10 @@ async def idea_text(ticker: str) -> str:
         "SELECT * FROM scout.opportunities WHERE ticker = :t ORDER BY asof DESC, score DESC LIMIT 1", {"t": t}
     )
     if o:
-        return render_card(o, await portfolio.get_settings())
+        from scout import learned, market_filter
+
+        return render_card(o, await portfolio.get_settings(), rejected=o["primary_detector"] in learned.held_back(await learned.current()),
+                           mfilter=await market_filter.current())
     from scout.agent import answer
 
     return await answer(f"{t} 目前没有规则触发的机会卡。请基于数据评估它当前的形态、相对强度和风险，并说明需要什么条件才会成为机会。", channel="telegram")

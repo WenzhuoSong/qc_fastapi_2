@@ -318,6 +318,12 @@ class ThesisGuardTests(unittest.TestCase):
         self.assertEqual(unsupported_numbers(thesis_text(t), allowed_numbers(self.EV)), [])
         self.assertTrue(t.counter_evidence)
 
+    def test_template_for_a_rejected_rule(self):
+        t = template_thesis({**self.EV, "news": [{"headline": "Midterms could move oil"}]}, rejected=True)
+        self.assertEqual(t.confidence, "low")
+        self.assertIn("没有通过公平基准检验", t.counter_evidence[0])
+        self.assertEqual(t.catalysts, [])                     # an ordinary headline is not a catalyst
+
 
 class UniverseTests(unittest.TestCase):
     def test_parse_constituents_handles_gics_and_icb_tables(self):

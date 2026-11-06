@@ -274,6 +274,9 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     summary["candidates"] = len(candidates)
     summary["signal_hits"] = await store_signal_hits(p, rates, asof)
     market = opportunities.market_context(p, asof)
+    from scout import learned
+
+    quiet = learned.held_back(await learned.current())
     saved = []
     for c in select_top(candidates, settings.scout_top_n):
         news = await context.load_news(c.ticker)
@@ -284,7 +287,8 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
             "sector_context": sector_ctx.get(c.sector),
         }
         ev = opportunities.evidence(c, market)
-        th, source = await thesis.write_thesis(ev)
+        # a rule the knowledge base rejects gets the plain template: an LLM text would sell a card that is only a record
+        th, source = (thesis.template_thesis(ev, rejected=True), "template") if c.primary.name in quiet else await thesis.write_thesis(ev)
         try:                           # history shown on the card, after the thesis (the LLM never sees it)
             ev["conditional"] = await conditional_rates.for_signal(c.primary.name, c.sector, market.get("regime"))
         except Exception as exc:
@@ -307,9 +311,6 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         logger.warning("market focus failed: %s", exc)
         summary["market_focus"] = f"failed: {type(exc).__name__}"
 
-    from scout import learned
-
-    quiet = learned.held_back(await learned.current())
     cards = [o for o in [await telegram.load_opportunity(i) for i in saved] if o]
     muted = [o for o in cards if o["primary_detector"] in quiet]
     scan = scan_lines(candidates, transitions, saved)

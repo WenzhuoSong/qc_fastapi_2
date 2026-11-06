@@ -54,7 +54,10 @@ readings 是各项指标在 Scout 数据字典里的标准解读（例如 RSI(2)
    公司自身走强比随大盘、随行业上涨更有信息量；beta 高意味着大盘回撤时跌得更多，可作为风险。
 8. event_flags 非空时（并购/出售、药监/临床、增发/融资、监管/诉讼），说明这是事件驱动的走势：
    技术规则的历史统计对这类股票参考价值有限，必须写进反方证据或 key_risk。
-9. 中文输出，简洁、具体，不写空话；正文不要出现英文字段名（如 avg_edge_vs_hold、rs_pct），用中文说法；
+9. 不要从 beta 的正负推出风险大小：beta 为负表示通常和大盘反向，不表示跌得更多；只有 beta 的绝对值大才表示随大盘波动大。
+   距 52 周高点的距离、"还没回到高点"本身不是回调风险的证据；不要写"提供了良好的入场机会"之类替规则下结论的话，
+   规则有没有优势只看 base_rate。
+10. 中文输出，简洁、具体，不写空话；正文不要出现英文字段名（如 avg_edge_vs_hold、rs_pct），用中文说法；
    不要出现"建议买入"之类的指令，用"机会/条件/失效"的语气。"""
 
 # Evidence keys holding fractions (0.052 = 5.2%); shown to the LLM pre-formatted.
@@ -164,7 +167,8 @@ def _pct(x: float | None, digits: int = 1) -> str:
     return "—" if x is None else f"{x * 100:.{digits}f}%"
 
 
-def template_thesis(ev: dict) -> Thesis:
+def template_thesis(ev: dict, rejected: bool = False) -> Thesis:
+    """The deterministic text: for an LLM failure, and for every card of a rule the knowledge base rejects."""
     setup, price, br, market = ev["setup"], ev["price"], ev.get("base_rate") or {}, ev.get("market") or {}
     n = br.get("n", 0)
     excess = br.get("avg_edge_vs_hold", br.get("avg_excess"))
@@ -178,7 +182,7 @@ def template_thesis(ev: dict) -> Thesis:
             f"该规则历史 {n} 次样本，扣费胜率 {_pct(br.get('win_rate_net', br.get('win_rate')), 0)}，"
             f"扣费后相对持有 {_pct(excess)}（{br.get('regime')}）。"
         )
-    counter = []
+    counter = ["这条规则没有通过公平基准检验：和同一天的其他股票相比没有可靠优势，这张卡只是记录。"] if rejected else []
     if market.get("regime") in {"downtrend", "mixed"}:
         counter.append(f"大盘处于 {market['regime']} 状态，突破类信号可靠性下降。")
     if excess is not None and excess <= 0:
@@ -190,9 +194,9 @@ def template_thesis(ev: dict) -> Thesis:
         counter.append(f"{nxt['date']} 有财报，事件风险较高。")
     if not counter:
         counter.append("单一规则信号，缺少基本面或新闻层面的确认。")
-    news = ev.get("news") or []
-    catalysts = [n_["headline"] for n_ in news[:2]]
-    conf = "medium" if n >= 30 and (excess or 0) > 0 else "low"
+    # only events are catalysts (rule 3 of the prompt); the card shows them on its ⚡ lines already
+    catalysts = [f"{f['type']}：{f['headline']}" for f in (ev.get("event_flags") or [])[:2]]
+    conf = "medium" if n >= 30 and (excess or 0) > 0 and not rejected else "low"
     return Thesis(
         headline=f"{ev['ticker']} {setup['label']}",
         thesis=" ".join(lines),
@@ -200,7 +204,8 @@ def template_thesis(ev: dict) -> Thesis:
         counter_evidence=counter[:3],
         key_risk=f"跌破止损 {ev['levels']['stop']} 即信号失效。",
         confidence=conf,
-        confidence_reason=f"历史样本 {n}，扣费后相对持有 {_pct(excess)}。" if n else "暂无历史基准。",
+        confidence_reason=("规则未通过检验。" if rejected else "")
+        + (f"历史样本 {n}，扣费后相对持有 {_pct(excess)}。" if n else "暂无历史基准。"),
     )
 
 

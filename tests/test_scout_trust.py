@@ -78,6 +78,30 @@ class CardTests(unittest.TestCase):
         self.assertNotIn("92.46 / 92.46", text)
         self.assertIn("已降为候选", text)
 
+    SETTINGS = {"account_size": 100000, "satellite_max_pct": 0.25, "satellite_used": 10000, "risk_pct": 0.01,
+                "max_position_pct": 0.1, "vol_budget_pct": 0.02}
+
+    def test_rejected_rule_card_says_so_and_the_plan_says_no(self):
+        from scout.telegram import render_card
+
+        text = render_card({**self.OPP, "primary_detector": "pullback_in_uptrend"}, self.SETTINGS, rejected=True)
+        self.assertIn("⛔ 规则未通过检验", text)
+        self.assertIn("👉 按你的计划：这条规则没有通过检验，不按它买入", text)
+        self.assertLess(text.index("⛔"), text.index("规则价位"))
+        self.assertNotIn("评分 =", text)
+
+    def test_plan_line_follows_the_filter_and_the_satellite(self):
+        from scout.telegram import plan_text
+
+        o = {**self.OPP, "primary_detector": "pullback_in_uptrend"}
+        self.assertIn("大盘过滤为避险", plan_text(o, self.SETTINGS, {"off": True}, True))
+        full = {**self.SETTINGS, "satellite_used": 30000}
+        self.assertIn("卫星仓已到上限（30% / 25%）", plan_text(o, full, {"off": False}, True))
+        ok = plan_text(o, self.SETTINGS, {"off": False}, True)
+        self.assertTrue(ok.startswith("按你的计划可以考虑"))
+        self.assertIn("回落 20% 止损", ok)
+        self.assertIsNone(plan_text({**o, "status": "stopped"}, self.SETTINGS, None, True))
+
 
 if __name__ == "__main__":
     unittest.main()

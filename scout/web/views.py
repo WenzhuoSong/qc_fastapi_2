@@ -8,7 +8,7 @@ from typing import Any, Iterable
 
 from scout import conditional_rates, knowledge, portfolio
 from scout.sectors import QUADRANTS, rotation_read, rotation_reads
-from scout.telegram import (CONFIDENCE_LABELS, STATUS_LABELS, base_rate_text, market_split_text, outcome_text, pct,
+from scout.telegram import (CONFIDENCE_LABELS, STATUS_LABELS, base_rate_text, market_split_text, outcome_text, pct, plan_text,
                             position_text, sector_text)
 
 CSS = """
@@ -125,7 +125,7 @@ def event_html(ev: dict) -> str:
             + "。技术规则的历史统计对这类走势参考价值有限。</div>")
 
 
-def opp_card(o: dict, settings: dict | None = None, rejected: bool = False) -> str:
+def opp_card(o: dict, settings: dict | None = None, rejected: bool = False, mfilter: dict | None = None) -> str:
     ev, th, br = o.get("evidence") or {}, knowledge.humanize_obj(o.get("thesis") or {}), o.get("base_rate") or {}
     label = (ev.get("setup") or {}).get("label", o["primary_detector"])
     chips = "".join(f'<span class="chip">{e(d)}</span>' for d in o.get("detectors") or [])
@@ -147,17 +147,15 @@ def opp_card(o: dict, settings: dict | None = None, rejected: bool = False) -> s
     cond = conditional_rates.text(ev.get("conditional"))
     if cond:
         base += f"<br>{e(cond)}"
-    sizing = ""
-    if settings is not None and o.get("status") in ("new", "triggered"):
-        sz = portfolio.size_text(portfolio.size((o["entry_lo"] + o["entry_hi"]) / 2, portfolio.holding_stop((o["entry_lo"] + o["entry_hi"]) / 2), settings,
-                                                portfolio.opp_vol(o)))
-        sizing = (f"<div class='small'>📐 {e(sz)} · <a href='/trades?opp={e(o['id'])}'>记录入场</a></div>" if sz else "")
+    plan = plan_text(o, settings, mfilter, is_live(o["primary_detector"]) and not rejected)
+    sizing = (f"<div class='small'>👉 {e(plan)}" + (f" · <a href='/trades?opp={e(o['id'])}'>记录入场</a>" if plan.startswith("按你的计划可以") else "")
+              + "</div>") if plan else ""
     return f"""<div class="card">
 <h3><a href="/ticker/{e(o['ticker'])}">{e(o['ticker'])}</a> · {e(label)} <span class="muted small">评分 {o['score']:.2f}</span></h3>
 <div class="small muted">{e(o['asof'])} · {e(STATUS_LABELS.get(o['status'], o['status']))} · {o['horizon_days']} 日 · R:R {(o.get('risk_reward') or 0):.1f}</div>
 <div>{chips}{theme}</div>{demoted}
 <p><b>{e(th.get('headline'))}</b><br>{e(th.get('thesis'))}</p>
-<div class="levels"><div><span>入场</span>{o['entry_lo']:.2f}–{o['entry_hi']:.2f}</div><div><span>止损</span>{o['stop']:.2f}</div>
+<div class="levels"><div><span>入场</span>{o['entry_lo']:.2f}–{o['entry_hi']:.2f}</div><div><span>规则止损</span>{o['stop']:.2f}</div>
 <div><span>目标 1</span>{o['target1']:.2f}</div><div><span>目标 2</span>{f"{o['target2']:.2f}" if (o.get('target2') or 0) > o['target1'] else "—"}</div></div>
 {sizing}{event_html(ev)}
 <div class="small">{e(market_split_text(ev.get("price") or {}) or "")}</div>
