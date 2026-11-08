@@ -240,6 +240,65 @@ def evidence(c: Candidate, market: dict) -> dict:
     }
 
 
+SAME_BET_CORR = 0.6      # daily-return correlation over SAME_BET_SESSIONS; a convention for "moves together", never tuned
+SAME_BET_SESSIONS = 63
+
+
+def same_bets(cards: list[tuple[str, float]], rets: pd.DataFrame, others: dict[str, str]) -> dict[str, dict]:
+    """Cards that are one bet (user's request 2026-11-08, after five energy pullbacks stopped out together).
+
+    `cards` = today's (ticker, score); `rets` = daily returns net of the market (`idio_ret_1d`: the market's own
+    move is shared by every stock and is the market filter's business, not a bet a card adds), up to the session
+    before the signal (on 2026-11-04 one rotation day alone tied tools, food distribution and logistics); `others` = ticker →
+    "持仓" / "机会卡". Two names whose 63-session correlation is ≥ SAME_BET_CORR move together. Cards are taken by
+    score: each joins the first higher-scored leader it moves with directly (no chains), else leads its own group.
+    Returns ticker → {lead, group, links} for cards with any tie."""
+    names = [t for t, _ in sorted(cards, key=lambda x: -x[1]) if t in rets.columns]
+    extra = [t for t in others if t in rets.columns and t not in names]
+    corr = rets[names + extra].tail(SAME_BET_SESSIONS).corr(min_periods=40) if names else pd.DataFrame()
+    tied = lambda a, b: pd.notna(corr.at[a, b]) and corr.at[a, b] >= SAME_BET_CORR  # noqa: E731
+    groups: dict[str, list[str]] = {}
+    for t in names:
+        lead = next((g for g in groups if tied(g, t)), None)
+        groups.setdefault(lead or t, []).append(t)
+    out = {}
+    for lead, members in groups.items():
+        for t in members:
+            links = [{"ticker": x, "kind": others[x], "corr": round(float(corr.at[t, x]), 2)} for x in extra if tied(t, x)]
+            if len(members) > 1 or links:
+                out[t] = {"lead": lead, "group": members, "links": sorted(links, key=lambda x: -x["corr"])}
+    return out
+
+
+def same_bet_text(sb: dict | None, ticker: str) -> str | None:
+    if not sb:
+        return None
+    parts = []
+    others = [t for t in sb["group"] if t != ticker]
+    if others and sb["lead"] != ticker:
+        parts.append(f"和今天的 {'、'.join(others)} 是同一个赌注（近 {SAME_BET_SESSIONS} 天扣掉大盘后同涨同跌，相关 ≥ {SAME_BET_CORR}），"
+                     f"以评分最高的 {sb['lead']} 为代表，这张不单独算一个机会")
+    elif others:
+        parts.append(f"今天的 {'、'.join(others)} 和它同涨同跌（相关 ≥ {SAME_BET_CORR}），算同一个赌注，它是其中评分最高的")
+    held = [x for x in sb["links"] if x["kind"] == "持仓"]
+    if held:
+        parts.append("和你持有的 " + "、".join(f"{x['ticker']}（相关 {x['corr']:.2f}）" for x in held) + " 同涨同跌：买它等于加码同一个判断")
+    cards = [x for x in sb["links"] if x["kind"] == "机会卡"]
+    if cards:
+        parts.append("和进行中的机会卡 " + "、".join(f"{x['ticker']}（{x['corr']:.2f}）" for x in cards) + " 同涨同跌")
+    return "；".join(parts) or None
+
+
+def same_bet_summary(bets: dict[str, dict]) -> str | None:
+    """One line for the digest: how many of today's cards are repeats of another."""
+    groups = {tuple(v["group"]) for v in bets.values() if len(v["group"]) > 1}
+    if not groups:
+        return None
+    repeats = sum(len(g) - 1 for g in groups)
+    return (f"今天的机会卡里有 {repeats} 张和别的卡同涨同跌，实际是 {len(groups)} 组同一个赌注："
+            + "；".join("、".join(g) for g in sorted(groups)) + "（每组只推送评分最高的一张）")
+
+
 SCORE_WEIGHTS = {"edge": 0.45, "rs": 0.25, "confluence": 0.15, "risk_reward": 0.15}
 SCORE_LABELS = {"edge": "规则历史优势", "rs": "相对强度", "confluence": "多规则共振", "risk_reward": "盈亏比",
                 "earnings_penalty": "财报临近", "watchlist_bonus": "在 watchlist 中", "feedback_weight": "反馈权重"}

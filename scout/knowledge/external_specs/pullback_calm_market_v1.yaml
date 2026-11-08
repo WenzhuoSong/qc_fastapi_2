@@ -1,0 +1,61 @@
+# Pre-registration (G0), written 2026-11-08 before any result of this design was computed. Never edited after the run;
+# a changed design is a new file with a new key. One run, local only, after the user's go-ahead (not run yet).
+key: pullback_calm_market_v1
+registered_on: '2026-11-08'
+requested_by: 用户 2026-11-08："你的规则是否过于专注某个数值的设定，而不是思路的动态调整？" → 提议把"市况和形态匹配"做成一条新规则检验，用户："两个都做吧"
+family: pullback_in_uptrend
+title: 强势回调 · 只在平稳的多头市况里
+question: 强势回调规则只在大盘过滤正常、且大盘波动不高于自身一年中位数时才算信号，这些信号是否跑赢同一天用同样买卖方式的其他股票，
+  并且好于同一规则在其他市况下的信号？
+
+claim: 上升趋势股的缩量回调在平稳的多头市况里是买点（趋势延续），在大盘走弱或高波动时更多是下跌的开始；加上市况条件后，规则有独立的优势。
+mechanism: 回调买入押的是"趋势会延续"。大盘在长期均线上方、波动平稳时，个股的短期回调多半是获利了结，买盘会回来（Jegadeesh & Titman 1993 动量在多头市况更强：
+  Cooper, Gutierrez & Hameed 2004《Market states and momentum》；Daniel & Moskowitz 2016《Momentum crashes》：高波动的熊市里动量崩溃）。
+  大盘走弱或波动放大时，同样形态更可能是资金整体撤出的一部分，止损被成片打掉（2026-11-02..06 那一周能源和科技回调信号成片止损是一个例子，只是例子，不是证据）。
+
+data:
+  source: 本地 Sharadar（scout/sharadar_research.py 的口径）：美国本土普通股，NYSE / NASDAQ / NYSEMKT，未复权价 ≥ $5；含之后退市的公司，
+    退市按最后收盘结算，非并购退市 −30%（Shumway 1997）；指标在含分红复权的 OHLCV 上计算
+  universe: 时点正确的市值前 1000，每 21 个交易日更新一次（从 1999-01-04 起，与 scout_system_v1 相同）；信号当天必须是成员
+  primary_sample: 1999-01-04 到 2014-09-30（判定用）。理由：Scout 自己的数据从 2014-10 开始，这条规则和这些市况拆分只在 2014-10 以后看过（见 disclosure）
+  halves: 1999-01-04..2006-12-29 和 2007-01-02..2014-09-30（日历固定分割）
+  later_sample: 2014-10-01 到数据结束，只报告，不参与判定（已经看过）
+
+rule:
+  signal: rules.D2_PULLBACK 的条件原样（相对强度前 20%、收盘 > 200 日线、50 日线 > 200 日线、63 日涨幅 > 10%、RSI(2) ≤ 10、收盘 ≥ 50 日线 × 0.97、
+    收盘 ≤ 20 日线、量比 ≤ 1.2），指标公式与 scout/features.py 相同；相对强度百分位在当天股票池内计算
+  condition: 两条同时满足（固定，不比较其他门槛）
+    market_filter: 信号日之前最近一个月末，SPY 月末收盘 ≥ 10 个月均值（与 scout/market_filter.py 和 exit_redeploy.market_off 相同）
+    calm: 信号日收盘时 SPY 20 日已实现波动 ≤ 其过去 252 个交易日的中位数（与 gate.vol_states 的"低波动"相同）
+  cooldown: 同一股票 10 个交易日内只计第一个信号（base_rates.COOLDOWN_SESSIONS）
+  entry_exit: 规则自己的价位（rules._pullback_levels）和出场（FIXED_EXIT：止损 / 目标 1 / 持有上限 10 个交易日），信号后 3 个交易日内限价成交，
+    成交与出场由 scout/simulate.py 计算（与检验关相同）；成本 simulate.ROUND_TRIP_COST
+
+controls:
+  select: 主对照。同一信号日，从当天股票池随机取其他股票，用同样的价位公式、成交和出场规则；每个信号取前 3 个能成交的对照的平均（与前向验证相同），固定随机种子
+  other_states: 同一规则在不满足条件的日子里的信号（同样的对照方法），用来检验"条件"本身有没有增加价值
+  hold: 同一只股票在同一窗口（成交日开盘到出场日收盘）直接持有的收益，用来检验是否好于"就持有这只股票"
+
+pass:
+  rule: 在 primary_sample 上同时满足：
+    1 条件内信号减 select 对照：前后两半的月均值都 > 0，全样本按月 t ≥ gate.required_t(本族检验次数)（目前为 3）；
+    2 条件内信号的超额减条件外信号的超额（各自对 select 对照），按月聚类 t ≥ 2；
+    3 条件内信号减 hold，全样本均值 > 0
+  outcome: 通过 → 新增候选规则 pullback_calm_market（Detector live=False，条件写进规则），知识库条目 backtested，进入前向验证（scout/forward.py）；
+    只有用户能确认。不通过 → 记为 rejected，不换门槛、不换波动定义、不加别的市况条件重测；强势回调族不再做市况拆分
+  multiple_testing: 计入 pullback_in_uptrend 族（gate_runs 里已有 pullback_in_uptrend_plan 一次，本次为第 2 次；另有 conditional_rates 的描述性拆分，见 disclosure）
+
+report: 信号数、成交数、每年信号数、条件内 / 外各自对 select 和 hold 的超额（按月、按半、逐年）、止损 / 目标 / 到期比例、熊市时期（2000-03..2002-09、
+  2007-10..2009-02）条件内信号数；只报告：单独一条条件（只用大盘过滤 / 只用低波动）、later_sample 的同样数字、2014-10 以后条件内外的差
+
+expected_failure: Scout 数据上最有利的切分（上升市况）也只有 t ≈ 2.4，样本比这次小；15 年的未见数据里 t ≥ 3 是很高的门槛；条件会去掉熊市里的大部分信号，
+  也就去掉了规则最差的时期，但剩下的平稳多头时期里，其他股票同样在涨，对照也强；短线技术形态在大盘股上扣成本后通常没有优势
+disclosure: |
+  登记前看过的（都在 Scout 自己的面板上，约 2015–2026，不含 primary_sample）：
+  1 检验关 pullback_in_uptrend_plan（2026-10-28，持仓计划出场）未通过；eval_rules 回放（原出场）否定，知识库 pullback_in_uptrend_decay 为 rejected。
+  2 conditional_rates_v1（2026-11-03）的拆分：全部 4,820 个成交对 select 超额 +0.34%（se 0.20%）；上升市况 +0.42%（se 0.18%）、混合 +0.30%、下跌 −0.49%；
+    低波动 +0.52%（se 0.32%）、高波动 +0.03%。这次的条件方向和这些数字一致，所以 2014-10 以后不能作为证据，只报告。
+  3 2026-11-02..06 这一周的止损（高波动、科技和能源下跌），促使提出这个想法。
+  没有看过这条规则在 1999-01..2014-09 上的任何结果，也没有看过"大盘过滤 + 低波动"组合在任何数据上的结果。
+deviations: 在 Sharadar 而不是 Scout 面板上计算（Scout 面板没有 2014 年以前的数据）；股票池是点时市值前 1000 而不是 Scout 现在的成分股；
+  与 breakout_retest_selection 的月度相关不检查（Sharadar 上没有它的成交），若通过在批判关里说明

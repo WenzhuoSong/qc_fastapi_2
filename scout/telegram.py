@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from scout import conditional_rates, db, knowledge, portfolio, universe
+from scout.opportunities import same_bet_text
 from scout.config import get_scout_settings
 
 logger = logging.getLogger("scout.telegram")
@@ -209,6 +210,9 @@ def render_card(o: dict, settings: dict | None = None, *, rejected: bool = False
     cond = conditional_rates.text(ev.get("conditional"))
     if cond:
         lines.append(f"🔬 {esc(cond)}")
+    bet = same_bet_text(ev.get("same_bet"), o["ticker"])
+    if bet:
+        lines.append(f"🔗 {esc(bet)}")
     if th.get("thesis"):
         lines.append(f"\n📌 {esc(th['thesis'])}")
     for c in th.get("catalysts") or []:

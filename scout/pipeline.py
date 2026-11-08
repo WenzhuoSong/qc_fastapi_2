@@ -108,6 +108,18 @@ async def store_signal_hits(p: FeaturePanel, rates: dict, asof: date) -> int:
     )
 
 
+async def bet_context(top: list) -> dict[str, str]:
+    """Holdings (core ETFs left out: they move with everything) and the open cards not scanned again today."""
+    from scout import levels
+
+    today = {c.ticker for c in top}
+    held = await db.fetch_all("SELECT DISTINCT ticker FROM scout.trades WHERE closed_on IS NULL")
+    cards = await db.fetch_all("SELECT DISTINCT ticker FROM scout.opportunities WHERE status IN ('new', 'triggered')")
+    out = {r["ticker"]: "机会卡" for r in cards if r["ticker"] not in today}
+    out.update({r["ticker"]: "持仓" for r in held if not levels.is_core(r["ticker"]) and r["ticker"] not in today})
+    return out
+
+
 def select_top(candidates: list, n: int, per_detector: int = MAX_PER_DETECTOR) -> list:
     """Highest scores first, at most `per_detector` cards from any one rule."""
     picked, counts = [], {}
@@ -277,8 +289,15 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     from scout import learned
 
     quiet = learned.held_back(await learned.current())
+    top = select_top(candidates, settings.scout_top_n)
+    bets: dict = {}
+    try:                               # cards that move together are one bet, not several
+        idio = p["idio_ret_1d"]          # before the signal day: the day that fired many cards at once would tie them all
+        bets = opportunities.same_bets([(c.ticker, c.score) for c in top], idio[idio.index < asof], await bet_context(top))
+    except Exception as exc:
+        logger.warning("same-bet grouping failed: %s", exc)
     saved = []
-    for c in select_top(candidates, settings.scout_top_n):
+    for c in top:
         news = await context.load_news(c.ticker)
         c.context = {
             "news": news,
@@ -287,6 +306,8 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
             "sector_context": sector_ctx.get(c.sector),
         }
         ev = opportunities.evidence(c, market)
+        if c.ticker in bets:
+            ev["same_bet"] = bets[c.ticker]
         # a rule the knowledge base rejects gets the plain template: an LLM text would sell a card that is only a record
         th, source = (thesis.template_thesis(ev, rejected=True), "template") if c.primary.name in quiet else await thesis.write_thesis(ev)
         try:                           # history shown on the card, after the thesis (the LLM never sees it)
@@ -316,6 +337,9 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     scan = scan_lines(candidates, transitions, saved)
     if mfilter and mfilter["off"]:
         scan.append("大盘过滤处于避险：下面的机会卡只作观察。")
+    bet_line = opportunities.same_bet_summary(bets)
+    if bet_line:
+        scan.append(bet_line)
     if muted:
         scan.append(f"今天有 {len(muted)} 张规则机会卡只记录、不推送：这些规则没有通过公平基准检验"
                     "（见 Dashboard「知识库」），仍在机会看板和判断台账里跟踪。")
@@ -353,6 +377,9 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         pushed = 0
         for o in cards:
             if o["primary_detector"] in quiet:
+                continue
+            lead = ((o.get("evidence") or {}).get("same_bet") or {}).get("lead")
+            if lead and lead != o["ticker"]:      # the group's leader carries the bet
                 continue
             if o["score"] >= settings.scout_push_threshold and pushed < settings.scout_max_push_cards:
                 if await telegram.push_card(o):

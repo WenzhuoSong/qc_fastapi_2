@@ -37,7 +37,7 @@ Archived, not in this tree: the QC observer (git tag `qc-observer-final`, local 
 | `scout/detectors/` | `Detector` contract + `rules.py` (5 rules). `mask(panel)` → bool frame, `levels(row)` → entry/stop/targets |
 | `scout/simulate.py` | Bracket simulator shared by replay and live tracking |
 | `scout/base_rates.py` | Replay → `scout.detector_base_rates` (per regime) |
-| `scout/opportunities.py` | Scan, score, evidence bundle, persistence, feedback weights |
+| `scout/opportunities.py` | Scan, score, evidence bundle, persistence, feedback weights; same-bet groups (user's request 2026-11-08): today's cards whose market-neutral daily returns (`idio_ret_1d`, 63 sessions before the signal day) correlate ≥ 0.6 are one bet, led by the highest score (no chains), also tied to holdings (core ETFs out) and open cards; shown on cards (`evidence.same_bet`), one digest line, only the leader pushed. A display convention, not a tested rule |
 | `scout/context.py` | News (shared library + Finnhub on demand) and earnings calendar |
 | `scout/thesis.py` | LLM thesis + number guard + template fallback |
 | `scout/tracker.py` | Lifecycle updates, outcomes, scoreboard |

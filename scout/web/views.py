@@ -147,6 +147,10 @@ def opp_card(o: dict, settings: dict | None = None, rejected: bool = False, mfil
     cond = conditional_rates.text(ev.get("conditional"))
     if cond:
         base += f"<br>{e(cond)}"
+    from scout.opportunities import same_bet_text
+
+    bet = same_bet_text(ev.get("same_bet"), o["ticker"])
+    bet_html = f"<div class='small warn'>🔗 {e(bet)}</div>" if bet else ""
     plan = plan_text(o, settings, mfilter, is_live(o["primary_detector"]) and not rejected)
     sizing = (f"<div class='small'>👉 {e(plan)}" + (f" · <a href='/trades?opp={e(o['id'])}'>记录入场</a>" if plan.startswith("按你的计划可以") else "")
               + "</div>") if plan else ""
@@ -157,7 +161,7 @@ def opp_card(o: dict, settings: dict | None = None, rejected: bool = False, mfil
 <p><b>{e(th.get('headline'))}</b><br>{e(th.get('thesis'))}</p>
 <div class="levels"><div><span>入场</span>{o['entry_lo']:.2f}–{o['entry_hi']:.2f}</div><div><span>规则止损</span>{o['stop']:.2f}</div>
 <div><span>目标 1</span>{o['target1']:.2f}</div><div><span>目标 2</span>{f"{o['target2']:.2f}" if (o.get('target2') or 0) > o['target1'] else "—"}</div></div>
-{sizing}{event_html(ev)}
+{sizing}{bet_html}{event_html(ev)}
 <div class="small">{e(market_split_text(ev.get("price") or {}) or "")}</div>
 <div class="small">{e(sector_text(ev.get("sector_context")) or "")}</div>
 {why_html(ev.get("why") or {})}
