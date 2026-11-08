@@ -1,7 +1,8 @@
-"""Multi-angle data for the whole universe: `python -m scout.jobs.sec_backfill [--limit N] [--no-facts] [--no-insiders]`.
+"""Multi-angle data for the whole universe: `python -m scout.jobs.sec_backfill [--limit N] [--no-facts] [--no-insiders] [--refetch-facts]`.
 
 SEC filings and XBRL financials for every scan stock, and open-market insider trades from the SEC
-quarterly data sets. Idempotent; the weekly job runs it to stay current.
+quarterly data sets. Idempotent; the weekly job runs it to stay current. `--refetch-facts` re-reads every
+company's XBRL facts even without a new filing (to add filed versions an earlier parser kept only as the latest).
 """
 import sys
 from datetime import date
@@ -14,7 +15,7 @@ async def main() -> dict:
     limit = int(sys.argv[sys.argv.index("--limit") + 1]) if "--limit" in sys.argv else None
     out = {}
     if "--no-facts" not in sys.argv:
-        out["sec"] = await research_data.universe_sec(date.today(), limit)
+        out["sec"] = await research_data.universe_sec(date.today(), limit, "--refetch-facts" in sys.argv)
     if "--no-insiders" not in sys.argv:
         out["insiders"] = await research_data.insiders(date.today())
     return out

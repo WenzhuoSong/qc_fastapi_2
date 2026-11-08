@@ -6,6 +6,10 @@ and full-year values (cash flow statements are year-to-date only), so
 `quarterly` derives single quarters: direct 3-month values first, otherwise
 the difference of consecutive cumulative values sharing a start date
 (Q2 = 6M − Q1, Q4 = FY − 9M).
+
+Most quarters are filed again a year later as comparatives (and after a split,
+restated per share). `financial_rows` keeps every distinct version of a period
+with the date it became known: the first filing and each later change.
 """
 from __future__ import annotations
 
@@ -210,13 +214,32 @@ def pick_unit(units: dict, kind: str) -> str | None:
     return next((u for u in names if len(u) == 3 and u.isalpha() and u.isupper()), None)
 
 
+def versions(entries: list[dict], kind: str, annual_only: bool = False) -> dict[str, list[dict]]:
+    """period_end → every distinct value of the period as known after each filing date, oldest first
+    (`quarterly` / `annual` replayed on the entries filed up to each date; `filed` = that date)."""
+    entries = sorted(entries, key=lambda e: e["filed"])
+    out: dict[str, list[dict]] = {}
+    i = 0
+    while i < len(entries):
+        day = entries[i]["filed"]
+        while i < len(entries) and entries[i]["filed"] == day:
+            i += 1
+        known = annual(entries[:i]) if annual_only else quarterly(entries[:i], kind)
+        for end, q in known.items():
+            seen = out.setdefault(end, [])
+            if not seen or seen[-1]["value"] != q["value"]:
+                seen.append({**q, "filed": day})
+    return out
+
+
 def financial_rows(facts: dict, ticker: str) -> list[dict]:
-    """All METRICS as quarterly (or, for annual-only filers, yearly) rows; concepts merged by priority per period."""
+    """All METRICS as quarterly (or, for annual-only filers, yearly) rows, one per filed version of each period;
+    concepts merged by priority per period at each date."""
     ns = (facts or {}).get("facts") or {}
     gaap, ifrs = ns.get("us-gaap") or {}, ns.get("ifrs-full") or {}
     rows = []
     for metric, (concepts, kind) in METRICS.items():
-        merged: dict[str, tuple[str, str, dict]] = {}
+        found: list[tuple[str, str, dict[str, list[dict]]]] = []      # (concept, unit, versions) by priority
         sources = [(gaap, c) for c in concepts] + [(ifrs, c) for c in IFRS_METRICS.get(metric, ())]
         for taxonomy, concept in sources:
             spec = taxonomy.get(concept)
@@ -224,17 +247,28 @@ def financial_rows(facts: dict, ticker: str) -> list[dict]:
                 continue
             unit = pick_unit(spec.get("units") or {}, kind)
             entries = (spec.get("units") or {}).get(unit) or []
-            periods = quarterly(entries, kind)
-            if not periods and kind != "instant":
-                periods = annual(entries)
-            for end, q in periods.items():
-                merged.setdefault(end, (concept, unit, q))
-        for end, (concept, unit, q) in merged.items():
-            rows.append({"ticker": ticker, "metric": metric, "period_end": date.fromisoformat(end),
-                         "period_start": date.fromisoformat(q["start"]) if q["start"] else None,
-                         "value": float(q["value"]), "fy": q["fy"], "fp": q["fp"], "form": q["form"],
-                         "filed": date.fromisoformat(q["filed"]), "derived": q["derived"], "concept": concept,
-                         "unit": unit or "USD"})
+            annual_only = not quarterly(entries, kind) and kind != "instant"
+            found.append((concept, unit, versions(entries, kind, annual_only)))
+        for end in {e for _, _, v in found for e in v}:
+            # at each date a concept changed, the period's value is the highest-priority concept known by then
+            days = sorted({q["filed"] for _, _, v in found for q in v.get(end, [])})
+            last = None
+            for day in days:
+                pick = None
+                for concept, unit, v in found:
+                    known = [q for q in v.get(end, []) if q["filed"] <= day]
+                    if known:
+                        pick = (concept, unit, known[-1])
+                        break
+                concept, unit, q = pick
+                if last and last[2]["value"] == q["value"]:
+                    continue
+                last = pick
+                rows.append({"ticker": ticker, "metric": metric, "period_end": date.fromisoformat(end),
+                             "period_start": date.fromisoformat(q["start"]) if q["start"] else None,
+                             "value": float(q["value"]), "fy": q["fy"], "fp": q["fp"], "form": q["form"],
+                             "filed": date.fromisoformat(day), "derived": q["derived"], "concept": concept,
+                             "unit": unit or "USD"})
     return rows
 
 
