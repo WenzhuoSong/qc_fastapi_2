@@ -45,7 +45,9 @@ async def record() -> dict:
     res = json.loads(OUT.read_text())
     if await db.fetch_one("SELECT 1 FROM scout.gate_runs WHERE key = :k", {"k": ct.KEY}):
         raise SystemExit("already recorded")
-    if ct.TRIALS != await gate.trials_in(FAMILY) + 1:
+    # cross_asset_trend_v1 tested three variants in one gate_runs row, so the database counts fewer trials than the
+    # spec; the bar was computed with the spec's count, which may only be higher.
+    if await gate.trials_in(FAMILY) + 1 > ct.TRIALS:
         raise SystemExit(f"family count changed: computed as trial {ct.TRIALS}, database says {await gate.trials_in(FAMILY) + 1}")
     spec = gate.load_spec(str(SPEC))
     if not await learned.get(ct.KEY):
