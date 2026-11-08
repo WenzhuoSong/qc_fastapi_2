@@ -5,9 +5,9 @@ split into market value and trailing earnings; plus today's forward P/E where Ya
 
 P/E = Σ market value ÷ Σ trailing four-quarter net income (losses included, as index P/Es are computed). Market value =
 close adjusted for splits only (not dividends) × the latest diluted share count, moved onto today's split basis.
-History: today's members (survivorship: companies that left the index are missing), and each quarter's final
-filed value (`sec.financial_rows` keeps the latest filing per period), taken as known 45 days after a quarter end
-(75 for a fiscal year) or on its filing date if earlier. Descriptive; not a valuation signal.
+History: today's members (survivorship: companies that left the index are missing), and every filed version of
+each quarter from its own filing date (`sec.financial_rows` keeps the first filing and each change since the
+2026-11-08 fix and re-import). Descriptive; not a valuation signal.
 """
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ logger = logging.getLogger("scout.valuation")
 BASKETS = (("sp500", "标普 500 成分"), ("ndx", "纳指 100 成分"), ("it", "标普 500 信息技术"), ("semis", "大盘半导体"))
 SEMIS = ("Semiconductors", "Semiconductor Materials & Equipment")
 HISTORY_START = date(2015, 1, 1)
-LAG = {"quarter": 45, "year": 75}
 FRESH = {"quarter": 200, "year": 460}        # a trailing figure older than this is stale, the stock is left out
 CHECK = (0.7, 1 / 0.7)                       # computed vs Yahoo market value today; outside = bad share data, dropped
 SESSIONS = (21, 63)
@@ -38,19 +37,11 @@ def span(start: date | None, end: date) -> str | None:
 
 
 def versions(rows: list[dict]) -> dict[tuple[str, str], list[tuple[date, date, str | None, float, date]]]:
-    """(ticker, metric) → [(known from, period end, span, value, filed)] sorted by known-from date."""
+    """(ticker, metric) → [(known from = filed, period end, span, value, filed)] sorted by filing date."""
     out: dict[tuple[str, str], list] = {}
-    first: set[tuple] = set()
     for r in sorted(rows, key=lambda r: r["filed"]):
         sp = span(r.get("period_start"), r["period_end"]) if r["metric"] != "shares_diluted" else "quarter"
-        key = (r["ticker"], r["metric"], r["period_end"])
-        known = r["filed"]
-        if key not in first:          # the first version we hold: its final value, at the usual filing lag
-            first.add(key)
-            known = min(r["filed"], r["period_end"] + timedelta(days=LAG.get(sp or "year", 75)))
-        out.setdefault((r["ticker"], r["metric"]), []).append((known, r["period_end"], sp, float(r["value"]), r["filed"]))
-    for v in out.values():
-        v.sort(key=lambda x: x[0])
+        out.setdefault((r["ticker"], r["metric"]), []).append((r["filed"], r["period_end"], sp, float(r["value"]), r["filed"]))
     return out
 
 

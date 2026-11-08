@@ -16,10 +16,10 @@ QUARTERS = [(date(2025, 3, 31), date(2025, 1, 1)), (date(2025, 6, 30), date(2025
 
 
 class VersionTests(unittest.TestCase):
-    def test_a_late_filed_final_value_counts_from_the_usual_lag(self):
-        fin = v.versions([q("X", "net_income", date(2025, 3, 31), date(2025, 1, 1), date(2026, 5, 1), 10.0)])
-        self.assertEqual(v.as_of(fin[("X", "net_income")], date(2025, 5, 14)), [])
-        self.assertEqual(v.as_of(fin[("X", "net_income")], date(2025, 5, 15))[0][2], 10.0)     # 45 days after the quarter
+    def test_a_value_counts_from_its_filing_date(self):
+        fin = v.versions([q("X", "net_income", date(2025, 3, 31), date(2025, 1, 1), date(2025, 5, 1), 10.0)])
+        self.assertEqual(v.as_of(fin[("X", "net_income")], date(2025, 4, 30)), [])
+        self.assertEqual(v.as_of(fin[("X", "net_income")], date(2025, 5, 1))[0][2], 10.0)
 
     def test_a_restatement_counts_from_its_own_filing(self):
         fin = v.versions([q("X", "net_income", date(2025, 3, 31), date(2025, 1, 1), date(2025, 5, 1), 10.0),
