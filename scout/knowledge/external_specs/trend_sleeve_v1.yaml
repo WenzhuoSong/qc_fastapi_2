@@ -1,0 +1,46 @@
+# Pre-registration (G0), written 2026-11-08 before any blended return was computed. Never edited after the run;
+# a changed design is a new file with a new key. One run, local only, after the user's go-ahead (not run yet).
+key: trend_sleeve_v1
+registered_on: '2026-11-08'
+requested_by: 用户 2026-11-08："两个都做吧"（记录 carver_trend_v1；写"现行核心规则 + 一部分趋势系统"的组合检验方案）
+family: cross_asset_trend
+title: 核心仓 + 20% 趋势配置
+question: carver_trend_v1 的趋势系统单独不如一直持有，但在股市大跌时赚钱、与 SPY 几乎不相关。把 20% 的钱放进它、80% 留在现行核心规则（SPY + 大盘过滤），
+  风险调整后是否好于现行规则？是否好于"80% 现行规则 + 20% 现金"（即不是只因为少放了股票）？
+
+data:
+  sleeves: exports/carver_trend/result.json 里已算好的月收益（同一次运行，不重算）：system（做多做空的完整系统）、long_only（只做多版本）、hold（一直做多的风险平价，只报告）
+  core: scout.cross_asset 的 core_now（SPY + 10 个月均线过滤，月末决策、次日收盘成交、单边 0.05%），与 carver_trend_v1 报告里的同一条
+  cash: French 日度 RF 按月复利
+  sample: 两者都有收益的月份（2003-09 起）到 carver_trend_v1 的最后一个完整月份；前后两半按月份中位数分（与 carver_trend_v1 相同的分界 2015-03）
+
+blends:
+  rebalance: 每月末再平衡回目标比例（月收益 = 0.8 × 核心 + 0.2 × 配置），再平衡成本另扣：单边 0.05% × 两边偏离目标的部分
+  primary:
+    core_system: 80% 现行核心规则 + 20% 趋势系统（做多做空）
+    core_long_only: 80% 现行核心规则 + 20% 只做多版本（散户不做空时可用的版本）
+  controls:
+    core_now: 100% 现行核心规则
+    core_cash: 80% 现行核心规则 + 20% 现金
+  reported: 80% 核心 + 20% hold；10% 配置的两个版本；只看 2008 / 2020 / 2022 与 SPY 最差 10% 月份
+
+pass:
+  rule: 一个组合同时满足才算"值得作为核心仓的配置"：
+    1 前后两半的夏普都高于 core_now；
+    2 前后两半的夏普都高于 core_cash（不是只靠少放股票）；
+    3 全样本最大回撤比 core_now 至少小 3 个百分点；
+    4 每月收益差（组合 − core_now）前后两半的 t 都不低于 −2（收益不显著落后）
+  pick: 两个都满足时选全样本夏普高的；是否采用由用户决定。通过 → 知识库条目 backtested，从采用当月起每月记录目标比例和结果（前向记录，Scout 不下单）；
+    不通过 → rejected。不换比例（20%）、配置版本或判定标准重测
+  multiple_testing: 计入 cross_asset_trend 族（判定不用 t ≥ 3 门槛，见 decision 的第 4 条）
+
+expected_failure: 趋势系统的夏普只有 0.25，后半段 0.14；core_now 后半段 0.43。混合后收益会下降，夏普能否在后半段也升高取决于相关性是否稳定；
+  20% 现金对照本身就会降低回撤，回撤条件可能只是"少放股票"的效果；只做多版本与 SPY 相关 0.12，分散效果比做多做空版本弱
+disclosure: |
+  登记前看过的（全部来自 carver_trend_v1 的同一次运行和 cross_asset_trend_v1）：
+  1 各配置单独的年化、波动、夏普（全部 / 前半 / 后半）、最大回撤、2008 / 2020 / 2022 年收益、SPY 最差 10% 月份的平均收益、与 SPY 月收益的相关
+    （system 0.25 / 0.39 / 0.14，相关 −0.10；long_only 0.48 / 0.66 / 0.32，相关 0.12；core_now 0.58 / 0.74 / 0.43，回撤 −26.7%）。
+  2 B0 第二引擎的 80 / 20 结果（AQR TSMOM 因子、KMLM），20% 的比例来自那里，不是在这里挑的。
+  按组合理论，与核心仓相关接近 0 或为负、夏普为正的配置，加入 20% 通常会提高夏普，所以第 1 条有一部分已经可以从看过的数字推出；
+  这次检验的信息主要在前后两半是否都成立、与 20% 现金的对比、以及回撤。没有计算过任何混合组合的数字。
+deviations: 用月收益混合（月末再平衡），而不是逐日模拟两部分；配置部分的杠杆和融资沿用 carver_trend_v1 的假设
