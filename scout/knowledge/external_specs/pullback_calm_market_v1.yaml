@@ -24,7 +24,8 @@ data:
 rule:
   signal: rules.D2_PULLBACK 的条件原样（相对强度前 20%、收盘 > 200 日线、50 日线 > 200 日线、63 日涨幅 > 10%、RSI(2) ≤ 10、收盘 ≥ 50 日线 × 0.97、
     收盘 ≤ 20 日线、量比 ≤ 1.2），指标公式与 scout/features.py 相同；相对强度百分位在当天股票池内计算
-  condition: 两条同时满足（固定，不比较其他门槛）
+  condition:
+    note: 两条同时满足（固定，不比较其他门槛）
     market_filter: 信号日之前最近一个月末，SPY 月末收盘 ≥ 10 个月均值（与 scout/market_filter.py 和 exit_redeploy.market_off 相同）
     calm: 信号日收盘时 SPY 20 日已实现波动 ≤ 其过去 252 个交易日的中位数（与 gate.vol_states 的"低波动"相同）
   cooldown: 同一股票 10 个交易日内只计第一个信号（base_rates.COOLDOWN_SESSIONS）
