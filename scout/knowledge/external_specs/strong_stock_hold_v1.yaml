@@ -1,0 +1,64 @@
+# Pre-registration (G0), written 2026-11-08 before any result of this design was computed. Never edited after the run;
+# a changed design is a new file with a new key. One run, local only, after the user's go-ahead (not run yet).
+key: strong_stock_hold_v1
+registered_on: '2026-11-08'
+requested_by: 用户 2026-11-08："强势股直接买入并持有，啥时候卖出？" → "写方案吧"
+family: trend_template
+title: 强势股直接买入，按 20% 移动止损持有
+question: 把强势回调 / 突破回踩里"选强势股"的部分单独拿出来：每月买入相对强度前 20% 且处在上升趋势的股票，不等买点，
+  用你的持仓计划（收盘低于买入以来最高收盘的 80% 卖出）持有最长一年，是否跑赢同一天随机买入、同样卖法的其他股票？
+
+claim: 相对强度前 20% 的上升趋势股，直接买入并按 20% 移动止损持有最长 252 个交易日，扣费后跑赢同一天同样买卖方式的其他市值前 1000 股票。
+mechanism: 中期动量（Jegadeesh & Titman 1993；George & Hwang 2004）在 3–12 个月内延续，靠的是少数持续上涨的股票，
+  所以要拿得久、不止盈；20% 移动止损只在趋势明显结束时离场（Scout 的 exit_vs_hold 复查：回撤从约 40% 降到约 20%，收益基本不变）。
+  择时进场（等回调、区间限价、窄止损、10–20 日到期）在 Scout 的检验里会吃掉选股的优势（pullback_calm_market_v1：对同日其他股票为正、对直接持有为负；
+  知识库 bracket_trade_drag、pullback_buy_point_worse）。
+
+data:
+  source: 本地 Sharadar（scout/sharadar_research.py 的口径，与 scout_system_v1 / pullback_calm_market_v1 相同）：美国本土普通股，NYSE / NASDAQ / NYSEMKT，
+    未复权价 ≥ $5；含之后退市的公司，退市按最后收盘结算，非并购退市 −30%（Shumway 1997）；价格含分红复权
+  universe: 时点正确的市值前 1000，每 21 个交易日更新（从 1999-01-04 起）
+  sample: 建仓日 1999-01-04 起每 21 个交易日一次，到持有窗口（252 个交易日）完整的最后一个建仓日
+  halves: 建仓日 1999-01..2012-12 和 2013-01..结束（日历固定分割，与 scout_system_v1 相同）
+
+rule:
+  formation: 每个建仓日 i 收盘，当天成员里同时满足：相对强度百分位（0.4 × 63 日 + 0.3 × 126 日 + 0.3 × 252 日收益，在当天成员内排名）≥ 0.80；
+    收盘 > 200 日线；50 日线 > 200 日线；63 日涨幅 > 10%。这是 rules.D2_PULLBACK 里描述"强势上升股"的四条，去掉了描述回调时机的四条（RSI(2)、20 日线、
+    50 日线 97%、量比）。指标公式与 scout/features.py 相同
+  market_filter: 建仓日之前最近一个月末 SPY 低于 10 个月均值（exit_redeploy.market_off）时，这个建仓日不买（与你的规则相同；已持有的照常按卖出规则）
+  entry: 次日开盘买入，等权
+  exit: 收盘低于买入以来最高收盘的 80%，下一个交易日开盘卖出（scout_system.trail_exit，与你的持仓计划相同）；否则在第 252 个交易日收盘卖出；
+    卖出后的钱在窗口剩余时间不再投资（收益按 0 计，对照同样处理）
+  cost: 每笔买卖合计 simulate.ROUND_TRIP_COST（0.10%），策略和对照相同
+
+controls:
+  select: 主对照。同一建仓日，从当天成员里不满足选股条件的股票中随机取同样数量，同样的买入、卖出和成本；20 次重复取平均，固定随机种子
+  hold_same: 只报告：同样的入选股票不设止损、持有满 252 个交易日（看 20% 止损本身的代价）
+  spy: 只报告：同一窗口 SPY 买入持有，以及 SPY + 大盘过滤
+
+pass:
+  rule: 同时满足：
+    1 每个建仓日的入选平均收益减对照平均收益，前后两半均值都 > 0；
+    2 全样本 Newey-West t（滞后 12 个建仓日，窗口重叠约 12 个）≥ gate.required_t(本族检验次数)（目前为 3）；
+    3 去掉 2008–2009 年的建仓日后，差值均值仍 > 0
+  outcome: 通过 → 知识库条目 backtested，作为卫星仓的选股方式进入前向记录（每月记录入选股票和对照，按同样规则结算），由用户决定是否使用；
+    只有用户能确认。不通过 → rejected；不换相对强度门槛、持有期或止损幅度重测
+  multiple_testing: 计入 trend_template 族（Minervini 趋势模板 rank_trend_template 及其持仓计划版本已在 gate_runs 各一次，本次为第 3 次）
+
+report: 每个建仓日入选数、差值逐年、前后两半、熊市时期（2000-03..2002-09、2007-10..2009-02、2020-02..03、2022-01..09）的建仓与收益、
+  持有天数中位数、被止损的比例、入选单笔收益的分布（10% / 50% / 90% 分位、最差 1%）、hold_same 与 spy 的同样数字；
+  只报告：相对强度前 10%、持有窗口 126 个交易日（不影响结论）
+
+expected_failure: 动量在 2009 年反弹这类急转时崩溃（Daniel & Moskowitz 2016），重叠一年的窗口让 t 值打折；Scout 面板上的动量类排名（52 周高点、平滑动量、
+  残差动量、趋势模板）在 21 / 63 日持有下都没通过；scout_system_v1 用突破回踩选股加 20% 移动止损时不比随机选股好（每月 −0.10%，t −0.43），
+  v2 按排名持有加 20% 移动止损时 t 2.37；20% 止损对强势股（波动大）触发更多，可能把动量的延续一起卖掉
+disclosure: |
+  登记前看过的：
+  1 pullback_calm_market_v1（2026-11-08，同一份 Sharadar 数据 1999–2026）：强势回调的全部信号对同日其他股票 +0.61%（10 日内，t 3.40），对直接持有该股 −0.26%。
+    这正是提出本方案的原因；那次的股票是"强势股里正在回调的"，持有 10 日，与本方案的选股、入场和持有期都不同。
+  2 scout_system_v1 / v2（2026-11-03，同一份数据）：突破回踩信号加相对强度排序、最多 5 只的组合结果（见 expected_failure）。
+  3 exit_vs_hold 的 Sharadar 复查：整个股票池每 20 日买入、20% 移动止损对一直持有的组合结果（不分强弱）。
+  4 Scout 面板（2015–2026）上动量类排名的检验关结果，均已否定。
+  没有看过"四条强势条件 + 每月直接买入 + 20% 移动止损 + 252 日"在任何数据上的结果。
+deviations: 在 Sharadar 上计算（覆盖 2000–2002、2008 熊市和退市公司）；用 Newey-West t 而不是按月 t（持有窗口重叠）；对照取"不满足条件"的成员而不是全部成员
+  （否则对照里含入选股票本身）
