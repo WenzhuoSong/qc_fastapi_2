@@ -306,7 +306,7 @@ def report_text(res: dict) -> str:
         s = ev["variants"].get(k)
         if not s:
             continue
-        y = s["years"]
+        y = {int(k): x for k, x in s["years"].items()}          # JSON keys come back as strings
         lines.append(f"{names[k]} | {_p(s['cagr'])} | {s['vol']:.1%} | {s['sharpe']:.2f} / {s['sharpe_first']:.2f} / {s['sharpe_second']:.2f} | "
                      f"{_p(s['max_dd'])} | {_p(s['worst_12m'])} | {_p(y[2008])} / {_p(y[2020])} / {_p(y[2022])} | {_p(s['crisis'], 2)} | "
                      f"{s['corr_spy']:.2f} | {s.get('leverage', float('nan')):.2f} | {s.get('turnover', float('nan')):.1f}")
