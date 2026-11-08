@@ -1,0 +1,48 @@
+# Pre-registration (G0), written 2026-11-08 before any Sharadar-based accruals number was computed. Never edited
+# after the run; a changed design is a new file with a new key. One run, local only, after the user's go-ahead (not run yet).
+key: low_accruals_sharadar_v1
+registered_on: '2026-11-08'
+requested_by: 用户 2026-11-08："两个都做吧"（恢复资产增长的否定；为低应计在 Sharadar 无偏数据上的复核写方案）
+family: low_accruals
+recheck_of: [rank_low_accruals, rank_low_accruals_plan]
+title: 低应计 · Sharadar 无偏数据复核
+question: 2026-11-08 SEC 财报修正后，rank_low_accruals 在 Scout 面板（当前指数成分股，2015-11 起）上从 t 1.27 变成 t 5.94。
+  同一条规则放到时点正确、含退市公司的市值前 1000（1999 至今）上，是否仍然跑赢当天其他股票？
+
+data:
+  source: 本地 Sharadar（scout/sharadar_research.py 与 sharadar_rechecks.yaml 的口径：美国本土普通股，NYSE / NASDAQ / NYSEMKT，
+    当天不复权收盘 ≥ $5，含之后退市的公司，表现性退市按最后收盘再 −30%（Shumway 1997），被收购按最后收盘）
+  universe: 每个调仓日按 daily.marketcap 排名前 1000（主样本）；1001–3000 只报告
+  fundamentals: fundamentals 表 ARQ 维度（As Reported，季度）的 netinc、ncfo、assets；每个报告期只用最先申报的版本（datekey，
+    sharadar_research.first_filed），之后的重述不替换它
+  sample: 调仓日 1999-01-04 起每 21 个交易日，到持有窗口完整的最后一个调仓日；前后两半按调仓日期中位数分（与复核 1 相同）
+
+rule:
+  signal: 应计比例 =（近四季 netinc 之和 − 近四季 ncfo 之和）÷ 平均总资产，与 scout/angles.fundamentals_now 相同：
+    四个季度按报告期连续（首尾报告期相隔 250–300 天）；平均总资产 = 最新季度与往前第 4 个季度总资产的平均（相隔 330–400 天，否则用最新季度），须 > 0；
+    这个值在四个季度里最晚的申报日（datekey）之后才算已知；调仓日只用 400 天内申报、已知的最新一个值（与复核 1 的过期规则相同）
+  selection: 每个调仓日，股票池里应计比例最低的 10%（与 rank_low_accruals 的 top_frac 0.1 相同）
+  entry_exit: 次日开盘买入，持有 63 个交易日到收盘（sharadar_research.holding_return）
+  control: 当天股票池其他所有股票同一窗口的平均收益（与复核 1 相同）
+
+pass:
+  rule: 主样本（前 1000）同时满足：前半和后半的月均超额都 > 0；全样本按月 t ≥ gate.required_t(本族检验次数)（low_accruals 族已有 4 次，本次第 5 次，门槛 3.0）
+  outcome: 通过 → rank_low_accruals 与 rank_low_accruals_plan 维持 backtested，前向验证继续；只有用户能确认。
+    不通过 → 两条都改为 rejected（持仓计划版本用的是同一个选股，复核的是选股本身），前向验证停止；不换门槛、指标定义或持有期重测
+  multiple_testing: 计入 low_accruals 族（gate_runs 加一行，key rank_low_accruals_sharadar）
+
+report: 全样本、前后两半、2015-11-27 起（Scout 同一时期，量化幸存者偏差：与 Scout 面板的 +2.47%、t 5.94 对比）、逐年代、熊市月份
+  （osap_check.BEARS）、行业拆分（探索性）、小盘（1001–3000）；每个调仓日有应计值的股票占股票池的比例
+
+expected_failure: 外部复现（Open Source Asset Pricing Accruals，1963-07..2025-12，市值加权第 10 组 − 十组平均）月均 +0.15%（t 1.86），
+  发表后 +0.06%（t 0.47）；Green, Hand & Soliman（2011）"Going, going, gone?" 记录了 2000 年后应计异象消失；
+  Scout 面板只有当前成分股，过去被剔除的公司（往往是高应计、后来暴跌的）不在里面，可能夸大了结果；大中盘股上异象通常比小盘弱
+disclosure: |
+  登记前看过的：
+  1 Scout 面板上 rank_low_accruals：2026-10-28（旧 SEC 数据，每个季度只有最新申报版本）+0.22%（t 1.27）未通过；
+    2026-11-08（修正后，保留每次申报版本）+2.47%（t 5.94），前半 +2.58% / 后半 +2.37%，通过；持仓计划版本 −0.04%（t −0.05）→ +0.81%（t 3.57）。
+  2 OSAP Accruals 复现（见 expected_failure），2015-11 起 +0.18%。
+  3 资产增长在 Sharadar 上的复核（2026-10-29，同样的口径）：+0.26%（t 0.94），Scout 同期 +0.64%（t 2.43）——说明 Scout 面板会夸大这类结果。
+  没有看过应计比例在 Sharadar 上的任何结果。
+deviations: 对照是当天股票池其他所有股票的平均（复核 1 的口径），而 Scout 检验关用同日随机股；在 Sharadar 上，股票池是时点正确的市值前 1000，不是 Scout 现在的成分股；
+  Sharadar 的 netinc 是归属母公司的净利润，ncfo 是经营现金流，与 Scout 从 SEC XBRL 取的概念相近但不完全相同

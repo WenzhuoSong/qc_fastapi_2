@@ -1,6 +1,7 @@
-"""Rechecks on the local Sharadar data: `python -m scout.jobs.eval_sharadar asset_growth | exits | b0`.
+"""Rechecks on the local Sharadar data: `python -m scout.jobs.eval_sharadar asset_growth | exits | b0 | accruals`.
 
-Pre-registered in `scout/knowledge/external_specs/sharadar_rechecks.yaml`; each recheck runs once.
+Pre-registered in `scout/knowledge/external_specs/sharadar_rechecks.yaml` (low accruals:
+`low_accruals_sharadar_v1.yaml`); each recheck runs once.
 Reads only the git-ignored local files; writes summary numbers (never Sharadar rows) to
 `scout.gate_runs`, a brief (kind `sharadar_recheck`) and the knowledge entry.
 """
@@ -39,6 +40,43 @@ async def asset_growth() -> dict:
     if not passed and en["status"] in learned.OPEN:
         update.update(status="rejected", polarity="negative")
     await learned.write(update, "system", ("无偏数据复核通过，继续前向验证" if passed else "无偏数据复核未通过：改为否定，前向验证停止")[:900])
+    return {"passed": passed, "large_t": lg["all"]["t"], "trials": trials}
+
+
+ACCRUALS_KEY = "rank_low_accruals_sharadar"
+ACCRUALS_ENTRIES = ("rank_low_accruals", "rank_low_accruals_plan")
+
+
+async def accruals() -> dict:
+    if await db.fetch_one("SELECT 1 FROM scout.gate_runs WHERE key = :k", {"k": ACCRUALS_KEY}):
+        raise SystemExit("already run (one run per pre-registration)")
+    trials = await gate.trials_in("low_accruals") + 1
+    res = sharadar_recheck.run_accruals(trials)
+    text = sharadar_recheck.report_text(res["large"], res["small"], trials, "低应计复核：应计比例最低 10%",
+                                        sharadar_recheck.ACCRUALS_SCOUT_START, sharadar_recheck.ACCRUALS_SCOUT_RESULT)
+    print(text, flush=True)
+    lg = res["large"]
+    passed = lg["pass"]
+    spec = {"key": ACCRUALS_KEY, "family": "low_accruals", "recheck_of": list(ACCRUALS_ENTRIES),
+            "registration": "scout/knowledge/external_specs/low_accruals_sharadar_v1.yaml"}
+    await db.execute("INSERT INTO scout.gate_runs (key, family, spec, backtest, critique, passed) VALUES "
+                     "(:k, 'low_accruals', CAST(:s AS JSONB), CAST(:b AS JSONB), CAST(:c AS JSONB), :ok)",
+                     {"k": ACCRUALS_KEY, "s": db.jsonb(spec), "b": db.jsonb(res), "ok": passed,
+                      "c": db.jsonb({"source": "none", "note": "无偏数据复核按预登记只用检验关的数值条件"})})
+    await db.execute("INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('sharadar_recheck', :d, :c, CAST(:p AS JSONB))",
+                     {"d": date.today(), "c": text, "p": db.jsonb({"recheck": "accruals", **res})})
+    summary = (f"无偏数据复核（Sharadar，时点正确的市值前 1000，含退市公司，{lg['first_date']} 至 {lg['last_date']}）："
+               f"{lg['all']['edge']:+.2%}（t {lg['all']['t']}），前半 {lg['first']['edge']:+.2%} / 后半 {lg['second']['edge']:+.2%}；"
+               f"Scout 同期（{sharadar_recheck.ACCRUALS_SCOUT_START} 起）{lg['scout_window']['edge']:+.2%}（t {lg['scout_window']['t']}）；"
+               f"门槛 t {lg['required_t']}，{'通过' if passed else '未通过'}")
+    for key in ACCRUALS_ENTRIES:
+        en = await learned.get(key)
+        if not en:
+            continue
+        update = {"key": key, "evidence": [*en.get("evidence", []), {"source": "sharadar_recheck", "date": str(date.today()), "summary": summary}]}
+        if not passed and en["status"] in learned.OPEN:
+            update.update(status="rejected", polarity="negative")
+        await learned.write(update, "system", "无偏数据复核通过，继续前向验证" if passed else "无偏数据复核未通过：改为否定，前向验证停止")
     return {"passed": passed, "large_t": lg["all"]["t"], "trials": trials}
 
 
@@ -92,7 +130,7 @@ async def b0_replay() -> dict:
 
 
 async def main() -> dict:
-    jobs = {"asset_growth": asset_growth, "exits": exits, "b0": b0_replay}
+    jobs = {"asset_growth": asset_growth, "exits": exits, "b0": b0_replay, "accruals": accruals}
     if len(sys.argv) < 2 or sys.argv[1] not in jobs:
         raise SystemExit(f"usage: python -m scout.jobs.eval_sharadar {'|'.join(jobs)}")
     return await jobs[sys.argv[1]]()

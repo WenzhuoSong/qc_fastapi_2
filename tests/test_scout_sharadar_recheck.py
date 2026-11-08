@@ -51,5 +51,42 @@ class RankRowTests(unittest.TestCase):
         self.assertFalse(rc.summarize(rows, 3.0)["pass"])
 
 
+def _quarters(n=6, start="2001-03-31", ticker="A"):
+    ends = pd.date_range(start, periods=n, freq="QE")
+    return pd.DataFrame({"ticker": ticker, "reportperiod": ends, "datekey": ends + pd.Timedelta(days=40),
+                         "netinc": 10.0, "ncfo": 6.0, "assets": [100.0 + 10 * k for k in range(n)]})
+
+
+class AccrualsTests(unittest.TestCase):
+    def test_four_quarters_over_average_assets_known_from_the_last_filing(self):
+        t = rc.accruals_table(_quarters()).set_index("reportperiod")
+        self.assertEqual(len(t), 3)                                     # needs four quarters
+        last = t.iloc[-1]                                               # assets 150 now, 110 four quarters earlier
+        self.assertAlmostEqual(last["accruals"], (40 - 24) / 130)
+        self.assertAlmostEqual(t.iloc[0]["accruals"], (40 - 24) / 130.0)   # no year-earlier assets: the latest
+        self.assertEqual(last["known"], last.name + pd.Timedelta(days=40))
+
+    def test_a_late_filing_delays_the_value_and_a_restatement_never_replaces_it(self):
+        f = _quarters()
+        f.loc[1, "datekey"] = f.loc[5, "datekey"] + pd.Timedelta(days=5)             # one quarter filed late
+        again = f.iloc[[5]].assign(datekey=f.loc[5, "datekey"] + pd.Timedelta(days=300), netinc=999.0)
+        t = rc.accruals_table(pd.concat([f, again])).set_index("reportperiod")
+        self.assertEqual(t.iloc[0]["known"], f.loc[1, "datekey"])
+        self.assertAlmostEqual(t.iloc[-1]["accruals"], (40 - 24) / 130)
+
+    def test_a_gap_in_the_quarters_gives_no_value(self):
+        f = _quarters(5).drop(index=2)
+        self.assertTrue(rc.accruals_table(f).empty)
+
+    def test_only_values_known_by_the_day_and_filed_within_400_days(self):
+        t = rc.accruals_table(_quarters())
+        k = sorted(t["known"])
+        out = rc.accruals_on(t, pd.DatetimeIndex([k[0] - pd.Timedelta(days=1), k[1], k[-1] + pd.Timedelta(days=401)]))
+        vals = list(out.values())
+        self.assertEqual(vals[0], {})
+        self.assertIn("A", vals[1])
+        self.assertEqual(vals[2], {})
+
+
 if __name__ == "__main__":
     unittest.main()
