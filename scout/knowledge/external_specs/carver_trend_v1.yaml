@@ -1,0 +1,75 @@
+# Pre-registration (G0), written 2026-11-08 before any return of this design was computed. Never edited after the run;
+# a changed design is a new file with a new key. One run, local only (Sharadar ETF prices, git-ignored exports/carver_trend/).
+key: carver_trend_v1
+registered_on: '2026-11-08'
+requested_by: 用户 2026-11-08："把多个信号合成一个预测、成本约束（速度上限）和多品种趋势跟踪，你看看实现原理，我们来试试"
+family: cross_asset_trend
+title: Carver 式多品种趋势跟踪（多速度合成 + 速度上限 + 波动目标）
+question: 按 Rob Carver（《Systematic Trading》，开源 pysystemtrade）的做法，在同样 12 只资产类别 ETF 上做趋势跟踪，
+  是否比同样资产、同样波动目标、一直做多的静态配置更好？三个部件分别有没有用：多个速度合成一个预测、速度上限（按成本剔除过快的规则）、整个系统。
+
+literature:
+  - Carver (2015) Systematic Trading 第 7–12 章；pysystemtrade（GPL-3，只参考原理，代码自行实现，不复制）
+  - Moskowitz, Ooi & Pedersen (2012)；Hurst, Ooi & Pedersen (2017)：多品种、做多做空的时间序列动量，各资产类别都有效，股市大跌时为正
+  - Baltas & Kosowski (2013)：多个回看期合成比单一回看期稳定
+
+data:
+  prices: Sharadar funds 表的 closeadj（含分红），scout.cross_asset.load 的 12 只 ETF，清单沿用 cross_asset_trend_v1（2026-10-31 按资产类别固定，不按结果增删）：
+    SPY IWM EFA EEM VNQ（股票）、TLT IEF LQD TIP（债券）、GLD DBC（商品）、UUP（美元）
+  cash: French 日度 RF（scout.cross_asset.french_daily_rf）
+  eligibility: 有至少 256 个交易日的价格才产生预测（最慢的 EWMA 256）；资产陆续进入
+  sample: 第一个至少 6 只资产合格的交易日起到 RF 有数据的最后一天；前后两半按月份中位数分
+
+system:
+  volatility: 日收益的 35 日指数加权标准差（span 35）× √256，与它过去 10 年（2520 日）平均的 70 / 30 混合（pysystemtrade 的 mixed_vol_calc 默认值）；只用当天及以前的数据
+  rules: EWMAC（快 EWMA − 慢 EWMA）÷ 日价格波动（价格单位）；6 个速度 2/8、4/16、8/32、16/64、32/128、64/256；
+    预测缩放用书中固定值 10.6、7.5、5.3、3.75、2.65、1.87（不在我们的数据上估计，避免前视）；缩放后截断在 ±20
+  speed_limit: 每月末、每只资产、每个规则：年交易成本（夏普单位）= 规则换手 × 每次往返成本 ÷ 资产年化波动；超过 0.13 的规则当月对该资产不用（Carver 的速度上限：
+    不超过预期夏普 0.4 的三分之一）。规则换手 = 截至当天全部合格资产上该规则预测的年化 Σ|Δ预测| ÷ 20（一次往返 = 从 +10 到 −10 再回来的一半），各资产取中位数；
+    每次往返成本 = 2 × 单边成本
+  combination: 允许的规则等权；预测分散乘数 FDM = 1 / √(wᵀHw)，H = 截至当天各规则预测的相关矩阵（全部资产合并、每周取样、负数记为 0），上限 2.5，
+    每月末更新、125 日指数平滑；样本少于 52 周时 FDM = 1；合成预测 = FDM × Σ wᵢ fᵢ，截断在 ±20
+  instrument_weights: 手工分组（Carver handcrafting，登记时固定）：股票 / 债券 / 商品 / 美元四组等权，组内等权，只在合格资产间分配
+  position: 资产 i 的目标名义仓位（占资本）= IDM × wᵢ × (合成预测 ÷ 10) × (年化波动目标 12 % ÷ σᵢ)；
+    IDM = 1 / √(wᵀHw)，H = 截至当天各资产子系统日收益的相关（每周取样、负数记 0），上限 2.5，每月末更新、125 日平滑，不足 52 周时 IDM = 1
+  buffer: 缓冲 = 10 % × 平均仓位（预测 = 10 时的仓位）；目标落在 当前 ± 缓冲 内不交易，否则只交易到缓冲边界（pysystemtrade 默认）
+  execution: 第 t 日收盘计算，第 t + 1 日收盘成交（滞后一天）；两次交易之间名义仓位随价格漂移
+  returns: 组合日收益 = RF + Σ 名义仓位ᵢ ×（资产收益ᵢ − RF）− 成本 − 融资：成本 = 单边 0.05 % × |成交名义|（与 cross_asset_trend_v1 相同），
+    融资 = 每年 0.5 % ×（空头名义 + 超过 1 倍的多头名义）
+  long_short: 做多做空（Carver / 文献原版）
+
+variants:
+  system: 上面的完整系统（主检验）
+  hold: 对照。同样资产、权重、IDM、波动目标、缓冲、成本，预测恒为 +10（一直做多的风险平价）——系统去掉趋势判断后的样子
+  single_<speed>: 只用一个速度（不合成、不加速度上限），其余相同；6 个
+  no_speed_limit: 6 个速度全用，不加速度上限
+  long_only: 合成预测低于 0 记为 0（只报告：散户不做空时的版本）
+  cost_high: 单边 0.2 %（只报告：成本敏感性）
+
+pass:
+  system: 同时满足才算"Carver 趋势系统在这些 ETF 上有效"：
+    1 前后两半的夏普都高于 hold；
+    2 每月收益差（system − hold）前后两半均值都 > 0，全样本 t ≥ gate.required_t(本族检验次数)（cross_asset_trend 族已 3 次，本次第 4 次，门槛 3.0）
+  combination: 合成有用 = system 去掉速度上限后（no_speed_limit）的夏普在前后两半都高于 6 个 single 的夏普平均
+  speed_limit: 速度上限有用 = system 的扣费夏普在前后两半都高于 no_speed_limit
+  outcome: system 通过 → 知识库条目 backtested，作为核心仓之外的分散来源进入前向记录（每月记录目标仓位，Scout 不下单），是否使用由用户决定；
+    不通过 → rejected。不换速度、缩放值、波动目标、资产清单或成本重测
+  multiple_testing: 计入 cross_asset_trend 族（第 4 次）
+
+report: 每个变体：年化、波动、夏普（全部 / 前半 / 后半）、最大回撤、最差 12 个月、2008 / 2020 / 2022 年、SPY 最差 10 % 月份的平均月收益、与 SPY 月收益相关、
+  平均总杠杆、年换手、成本拖累；速度上限每年剔除了哪些（资产 × 规则）；实际平均绝对预测（检查书中缩放值在 ETF 上是否接近 10）；
+  对照 core_now（SPY + 大盘过滤）、SPY、60/40 的同样数字（scout.cross_asset 的口径，月度）
+
+expected_failure: cross_asset_trend_v1（同样 12 只 ETF）里只做多的时间序列动量夏普 0.72，对一直持有的波动倒数配置 0.69 没有显著优势（每月 −0.08%，t −1.19）；
+  2009–2021 年股债长期牛市里做空亏钱；12 只 ETF 里 5 只股票、4 只债券，独立赌注少；ETF 品种远少于 Carver 用的上百个期货，分散乘数会低；
+  书中缩放值来自期货，用在 ETF 上平均绝对预测可能偏离 10；做空 ETF 的成本和保证金比期货高
+disclosure: |
+  登记前看过的：
+  1 cross_asset_trend_v1（2026-10-31，同样 12 只 ETF，2003-08..2026-09）全部结果：tsmom（只做多、12 个月、月度）夏普 0.72 / 前半 1.04 / 后半 0.33、回撤 −8.2 %；
+    同样资产波动倒数一直持有 0.69 / 1.01 / 0.36；现行核心规则 0.59；SPY 0.58；60/40 0.66。
+  2 B0 第二引擎（AQR TSMOM 因子）：夏普 1.216，与 B0 相关 −0.07；KMLM 2023–2025 相对现金拖累。
+  3 pysystemtrade 源码（默认参数、书中缩放值、futures_chapter15 配置），没有看过它在任何 ETF 上的结果。
+  没有在这些 ETF 上计算过 EWMAC、多速度合成、速度上限或做多做空的任何结果。本规格的参数全部来自 pysystemtrade 默认值或书中数值，
+  只决定了它们没写明的部分：波动目标 12 %（与现行核心规则的实际波动 12.5 % 相当）、资产分组、成本与融资假设、判定标准。
+correlation_gaps: 相关矩阵里某一对数据不足 52 周（新进入的资产）时按相关 1 处理（不给分散加分，保守）
+deviations: ETF 而不是期货（没有 carry 规则：ETF 没有期限结构）；资本固定按每日组合价值复利；预测换手按全部资产合并取中位数（pysystemtrade 的 use_pooled_turnover = True）
