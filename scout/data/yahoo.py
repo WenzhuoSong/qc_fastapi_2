@@ -76,6 +76,51 @@ def split_download(raw: pd.DataFrame, tickers: list[str]) -> dict[str, pd.DataFr
     return out
 
 
+# ── Price closes without the dividend adjustment, with split dates (for market values) ──
+
+def unadjusted(raw: pd.DataFrame, tickers: list[str]) -> tuple[pd.DataFrame, dict[str, list[tuple[date, float]]]]:
+    """(date × ticker closes adjusted for splits only, ticker → [(split date, ratio)]) from a download with actions."""
+    closes, splits = {}, {}
+    if raw is None or raw.empty:
+        return pd.DataFrame(), splits
+    multi = isinstance(raw.columns, pd.MultiIndex)
+    for t in tickers:
+        if multi and t not in raw.columns.get_level_values(0):
+            continue
+        f = raw[t] if multi else raw
+        c = f["Close"].dropna()
+        c = c[c > 0]
+        if c.empty:
+            continue
+        c.index = pd.to_datetime(c.index).date
+        closes[t] = c.astype(float)
+        if "Stock Splits" in f.columns:
+            s = f["Stock Splits"].fillna(0)
+            splits[t] = [(pd.Timestamp(d).date(), float(v)) for d, v in s[s > 0].items()]
+    return pd.DataFrame(closes).sort_index(), splits
+
+
+async def unadjusted_closes(tickers: list[str], start: date, interval: str = "1d"
+                            ) -> tuple[pd.DataFrame, dict[str, list[tuple[date, float]]]]:
+    """Closes adjusted for splits but not dividends (so close × shares is a market value), and the split dates."""
+    import yfinance as yf
+
+    frames, splits = [], {}
+    unique = sorted(set(tickers))
+    for i in range(0, len(unique), CHUNK):
+        chunk = unique[i: i + CHUNK]
+        try:
+            raw = await asyncio.to_thread(yf.download, chunk, start=start.isoformat(), interval=interval, auto_adjust=False,
+                                          actions=True, group_by="ticker", progress=False, threads=True)
+        except Exception as exc:
+            logger.warning("yahoo unadjusted chunk %d failed: %s", i // CHUNK, exc)
+            continue
+        c, s = unadjusted(raw, chunk)
+        frames.append(c)
+        splits.update(s)
+    return (pd.concat(frames, axis=1).sort_index() if frames else pd.DataFrame()), splits
+
+
 # ── Latest quotes incl. pre-market / overnight futures (for the pre-market brief) ──
 
 def quote_from(intraday: pd.Series, daily: pd.Series, session: date) -> dict | None:

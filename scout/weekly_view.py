@@ -49,7 +49,7 @@ class MarketArgument(BaseModel):
     claim: str
     source_kind: Literal["新闻媒体", "分析师", "独立研究", "投资者社区", "官方"]
     fact_ids: list[int] = Field(description="至少一个外部事实 id")
-    check: Literal["Scout 数据一致", "Scout 数据矛盾", "无法用 Scout 数据核对"]
+    check: Literal["Scout 数据一致", "部分一致", "Scout 数据矛盾", "无法用 Scout 数据核对"]
     check_note: str
 
 
@@ -79,7 +79,10 @@ calendar（未来两周的事件）、portfolio（用户的组合结构）、pre
 
 要求：
 1. week 和 drivers 写本周发生了什么、为什么；原因只能来自 facts（写明来源）或 Scout 数据，不要用你自己的知识补充新闻。
-2. bull / bear 各 1–4 条，只用 facts，fact_ids 必填；只有未核对事实支撑的写成"有报道称"，不带数字；每条用 market 数据核对。
+2. bull / bear 各 1–4 条，只用 facts，fact_ids 必填；只有未核对事实支撑的写成"有报道称"，不带数字；每条用 market 数据核对：
+   论点的每个部分都被数据支持才是"Scout 数据一致"；只有一部分能核对（另一部分是对方的专有指标、预测或 Scout 没有的数据）写"部分一致"，
+   check_note 说清哪部分核对了、哪部分没有；关于估值高低、估值压缩的论点用 valuation.* 核对（分清价格下跌和盈利变化）。
+   报道的日期晚于 Scout 数据的日期时，check_note 写明两边各自的日期，不要用较早的数据否定较晚的报道。
 3. explained 选 2–4 个最关键的 market 数据，按"是什么 → 通常意味着什么 → 对你意味着什么"写，专业词用半句话解释。
 4. sectors 覆盖全部 11 个板块各一条（etf 用证据里的代码）。
 4b. 在 week、drivers 或 ahead 里引用 prediction 中最重要的一两项概率及一周变化，写明来源（Polymarket / Kalshi）；不要把概率写成确定的事。
@@ -130,10 +133,42 @@ async def market_items(asof: date) -> list[dict]:
     meaning = {"10 年期美债": "长期利率；上升通常压低成长股估值", "2 年期美债": "反映市场对美联储短期利率的预期",
                "美元指数": "美元走强通常不利于海外收入多的公司和大宗商品", "WTI 原油": "影响能源公司利润和通胀预期",
                "VIX": "标普期权隐含的未来 30 天波动；越高表示市场越紧张", "高收益债利差": "垃圾债相对国债的额外利率；扩大表示信用风险担忧上升"}
+    live = await market_close(asof)
     for label, v in macro.items():
-        items.append({"字段": f"macro.{label}", "名称": label, "数值": f"{v['最新']}（20 个交易日变化 {v['20 个交易日变化']}，{v['日期']}）",
-                      "含义": meaning.get(label, "")})
+        text = f"{v['最新']}（20 个交易日变化 {v['20 个交易日变化']}，{v['日期']}，FRED）"
+        y = live.get(label)
+        if y and y["日期"] > v["日期"]:
+            text = f"{y['最新']}（20 个交易日变化 {y['20 个交易日变化']}，{y['日期']}，Yahoo 收盘；FRED 最新到 {v['日期']}）"
+        items.append({"字段": f"macro.{label}", "名称": label, "数值": text, "含义": meaning.get(label, "")})
+    try:
+        from scout import valuation
+
+        items += await valuation.items(asof)
+    except Exception as exc:             # the valuation is extra; the report still has the market data
+        logger.warning("basket valuation failed: %s", exc)
     return items
+
+
+LIVE = (("^TNX", "10 年期美债"), ("^VIX", "VIX"))
+
+
+async def market_close(asof: date) -> dict[str, dict]:
+    """The 10-year yield and VIX at Yahoo's last close: FRED's copies arrive a day or two later, which left the report
+    unable to check same-day news (2026-11-07: Scout's 10-year stopped at 11-05, the rise reported for 11-06)."""
+    from scout.data.yahoo import YahooProvider
+
+    try:
+        bars = await YahooProvider().daily_bars([s for s, _ in LIVE], asof - timedelta(days=45), asof)
+    except Exception as exc:
+        logger.warning("yahoo rates failed: %s", exc)
+        return {}
+    out = {}
+    for sym, label in LIVE:
+        c = bars.get(sym)
+        if c is not None and len(c) > 20:
+            c = c["close"]
+            out[label] = {"最新": f"{c.iloc[-1]:.2f}", "20 个交易日变化": f"{c.iloc[-1] - c.iloc[-21]:+.2f}", "日期": c.index[-1].isoformat()}
+    return out
 
 
 async def sector_items() -> list[dict]:
