@@ -49,6 +49,8 @@ SYSTEM_PROMPT = f"""你是 Scout，一位美股研究助理，服务于一位有
 - 问到"各方怎么看 X""市场上对 X 怎么说""多空分歧"：get_views（没有近期观点再用 research_views）；逐条讲看多 / 看空论点、
   来源和日期、Scout 数据是证实还是否定；关键数据按"是什么 → 通常意味着什么 → 对你意味着什么"讲；最后说明这只是观点，方向记入判断台账。
 - 问到"从各个策略看这只股票行不行""哪些股票被多个策略选中"：get_strategy_view；逐个策略说是否选中、排第几，并强调每个策略的检验状态
+- 问到"按某某（Graham、巴菲特、O'Neil、海龟、双动量……）的打法现在买什么 / 卖什么""各种打法怎么看 X"：get_playbooks；
+  说清每个打法的检验状态（多数未通过或未检验，只有大盘过滤通过），措辞用"按 X 打法的规则，符合买入 / 卖出条件"，不说成推荐
   （只有前向验证中 / 已确认的有经过检验的依据；否定的经检验无效；描述性筛选只说明现状）。
 - 问到公司的业务和行业现状（主要产品、客户、是不是某行业的主要供应商、行业需求是否旺盛、竞争格局）：先调 get_company_profile
   （公司自己年报里写的，带原文引用；"其他公司年报提到它"能看出它是谁的供应商），年报没写或需要最新情况时再用 research_company 联网检索。
@@ -790,6 +792,48 @@ async def get_strategy_view(ticker: str | None = None) -> dict:
             "说明": "被多个策略选中不等于有优势：先看每个策略的检验状态"}
 
 
+@tool("get_playbooks", "打法简报（每周）：约 60 个投资 / 交易打法（价值、成长、技术趋势、大盘择时、资产配置、事件、出场规则，"
+                       "Graham、Greenblatt、O'Neil、Minervini、Darvas、Weinstein、海龟、Clenow、Faber、Antonacci 等）按各自规则机械计算的"
+                       "买入 / 持有 / 卖出，每条带理由和该打法的检验状态。给 ticker：各打法对这只的判断；给 playbook（键或名称）：该打法的买入 / 卖出名单；"
+                       "都不给：每个打法的状态和数量",
+      {"type": "object", "properties": {"ticker": {"type": "string", "description": "可选"},
+                                        "playbook": {"type": "string", "description": "可选：打法的键（如 magic_formula）或名称中的词（如 神奇公式）"}}})
+async def get_playbooks(ticker: str | None = None, playbook: str | None = None) -> dict:
+    from scout import playbooks
+
+    res = await playbooks.latest()
+    if not res:
+        return {"note": "还没有打法简报（每周六随周报计算）"}
+    note = "按各打法自己的规则机械计算，不是 Scout 的推荐；只有大盘过滤（Faber 10 个月均线）通过了检验，其余多数检验未通过或没有检验"
+    books = res["playbooks"]
+    if playbook:
+        b = next((x for x in books if x["key"] == playbook or playbook in x["name"]), None)
+        if not b:
+            return {"note": f"没有叫 {playbook} 的打法", "可选": [x["key"] + " " + x["name"] for x in books]}
+        return {"日期": res["asof"], "打法": {k: b.get(k) for k in ("name", "school", "author", "idea", "buy_rule", "sell_rule", "evidence",
+                                                                  "version", "status", "counts", "missing")},
+                "买入": b.get("buys", []), "卖出": b.get("sells", [])[:20], "持有（ETF / 配置）": b.get("holds", []),
+                "你的持仓和自选股": b.get("mine", {}), "说明": note}
+    if ticker:
+        t = universe.yahoo_symbol(ticker)
+        rows = []
+        for b in books:
+            v = (b.get("mine") or {}).get(t)
+            for action, key in (("买入", "buys"), ("卖出", "sells")):
+                r = None if v else next((r for r in b.get(key, []) if r["ticker"] == t), None)
+                if r:
+                    v = {"action": action, "why": r["why"]}
+            act = None if v else dict(res.get("by_ticker", {}).get(t, [])).get(b["key"])
+            if act:
+                v = {"action": act, "why": "（名单较长，理由没有保存）"}
+            if v:
+                rows.append({"打法": b["name"], "流派": b["school"], "判断": v["action"], "理由": v["why"], "检验状态": b["status"]["text"]})
+        return {"代码": t, "日期": res["asof"], "各打法": rows or "没有打法对它给出买入或卖出", "说明": note}
+    return {"日期": res["asof"], "说明": note,
+            "打法": [{"键": b["key"], "名称": b["name"], "流派": b["school"], "检验状态": b["status"]["text"], "数量": b.get("counts"),
+                    "买入前列": [r["ticker"] for r in b.get("buys", [])[:5]], "缺少": b.get("missing")} for b in books]}
+
+
 @tool("get_company_profile", "公司画像与产业链（来自公司自己的年报 10-K / 20-F 业务部分，每条都有原文引用，按申报日保存）：业务分部与收入、"
                              "终端市场、点名的客户（含披露的收入占比）、供应商 / 代工厂、竞争对手、合作方、竞争优势、业务风险、明确未披露的信息；"
                              "以及其他公司年报里提到它的关系（谁把它列为供应商 / 客户 / 竞争对手），和这些关联公司的近期走势与财报日期",
@@ -1022,7 +1066,7 @@ def _round(value: Any) -> Any:
     return value
 
 
-LIMITS = {"get_evidence": 60000, "get_briefs": 20000, "get_strategy_view": 20000, "research_company": 16000}      # characters of tool output passed to the model
+LIMITS = {"get_evidence": 60000, "get_briefs": 20000, "get_strategy_view": 20000, "research_company": 16000, "get_playbooks": 20000}      # characters of tool output passed to the model
 
 
 async def call_tool(name: str, args: dict) -> str:

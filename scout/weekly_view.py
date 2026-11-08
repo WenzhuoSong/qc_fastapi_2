@@ -312,7 +312,7 @@ async def run(today: date | None = None, push: bool = True) -> dict:
             views.append({"ticker": ticker, "name": rec["name"], "kind": "sector" if sector else "stock", "view": rec["view"]})
         else:
             failed.append(ticker)
-    report = {**market, "views": views, "failed": failed}
+    report = {**market, "views": views, "failed": failed, "playbooks": await playbook_lines(today)}
     text = render(report)
     await db.execute("INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('weekly_view', :d, :c, CAST(:p AS JSONB))",
                      {"d": today, "c": text, "p": db.jsonb(report)})
@@ -321,6 +321,17 @@ async def run(today: date | None = None, push: bool = True) -> dict:
 
         await telegram.send(telegram.esc(text))
     return {"market": bool(report.get("market")), "views": len(views), "failed": failed}
+
+
+async def playbook_lines(today: date) -> list[str]:
+    """The week's playbook brief in a few lines: the market and allocation playbooks' calls, the buys of the stock
+    playbooks that have evidence first, and each exit rule on the holdings. Empty when no brief from this week exists."""
+    from scout import playbooks
+
+    res = await playbooks.latest()
+    if not res or (today - date.fromisoformat(res["asof"])).days > 7:
+        return []
+    return playbooks.digest(res)
 
 
 ICON = {"看涨": "🟢", "中性": "⚪", "看跌": "🔴", "看多": "🟢", "看空": "🔴"}
@@ -360,6 +371,8 @@ def render(r: dict) -> str:
         lines += ["", "三、个股（持仓、自选股里变化大的、本周报道最多的）"]
         lines += [f"{ICON[v['view']['stance']]} {v['ticker']} {v['view']['stance']}（{v['view']['horizon']} 日，把握{v['view']['confidence']}）："
                   f"{v['view']['summary']}" for v in stocks]
+    if r.get("playbooks"):
+        lines += ["", "四、打法简报（按各打法自己的规则机械计算，不是 Scout 的推荐）", *r["playbooks"]]
     if r.get("failed"):
         lines.append(f"未生成：{'、'.join(r['failed'])}")
     lines.append("每条论点的来源、核对和白话解读见 Dashboard「多来源观点」，或问助手。")

@@ -459,6 +459,15 @@ async def run_weekly(push: bool = True) -> dict:
     except Exception as exc:
         logger.warning("event calendar failed: %s", exc)
         summary["calendar"] = f"failed: {type(exc).__name__}"
+    try:                               # playbooks: every catalogued way to trade on the latest close, read by the weekly report
+        from scout import playbooks
+
+        res = await playbooks.compute()
+        await playbooks.store(res)
+        summary["playbooks"] = {"asof": res["asof"], "missing": [b["key"] for b in res["playbooks"] if b.get("missing")]}
+    except Exception as exc:
+        logger.warning("playbooks failed: %s", exc)
+        summary["playbooks"] = f"failed: {type(exc).__name__}"
     try:                               # the weekly market report: market → sectors → stocks, facts store + Scout data, ledger-scored
         from scout import weekly_view
 

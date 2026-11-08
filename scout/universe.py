@@ -114,9 +114,18 @@ def yahoo_symbol(symbol: str) -> str:
     return symbol.strip().upper().replace(".", "-")
 
 
+# ETFs the allocation and Dow playbooks hold or compare (scout/playbooks): bars only, not shown as themes
+ALLOCATION_ETFS: dict[str, str] = {
+    "EFA": "发达市场（除美国）", "EEM": "新兴市场", "AGG": "美国综合债", "BIL": "1–3 个月国库券", "SHY": "1–3 年国债",
+    "IEI": "3–7 年国债", "IEF": "7–10 年国债", "LQD": "投资级公司债", "VNQ": "美国房地产信托", "DBC": "商品",
+    "VTI": "美国全市场", "DIA": "道琼斯工业", "IYT": "道琼斯运输",
+}
+
+
 def context_etfs() -> dict[str, str]:
     out = dict(THEME_ETFS)
     out.update({etf: sector for sector, etf in SECTOR_ETFS.items()})
+    out.update(ALLOCATION_ETFS)
     return out
 
 
