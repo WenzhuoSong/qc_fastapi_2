@@ -58,7 +58,7 @@ async def _ensure_ciks(tickers: list[str]) -> dict[str, str]:
     return {t: have[t]["cik"] for t in tickers if t in have}
 
 
-async def sec_company(ticker: str, cik: str, asof: date) -> dict:
+async def sec_company(ticker: str, cik: str, asof: date, refetch: bool = False) -> dict:
     sub = await sec.submissions(cik)
     if not sub:
         await _quality(asof, "sec_submissions_missing", ticker, {"cik": cik})
@@ -72,7 +72,7 @@ async def sec_company(ticker: str, cik: str, asof: date) -> dict:
     latest_fact_filing = next((f["accession"] for f in found if f["form"] in FACT_FORMS), None)
     row = await db.fetch_one("SELECT facts_accession FROM scout.sec_companies WHERE ticker = :t", {"t": ticker})
     n_facts = 0
-    if latest_fact_filing and (row or {}).get("facts_accession") != latest_fact_filing:
+    if latest_fact_filing and (refetch or (row or {}).get("facts_accession") != latest_fact_filing):
         facts = await sec.company_facts(cik)
         rows = sec.financial_rows(facts, ticker)
         if rows:
@@ -325,9 +325,10 @@ SEC_CONCURRENCY = 6
 INSIDER_REFRESH = 2                       # the latest quarters are reloaded (late filings, amendments)
 
 
-async def universe_sec(asof: date, limit: int | None = None) -> dict:
+async def universe_sec(asof: date, limit: int | None = None, refetch: bool = False) -> dict:
     """SEC filings and XBRL financials for every stock in the scan universe (the research pool only
-    covers about 115). Facts are re-read only when a new 10-Q/10-K appeared."""
+    covers about 115). Facts are re-read only when a new 10-Q/10-K appeared, or for all with `refetch`
+    (adds the filed versions an earlier parser dropped; existing rows are kept)."""
     stocks = [r["ticker"] for r in await db.fetch_all(
         "SELECT ticker FROM scout.instruments WHERE kind = 'stock' AND in_scan ORDER BY ticker")][:limit]
     ciks = await _ensure_ciks(stocks)
@@ -337,7 +338,7 @@ async def universe_sec(asof: date, limit: int | None = None) -> dict:
     async def one(t: str, cik: str) -> None:
         async with sem:
             try:
-                r = await sec_company(t, cik, asof)
+                r = await sec_company(t, cik, asof, refetch)
                 stats["filings"] += r["filings"]
                 stats["facts"] += r["facts"]
             except Exception as exc:

@@ -44,6 +44,45 @@ class SecQuarterTests(unittest.TestCase):
         self.assertEqual(rows[("revenue", "2025-12-31")]["value"], 100)     # older concept fills the gap
         self.assertEqual(rows[("equity", "2026-03-31")]["value"], 640)
 
+    def test_every_filed_version_is_kept(self):
+        # Q1 filed in its 10-Q, filed again unchanged a year later as a comparative, restated after a 10:1 split;
+        # net income restated once; Q4 derived from the 10-K, then changed when the 9M comparative is restated.
+        facts = {"facts": {"us-gaap": {
+            "WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": [
+                e("2024-01-29", "2024-04-28", 2.49e9, filed="2024-05-29"),
+                e("2024-01-29", "2024-04-28", 2.49e9, filed="2024-08-28"),
+                e("2024-01-29", "2024-04-28", 24.9e9, filed="2025-05-28")]}},
+            "NetIncomeLoss": {"units": {"USD": [
+                e("2024-01-29", "2024-04-28", 100, filed="2024-05-29"),
+                e("2024-01-29", "2024-04-28", 100, filed="2025-05-28"),
+                e("2024-01-29", "2024-04-28", 90, form="10-Q/A", filed="2025-06-15")]}},
+            "Revenues": {"units": {"USD": [
+                e("2024-01-01", "2024-09-30", 300, "Q3", filed="2024-11-01"),
+                e("2024-01-01", "2024-12-31", 420, "FY", "10-K", "2025-02-20"),
+                e("2024-01-01", "2024-09-30", 310, "Q3", filed="2025-11-01")]}},
+        }}}
+        rows = sec.financial_rows(facts, "NVDA")
+        got = lambda m: [(str(r["filed"]), r["value"]) for r in sorted(rows, key=lambda r: r["filed"]) if r["metric"] == m]  # noqa: E731
+        self.assertEqual(got("shares_diluted"), [("2024-05-29", 2.49e9), ("2025-05-28", 24.9e9)])
+        self.assertEqual(got("net_income"), [("2024-05-29", 100), ("2025-06-15", 90)])
+        self.assertEqual(got("revenue"), [("2025-02-20", 120), ("2025-11-01", 110)])
+        self.assertTrue(all(r["derived"] for r in rows if r["metric"] == "revenue"))
+        self.assertEqual(len({(r["metric"], r["period_end"], r["filed"]) for r in rows}), len(rows))   # table key
+
+    def test_versions_merge_concepts_by_priority_over_time(self):
+        # the old concept is known first; the preferred one arrives later with the same value (no new version)
+        # and then a different one (a new version under the preferred concept)
+        facts = {"facts": {"us-gaap": {
+            "Revenues": {"units": {"USD": [e("2025-01-01", "2025-03-31", 100, filed="2025-05-01")]}},
+            "RevenueFromContractWithCustomerExcludingAssessedTax": {"units": {"USD": [
+                e("2025-01-01", "2025-03-31", 100, filed="2025-08-01"),
+                e("2025-01-01", "2025-03-31", 104, filed="2026-05-01")]}},
+        }}}
+        rows = sorted(sec.financial_rows(facts, "X"), key=lambda r: r["filed"])
+        self.assertEqual([(str(r["filed"]), r["value"], r["concept"]) for r in rows],
+                         [("2025-05-01", 100, "Revenues"),
+                          ("2026-05-01", 104, "RevenueFromContractWithCustomerExcludingAssessedTax")])
+
     def test_filings_index(self):
         sub = {"filings": {"recent": {"accessionNumber": ["0001-26-1", "0001-26-2"], "form": ["8-K", "SD"],
                                       "filingDate": ["2026-10-23", "2026-10-20"], "reportDate": ["2026-10-23", ""],
