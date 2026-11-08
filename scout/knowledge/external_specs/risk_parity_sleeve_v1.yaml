@@ -1,0 +1,56 @@
+# Pre-registration (G0), written 2026-11-08 before any return of this design was computed on the judged sample.
+# Never edited after the run; a changed design is a new file with a new key. One run, local only, after the user's go-ahead (not run yet).
+key: risk_parity_sleeve_v1
+registered_on: '2026-11-08'
+requested_by: 用户 2026-11-08："写入吧，然后给风险平价配置写方案"
+family: risk_parity_sleeve
+title: 核心仓 + 20% 风险平价配置（1965–2003 未见数据）
+question: trend_sleeve_v1 的报告里，"80% 现行核心规则 + 20% 一直持有的风险平价"（不择时）夏普 0.77，高于加 20% 趋势配置（0.73）和现行规则（0.67）。
+  这是在 2003–2026 上看到的，不能当证据。在没用过的 1965–2003 年（只有美股和美国国债两类资产），同样的组合是否仍然好于现行规则、好于 80% 现行规则 + 20% 现金？
+
+data:
+  equity: Kenneth French 月度市场收益（Mkt-RF + RF，本地 exports/research_data/french/），与 scout.cross_asset.french_monthly 相同
+  bonds: 10 年期美债总收益，由 FRED DGS10（每日，取每月最后一个有值的日子）按 Swinkels (2019) 的方法构造：上月末按面值买入票息 = 上月末收益率、期限 10 年的债券，
+    本月末按本月末收益率、剩余期限 10 − 1/12 年定价（每半年付息），月收益 = 价格 − 1 + 票息 / 12；不扣管理费
+  cash: French 月度 RF
+  data_check: 只报告：构造的债券月收益与 IEF（7–10 年国债 ETF，Sharadar）在 2002-08..2026-08 的相关和年化差（说明构造方法可信，不参与判定）
+  judged_sample: 1965-01..2003-08（需要 36 个月历史估计波动；2003-09 起已在 trend_sleeve_v1 看过）；前后两半按月份中位数分
+  later_sample: 2003-09..数据结束，只报告（已经看过），同时报告用 SPY 和 IEF 实际 ETF 收益算的同一组合
+
+sleeve:
+  rule: 每月末，股票和债券两类资产各占一半风险：权重 ∝ 1 / σᵢ（σ = 截至当月的 36 个月月收益标准差 × √12），
+    再整体缩放，使按 36 个月协方差估计的事前年化波动 = 12%（与 carver_trend_v1 的 hold 对照相同的波动目标）；下个月按此持有
+  leverage: 不设上限；超过 1 倍的部分按 RF + 0.5% 年化融资（与 carver_trend_v1 相同）
+  cost: 单边 0.05% × 换手
+  note: carver_trend_v1 的 hold 有 12 只 ETF、四类资产（股票、债券、商品、美元）；1965–2003 年只有股票和国债两类可用，所以这是同一想法的简化版
+
+core: 现行核心规则的长历史版本：French 市场总收益指数的月末值 ≥ 最近 10 个月末均值时下月持有股票，否则持有现金（与 cross_asset.french_long 的 sma10 相同，单边 0.05%）
+
+blends:
+  rebalance: 每月末再平衡（与 trend_sleeve_v1 相同的 blend：月收益 = 0.8 × 核心 + 0.2 × 配置，扣回到目标比例的单边 0.05%）
+  primary: core_rp = 80% 核心 + 20% 风险平价配置
+  controls:
+    core_now: 100% 核心
+    core_cash: 80% 核心 + 20% 现金
+  reported: 80% 核心 + 20% 国债（不加杠杆，看是不是"只是买了债券"）；风险平价配置单独；美股买入持有；60% 股 / 40% 债
+
+pass:
+  rule: 在 judged_sample 上同时满足（与 trend_sleeve_v1 相同的四条）：
+    1 前后两半的夏普都高于 core_now；
+    2 前后两半的夏普都高于 core_cash；
+    3 最大回撤比 core_now 至少小 3 个百分点；
+    4 每月收益差（core_rp − core_now）前后两半的 t 都不低于 −2
+  outcome: 通过 → 知识库条目 backtested；你决定采用后，从采用当月起每月记录目标权重和结果（前向记录，Scout 不下单）。
+    不通过 → rejected；不换比例、波动目标、估计窗口或资产重测
+  multiple_testing: 新族 risk_parity_sleeve 第 1 次（判定不用 t ≥ 3 门槛）
+
+expected_failure: 前半段（约 1965–1984）通胀上升、利率从 4% 升到 15%，国债长期亏损，加杠杆的债券部分会拖累；只有两类资产，分散有限；
+  事前波动估计在 1970 年代末利率剧烈波动时偏低，杠杆可能过高；1987 年、2000–2002 年股市下跌时国债上涨，可能是主要的好处
+disclosure: |
+  登记前看过的：
+  1 trend_sleeve_v1（2003-09..2026-08）全部结果，包括只报告的"80% 核心 + 20% 风险平价一直持有"：夏普 0.77 / 1.11 / 0.52、回撤 −20.7%、2022 年 −18.6%。
+  2 carver_trend_v1 与 cross_asset_trend_v1（同一时期）的风险平价 / 波动倒数配置结果；cross_asset_trend_v1 的 French 美股长历史（1927 起）：
+    买入持有夏普 0.45、10 个月均线 0.55。
+  3 文献：Asness, Frazzini & Pedersen (2012) 风险平价在 1926–2010 年美国股债上夏普高于 60/40（杠杆约 2–3 倍）。
+  没有看过 1965–2003 年任何股债组合、构造的国债收益或风险平价配置的数字。
+deviations: 两类资产而不是四类；月度而不是日度；债券收益由收益率构造，不是实际可交易的基金（1965–2002 年没有国债 ETF）
