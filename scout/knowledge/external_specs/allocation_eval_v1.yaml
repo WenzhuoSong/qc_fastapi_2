@@ -1,0 +1,68 @@
+# Allocation evaluation framework (written 2026-11-09 before the environment table below was computed).
+# Not a gate test: every month of 1965–2026 has been seen in earlier runs (risk_parity_sleeve_v1, trend_sleeve_v1,
+# carver_trend_v1), so the result is a judgment on seen data, never evidence for a rule. Written down before the run so
+# the choice rule cannot be fitted to the table. One run, local only; a changed framework is a new file with a new key.
+key: allocation_eval_v1
+registered_on: '2026-11-09'
+requested_by: 用户 2026-11-09："写配置评价框架吧"（前一轮讨论：配置和分散不该用"前后两半都更好"的超额收益门槛判，应看各种环境下的表现和后悔）
+kind: judgment
+title: 核心仓配置评价框架 v1（各种市场环境下的表现与后悔）
+question: 现行核心规则旁边放 20% 的配置（现金 / 10 年国债 / 风险平价 / 趋势只做多）时，哪一个在过去出现过的各种环境里都可以接受、最坏的后悔最小？
+  这是在已看过的数据上做的判断，用来选一个"不管接下来是哪种环境都能承受"的配置，不是预测接下来是哪种环境。
+
+why_not_the_gate: |
+  选股 / 择时规则声称有超额收益，用 gate 的门槛（前后两半、t ≥ 3）判，防止数据挖掘。
+  配置和分散本来就在某些环境亏、在另一些环境保护，要求前后两半都更好等于要求保险在不出险的年份也赚钱；
+  而且 20% 配置之间的差别（夏普差 0.05–0.1、回撤差 2–5 个百分点）在 20 年的样本里分辨不出来。
+  所以这里不问"是否显著更好"，而问"每种环境下的结果是否能接受、最坏的后悔有多大"。
+
+candidates:
+  decision: [core_now, core_cash, core_bonds, core_rp]
+  short_only: core_trend   # 80% 核心 + 20% carver_trend_v1 的只做多版本；趋势配置只有 2003-09 起的 ETF 数据
+  reference: [sixty_forty, equity]   # 只报告，不参与选择
+  definitions:
+    core_now: 现行核心规则的长历史版本（French 市场 + 10 个月均线，与 risk_parity_sleeve_v1 相同）
+    core_cash: 80% 核心 + 20% French RF
+    core_bonds: 80% 核心 + 20% 构造的 10 年国债总收益（不加杠杆，risk_parity_sleeve_v1 的构造）
+    core_rp: 80% 核心 + 20% 风险平价配置（risk_parity_sleeve_v1 的配置，原样，不改参数）
+    core_trend: 80% 核心 + 20% carver_trend_v1 只做多版本的月收益（exports/carver_trend/result.json，不重算）
+    rebalance: 每月末回到 80 / 20，单边 0.05%（trend_sleeve_v1 的 blend）
+
+samples:
+  long: 1965-02..French 数据结束（决策集四个候选）
+  short: 2003-09..趋势配置数据结束（决策集四个候选 + core_trend；与长样本重叠，不是独立样本）
+
+environments:
+  note: 用每个月本身的数据给它贴环境标签，只用于描述"这个月处在什么环境"，不用作信号；宏观数据用 FRED 现在的修订值
+  macro_quadrant: 通胀方向 × 增长方向，共四种：
+    通胀上升 = CPI（CPIAUCSL）同比 高于 12 个月前的同比；增长加速 = 工业产值（INDPRO）同比 高于 12 个月前的同比
+  rates: 利率上升 / 下降 = 10 年期收益率（DGS10 月末）高于 / 不高于 12 个月前
+  stock_bond_correlation: 正 / 负 = 截至当月的 36 个月美股与构造国债月收益相关系数 > 0 / ≤ 0
+  bear: 熊市月份 = French 市场总收益指数从前高回撤 ≥ 20% 的每一段，从前高后一个月到谷底月；每一段单独报告累计收益
+  scenarios: 上面 4 + 2 + 2 + 1 = 9 种环境；某样本里不足 24 个月的环境只报告，不进入后悔计算
+
+metrics:
+  per_candidate: 年化收益、波动、夏普、最大回撤、最差 12 个月、最长水下时间（低于前高的连续月数）、最差 5% 月份的平均收益
+  per_environment: 该环境所有月份连起来的年化收益、月数；熊市每一段的累计收益
+  rolling: 所有滚动 36 个月窗口中，候选的年化收益高于 core_now 的比例、窗口内最大回撤小于 core_now 的比例
+  regret: 每种环境里，后悔 = 该环境年化收益最高的可接受候选 − 该候选；最大后悔 = 各环境里后悔的最大值
+    （只在可接受的候选之间比：被排除的候选在某个环境里特别好，不应该抬高其他候选的后悔。
+    这一条是在用合成数据试运行程序时改的，那次没有用真实数据，所以改动没有看过任何结果）
+
+choice:
+  acceptable: 和 core_now 比，同时满足：最大回撤不差超过 5 个百分点；最差 12 个月不差超过 5 个百分点；最长水下时间不长超过 12 个月
+  pick: 可接受的候选中最大后悔最小的那个
+  default: 如果它的最大后悔只比 core_now 小不到 1 个百分点 / 年，保留 core_now（换配置要付出复杂度和执行成本，这么小的差别是噪音）
+  final: 长样本的选择，并且它在短样本上也必须可接受，否则保留 core_now
+  core_trend: 只在短样本上评价；即使在短样本上胜出，也因为没有长历史而不改变最终结论（只报告）
+  after: 结论只给你参考，是否改配置由你决定；Scout 不下单
+
+monitor:
+  rule: 报告最新一个月的环境标签和 36 个月股债相关系数，只描述"现在像哪种环境"
+  not_a_signal: 不根据它换配置（环境预测在 weekly_direction / sector_forecast / risk_off_destination 中都失败了，这里没检验过）
+
+disclosure: |
+  运行前已看过的：risk_parity_sleeve_v1（1965–2003 判定 + 2003 起报告）、trend_sleeve_v1、carver_trend_v1、cross_asset_trend_v1 的全部结果。
+  具体知道：1965–1984 利率上升期国债和风险平价亏损，2003 年以后风险平价和国债配置略好于现行规则；趋势配置在 2008、2020、2022 年赚钱。
+  没有算过任何按通胀 / 增长 / 利率 / 股债相关性分环境的结果，也没有算过水下时间和后悔。
+  选择规则和阈值（5 个百分点、12 个月、1 个百分点 / 年、24 个月）在看到环境表之前定下，不按结果修改。
