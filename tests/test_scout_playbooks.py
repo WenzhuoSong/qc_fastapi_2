@@ -152,6 +152,8 @@ class PageTests(unittest.TestCase):
 
         html = views.playbooks_panel(self._res())
         self.assertIn("神奇公式", html)
+        self.assertNotIn("你的持仓", html)                              # PBF is in the verdicts but not held
+        self.assertIn("你的持仓", views.playbooks_panel(self._res(), held={"PBF"}))
         self.assertIn("其余 1 只", html)
         self.assertIn("缺少数据：EFA", html)
         self.assertNotIn("双动量", views.playbooks_panel(self._res(), "价值投资"))

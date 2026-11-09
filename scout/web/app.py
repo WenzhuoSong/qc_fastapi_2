@@ -623,7 +623,8 @@ async def screens_page(s: str = "", school: str = "", _: str = Depends(require_a
             f"style='{'background:var(--accent);color:#fff' if s == 'playbooks' else ''}' href='/screens?s=playbooks'>"
             f"名人与经典打法 {len(books['playbooks']) if books else 0}</a></div>")
     if s == "playbooks":
-        return layout("策略筛选", "screens", f"<h2>策略筛选 · 打法</h2>{nav}" + views.playbooks_panel(books, school))
+        held = {x["ticker"] for x in await portfolio.trades(open_only=True)}
+        return layout("策略筛选", "screens", f"<h2>策略筛选 · 打法</h2>{nav}" + views.playbooks_panel(books, school, held))
     if s == "board":
         return layout("策略筛选", "screens", f"<h2>策略筛选</h2>{nav}" + views.signal_board_panel(board))
     if on:

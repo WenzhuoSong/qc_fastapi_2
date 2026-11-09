@@ -1609,7 +1609,8 @@ def _action_class(action: str) -> str:
     return {"买入": "up", "卖出": "down"}.get(action, "muted")
 
 
-def playbook_card(b: dict, top: int = 8) -> str:
+def playbook_card(b: dict, held: set[str], top: int = 8) -> str:
+    """`held`: the user's open trades now; only those are shown from the playbook's verdicts on the user's names."""
     c = b.get("counts") or {}
     counts = (" · ".join(f"<span class='{_action_class(a)}'>{a} {c.get(a, 0)}</span>" for a in ("买入", "持有", "卖出"))
               if c else "")
@@ -1627,9 +1628,9 @@ def playbook_card(b: dict, top: int = 8) -> str:
                        for r in rows[:top])
 
     parts = []
-    mine = b.get("mine") or {}
+    mine = {t: x for t, x in (b.get("mine") or {}).items() if t in held}
     if mine:
-        parts.append("<div class='small'><b>你的持仓、自选和 ETF：</b>" + "；".join(
+        parts.append("<div class='small'><b>你的持仓：</b>" + "；".join(
             f"{tlink(t)} <span class='{_action_class(x['action'])}'>{e(x['action'])}</span>" for t, x in sorted(mine.items())) + "</div>")
     if b.get("buys"):
         parts.append(f"<div class='small' style='margin-top:6px'><b>买入</b></div><ul class='tight'>{lst(b['buys'], 'up')}</ul>")
@@ -1650,7 +1651,7 @@ def playbook_card(b: dict, top: int = 8) -> str:
     return f"<div class='card'>{head}{''.join(parts)}{rules}</div>"
 
 
-def playbooks_panel(res: dict | None, school: str = "") -> str:
+def playbooks_panel(res: dict | None, school: str = "", held: set[str] = frozenset()) -> str:
     from scout.playbooks.base import SCHOOLS
 
     if not res:
@@ -1670,7 +1671,7 @@ def playbooks_panel(res: dict | None, school: str = "") -> str:
         group = sorted((b for b in books if b["school"] == s), key=lambda b: order.get(b["status"]["grade"], 9))
         if group:
             out.append(f"<h3 style='margin-top:16px'>{e(s)} {len(group)}</h3><div class='grid'>"
-                       + "".join(playbook_card(b) for b in group) + "</div>")
+                       + "".join(playbook_card(b, held) for b in group) + "</div>")
     return "".join(out)
 
 
