@@ -413,6 +413,11 @@ async def ticker_page(ticker: str, _: str = Depends(require_auth)) -> str:
         body += views.company_card(await company_profile.latest(t), await company_profile.neighbours(t))
     except Exception as exc:
         logger.warning("company profile for %s unavailable: %s", t, exc)
+    from scout import playbooks
+
+    books = await playbooks.latest()
+    if books:
+        body += views.playbook_ticker_card(books["asof"], playbooks.for_ticker(books, t))
     if latest:
         from scout import market_filter
 
@@ -561,7 +566,7 @@ async def market_focus_regenerate(_: str = Depends(require_auth)):
 
 
 @app.get("/screens", response_class=HTMLResponse)
-async def screens_page(s: str = "", _: str = Depends(require_auth)) -> str:
+async def screens_page(s: str = "", school: str = "", _: str = Depends(require_auth)) -> str:
     from scout import base_rates as br_mod
     from scout import screens as sc
 
@@ -585,7 +590,7 @@ async def screens_page(s: str = "", _: str = Depends(require_auth)) -> str:
     current = next((x for x in screens if x.id == s), None) or next(
         (x for x in screens if x.detector is not None and x.detector.live and count_of(x)), screens[0])
     # the rule / signal row is highlighted only when the page shows one of its screens (not B0 or a fundamentals screen)
-    shows_rule = s not in ("b0", "board") and not any(x.id == s for x in sc.ANGLE_SCREENS)
+    shows_rule = s not in ("b0", "board", "playbooks") and not any(x.id == s for x in sc.ANGLE_SCREENS)
     nav = ""
     for group in ("规则", "技术信号", "事件"):
         chips = "".join(
@@ -611,6 +616,14 @@ async def screens_page(s: str = "", _: str = Depends(require_auth)) -> str:
            f"style='{'background:var(--accent);color:#fff' if s == 'board' else ''}' href='/screens?s=board'>"
            f"信号看板 候选 {board['counts']['candidate']} · 触发 {board['counts']['triggered']} · 完成 {board['counts']['done']}</a></div>"
            + nav) if board["rows"] else nav
+    from scout import playbooks
+
+    books = await playbooks.latest()
+    nav += (f"<div style='margin:4px 0'><span class='small muted'>打法：</span><a class='chip' "
+            f"style='{'background:var(--accent);color:#fff' if s == 'playbooks' else ''}' href='/screens?s=playbooks'>"
+            f"名人与经典打法 {len(books['playbooks']) if books else 0}</a></div>")
+    if s == "playbooks":
+        return layout("策略筛选", "screens", f"<h2>策略筛选 · 打法</h2>{nav}" + views.playbooks_panel(books, school))
     if s == "board":
         return layout("策略筛选", "screens", f"<h2>策略筛选</h2>{nav}" + views.signal_board_panel(board))
     if on:

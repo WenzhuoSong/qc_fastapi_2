@@ -135,6 +135,35 @@ class ValueTests(unittest.TestCase):
         self.assertEqual(int(sc.at["BAD", "score"]), 0)
 
 
+class PageTests(unittest.TestCase):
+    def _res(self):
+        book = {"key": "magic_formula", "name": "神奇公式", "school": "价值投资", "author": "Greenblatt", "idea": "好公司 + 便宜",
+                "buy_rule": "b", "sell_rule": "s", "evidence": "ev", "version": "v", "status": {"text": "未检验", "grade": "未检验"},
+                "counts": {BUY: 9, HOLD: 0, SELL: 1}, "buys": [{"ticker": f"T{i}", "name": "", "why": f"第 {i}"} for i in range(9)],
+                "sells": [{"ticker": "PBF", "name": "", "why": "跌出"}], "mine": {"PBF": {"action": SELL, "why": "跌出"}}}
+        missing = {**book, "key": "gem", "name": "双动量", "school": "资产配置", "missing": "缺少数据：EFA"}
+        for k in ("counts", "buys", "sells", "mine"):
+            missing.pop(k)
+        return {"asof": "2026-11-06", "playbooks": [book, missing], "by_ticker": {"T8": [["magic_formula", BUY]]},
+                "universe": {"stocks": 10, "etfs": 2}}
+
+    def test_panel_shows_each_playbook_with_its_lists_and_missing_data(self):
+        from scout.web import views
+
+        html = views.playbooks_panel(self._res())
+        self.assertIn("神奇公式", html)
+        self.assertIn("其余 1 只", html)
+        self.assertIn("缺少数据：EFA", html)
+        self.assertNotIn("双动量", views.playbooks_panel(self._res(), "价值投资"))
+        self.assertIn("还没有打法简报", views.playbooks_panel(None))
+
+    def test_ticker_verdicts_come_from_lists_holdings_and_the_long_index(self):
+        res = self._res()
+        self.assertEqual([(v["book"]["key"], v["action"]) for v in pb.for_ticker(res, "PBF")], [("magic_formula", SELL)])
+        self.assertEqual(pb.for_ticker(res, "T8")[0]["why"], "第 8")
+        self.assertEqual(pb.for_ticker(res, "NONE"), [])
+
+
 class FundamentalsTests(unittest.TestCase):
     def test_trailing_and_year_earlier_values_as_filed(self):
         rows = []

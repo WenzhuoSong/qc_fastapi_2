@@ -335,6 +335,23 @@ async def store(res: dict) -> None:
                      {"d": date.fromisoformat(res["asof"]), "c": text(res), "p": db.jsonb(res)})
 
 
+def for_ticker(res: dict, t: str) -> list[dict]:
+    """Every playbook's verdict on one ticker: {book, action, why}; a long list kept only the action (`by_ticker`)."""
+    acts = {k: a for k, a in res.get("by_ticker", {}).get(t, [])}
+    out = []
+    for b in res["playbooks"]:
+        v = (b.get("mine") or {}).get(t)
+        for action, key in ((BUY, "buys"), (SELL, "sells")):
+            r = None if v else next((r for r in b.get(key, []) if r["ticker"] == t), None)
+            if r:
+                v = {"action": action, "why": r["why"]}
+        if not v and b["key"] in acts:
+            v = {"action": acts[b["key"]], "why": "（名单较长，理由没有保存）"}
+        if v:
+            out.append({"book": b, **v})
+    return out
+
+
 async def latest() -> dict | None:
     from scout import db
 

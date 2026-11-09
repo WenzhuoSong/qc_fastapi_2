@@ -1591,3 +1591,98 @@ def views_page(recs: list[dict], scored: dict[str, list[dict]], weekly: dict | N
             "样本够了才能说哪类观点值得听。也可以问助手「XX 各方怎么看」现写一份。</p>")
     return layout("多来源观点", "views", f"<h2>多来源观点</h2>{note}{weekly_market_html(weekly)}"
                   f"<div class='grid'>{''.join(cards) or '<p>还没有观点。</p>'}</div>")
+
+
+# ── playbooks (策略筛选 → 打法) ──────────────────────────────────────────
+
+PLAYBOOK_NOTE = ("按各打法作者自己的规则在 Scout 的日线和财报（按申报日）上机械计算，每周六随周报更新；这是「这套规则现在怎么说」，"
+                 "不是 Scout 的推荐。标签是检验状态：只有大盘过滤（Faber 10 个月均线）和你的 20 % 跟踪止损有检验依据，"
+                 "其余多数检验未通过或没有检验。")
+
+
+def _grade_chip(status: dict) -> str:
+    color = {"有依据": "var(--up)", "你的规则": "var(--accent)", "未通过": "var(--down)"}.get(status["grade"], "")
+    return f"<span class='chip' style='{f'background:{color};color:#fff' if color else ''}'>{e(status['text'])}</span>"
+
+
+def _action_class(action: str) -> str:
+    return {"买入": "up", "卖出": "down"}.get(action, "muted")
+
+
+def playbook_card(b: dict, top: int = 8) -> str:
+    c = b.get("counts") or {}
+    counts = (" · ".join(f"<span class='{_action_class(a)}'>{a} {c.get(a, 0)}</span>" for a in ("买入", "持有", "卖出"))
+              if c else "")
+    head = (f"<h3>{e(b['name'])} <span class='small muted'>{e(b['author'])}</span></h3>"
+            f"<div>{_grade_chip(b['status'])}<span class='small'>{counts}</span></div>"
+            f"<p class='small'>{e(b['idea'])}</p>")
+    rules = (f"<details class='small'><summary>规则与依据</summary><div><b>买入：</b>{e(b['buy_rule'])}</div>"
+             f"<div><b>卖出：</b>{e(b['sell_rule'])}</div><div><b>外部证据：</b>{e(b['evidence'])}</div>"
+             f"<div class='muted'>版本：{e(b['version'])}</div></details>")
+    if b.get("missing") and not c:
+        return f"<div class='card'>{head}<p class='small warn'>{e(b['missing'])}</p>{rules}</div>"
+
+    def lst(rows: list[dict], cls: str) -> str:
+        return "".join(f"<li><span class='{cls}'>{tlink(r['ticker'])}</span> <span class='small'>{e(r['why'])}</span></li>"
+                       for r in rows[:top])
+
+    parts = []
+    mine = b.get("mine") or {}
+    if mine:
+        parts.append("<div class='small'><b>你的持仓、自选和 ETF：</b>" + "；".join(
+            f"{tlink(t)} <span class='{_action_class(x['action'])}'>{e(x['action'])}</span>" for t, x in sorted(mine.items())) + "</div>")
+    if b.get("buys"):
+        parts.append(f"<div class='small' style='margin-top:6px'><b>买入</b></div><ul class='tight'>{lst(b['buys'], 'up')}</ul>")
+        rest, unsaved = b["buys"][top:], c.get("买入", 0) - len(b["buys"])
+        if rest:
+            parts.append(f"<details class='small'><summary>其余 {len(rest) + unsaved} 只</summary><ul class='tight'>"
+                         + "".join(f"<li>{tlink(r['ticker'])} {e(r['why'])}</li>" for r in rest) + "</ul>"
+                         + (f"<p class='muted'>另有 {unsaved} 只没有保存（每个打法只存前 40 只）</p>" if unsaved > 0 else "")
+                         + "</details>")
+    if b.get("holds") and b["school"] in ("资产配置", "大盘择时"):
+        parts.append(f"<div class='small' style='margin-top:6px'><b>持有</b></div><ul class='tight'>{lst(b['holds'], '')}</ul>")
+    if b.get("sells"):
+        parts.append(f"<details class='small'><summary class='down'>卖出 {c.get('卖出', 0)}</summary><ul class='tight'>{lst(b['sells'], 'down')}</ul></details>")
+    if not parts:
+        parts.append("<p class='small muted'>本周没有符合买入或卖出条件的。</p>")
+    if b.get("missing"):
+        parts.append(f"<p class='small warn'>{e(b['missing'])}</p>")
+    return f"<div class='card'>{head}{''.join(parts)}{rules}</div>"
+
+
+def playbooks_panel(res: dict | None, school: str = "") -> str:
+    from scout.playbooks.base import SCHOOLS
+
+    if not res:
+        return ("<p class='muted'>还没有打法简报：每周六随周报计算，也可以手动运行 "
+                "<code>python -m scout.jobs.playbooks</code>。</p>")
+    books = res["playbooks"]
+    chips = "".join(
+        f"<a class='chip' style='{'background:var(--accent);color:#fff' if s == school else ''}' "
+        f"href='/screens?s=playbooks{'&school=' + e(s) if s else ''}'>{e(s or '全部')} "
+        f"{len(books) if not s else sum(b['school'] == s for b in books)}</a>" for s in ("", *SCHOOLS))
+    order = {"有依据": 0, "你的规则": 1, "未检验": 2, "未通过": 3, "不适用": 4}
+    out = [f"<p class='small muted'>数据日期 {e(res['asof'])} · {res['universe']['stocks']} 只股票、{res['universe']['etfs']} 只 ETF。"
+           f"{PLAYBOOK_NOTE}</p><div style='margin:6px 0'>{chips}</div>"]
+    for s in SCHOOLS:
+        if school and s != school:
+            continue
+        group = sorted((b for b in books if b["school"] == s), key=lambda b: order.get(b["status"]["grade"], 9))
+        if group:
+            out.append(f"<h3 style='margin-top:16px'>{e(s)} {len(group)}</h3><div class='grid'>"
+                       + "".join(playbook_card(b) for b in group) + "</div>")
+    return "".join(out)
+
+
+def playbook_ticker_card(asof: str, rows: list[dict]) -> str:
+    """Ticker page: every playbook giving a verdict on this stock."""
+    if not rows:
+        body = "<p class='small muted'>本周没有打法对它给出买入或卖出。</p>"
+    else:
+        rows = sorted(rows, key=lambda v: {"买入": 0, "卖出": 1}.get(v["action"], 2))
+        body = "<ul class='tight'>" + "".join(
+            f"<li><span class='{_action_class(v['action'])}'>{e(v['action'])}</span> <b>{e(v['book']['name'])}</b> "
+            f"{_grade_chip(v['book']['status'])}<div class='small'>{e(v['why'])}</div></li>" for v in rows) + "</ul>"
+    return (f"<div class='card'><h3>各打法怎么看 <span class='small muted'>{e(asof)} · "
+            f"<a href='/screens?s=playbooks'>全部打法</a></span></h3>{body}"
+            f"<p class='small muted'>按各打法自己的规则计算，不是推荐；多数打法检验未通过或没有检验。</p></div>")

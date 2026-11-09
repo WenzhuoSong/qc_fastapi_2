@@ -797,7 +797,8 @@ async def get_strategy_view(ticker: str | None = None) -> dict:
                        "买入 / 持有 / 卖出，每条带理由和该打法的检验状态。给 ticker：各打法对这只的判断；给 playbook（键或名称）：该打法的买入 / 卖出名单；"
                        "都不给：每个打法的状态和数量",
       {"type": "object", "properties": {"ticker": {"type": "string", "description": "可选"},
-                                        "playbook": {"type": "string", "description": "可选：打法的键（如 magic_formula）或名称中的词（如 神奇公式）"}}})
+                                        "playbook": {"type": "string", "description": "可选：打法的键（如 magic_formula）或名称中的词（如 神奇公式）"}}},
+      pages=("/screens", "/ticker"))
 async def get_playbooks(ticker: str | None = None, playbook: str | None = None) -> dict:
     from scout import playbooks
 
@@ -816,18 +817,8 @@ async def get_playbooks(ticker: str | None = None, playbook: str | None = None) 
                 "你的持仓和自选股": b.get("mine", {}), "说明": note}
     if ticker:
         t = universe.yahoo_symbol(ticker)
-        rows = []
-        for b in books:
-            v = (b.get("mine") or {}).get(t)
-            for action, key in (("买入", "buys"), ("卖出", "sells")):
-                r = None if v else next((r for r in b.get(key, []) if r["ticker"] == t), None)
-                if r:
-                    v = {"action": action, "why": r["why"]}
-            act = None if v else dict(res.get("by_ticker", {}).get(t, [])).get(b["key"])
-            if act:
-                v = {"action": act, "why": "（名单较长，理由没有保存）"}
-            if v:
-                rows.append({"打法": b["name"], "流派": b["school"], "判断": v["action"], "理由": v["why"], "检验状态": b["status"]["text"]})
+        rows = [{"打法": v["book"]["name"], "流派": v["book"]["school"], "判断": v["action"], "理由": v["why"],
+                 "检验状态": v["book"]["status"]["text"]} for v in playbooks.for_ticker(res, t)]
         return {"代码": t, "日期": res["asof"], "各打法": rows or "没有打法对它给出买入或卖出", "说明": note}
     return {"日期": res["asof"], "说明": note,
             "打法": [{"键": b["key"], "名称": b["name"], "流派": b["school"], "检验状态": b["status"]["text"], "数量": b.get("counts"),
