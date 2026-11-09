@@ -1,0 +1,26 @@
+# Run note for playbook_history_v3 (written 2026-11-09 after the one run; the spec itself is unchanged).
+key: playbook_history_v3
+run_on: '2026-11-09'
+before_the_run: >-
+  A mechanics check printed only trade counts, average holdings and whether every account value stayed finite and
+  positive (no return was looked at). It found that v2's rules replayed on the window left Zweig 4 % without a value for
+  the window's first three sessions (its weekly verdicts fall on Fridays, the window starts on a Monday); those sessions
+  now count as cash for every replayed playbook. Tranche holdings are counted once per stock. Both fixed before the run.
+fixes_after_the_run: none
+audit_after_the_run: >-
+  The turtles' losses were checked for a code error (trade log, local only): under the registered sizing (1 % of equity
+  per N) and no leverage, a unit is about 58 % of the account at the median (N ≈ 2.3 % of the price) and often all of it,
+  so the system holds one or two stocks; 29 % of exits are gains, the median holding is 5 sessions. This is the protocol
+  on stocks without the futures' leverage, not a bug.
+result: >-
+  One window 2008-06-30..2026-10-28: SPY +12.3 % a year (max drawdown −47 %), the liquid top 1000 in equal weight
+  +10.0 % (−52 %). No playbook's monthly excess reaches t 3. Closest: net buyback +13.9 % (−47 %), +0.29 % a month over
+  the pool, t 2.9 (v2's rules on the same window t 1.0: buying the whole top decile instead of 20); with about 50
+  playbooks compared, one t near 3 is what chance alone gives. Above SPY in annual return: net buyback, Buffett quality
+  +12.9 % (−37 %, t 0.9), trending value +12.5 % (t 1.4), Livermore +12.4 % (100 trades). The authors' sizing ruins the
+  short-term systems on stocks: turtles −11.7 % / −8.6 % a year (−91 % / −85 %; v2 +4.3 % / +4.9 %), Elder −1.1 % (t −4.0),
+  CAN SLIM +4.8 % (v2 +8.3 %); the next-open control is less bad (turtles −1.9 % / −2.2 %, Elder −2.8 %). Connors RSI(2)
+  at the signal close +9.3 % (next open +6.7 %) but −7.1 % at 0.20 % cost. Value playbooks barely move with tranches.
+  Timing and allocation are v2's rules on the window: none beats SPY's return; all have smaller drawdowns.
+  Top-3000 versions (small_cap_costs_v1): pool +8.5 %; trending value +11.0 % (t 1.5), Lynch +9.0 %, Piotroski +8.0 %,
+  Greenblatt +7.2 %, CAN SLIM −0.5 % — smaller companies did not help after costs. Descriptive: no status changes.
