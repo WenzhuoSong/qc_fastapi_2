@@ -1,0 +1,47 @@
+# Pre-registration of the playbooks' twenty-year history, written 2026-11-09 before any playbook's historical return
+# was computed (a smoke test only checked that verdicts are produced on two weeks of 2006, three of 2009 and two of
+# 2026). Never edited after the run; a changed design is a new file with a new key. Run once (local only: Sharadar
+# files in git-ignored exports/sharadar/, results in exports/playbook_history/; summary numbers only leave it).
+key: playbook_history_v1
+registered_on: '2026-11-09'
+requested_by: 用户 2026-11-09："按照回测的方式，你来测试一下，每种打法，按照自己的交易方式，过去20年的收益如何"
+kind: descriptive
+question: >-
+  scout/playbooks 的每个打法，按它自己的买入和卖出规则交易，过去 20 年（2006-11 至 2026-10）的收益、回撤和夏普是多少，
+  比一直持有 SPY、比同一股票池等权持有多赚还是少赚，前后十年是否一致？
+not_a_test: >-
+  这是描述历史，不是 gate 检验：整个样本都被看到，约 45 个打法一起比较，最好的几个有一部分是运气。
+  任何打法的知识库状态都不因这次结果改变；看起来好的打法只能作为新的预登记前向检验的候选（用以后的数据）。
+
+data:
+  stocks: >-
+    Sharadar SEP，每周最后一个交易日当天市值前 1000 名的美国普通股（价格 ≥ 5 美元，含之后退市的股票，scout.sharadar_research.universe）；
+    OHLC 按分红复权（scout.sharadar_exits.settle），退市后按最后价格加退市调整（破产或无收购的退市 −30%）结算
+  etfs: Sharadar SFP 的指数、行业和资产配置 ETF（分红复权）；上市晚的 ETF 从有足够历史起才参与
+  financials: Sharadar SF1 ARQ 季报，每期只用第一次申报的版本（datekey 当天起可见）；股本和每股收益是 Sharadar 按拆股回溯调整后的口径
+  market_value: Sharadar DAILY 当天市值；企业价值 = 市值 + 长短期负债 − 现金和短期投资
+  other: >-
+    S&P 500 成分按 Sharadar SP500 表当天成分；内部人买入 = SF2 里高管 / 董事公开市场买入普通股（2008 年起，无 10b5-1 标记）；
+    财报日 = 8-K 第 2.02 项（EVENTS 代码 22）；联邦基金利率、2 年期收益率来自 FRED；现金利率 = French 日度 RF（2026-10 沿用 9 月）
+
+method:
+  decisions: >-
+    每周最后一个交易日收盘后，在当天能知道的数据上重建打法的上下文（最近 360 个交易日的 Scout 特征，scout.features.build_panel），
+    调用 scout.playbooks 里线上用的同一批函数，下一个交易日开盘成交
+  stock_playbooks: >-
+    最多 20 只，每只买入时占账户 1/20；按打法自己的顺序买入（得分高的先买，同分按成交额）；打法给出"卖出"或股票离开流动的前 1000 名时卖出；
+    "持有"或没有判断时继续持有；没有空位不买；现金按 RF 计息
+  market_timing: 判断对象的 ETF（有 SPY 用 SPY，道氏理论用 DIA）："买入 / 持有"时 100% 持有，"卖出"时现金
+  allocation: 打法给出的目标权重（其余现金），权重变化时和每月第一次判断时调回目标
+  cost: 每笔交易单边 0.05%；另报 0.20% 的结果
+  excluded: >-
+    出场规则（需要一个买入来源，已有 exit_vs_hold 检验）；问题清单（不给买卖）；没有函数的 net-net、道指狗股、分拆；
+    估值倾向（Scout 的篮子估值只从 2015 年起）；轧空（没有做空比例历史）
+  known_approximations: >-
+    每周判断一次：日线短线系统（RSI(2)、海龟）线上和书里是每天判断，这里是每周；Livermore、Wyckoff 是 Scout 定的近似规则；
+    价值打法缺流动比率和分红；净回购用 Sharadar 的净股权现金流
+
+report:
+  per_playbook: 年化收益、总收益、波动、夏普（扣 RF）、最大回撤、最好 / 最差年份、逐年收益、前后十年（切在 2016-11-01）、高成本年化、
+    相对 SPY 和相对参照（个股打法：同一股票池等权，每月调仓；择时和配置：SPY）的月度超额均值和 Newey-West t（滞后 3）、交易次数、平均持仓数 / 平均仓位
+  benchmarks: SPY 买入持有；流动的前 1000 名等权（每月调仓，同样成本）

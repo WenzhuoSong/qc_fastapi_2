@@ -42,11 +42,12 @@ def _level_at(rows: list[tuple], end: date, tol: int = 45) -> float | None:
 
 
 def fundamentals(rows: list[dict], close: pd.Series, splits: dict[str, list], asof: date,
-                 caps: dict[str, float] | None = None) -> pd.DataFrame:
-    """ticker × fields from scout.financials rows (every filed version), as known on `asof`."""
-    fin = val.versions(rows)
+                 caps: dict[str, float] | None = None, fin: dict | None = None, tickers: list[str] | None = None) -> pd.DataFrame:
+    """ticker × fields from scout.financials rows (every filed version), as known on `asof`. A backtest passes the
+    versions once (`fin`, as `valuation.versions` builds them) and the day's `tickers`."""
+    fin = fin if fin is not None else val.versions(rows)
     caps = caps or {}
-    tickers = sorted({t for t, _ in fin})
+    tickers = sorted({t for t, _ in fin}) if tickers is None else tickers
     out = {}
     for t in tickers:
         get = {m: val.as_of(fin.get((t, m), []), asof) for m in (*FLOWS, *STOCKS, "shares_diluted")}
