@@ -1,12 +1,13 @@
-# DRAFT — not registered. Pre-registration of the playbooks' history with each playbook's own execution protocol,
-# written 2026-11-09 after v2 (results in playbook_history_v2_run_note.yaml) and before any v3 code or number exists.
-# Becomes registered when the user approves it (registered_on is filled then); never edited after the run; a changed
-# design is a new file with a new key. Run once (local only: Sharadar files in git-ignored exports/sharadar/, results
+# Pre-registration of the playbooks' history with each playbook's own execution protocol, written 2026-11-09 after v2
+# (results in playbook_history_v2_run_note.yaml) and before any v3 code or number exists; approved by the user the same
+# day ("协议确认，开始跑 v3"), then the items marked 待核对 were resolved (section verification) and the details the
+# protocol left open were fixed (section implementation) before any code was written. Never edited after the run; a
+# changed design is a new file with a new key. Run once (local only: Sharadar files in git-ignored exports/sharadar/, results
 # in exports/playbook_history_v3/; summary numbers only leave it).
 key: playbook_history_v3
-status: draft
+status: registered
 drafted_on: '2026-11-09'
-registered_on: null
+registered_on: '2026-11-09'
 requested_by: >-
   用户 2026-11-09："不同策略需要适合的回测逻辑，在相同的周期上进行回测，才会有更准确的结果吧，之前你测试的也许有 bias"；
   方案（同期参照 + 每个打法的执行协议）用户回复"两步都做"
@@ -111,3 +112,49 @@ benchmarks: SPY 买入持有；同一股票池（前 1000 / 前 3000）等权每
 report: >-
   每个打法：年化、最大回撤、夏普、前后两半、高成本、交易笔数、平均持股数、相对参照的每月超额和 Newey-West t（滞后 3），
   并列 v2 同期数字（v2 的净值截在同一窗口）和 v3 的"次日开盘"对照；小盘版本单列。按派别排序，不按收益排名。
+
+verification:
+  # 2026-11-09, before any code: the original papers could not be read (PDFs blocked or not parseable; secondary
+  # summaries only). By the rule above, every item that could not be confirmed from the original keeps v2's way.
+  fundamental_rankers: 未能核对原文的持有期 → 沿用 v2：每月判断，进入前 10% 买入、跌出前 30% 卖出；只改为不限 20 只（买入整个前 10%）
+  high_52w: 未能核对 George & Hwang 的持有期 → 1 个月
+  residual_momentum: 二手摘要称原文主结果为 1 个月持有 → 1 个月
+  frog_in_pan: 未能核对 → 1 个月
+  pead: 未能核对 → 1 个月
+  short_reversal: 1 个月（协议原文）
+  wilcox: 未能核对仓位方法和入场方式 → 与 v2 相同（20 只等权，收盘确认次日开盘；10 × ATR42 按收盘每天检查），只改时间窗口
+  connors_rsi2: 未能核对持股数 → 20 只等权；信号日收盘成交（协议原文）
+  insider: 未能核对 Cohen–Malloy–Pomorski 的持有期（且 Scout 的规则是集中买入，不是原文的"非例行交易者"）→ 与 v2 相同
+
+implementation:
+  window_start: 2008-06-30 收盘为第一个判断日；所有打法和参照都从这一天的净值 1 起算
+  tranches: >-
+    12 个批次在起点同时按当天名单建仓，各占 1/12；之后批次 k 在每年第 k 个月（从 7 月起数）的月末重建或复核；批次之间资金不互通。
+    Lynch 3 个批次，批次 k 在 (月份 − k) 能被 3 整除的月末复核。年度资产配置（全天候、永久、60/40）同样 12 批次。
+    年度、季度打法的判断因此改为每个月末计算（v2 只在 12 月 / 季末）。
+  stops: >-
+    止损价在成交时定好：CAN SLIM / Minervini = 成交价 × 0.92；Darvas = 信号日前最近完成的箱底（scout.playbooks.technical.darvas_box）；
+    Livermore = 信号日前 20 个交易日最低价；Weinstein = 信号日前 50 个交易日最低价；当天最低价 ≤ 止损价即按 min(开盘价, 止损价) 卖出；
+    成交当天不检查。
+  turtles: >-
+    N = 20 日真实波幅的 Wilder 平滑（N_t = (19 × N_{t−1} + TR_t) / 20）；入场价位 = 前 20 / 55 个交易日最高价，前一天收盘时
+    在流动的前 1000 名里的股票才挂单；同一天多只触发时按前一天市值从大到小成交，现金不够即停。加仓：最近一次成交价 + ½N
+    挂单，至多 4 单位；止损 = 最近一次成交价 − 2N（全部单位）；出场 = 前 10 / 20 个交易日最低价挂单，成交价 min(开盘价, 价位)。
+    系统 1 的过滤：每只股票不论是否实际交易都跟踪"上一次 20 日突破"的虚拟交易（同样的入场、2N 止损和 10 日出场），
+    上一次盈利则跳过本次 20 日突破；被跳过时 55 日突破仍入场（原规则的保底）。成交当天不检查止损和出场。
+  clenow: >-
+    每周最后一个周三或之前的交易日判断（W-WED），收盘决定、次日开盘成交；按打法的买入顺序买，股数 = 净值 × 0.1% ÷ ATR(20)
+    （ATR 为 20 日真实波幅的简单平均），现金不够即停；每隔一次判断把所有持仓调回目标股数。
+  elder: >-
+    打法给出买入后，在前一日最高价挂买入停损单，未成交则每天改为前一日最高价，直到成交、打法对它给出卖出或满 5 个交易日
+    （原书没有给上限，Scout 定）；股数 = 净值 × 2% ÷（入场价 − 止损），止损 = 信号日及前一日的最低价；当月已实现亏损（相对月初净值）
+    达到 6% 后当月不再开仓；单只仓位不超过净值的 1/5（无杠杆下的上限，Scout 定）。
+  connors: 信号日收盘成交，出场在打法给出卖出的那天收盘成交
+  rankers_rebuild: 价格类排名每月末重建：卖出不在新前 10% 的，按等权把全部名单调到 1/名单数（只交易差额）
+  fundamental_buffer: 新买入每只按 净值 ÷ 当天前 10% 的只数，现金不够即停
+  next_open_control: 海龟、Elder、Connors 另报"次日开盘"成交的版本（其余规则相同），即 v2 的成交方式
+  v2_same_window: v2 的规则原样，从 2008-06-30 起重新模拟（不重算信号）
+  small_cap_version: >-
+    Sharadar 市值前 3000（每周更新），股价 ≥ $5、20 日成交额 ≥ $100 万（small_cap_costs_v1 的可交易下限）才算流动；
+    前 1000 名的成交单边 0.05%，1001–3000 名用 small_cap_costs_v1 上个月的估计，不可交易的当月不买；高成本版本为两者 × 4 和 0.20% 的较大者。
+    参照为同一前 3000 流动股票等权、每月调回、同样的成本。打法：神奇公式、Piotroski、趋势价值、Lynch、CAN SLIM，执行协议同主结果。
