@@ -114,6 +114,8 @@ class Hist:
     earnings: dict[str, list[date]]
     macro: dict[str, pd.Series]
     rf: np.ndarray
+    min_dv: float = 20_000_000.0             # liquid = 20-day dollar volume at least this (live Scout's floor)
+    large: dict[int, set[str]] | None = None  # week end → the 1000 largest (set when members reach further)
 
     @property
     def col(self) -> dict[str, int]:
@@ -174,7 +176,8 @@ def _fred(series: str) -> pd.Series:
     return pd.Series({pd.Timestamp(d): v for d, v in rows}).sort_index()
 
 
-def load() -> Hist:
+def load(top: int = 1000, min_dv: float = 20_000_000.0) -> Hist:
+    """The data for the market-cap top `top` (1000, or 3000 = Sharadar's large + small lists)."""
     from scout.sharadar_b0 import sp500_members
 
     dates = sr.trading_days()
@@ -183,7 +186,8 @@ def load() -> Hist:
     weeks = [i for i in decision_days(dates, start - 10)["weekly"]]          # one membership at or before the first day
     elig = sr.eligible()
     uni = sr.universe(dates[weeks], elig)
-    members = {i: uni.get(dates[i], {}).get("large", []) for i in weeks}
+    members = {i: uni.get(dates[i], {}).get("large", []) + (uni.get(dates[i], {}).get("small", []) if top > 1000 else [])
+               for i in weeks}
     stocks = sorted({t for m in members.values() for t in m})
     logger.info("%d sessions, %d stocks", len(dates) - start, len(stocks))
     p = sr.prices(stocks, dates)
@@ -211,7 +215,8 @@ def load() -> Hist:
                 members=members, sp500={i: spx.get(dates[i], set()) for i in weeks},
                 sectors={t: SECTOR_MAP.get(s, s) for t, s in elig["sector"].items() if t in set(stocks)},
                 caps=caps, fin=_fin_versions(stocks), insiders=_insiders(stocks), earnings=_earnings(stocks),
-                macro={s: _fred(s) for s in ("DFF", "DGS2")}, rf=rf_s.fillna(0.0).to_numpy())
+                macro={s: _fred(s) for s in ("DFF", "DGS2")}, rf=rf_s.fillna(0.0).to_numpy(), min_dv=min_dv,
+                large={i: set(uni.get(dates[i], {}).get("large", [])) for i in weeks} if top > 1000 else None)
 
 
 # ── one day's context (pure, from Hist) ──
@@ -227,7 +232,7 @@ def _panel(H: Hist, a: int, b: int, cols: list[int]):
         bars[t] = pd.DataFrame({"open": H.o[a:b + 1, j], "high": H.h[a:b + 1, j], "low": H.l[a:b + 1, j],
                                 "close": H.c[a:b + 1, j], "volume": H.v[a:b + 1, j]}, index=idx)
         inst[t] = {"kind": "stock" if j < H.n_stocks else "etf", "sector": H.sectors.get(t)}
-    return build_panel(bars, inst, 5.0, 20_000_000.0)
+    return build_panel(bars, inst, 5.0, H.min_dv)
 
 
 def _angles(H: Hist, fund: pd.DataFrame, i: int, cl: pd.DataFrame, stocks: list[str]) -> dict[str, dict[str, float]]:
@@ -362,6 +367,8 @@ def run_block(args: tuple) -> dict[int, dict]:
     panel = _panel(H, a, last, cols)
     col = H.col
     out = {}
+    if not any(todo.get(i) for i in sessions):
+        return {}
     for i in sessions:
         books_i = todo.get(i)
         if not books_i:
@@ -386,12 +393,13 @@ def _run_chunk(sessions: list[int]) -> dict[int, dict]:
     return run_block((_H, sessions, _TODO))
 
 
-def compute_verdicts(H: Hist, workers: int = 8, block: int = 125) -> dict[int, dict]:
+def compute_verdicts(H: Hist, workers: int = 8, block: int = 125, todo: dict[int, list] | None = None) -> dict[int, dict]:
+    """`todo`: session → playbooks to decide (default: each playbook on its own cadence, `due`)."""
     import multiprocessing as mp
 
     global _H, _TODO
-    _H, _TODO = H, due(H)
-    sessions = list(range(H.start, len(H.dates)))
+    _H, _TODO = H, todo if todo is not None else due(H)
+    sessions = [i for i in range(H.start, len(H.dates)) if i >= min(_TODO, default=H.start)]
     chunks = [sessions[k:k + block] for k in range(0, len(sessions), block)]
     with mp.get_context("fork").Pool(workers) as pool:
         parts = pool.map(_run_chunk, chunks)
