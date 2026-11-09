@@ -11,7 +11,7 @@ import math
 import numpy as np
 import pandas as pd
 
-from scout.playbooks.base import BUY, FRESH_DAYS, HOLD, SELL, Ctx, Verdict, crossed_down, crossed_up, num, pct
+from scout.playbooks.base import BUY, HOLD, SELL, Ctx, Verdict, crossed_down, crossed_up, num, pct
 
 
 VOL_ZH = {"up": "放大", "down": "缩小", "flat": "持平"}
@@ -60,10 +60,10 @@ def ranked(ctx: Ctx, name: str, frac: float, label: str, picker=None) -> dict[st
     return out
 
 
-def every_day(ctx: Ctx, name: str, days: int = FRESH_DAYS) -> dict[str, int]:
+def every_day(ctx: Ctx, name: str, days: int | None = None) -> dict[str, int]:
     """Stocks an all-that-qualify ranker picked in the last `days` sessions → sessions ago."""
     out: dict[str, int] = {}
-    for k in range(days):
+    for k in range(days or ctx.fresh):
         for t in _ranker_picks(ctx, name, 0.0, day_offset=k):
             out.setdefault(t, k)
     return out
@@ -106,18 +106,18 @@ def minervini(ctx: Ctx) -> dict[str, Verdict]:
     out = {}
     for t in ctx.stocks:
         if t in passing:
-            hh, ll, cc = h[t].iloc[-66:-FRESH_DAYS].to_numpy(), l[t].iloc[-66:-FRESH_DAYS].to_numpy(), c[t].iloc[-FRESH_DAYS:]
+            hh, ll, cc = h[t].iloc[-66:-ctx.fresh].to_numpy(), l[t].iloc[-66:-ctx.fresh].to_numpy(), c[t].iloc[-ctx.fresh:]
             if len(hh) == 61 and np.isfinite(hh).all() and np.isfinite(ll).all():
                 depth = [(hh[k:k + 20].max() - ll[k:k + 20].min()) / hh[k:k + 20].max() for k in (1, 21, 41)]
                 pivot = hh[-25:].max()
-                vol = vr[t].iloc[-FRESH_DAYS:]
+                vol = vr[t].iloc[-ctx.fresh:]
                 hit = (cc > pivot) & (cc <= 1.05 * pivot) & (vol >= 1.5)
                 if depth[0] > depth[1] > depth[2] and depth[2] <= 0.10 and bool(hit.any()):
                     out[t] = Verdict(BUY, f"趋势模板通过；三段回调幅度 {pct(depth[0], 0)} → {pct(depth[1], 0)} → {pct(depth[2], 0)} 收缩；"
                                           f"放量突破枢轴 {num(pivot)}，止损参考 {num(pivot * 0.92)}（−8%）", score=float(-depth[2]))
                     continue
             out[t] = Verdict(HOLD, "趋势模板 8 条全部满足（还没有收缩后的突破买点）", score=float(ctx.f["rs_pct"][t].iloc[-1]))
-        elif crossed_down(c[t], sma50[t], FRESH_DAYS) and float(vr[t].iloc[-FRESH_DAYS:].max()) >= 1.5:
+        elif crossed_down(c[t], sma50[t], ctx.fresh) and float(vr[t].iloc[-ctx.fresh:].max()) >= 1.5:
             out[t] = Verdict(SELL, f"放量跌破 50 日均线 {num(sma50[t].iloc[-1])}")
     return out
 
@@ -166,9 +166,9 @@ def macd_cross(ctx: Ctx) -> dict[str, Verdict]:
     out = {}
     for t in ctx.stocks:
         u, dn, now = up.get(t, np.nan), down.get(t, np.nan), hist[t].iloc[-1]
-        if u < FRESH_DAYS and not dn < u:
+        if u < ctx.fresh and not dn < u:
             out[t] = Verdict(BUY, f"MACD（12/26/9）金叉，{int(u)} 个交易日前", score=-u)
-        elif dn < FRESH_DAYS and not u < dn:
+        elif dn < ctx.fresh and not u < dn:
             out[t] = Verdict(SELL, f"MACD 死叉，{int(dn)} 个交易日前")
         elif now > 0:
             out[t] = Verdict(HOLD, "MACD 柱为正")
@@ -181,9 +181,9 @@ def golden_cross(ctx: Ctx, tickers: list[str] | None = None) -> dict[str, Verdic
         if t not in s200.columns or not np.isfinite(s200[t].iloc[-1]):
             continue
         a, b = s50[t], s200[t]
-        if crossed_up(a, b, FRESH_DAYS):
+        if crossed_up(a, b, ctx.fresh):
             out[t] = Verdict(BUY, f"50 日均线 {num(a.iloc[-1])} 上穿 200 日均线 {num(b.iloc[-1])}（金叉）", score=float(a.iloc[-1] / b.iloc[-1]))
-        elif crossed_down(a, b, FRESH_DAYS):
+        elif crossed_down(a, b, ctx.fresh):
             out[t] = Verdict(SELL, f"50 日均线跌破 200 日均线（死叉）")
         elif a.iloc[-1] > b.iloc[-1]:
             out[t] = Verdict(HOLD, f"50 日均线在 200 日均线上方 {pct(a.iloc[-1] / b.iloc[-1] - 1)}")
@@ -220,9 +220,9 @@ def turtle(ctx: Ctx, entry: int, exit_: int) -> dict[str, Verdict]:
         b, e = brk.get(t, np.nan), ext.get(t, np.nan)
         unit = f"N（20 日 ATR）{num(n[t])}，按 1% 风险每 10 万美元约 {int(1000 / n[t])} 股，止损 2N = {num(c[t].iloc[-1] - 2 * n[t])}" \
             if np.isfinite(n[t]) and n[t] > 0 else ""
-        if b < FRESH_DAYS and not e < b:
+        if b < ctx.fresh and not e < b:
             out[t] = Verdict(BUY, f"收盘突破前 {entry} 日最高（{int(b)} 个交易日前）；{unit}", score=-b)
-        elif e < FRESH_DAYS and not b < e:
+        elif e < ctx.fresh and not b < e:
             out[t] = Verdict(SELL, f"收盘跌破前 {exit_} 日最低（{int(e)} 个交易日前）")
         elif np.isfinite(b) and not e < b:
             out[t] = Verdict(HOLD, f"{int(b)} 个交易日前突破 {entry} 日高点，之后没有跌破 {exit_} 日低点")
@@ -244,13 +244,13 @@ def darvas(ctx: Ctx) -> dict[str, Verdict]:
     out = {}
     for t in ctx.stocks:
         hh, ll = h[t].to_numpy(), l[t].to_numpy()
-        hh_b = hh[:-FRESH_DAYS]
-        box = darvas_box(hh_b, ll[:-FRESH_DAYS]) if len(hh_b) > 260 else None
+        hh_b = hh[:-ctx.fresh]
+        box = darvas_box(hh_b, ll[:-ctx.fresh]) if len(hh_b) > 260 else None
         if not box:
             continue
         top, bottom = box
-        cc, vv = c[t].iloc[-FRESH_DAYS:], v[t].iloc[-FRESH_DAYS:]
-        avg = float(v[t].iloc[-25:-FRESH_DAYS].mean())
+        cc, vv = c[t].iloc[-ctx.fresh:], v[t].iloc[-ctx.fresh:]
+        avg = float(v[t].iloc[-25:-ctx.fresh].mean())
         px = float(cc.iloc[-1])
         if bool(((cc > top) & (vv >= avg)).any()) and px > bottom:
             out[t] = Verdict(BUY, f"放量收盘突破箱顶 {num(top)}；止损放在箱底 {num(bottom)} 下方，新箱体形成后上移",
@@ -268,8 +268,8 @@ def wilcox(ctx: Ctx) -> dict[str, Verdict]:
     atr42 = _tr(ctx).rolling(42).mean().iloc[-1]
     out = {}
     for t in ctx.stocks:
-        hist = max(ctx.prior_high.get(t, -math.inf), float(np.nanmax(h[t].iloc[:-FRESH_DAYS])) if len(h[t]) > FRESH_DAYS else -math.inf)
-        cc = c[t].iloc[-FRESH_DAYS:]
+        hist = max(ctx.prior_high.get(t, -math.inf), float(np.nanmax(h[t].iloc[:-ctx.fresh])) if len(h[t]) > ctx.fresh else -math.inf)
+        cc = c[t].iloc[-ctx.fresh:]
         top = float(np.nanmax(c[t].iloc[-252:]))
         stop = top - 10 * float(atr42[t])
         px = float(cc.iloc[-1])
@@ -332,7 +332,7 @@ def livermore(ctx: Ctx) -> dict[str, Verdict]:
         cc = c[t].to_numpy(dtype=float)
         if len(cc) < 260 or not np.isfinite(cc[-260:]).all():
             continue
-        for k in range(1, FRESH_DAYS + 1):
+        for k in range(1, ctx.fresh + 1):
             i = len(cc) - k
             base = cc[i - 20:i]
             if cc[i] > cc[i - 252:i].max() and base.max() / base.min() - 1 <= 0.15 and vr[t].iloc[i] >= 2:
@@ -351,13 +351,13 @@ def wyckoff_spring(ctx: Ctx) -> dict[str, Verdict]:
     c, l, h, vr = ctx.close, ctx.low, ctx.high, ctx.f["vol_ratio"]
     out = {}
     for t in ctx.stocks:
-        hi, lo = h[t].iloc[-65:-FRESH_DAYS], l[t].iloc[-65:-FRESH_DAYS]
+        hi, lo = h[t].iloc[-65:-ctx.fresh], l[t].iloc[-65:-ctx.fresh]
         if len(hi) < 60 or not (np.isfinite(hi).all() and np.isfinite(lo).all()):
             continue
         top, bottom = float(hi.max()), float(lo.min())
         if top / bottom - 1 > 0.25:
             continue
-        ll, cc, vv = l[t].iloc[-FRESH_DAYS:], c[t].iloc[-FRESH_DAYS:], vr[t].iloc[-FRESH_DAYS:]
+        ll, cc, vv = l[t].iloc[-ctx.fresh:], c[t].iloc[-ctx.fresh:], vr[t].iloc[-ctx.fresh:]
         if bool(((ll < bottom) & (cc > bottom) & (vv >= 1.5)).any()) and cc.iloc[-1] > bottom:
             out[t] = Verdict(BUY, f"跌破 60 日区间下沿 {num(bottom)} 后放量收回（弹簧）；止损放在本周最低 {num(ll.min())} 下方",
                              score=float(vv.max()))
@@ -375,7 +375,7 @@ def chart_patterns(ctx: Ctx) -> dict[str, Verdict]:
     for t in ctx.stocks:
         cc, vv = ctx.close[t].to_numpy(dtype=float)[-80:], ctx.volume[t].to_numpy(dtype=float)[-80:]
         ok = np.zeros(len(cc), dtype=bool)
-        ok[-FRESH_DAYS:] = True
+        ok[-ctx.fresh:] = True
         for d in cp.detect(cc, vv, ok):
             side = cp.BOOK.get(d["pattern"])
             if side:

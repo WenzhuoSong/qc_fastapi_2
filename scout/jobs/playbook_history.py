@@ -1,5 +1,5 @@
-"""Twenty years of each playbook traded by its own rules (pre-registered in
-`scout/knowledge/external_specs/playbook_history_v1.yaml`): `python -m scout.jobs.playbook_history compute`.
+"""Twenty years of each playbook traded by its own rules at its own pace (pre-registered in
+`scout/knowledge/external_specs/playbook_history_v2.yaml`): `python -m scout.jobs.playbook_history compute`.
 
 Local only (Sharadar files, French RF, FRED); verdicts cached in git-ignored `exports/playbook_history/verdicts.pkl`,
 summary numbers in `result.json`; refuses a second run. `record` stores the report as brief `playbook_history`.
@@ -13,7 +13,7 @@ from pathlib import Path
 
 from scout import playbook_history as ph
 
-OUT = Path("exports/playbook_history")
+OUT = Path("exports/playbook_history_v2")
 
 
 async def _record() -> None:

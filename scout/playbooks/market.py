@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from scout.playbooks.base import BUY, FRESH_DAYS, HOLD, SELL, Ctx, Verdict, num, pct, weekly_closes
+from scout.playbooks.base import BUY, HOLD, SELL, Ctx, Verdict, num, pct, weekly_closes
 
 INDEXES = ("SPY", "QQQ", "IWM", "RSP", "DIA")
 
@@ -137,7 +137,7 @@ def oneil_market(ctx: Ctx) -> dict[str, Verdict]:
         ftd = f"，跟进日 {st['ftd']}" if st["ftd"] else ""
         why = f"{st['state']}：近 25 个交易日派发日 {st['distribution']} 个{ftd}"
         if st["state"] == "确认上升":
-            out[t] = Verdict(BUY if (st["ftd_ago"] or 99) < FRESH_DAYS else HOLD, why)
+            out[t] = Verdict(BUY if (st["ftd_ago"] or 99) < ctx.fresh else HOLD, why)
         else:
             out[t] = Verdict(SELL, why + ("（O'Neil：此时减仓、不买新股）" if st["state"] == "上升承压" else "（等跟进日再买）"))
     return out
@@ -174,7 +174,7 @@ def dow_theory(ctx: Ctx) -> dict[str, Verdict]:
     up = [when(t, True) for t in ("DIA", "IYT")]
     dn = [when(t, False) for t in ("DIA", "IYT")]
     if all(x is not None for x in up):
-        return {"DIA": Verdict(BUY if min(up) < FRESH_DAYS else HOLD, f"工业（DIA）和运输（IYT）20 个交易日内都创一年新高（相互确认）")}
+        return {"DIA": Verdict(BUY if min(up) < ctx.fresh else HOLD, f"工业（DIA）和运输（IYT）20 个交易日内都创一年新高（相互确认）")}
     if all(x is not None for x in dn):
         return {"DIA": Verdict(SELL, "工业和运输 20 个交易日内都创一年新低（熊市确认）")}
     one = "工业" if up[0] is not None else "运输" if up[1] is not None else None

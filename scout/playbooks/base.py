@@ -71,6 +71,8 @@ class Ctx:
     watchlist: list[str] = field(default_factory=list)
     arrays: tuple | None = None                                      # (scout.rankers arrays, stock order) for the tested rankers
     long_close: pd.DataFrame = field(default_factory=pd.DataFrame)   # closes over ~3 years (residual momentum)
+    fresh: int = 5                                                   # sessions an entry / exit event stays new (FRESH_DAYS;
+                                                                     # 1 when a playbook is checked every session)
     cache: dict = field(default_factory=dict)
 
     def last(self, name: str) -> pd.Series:

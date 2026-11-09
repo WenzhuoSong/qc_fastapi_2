@@ -1,0 +1,41 @@
+# Pre-registration of the playbooks' twenty-year history at each playbook's own pace, written 2026-11-09 after v1
+# (every playbook checked weekly; results in playbook_history_v1_run_note.yaml) and before any v2 return was computed
+# (a smoke test only checked that verdicts are produced on five sessions of 2016 and that, checked weekly, they equal
+# v1's). Never edited after the run; a changed design is a new file with a new key. Run once (local only: Sharadar
+# files in git-ignored exports/sharadar/, results in exports/playbook_history_v2/; summary numbers only leave it).
+key: playbook_history_v2
+registered_on: '2026-11-09'
+requested_by: 用户 2026-11-09："不要固定每周判断一次，而是按照不同打法，自己决定"
+kind: descriptive
+changes_from_v1: >-
+  只改判断节奏：每个打法按作者的做法每日 / 每周 / 每月 / 每季 / 每年判断；每日判断的系统只按当天的信号买卖（信号新鲜度 1 个交易日，
+  线上周报仍是 5 个交易日）；神奇公式、Piotroski、趋势价值每次调仓时卖出不在新名单里的股票（作者的做法）；资产配置每次判断都调回目标权重。
+  数据、股票池、成本、仓位、参照与 v1 相同；股票池每周末更新一次，一周内沿用。
+question: >-
+  scout/playbooks 的每个打法，按它自己的买卖规则和自己的判断节奏交易，过去 20 年（2006-11 至 2026-10）的收益、回撤和夏普是多少，
+  比一直持有 SPY、比同一股票池等权持有多赚还是少赚，前后十年是否一致？
+not_a_test: >-
+  描述历史，不是 gate 检验：整个样本都被看到（v1 已看过同一段的周度结果），约 45 个打法一起比较。任何打法的知识库状态都不因此改变；
+  看起来好的打法只能作为新的预登记前向检验的候选（用以后的数据）。
+
+cadence:
+  daily: 海龟系统 1 / 2、Darvas、Connors RSI(2)、MACD 金叉、均线金叉（个股和 ETF）、经典形态、Minervini、CAN SLIM、Livermore、Wyckoff、
+    Wilcox、Elder（第二、三重滤网是日线）、财报后漂移、内部人集中买入、O'Neil 市场方向（跟进日）、道氏理论、Zweig 广度冲刺
+  weekly: Weinstein（周线）、Zweig 4%（周收盘）、Clenow（每周调仓）
+  monthly: Faber 10 个月均线、双动量、VAA、GTAA、流动性、52 周新高、残差动量、平滑动量、短期反转、毛利能力、利润质量、资产增长、净回购
+  quarterly: Lynch（季报后复核）
+  annual: 神奇公式、Piotroski、趋势价值、Graham、Buffett（量化版）、全天候、永久组合、60 / 40（每年 12 月最后一个交易日）
+  rebuilt_lists: 神奇公式、Piotroski、趋势价值
+
+data: 同 playbook_history_v1（Sharadar SEP / SFP / SF1 首次申报 / DAILY 当天市值 / SP500 / SF2 / EVENTS 22；FRED；French RF）
+method:
+  decisions: 判断日收盘后，在当天能知道的数据上重建上下文（最近 360 个交易日的 Scout 特征），调用线上同一批打法函数，下一个交易日开盘成交
+  stock_playbooks: 最多 20 只、每只买入时占账户 1/20、按打法自己的顺序买入；判断日打法给出"卖出"或股票离开流动的前 1000 名时卖出
+  market_timing: 判断对象的 ETF（有 SPY 用 SPY，道氏理论用 DIA）："买入 / 持有"时 100% 持有，"卖出"时现金；状态变化时成交
+  allocation: 打法给出的目标权重（其余现金）；ETF 历史不够时不算开始
+  measured_from: 每个打法从第一次判断起算；参照比较只用重叠的月份
+  cost: 每笔单边 0.05%；另报 0.20%
+  excluded: 同 v1（出场规则、问题清单、无函数的三个、估值倾向、轧空）
+  known_approximations: Livermore、Wyckoff 是 Scout 定的近似规则；价值打法缺流动比率和分红；海龟用等额仓位，不按 N 定仓
+
+report: 同 v1，另列每个打法的判断节奏
