@@ -106,7 +106,8 @@ def minervini(ctx: Ctx) -> dict[str, Verdict]:
     out = {}
     for t in ctx.stocks:
         if t in passing:
-            hh, ll, cc = h[t].iloc[-66:-ctx.fresh].to_numpy(), l[t].iloc[-66:-ctx.fresh].to_numpy(), c[t].iloc[-ctx.fresh:]
+            base = slice(-(61 + ctx.fresh), -ctx.fresh)                  # the 61 sessions before the breakout window
+            hh, ll, cc = h[t].iloc[base].to_numpy(), l[t].iloc[base].to_numpy(), c[t].iloc[-ctx.fresh:]
             if len(hh) == 61 and np.isfinite(hh).all() and np.isfinite(ll).all():
                 depth = [(hh[k:k + 20].max() - ll[k:k + 20].min()) / hh[k:k + 20].max() for k in (1, 21, 41)]
                 pivot = hh[-25:].max()

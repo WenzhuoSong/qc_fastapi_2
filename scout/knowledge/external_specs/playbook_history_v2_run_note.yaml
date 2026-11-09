@@ -1,0 +1,19 @@
+# Run note for playbook_history_v2 (written 2026-11-09 after the one run; the spec itself is unchanged).
+key: playbook_history_v2
+run_on: '2026-11-09'
+fixes_after_the_run: >-
+  One implementation error against the spec, fixed without changing any rule: Minervini's 61-session base window was
+  written as h.iloc[-66:-fresh] with a length check of 61, so with the daily freshness of 1 it never qualified and
+  the playbook made no trade. The window is now the 61 sessions before the breakout window (identical at the live
+  freshness of 5); only Minervini's daily verdicts were recomputed and merged; the first report is kept as
+  result_before_fix.json.
+result: >-
+  2006-11..2026-10, each playbook at its own pace: SPY +11.1 % a year (max drawdown −55 %), the liquid top 1000 in equal
+  weight +9.3 % (−59 %). No stock playbook's monthly excess over the pool reaches t 2 (best Sloan accruals +0.20 %,
+  t 0.7; Greenblatt +0.18 %, t 1.0; Buffett quality +0.16 %, t 1.0). Buffett quality +11.8 % (−41 %) and Greenblatt
+  +11.0 % (rebuilt each year; weekly hold-forever in v1 +5.6 %) are the closest to SPY; Piotroski fell from +12.2 % (v1,
+  its first picks held) to +5.6 % when rebuilt each year. Daily short-term systems trade heavily and lose to costs
+  (Connors RSI(2) 43 510 trades, +7.1 %, −9.0 % at 0.20 % cost; MACD −0.1 %; Darvas +0.7 %; Elder +4.2 %).
+  Significantly worse (t ≤ −2): MACD, Darvas, Zweig 4 %, O'Neil market direction, GTAA 5, 60/40 vs SPY.
+  Timing and allocation keep lower drawdowns at lower returns (Faber +8.1 % / −25 %, permanent +6.9 % / −18 %).
+  Minervini (after the fix) +6.8 %, −26 %. No status changes (descriptive run).
