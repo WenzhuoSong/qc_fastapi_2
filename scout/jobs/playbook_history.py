@@ -16,7 +16,7 @@ from scout import playbook_history as ph
 OUT = Path("exports/playbook_history_v2")
 
 
-async def _record() -> None:
+async def _record() -> dict:
     from scout import db, learned
     from scout import playbooks as pb
 
@@ -25,6 +25,7 @@ async def _record() -> None:
     status = {p.key: pb.status_of(p, entries)["text"] for p in pb.PLAYBOOKS}
     await db.execute("INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('playbook_history', CURRENT_DATE, :c, CAST(:p AS JSONB))",
                      {"c": ph.report_text(res, status), "p": db.jsonb(res)})
+    return {"key": res["key"], "playbooks": len(res["playbooks"])}
 
 
 if __name__ == "__main__":

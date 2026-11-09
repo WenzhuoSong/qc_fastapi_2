@@ -794,7 +794,7 @@ async def get_strategy_view(ticker: str | None = None) -> dict:
 
 @tool("get_playbooks", "打法简报（每周）：约 60 个投资 / 交易打法（价值、成长、技术趋势、大盘择时、资产配置、事件、出场规则，"
                        "Graham、Greenblatt、O'Neil、Minervini、Darvas、Weinstein、海龟、Clenow、Faber、Antonacci 等）按各自规则机械计算的"
-                       "买入 / 持有 / 卖出，每条带理由和该打法的检验状态。给 ticker：各打法对这只的判断；给 playbook（键或名称）：该打法的买入 / 卖出名单；"
+                       "买入 / 持有 / 卖出，每条带理由和该打法的检验状态，以及按各自规则交易的二十年回测（年化、回撤、前后十年、相对参照的超额）。给 ticker：各打法对这只的判断；给 playbook（键或名称）：该打法的买入 / 卖出名单；"
                        "都不给：每个打法的状态和数量",
       {"type": "object", "properties": {"ticker": {"type": "string", "description": "可选"},
                                         "playbook": {"type": "string", "description": "可选：打法的键（如 magic_formula）或名称中的词（如 神奇公式）"}}},
@@ -806,6 +806,10 @@ async def get_playbooks(ticker: str | None = None, playbook: str | None = None) 
     if not res:
         return {"note": "还没有打法简报（每周六随周报计算）"}
     note = "按各打法自己的规则机械计算，不是 Scout 的推荐；只有大盘过滤（Faber 10 个月均线）通过了检验，其余多数检验未通过或没有检验"
+    hist = await playbooks.history()
+    hist_note = (f"二十年回测（{hist['_period'][0]} 至 {hist['_period'][1]}，Sharadar 前 1000 大含退市股，每个打法按自己的节奏和规则交易，"
+                 f"最多 20 只等权，单边成本 0.05%；基准 {hist['_benchmarks']}）是描述历史、不是检验：四十多个打法一起比，"
+                 "没有一个个股打法的超额 t 值到 2，排在前面的有运气成分，不改变检验状态") if hist else None
     books = res["playbooks"]
     if playbook:
         b = next((x for x in books if x["key"] == playbook or playbook in x["name"]), None)
@@ -814,15 +818,18 @@ async def get_playbooks(ticker: str | None = None, playbook: str | None = None) 
         return {"日期": res["asof"], "打法": {k: b.get(k) for k in ("name", "school", "author", "idea", "buy_rule", "sell_rule", "evidence",
                                                                   "version", "status", "counts", "missing")},
                 "买入": b.get("buys", []), "卖出": b.get("sells", [])[:20], "持有（ETF / 配置）": b.get("holds", []),
-                "你的持仓和自选股": b.get("mine", {}), "说明": note}
+                "你的持仓和自选股": b.get("mine", {}), "二十年回测": hist.get(b["key"]), "回测说明": hist_note, "说明": note}
     if ticker:
         t = universe.yahoo_symbol(ticker)
         rows = [{"打法": v["book"]["name"], "流派": v["book"]["school"], "判断": v["action"], "理由": v["why"],
                  "检验状态": v["book"]["status"]["text"]} for v in playbooks.for_ticker(res, t)]
         return {"代码": t, "日期": res["asof"], "各打法": rows or "没有打法对它给出买入或卖出", "说明": note}
     return {"日期": res["asof"], "说明": note,
+            "回测说明": hist_note,
             "打法": [{"键": b["key"], "名称": b["name"], "流派": b["school"], "检验状态": b["status"]["text"], "数量": b.get("counts"),
-                    "买入前列": [r["ticker"] for r in b.get("buys", [])[:5]], "缺少": b.get("missing")} for b in books]}
+                    "买入前列": [r["ticker"] for r in b.get("buys", [])[:5]], "缺少": b.get("missing"),
+                    "二十年年化": (hist.get(b["key"]) or {}).get("年化"), "二十年最大回撤": (hist.get(b["key"]) or {}).get("最大回撤")}
+                   for b in books]}
 
 
 @tool("get_company_profile", "公司画像与产业链（来自公司自己的年报 10-K / 20-F 业务部分，每条都有原文引用，按申报日保存）：业务分部与收入、"

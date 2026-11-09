@@ -52,6 +52,7 @@ QUESTIONS: list[tuple[str, set[str]]] = [
     ("美光是不是 AI 存储的主要供应商？行业需求还旺盛吗？", {"research_company"}),
     ("英伟达的主要供应商有哪些？MU 和它是什么关系？", {"get_company_profile"}),
     ("按神奇公式和海龟的打法，现在有哪些股票符合买入条件？", {"get_playbooks"}),
+    ("神奇公式过去 20 年按它自己的规则交易，表现怎么样？比 SPY 好吗？", {"get_playbooks"}),
 ]
 
 NUM = re.compile(r"(?<![\w.])[-+−]?\d[\d,]*\.?\d*")

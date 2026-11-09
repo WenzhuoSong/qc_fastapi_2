@@ -335,6 +335,31 @@ async def store(res: dict) -> None:
                      {"d": date.fromisoformat(res["asof"]), "c": text(res), "p": db.jsonb(res)})
 
 
+async def history() -> dict:
+    """The latest twenty-year history (`scout.playbook_history`, brief `playbook_history`): {key: summary}, plus the
+    benchmarks under "_benchmarks" and the period under "_period"."""
+    from scout import db
+
+    row = await db.fetch_one("SELECT payload FROM scout.briefs WHERE kind = 'playbook_history' ORDER BY id DESC LIMIT 1")
+    if not row:
+        return {}
+    res = row["payload"]
+    pct_ = lambda x: None if x is None else f"{x * 100:+.1f}%"  # noqa: E731
+    out = {"_period": res["period"], "_benchmarks": {k: {"年化": pct_(v["all"]["cagr"]), "最大回撤": pct_(v["all"]["max_dd"])}
+                                                     for k, v in res["benchmarks"].items()}}
+    for r in res["playbooks"]:
+        ref = r.get("vs_ref") or {}
+        out[r["key"]] = {"判断节奏": r.get("cadence"), "年化": pct_(r["all"]["cagr"]), "最大回撤": pct_(r["all"]["max_dd"]),
+                         "夏普": round(r["all"]["sharpe"], 2) if r["all"].get("sharpe") is not None else None,
+                         "前十年年化": pct_((r.get("first") or {}).get("cagr")), "后十年年化": pct_((r.get("second") or {}).get("cagr")),
+                         "高成本年化": pct_((r.get("high_cost") or {}).get("cagr")), "对比": r["ref"],
+                         "每月超额": pct_(ref.get("mean")), "超额t值": round(ref["t"], 1) if ref.get("t") == ref.get("t") and ref.get("t") is not None else None,
+                         "交易笔数": r["trades"], "起始": r["all"]["start"]}
+    for k, why in res.get("not_run", {}).items():
+        out.setdefault(k, {"没有回测": why})
+    return out
+
+
 def for_ticker(res: dict, t: str) -> list[dict]:
     """Every playbook's verdict on one ticker: {book, action, why}; a long list kept only the action (`by_ticker`)."""
     acts = {k: a for k, a in res.get("by_ticker", {}).get(t, [])}
