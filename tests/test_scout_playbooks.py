@@ -159,6 +159,21 @@ class PageTests(unittest.TestCase):
         self.assertNotIn("双动量", views.playbooks_panel(self._res(), "价值投资"))
         self.assertIn("还没有打法简报", views.playbooks_panel(None))
 
+    def test_cards_carry_the_twenty_year_history(self):
+        from scout.web import views
+
+        hist = {"_period": ["2006-11-01", "2026-10-28"], "_benchmarks": {"SPY": {"年化": "+11.1%", "最大回撤": "-55.2%"}},
+                "magic_formula": {"判断节奏": "annual", "年化": "+11.0%", "最大回撤": "-48.0%", "夏普": 0.5, "前十年年化": "+8.0%",
+                                  "后十年年化": "+14.0%", "高成本年化": "+10.8%", "对比": "等权股票池", "每月超额": "+0.10%",
+                                  "超额t值": 0.9, "交易笔数": 312, "起始": "2006-12-29"},
+                "gem": {"没有回测": "数据缺"}}
+        html = views.playbooks_panel(self._res(), hist=hist)
+        self.assertIn("年化 <b>+11.0%</b>", html)
+        self.assertIn("每年判断", html)
+        self.assertIn("二十年回测：没有做，数据缺", html)
+        self.assertIn("SPY 年化 +11.1%", html)
+        self.assertNotIn("二十年回测", views.playbooks_panel(self._res()))
+
     def test_ticker_verdicts_come_from_lists_holdings_and_the_long_index(self):
         res = self._res()
         self.assertEqual([(v["book"]["key"], v["action"]) for v in pb.for_ticker(res, "PBF")], [("magic_formula", SELL)])

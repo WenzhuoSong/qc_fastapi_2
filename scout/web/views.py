@@ -1609,14 +1609,36 @@ def _action_class(action: str) -> str:
     return {"买入": "up", "卖出": "down"}.get(action, "muted")
 
 
-def playbook_card(b: dict, held: set[str], top: int = 8) -> str:
-    """`held`: the user's open trades now; only those are shown from the playbook's verdicts on the user's names."""
+def playbook_history_line(h: dict | None) -> str:
+    """The playbook's twenty-year history (`playbooks.history()` entry): one visible line, the rest folded."""
+    if not h:
+        return ""
+    if "没有回测" in h:
+        return f"<p class='small muted'>二十年回测：没有做，{e(h['没有回测'])}</p>"
+    t = h.get("超额t值")
+    tcls = "up" if t is not None and t >= 2 else "down" if t is not None and t <= -2 else "muted"
+    tx = f"（t {t:.1f}）" if t is not None else ""
+    start = f"{e(h['起始'][:7])} 起，" if h.get("起始") else ""
+    line = (f"<b>二十年回测</b>（{start}{e(CADENCE_ZH.get(h.get('判断节奏'), h.get('判断节奏') or ''))}判断）："
+            f"年化 <b>{e(h['年化'] or '—')}</b> · 最大回撤 {e(h['最大回撤'] or '—')} · "
+            f"比 {e(h['对比'])} 每月 <span class='{tcls}'>{e(h['每月超额'] or '—')}{tx}</span>")
+    more = (f"前十年 {e(h['前十年年化'] or '—')} · 后十年 {e(h['后十年年化'] or '—')} · 成本按 0.20 % 单边 {e(h['高成本年化'] or '—')} · "
+            f"夏普 {h['夏普'] if h.get('夏普') is not None else '—'} · 交易 {h['交易笔数']} 笔")
+    return (f"<div class='small' style='margin-top:6px'>{line}<details><summary class='muted'>更多</summary>{more}</details></div>")
+
+
+CADENCE_ZH = {"daily": "每日", "weekly": "每周", "monthly": "每月", "quarterly": "每季", "annual": "每年"}
+
+
+def playbook_card(b: dict, held: set[str], top: int = 8, hist: dict | None = None) -> str:
+    """`held`: the user's open trades now; only those are shown from the playbook's verdicts on the user's names.
+    `hist`: the playbook's entry in `playbooks.history()`."""
     c = b.get("counts") or {}
     counts = (" · ".join(f"<span class='{_action_class(a)}'>{a} {c.get(a, 0)}</span>" for a in ("买入", "持有", "卖出"))
               if c else "")
     head = (f"<h3>{e(b['name'])} <span class='small muted'>{e(b['author'])}</span></h3>"
             f"<div>{_grade_chip(b['status'])}<span class='small'>{counts}</span></div>"
-            f"<p class='small'>{e(b['idea'])}</p>")
+            f"<p class='small'>{e(b['idea'])}</p>{playbook_history_line(hist)}")
     rules = (f"<details class='small'><summary>规则与依据</summary><div><b>买入：</b>{e(b['buy_rule'])}</div>"
              f"<div><b>卖出：</b>{e(b['sell_rule'])}</div><div><b>外部证据：</b>{e(b['evidence'])}</div>"
              f"<div class='muted'>版本：{e(b['version'])}</div></details>")
@@ -1651,7 +1673,7 @@ def playbook_card(b: dict, held: set[str], top: int = 8) -> str:
     return f"<div class='card'>{head}{''.join(parts)}{rules}</div>"
 
 
-def playbooks_panel(res: dict | None, school: str = "", held: set[str] = frozenset()) -> str:
+def playbooks_panel(res: dict | None, school: str = "", held: set[str] = frozenset(), hist: dict | None = None) -> str:
     from scout.playbooks.base import SCHOOLS
 
     if not res:
@@ -1665,13 +1687,20 @@ def playbooks_panel(res: dict | None, school: str = "", held: set[str] = frozens
     order = {"有依据": 0, "你的规则": 1, "未检验": 2, "未通过": 3, "不适用": 4}
     out = [f"<p class='small muted'>数据日期 {e(res['asof'])} · {res['universe']['stocks']} 只股票、{res['universe']['etfs']} 只 ETF。"
            f"{PLAYBOOK_NOTE}</p><div style='margin:6px 0'>{chips}</div>"]
+    hist = hist or {}
+    if hist.get("_period"):
+        bench = " · ".join(f"{e(k)} 年化 {e(v['年化'])}、最大回撤 {e(v['最大回撤'])}" for k, v in hist["_benchmarks"].items())
+        out.append(f"<p class='small muted'>卡片上的「二十年回测」：{e(hist['_period'][0])} 至 {e(hist['_period'][1])}，每个打法在 Sharadar 市值前 1000"
+                   f"（含已退市）上按自己的节奏和买卖规则交易，股票打法最多 20 只等权，成本 0.05 % 单边；参照 {bench}。"
+                   f"「每月」是相对参照的平均月超额，t 值 2 以上才算明显。这是描述历史，不是检验：几十个打法里排前面的有运气成分，"
+                   f"不改变任何打法的检验状态。</p>")
     for s in SCHOOLS:
         if school and s != school:
             continue
         group = sorted((b for b in books if b["school"] == s), key=lambda b: order.get(b["status"]["grade"], 9))
         if group:
             out.append(f"<h3 style='margin-top:16px'>{e(s)} {len(group)}</h3><div class='grid'>"
-                       + "".join(playbook_card(b, held) for b in group) + "</div>")
+                       + "".join(playbook_card(b, held, hist=hist.get(b["key"])) for b in group) + "</div>")
     return "".join(out)
 
 
