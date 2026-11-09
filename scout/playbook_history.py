@@ -284,7 +284,9 @@ def verdicts(ctx) -> dict[str, dict]:
             out[p.key] = None
             continue
         if p.school == "资产配置":
-            out[p.key] = {"w": {t: float(x.score or 0.0) for t, x in v.items() if x.action in (BUY, HOLD)}}
+            # an ETF without enough history yet means no verdict (the playbook starts later), not cash
+            out[p.key] = None if ctx.cache.get("missing", {}).get(p.key) else \
+                {"w": {t: float(x.score or 0.0) for t, x in v.items() if x.action in (BUY, HOLD)}}
         elif p.school == "大盘择时":
             t = "SPY" if "SPY" in v else next(iter(v), None)
             out[p.key] = {"etf": t, "action": v[t].action if t else None}
@@ -293,6 +295,26 @@ def verdicts(ctx) -> dict[str, dict]:
             buys.sort(key=lambda tx: (-(tx[1].score if tx[1].score is not None else -1e9), -float(dv.get(tx[0], 0) or 0)))
             out[p.key] = {"buy": [t for t, _ in buys], "sell": sorted(t for t, x in v.items() if x.action == SELL)}
     return out
+
+
+def allocation_verdicts(H: Hist, ver: dict[int, dict]) -> None:
+    """Recompute the allocation playbooks in a verdict cache (they read only the ETF closes)."""
+    from scout import playbooks as pb
+    from scout.playbooks.base import Ctx
+
+    etf_cols = list(range(H.n_stocks, len(H.names)))
+    keys = [p for p in books() if p.school == "资产配置"]
+    for i in H.evals:
+        if ver[i]["stocks"] is None:
+            continue
+        a = max(0, i - WINDOW + 1)
+        close = pd.DataFrame(H.c[a:i + 1][:, etf_cols], index=H.dates[a:i + 1], columns=[H.names[j] for j in etf_cols])
+        ctx = Ctx(asof=H.dates[i].date(), close=close, high=close, low=close, open=close, volume=close, f={}, stocks=[],
+                  etfs=list(close.columns), sectors={})
+        for p in keys:
+            v = pb.apply(ctx, p)
+            ver[i]["v"][p.key] = None if v is None or ctx.cache.get("missing", {}).get(p.key) else \
+                {"w": {t: float(x.score or 0.0) for t, x in v.items() if x.action in ("买入", "持有")}}
 
 
 def run_block(args: tuple) -> dict[int, dict]:
@@ -432,8 +454,9 @@ def simulate_weights(H: Hist, ver: dict[int, dict], key: str, cost: float, timin
 def benchmarks(H: Hist, ver: dict[int, dict]) -> dict[str, np.ndarray]:
     """SPY bought and held, and every liquid top-1000 stock in equal weight (rebalanced monthly, same cost)."""
     first = H.evals[0]
-    spy = H.c[:, H.col["SPY"]]
-    out = {"SPY": spy / spy[first]}
+    spy = H.c[:, H.col["SPY"]] / H.c[first, H.col["SPY"]]
+    spy[:first] = np.nan                                # measured from the first decision, like the playbooks
+    out = {"SPY": spy}
     nav = np.full(len(H.dates), np.nan)
     value, w, month = 1.0, {}, None
     plan = {i + 1: i for i in H.evals}

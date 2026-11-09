@@ -1,0 +1,20 @@
+# Run note for playbook_history_v1 (written 2026-11-09 after the one run; the spec itself is unchanged).
+key: playbook_history_v1
+run_on: '2026-11-09'
+fixes_after_the_run: >-
+  Two implementation errors against the spec, found while checking the report and fixed without changing any decision
+  rule; the playbooks' weekly verdicts were kept from the run (exports/playbook_history/verdicts.pkl), the first report
+  is kept as result_before_fix.json:
+  (1) the SPY benchmark was measured from 1998 instead of the first decision (2006-11-03): its row changed from
+  +9.3 % to +11.1 % a year; every playbook's excess over SPY already used overlapping months only and did not change.
+  (2) allocation playbooks whose ETFs lacked history (spec: "上市晚的 ETF 从有足够历史起才参与") were treated as
+  holding cash from 2006-11; they now start at their first verdict (GEM 2008-07, permanent 2007-07, all weather
+  2007-03, GTAA 5 2007-02), recomputed from the ETF closes only; on the last week the weights equal the run's.
+result: >-
+  2006-11-03..2026-10-28: SPY +11.1 % a year (max drawdown −55 %), the liquid top 1000 in equal weight +9.3 % (−59 %).
+  No stock playbook's monthly excess over the equal-weight pool reaches t 2 (best Piotroski +0.23 %, t 1.4); only
+  Piotroski (+12.2 %) beat SPY's +11.1 %, with 98 trades in 20 years (mostly the stocks bought in its first years).
+  Significantly worse than the pool or SPY (t ≤ −2): MACD crossover, 52-week high, turtle system 1, Minervini, Darvas,
+  O'Neil market direction, Zweig 4 %, Dow theory, GTAA 5, 60/40. Market timing and allocation lowered drawdowns
+  (Faber −25 %, permanent −18 %, all weather −23 %) at a lower return than SPY (+7.6 %, +6.8 %, +6.5 %).
+  No status changes (descriptive run).
