@@ -1619,11 +1619,15 @@ def playbook_history_line(h: dict | None) -> str:
     tcls = "up" if t is not None and t >= 2 else "down" if t is not None and t <= -2 else "muted"
     tx = f"（t {t:.1f}）" if t is not None else ""
     start = f"{e(h['起始'][:7])} 起，" if h.get("起始") else ""
+    same = ""
+    if h.get("同期参照年化"):                            # the reference (and SPY) over the playbook's own span
+        same = f"（同期 {e(h['对比'])} {e(h['同期参照年化'])}" + (f"、SPY {e(h['同期SPY年化'])}" if h["对比"] != "SPY" else "") + "）"
     line = (f"<b>二十年回测</b>（{start}{e(CADENCE_ZH.get(h.get('判断节奏'), h.get('判断节奏') or ''))}判断）："
-            f"年化 <b>{e(h['年化'] or '—')}</b> · 最大回撤 {e(h['最大回撤'] or '—')} · "
+            f"年化 <b>{e(h['年化'] or '—')}</b>{same} · 最大回撤 {e(h['最大回撤'] or '—')} · "
             f"比 {e(h['对比'])} 每月 <span class='{tcls}'>{e(h['每月超额'] or '—')}{tx}</span>")
     more = (f"前十年 {e(h['前十年年化'] or '—')} · 后十年 {e(h['后十年年化'] or '—')} · 成本按 0.20 % 单边 {e(h['高成本年化'] or '—')} · "
-            f"夏普 {h['夏普'] if h.get('夏普') is not None else '—'} · 交易 {h['交易笔数']} 笔")
+            f"夏普 {h['夏普'] if h.get('夏普') is not None else '—'} · 交易 {h['交易笔数']} 笔"
+            + (f" · 同期 {e(h['对比'])} 最大回撤 {e(h['同期参照最大回撤'])}" if h.get("同期参照最大回撤") else ""))
     return (f"<div class='small' style='margin-top:6px'>{line}<details><summary class='muted'>更多</summary>{more}</details></div>")
 
 
@@ -1693,7 +1697,7 @@ def playbooks_panel(res: dict | None, school: str = "", held: set[str] = frozens
         out.append(f"<p class='small muted'>卡片上的「二十年回测」：{e(hist['_period'][0])} 至 {e(hist['_period'][1])}，每个打法在 Sharadar 市值前 1000"
                    f"（含已退市）上按自己的节奏和买卖规则交易，股票打法最多 20 只等权，成本 0.05 % 单边；参照 {bench}。"
                    f"「每月」是相对参照的平均月超额，t 值 2 以上才算明显。这是描述历史，不是检验：几十个打法里排前面的有运气成分，"
-                   f"不改变任何打法的检验状态。</p>")
+                   f"不改变任何打法的检验状态。卡片上括号里是参照在该打法同一段时间里的年化（起点较晚的打法和它同期比）。</p>")
     for s in SCHOOLS:
         if school and s != school:
             continue

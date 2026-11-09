@@ -44,9 +44,18 @@ if __name__ == "__main__":
         res = ph.evaluate(H, ver)
         (OUT / "result.json").write_text(json.dumps(res, ensure_ascii=False, indent=1, default=str))
         print(ph.report_text(res), flush=True)
+    elif cmd == ["same_period"]:
+        # added after the run (run note): the benchmarks over each playbook's own span; no playbook number changes
+        res = json.loads((OUT / "result.json").read_text())
+        H = ph.load()
+        bench = ph.benchmarks(H, pickle.loads((OUT / "verdicts.pkl").read_bytes()))
+        for r in res["playbooks"]:
+            r["same_period"] = ph.same_period(bench, r["all"]["start"], H.dates, H.rf)
+        (OUT / "result.json").write_text(json.dumps(res, ensure_ascii=False, indent=1, default=str))
+        print({r["key"]: {k: v and round(v["cagr"], 4) for k, v in r["same_period"].items()} for r in res["playbooks"]})
     elif cmd == ["record"]:
         from scout.jobs._run import run as job
 
         job("playbook_history", _record, alert=False)
     else:
-        raise SystemExit("usage: python -m scout.jobs.playbook_history compute | record")
+        raise SystemExit("usage: python -m scout.jobs.playbook_history compute | same_period | record")

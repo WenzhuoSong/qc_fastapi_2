@@ -17,3 +17,11 @@ result: >-
   Significantly worse (t ≤ −2): MACD, Darvas, Zweig 4 %, O'Neil market direction, GTAA 5, 60/40 vs SPY.
   Timing and allocation keep lower drawdowns at lower returns (Faber +8.1 % / −25 %, permanent +6.9 % / −18 %).
   Minervini (after the fix) +6.8 %, −26 %. No status changes (descriptive run).
+added_after_the_run: >-
+  2026-11-09, user's question on bias: each playbook now also carries the benchmarks over its own span
+  (`same_period`, from its first decision; `python -m scout.jobs.playbook_history same_period`), so a late starter is
+  compared with SPY and the pool over the same months; no playbook number changed (the report before this is kept as
+  result_before_same_period.json). Late starters: GEM from 2008-06 (SPY same period +12.3 %, not +11.1 %),
+  all weather / permanent from 2007-12 (SPY +11.3 %), GTAA from 2007-01 (+10.9 %). The monthly excess and its t were
+  already on the playbook's own months. The other biases the user raised (one portfolio template for every playbook,
+  the top 1000 for small-cap methods, next-open fills for breakouts) are addressed by playbook_history_v3, not here.

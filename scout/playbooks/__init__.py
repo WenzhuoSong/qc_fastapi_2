@@ -354,7 +354,9 @@ async def history() -> dict:
                          "前十年年化": pct_((r.get("first") or {}).get("cagr")), "后十年年化": pct_((r.get("second") or {}).get("cagr")),
                          "高成本年化": pct_((r.get("high_cost") or {}).get("cagr")), "对比": r["ref"],
                          "每月超额": pct_(ref.get("mean")), "超额t值": round(ref["t"], 1) if ref.get("t") == ref.get("t") and ref.get("t") is not None else None,
-                         "交易笔数": r["trades"], "起始": r["all"]["start"]}
+                         "交易笔数": r["trades"], "起始": r["all"]["start"],
+                         **({"同期参照年化": pct_((sp.get(r["ref"]) or {}).get("cagr")), "同期参照最大回撤": pct_((sp.get(r["ref"]) or {}).get("max_dd")),
+                             "同期SPY年化": pct_((sp.get("SPY") or {}).get("cagr"))} if (sp := r.get("same_period")) else {})}
     for k, why in res.get("not_run", {}).items():
         out.setdefault(k, {"没有回测": why})
     return out

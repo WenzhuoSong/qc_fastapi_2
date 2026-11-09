@@ -555,6 +555,17 @@ def excess_t(nav: np.ndarray, ref: np.ndarray, dates: pd.DatetimeIndex) -> dict 
     return {"months": int(len(m)), "mean": float(m.mean()), "t": float(t) if t is not None else float("nan")}
 
 
+def same_period(bench: dict[str, np.ndarray], start: str, dates: pd.DatetimeIndex, rf: np.ndarray) -> dict:
+    """Each benchmark over the playbook's own span (from its first decision), so a late starter is compared fairly."""
+    out = {}
+    for k, nav in bench.items():
+        a = nav.copy()
+        a[dates < pd.Timestamp(start)] = np.nan
+        st = stats(a, dates, rf)
+        out[k] = {"cagr": st["cagr"], "max_dd": st["max_dd"], "sharpe": st["sharpe"]} if st else None
+    return out
+
+
 def evaluate(H: Hist, ver: dict[int, dict]) -> dict:
     bench = benchmarks(H, ver)
     res = {"key": KEY, "period": [H.dates[H.start].date().isoformat(), H.dates[-1].date().isoformat()],
@@ -579,7 +590,7 @@ def evaluate(H: Hist, ver: dict[int, dict]) -> dict:
             "rebalance": p.key in REBALANCE, "all": st, **halves(nav, H.dates, H.rf),
             "high_cost": stats(runs["high"]["nav"], H.dates, H.rf),
             "vs_spy": excess_t(nav, bench["SPY"], H.dates), "vs_ref": excess_t(nav, ref, H.dates),
-            "ref": "SPY" if timing or alloc else "等权股票池",
+            "ref": "SPY" if timing or alloc else "等权股票池", "same_period": same_period(bench, st["start"], H.dates, H.rf),
             "trades": runs["main"]["trades"], "avg_positions": runs["main"].get("avg_positions"),
             "invested": runs["main"].get("invested")})
     return res
@@ -615,7 +626,8 @@ def report_text(res: dict, status: dict[str, str] | None = None) -> str:
                          f"（高成本 {_p((r['high_cost'] or {}).get('cagr'))}），最大回撤 {_p(a['max_dd'], 0)}，夏普 "
                          f"{a['sharpe']:.2f}；前十年 {_p((r['first'] or {}).get('cagr'))}，后十年 {_p((r['second'] or {}).get('cagr'))}；"
                          f"每月超额 {_p(ref.get('mean'), 2)}（t {ref.get('t', float('nan')):.1f}）；交易 {r['trades']} 笔"
-                         + (f"；起于 {a['start']}" if a["start"] > res["period"][0] else ""))
+                         + (f"；起于 {a['start']}" if a["start"] > res["period"][0] else "")
+                         + (f"；同期 {r['ref']} {_p(sp['cagr'])}" if (sp := (r.get("same_period") or {}).get(r["ref"])) else ""))
     if res["not_run"]:
         lines += ["", "没有回测：" + "；".join(f"{k}：{v}" for k, v in res["not_run"].items())]
     return "\n".join(lines)
