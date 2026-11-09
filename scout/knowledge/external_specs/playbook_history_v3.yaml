@@ -1,0 +1,113 @@
+# DRAFT — not registered. Pre-registration of the playbooks' history with each playbook's own execution protocol,
+# written 2026-11-09 after v2 (results in playbook_history_v2_run_note.yaml) and before any v3 code or number exists.
+# Becomes registered when the user approves it (registered_on is filled then); never edited after the run; a changed
+# design is a new file with a new key. Run once (local only: Sharadar files in git-ignored exports/sharadar/, results
+# in exports/playbook_history_v3/; summary numbers only leave it).
+key: playbook_history_v3
+status: draft
+drafted_on: '2026-11-09'
+registered_on: null
+requested_by: >-
+  用户 2026-11-09："不同策略需要适合的回测逻辑，在相同的周期上进行回测，才会有更准确的结果吧，之前你测试的也许有 bias"；
+  方案（同期参照 + 每个打法的执行协议）用户回复"两步都做"
+kind: descriptive
+not_a_test: >-
+  描述历史，不是 gate 检验。v1、v2 已看过同一段历史，这里改的是"像不像原作者的做法"，不是参数：每个打法的执行协议在下面写死，
+  依据是作者原书 / 原论文，跑之前由用户确认，跑后不改；与 v2 并列报告，两者的差别就是执行方式带来的。任何打法的知识库状态都不因此改变。
+  选择执行协议时已经看过 v2 的结果，这一点如实记录：协议只按原文定，凡原文没说的一律沿用 v2，不因 v2 的好坏取舍。
+
+what_stays_from_v2:
+  signals: 买卖信号仍由 scout/playbooks 里的同一批函数给出（规则文字不变，见各打法的 buy_rule / sell_rule / version）；判断节奏同 v2 的 CADENCE
+  data: 同 v2（Sharadar SEP / SFP / SF1 首次申报 / DAILY / SP500 / SF2 / EVENTS 22；FRED；French RF）；现金按 RF 计息
+  long_only: 只做多（Scout 的使用者只做多）；原作者做空的系统（海龟、Elder）只取多头一侧，报告里写明
+  no_leverage: 持仓总额不超过账户净值；按风险定仓的系统在现金不够时按顺序少买
+  cost: 前 1000 名单边 0.05%，另报 0.20%；1001–3000 名用 small_cap_costs_v1（与小盘排名检验相同）
+
+changes_from_v2:
+  same_window: >-
+    所有打法同一段时间：2008-06-30 收盘建第一批仓（这一天所有打法的数据都已齐全：GEM 的 ETF、内部人数据从 2008 年起），
+    估值到 2026-10-28。参照（SPY、同一股票池等权）也从同一天起算。另报 2016-11-01 前后两半。
+  rebalance_timing: >-
+    每年、每季判断的打法按 12 个（每季的 3 个）错开的月度批次持有：每批占 1/12 资金，各在自己的月份每年调仓一次
+    （Greenblatt 原书就建议一年里分批买入；也消除"恰好在 12 月调仓"的运气）。
+  stops_daily: 规则里带止损的打法，止损每天检查（盘中触及按止损价成交，跳空低开按开盘价），不再只在判断日检查。
+  fills: >-
+    收盘价确认的信号（带放量条件的突破、指标交叉、形态）仍是次日开盘成交；不需要收盘确认、原作者用挂单入场的突破
+    （海龟、Wilcox 新高）改为前一天收盘已知的突破价挂买入停损单：当天最高价 ≥ 突破价即成交，成交价 = max(开盘价, 突破价)。
+    Connors RSI(2) 按原书在信号日收盘成交（收盘前计算，收盘价成交）。v2 的"次日开盘"作为对照一并报告。
+  portfolio: 每个打法按下面的协议定持股数、仓位和调仓，不再统一 20 只等权。
+  universe: 原作者面向中小盘的打法另跑一个 Sharadar 市值前 3000 的版本（主结果仍是前 1000），参照用同一前 3000 等权。
+
+protocols:
+  # 每条：持股数 / 仓位 / 调仓 / 止损 / 成交 / 依据。"待核对"的项在登记前对照原文确认，确认不了就沿用 v2。
+  value_annual_lists:
+    playbooks: [magic_formula, piotroski, trending_value]
+    rule: 12 个月度批次；每批在自己的月份按当时名单整组买入、等权、持有 12 个月后整组换成新名单
+    size: 神奇公式 30 只（原书 20–30 只）；趋势价值 25 只（O'Shaughnessy）；Piotroski 名单里全部（原论文等权持有全部高 F 分）
+    small_cap_version: 是（三者原文都不限于大盘）
+  value_annual_hold:
+    playbooks: [graham, buffett_quality]
+    rule: 12 个月度批次；每批每年复核一次：卖出符合卖出规则的，再按顺序补足
+    size: 每批最多 30 只等权（Graham 防御型 10–30 只，取上限；Buffett 量化版原文是全体排序，沿用 30）
+    small_cap_version: 否（Graham 规则本身要求市值 ≥ 20 亿；Buffett 量化版原文用大中盘）
+  growth_quarterly:
+    playbooks: [lynch]
+    rule: 3 个季度批次；每批每季复核：PEG > 2 卖出，再按顺序补足
+    size: 每批最多 20 只等权（原书没有固定数量，沿用 v2）
+    small_cap_version: 是（Lynch 的快速增长股多是中小公司）
+  fundamental_rankers:
+    playbooks: [gross_profitability, low_accruals, low_asset_growth, net_buyback]
+    rule: 前 10% 整组等权（不再限 20 只），12 个月度批次各持有 12 个月（原论文按年组合，待核对每篇的持有期）
+  price_rankers:
+    playbooks: [high_52w, residual_momentum, frog_in_pan, short_reversal, pead]
+    rule: 前 10% 整组等权、每月重建；持有期按原论文（52 周新高 6 个月重叠批次 George & Hwang 2004；短期反转 1 个月；残差动量、平滑动量、财报后漂移待核对，核对不了就 1 个月）
+  concentrated_growth:
+    playbooks: [can_slim, minervini, darvas, livermore]
+    size: 最多 8 只，每只 1/8（O'Neil、Minervini 主张集中持有 4–8 只，取上限以减少单只运气；Darvas、Livermore 原书同样集中）
+    stop: 买入价下方 8% 的每日止损（O'Neil 7–8%、Minervini 8%）；Darvas 止损在箱底下方、Livermore 在整理区间低点下方，也每天检查
+    rule: 其余卖出规则按各自节奏（每日）
+    entry: 收盘确认（规则带放量条件），次日开盘
+    small_cap_version: CAN SLIM 是（O'Neil 的样本多是中小盘），其余否
+  turtles:
+    playbooks: [turtle_s1, turtle_s2]
+    size: 每单位 = 账户 1% ÷ N（N = 20 日 ATR）；同向加仓到 4 单位，每涨 ½N 加 1 单位；总持仓不超过净值（无杠杆）
+    stop: 每单位入场价下方 2N，加仓时全部止损上移；出场为 10 日 / 20 日最低价挂单
+    entry: 前一天已知的 20 日 / 55 日最高价挂买入停损单
+    filter: 系统 1 上一次信号若盈利则跳过本次（原规则）
+    note: 原系统做期货并做空，这里是"股票、只做多"的海龟
+  clenow:
+    playbooks: [clenow]
+    size: 每只股数 = 账户 × 0.1% ÷ ATR(20)（Clenow《Stocks on the Move》）
+    rule: 每周三调仓（原书），每两周把仓位调回目标风险；指数在 200 日均线下方时不开新仓
+  elder:
+    playbooks: [elder]
+    size: 2% 规则：每笔风险 ≤ 账户 2%，止损 = 前两日最低价；6% 规则：当月已实现亏损达 6% 时当月不再开仓
+    entry: 前一日最高价上方挂买入停损单（原书的入场技巧）
+  wilcox:
+    playbooks: [wilcox]
+    size: 20 只等权（待核对 Wilcox & Crittenden 2005 的仓位方法，核对不了就沿用）
+    stop: 最高收盘 − 10 × ATR42，每天检查
+    entry: 前一日已知的历史新高价挂买入停损单
+  weinstein:
+    playbooks: [weinstein]
+    size: 20 只等权（原书没有固定数量）
+    stop: 周收盘规则不变（原书按周线），另加初始止损在突破前底部低点下方，每天检查
+  short_term_signals:
+    playbooks: [connors_rsi2, macd, golden_cross, chart_patterns, wyckoff]
+    size: 20 只等权（原文没有仓位规则；Connors 原书用 10 只以内，待核对）
+    note: Connors RSI(2) 信号日收盘成交；其余同 v2
+  events:
+    playbooks: [insider]
+    rule: 同 v2（20 只等权，节奏每日），持有 6 个月后卖出（原规则没有卖出，v2 一直持有到离开前 1000；待核对 Cohen–Malloy–Pomorski 2012 的持有期）
+  market_timing:
+    playbooks: [faber, golden_cross_etf, zweig_4, oneil_market, breadth_thrust, dow_theory, liquidity]
+    rule: 同 v2（判断对象 ETF 100% 或现金），只改同一时间窗口
+  allocation:
+    playbooks: [gem, vaa, gtaa, all_weather, permanent, sixty_forty]
+    rule: 同 v2（目标权重），只改同一时间窗口；年度调仓的三个也分 12 个月度批次
+
+excluded: 同 v2（出场规则、问题清单、无函数的三个、估值倾向、轧空）
+benchmarks: SPY 买入持有；同一股票池（前 1000 / 前 3000）等权每月调回；全部从 2008-06-30 收盘起算
+report: >-
+  每个打法：年化、最大回撤、夏普、前后两半、高成本、交易笔数、平均持股数、相对参照的每月超额和 Newey-West t（滞后 3），
+  并列 v2 同期数字（v2 的净值截在同一窗口）和 v3 的"次日开盘"对照；小盘版本单列。按派别排序，不按收益排名。
