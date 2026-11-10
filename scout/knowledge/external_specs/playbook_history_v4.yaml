@@ -1,0 +1,130 @@
+# Draft (not registered) of the playbooks' history v4, written 2026-11-10 after v3's one run and after the review
+# that found some v3 protocols degenerate or incomplete (trade counts, average holdings, rule gaps). Nothing here is
+# run or coded yet; the user confirms or changes it, then it is registered and never edited after the run. Local only
+# (Sharadar files in git-ignored exports/sharadar/, results in exports/playbook_history_v4/).
+key: playbook_history_v4
+status: draft
+drafted_on: '2026-11-10'
+requested_by: >-
+  用户 2026-11-10："独立分析，每一个策略是否用的是最适合的配置来回测的？" → 复查结论（7 个打法配置退化或缺规则，若干打法的数据替代
+  在历史里可以去掉）→ "写 v4 草稿"
+kind: descriptive
+not_a_test: >-
+  描述历史，不是 gate 检验，任何打法的知识库状态都不因此改变。v1–v3 已看过同一段历史，v3 的结果也已看过，这一点如实记录：
+  这里只改复查中按机制（交易笔数、平均持股、规则缺口、数据替代）找出的问题，修法取自原书 / 原论文，原文没有的写明是 Scout 的约定，
+  并在跑之前定死；不因 v3 的收益好坏增删打法或改参数。v4 与 v3、v2（同一窗口）并列报告。
+
+why_each_change:
+  # Mechanical evidence from v3 (counts and holdings, not returns), the reason the playbook is in v4
+  turtles: 1% 风险单位在不加杠杆的股票上约占净值 58%（中位），平均持股 1.4 / 1.3 只：测的是一两只股票，不是海龟的分散组合
+  elder: 两日低点止损太近，2% 风险算出的仓位几乎总顶到 Scout 定的 1/5 上限，等于集中持有约 5 只
+  insider: 规则没有卖出，20 个仓位在 2008 年头几周占满后不再换（18 年 111 笔）
+  breadth_thrust: 只有买入信号，"持有"被当作在场，第一次信号后一直持有 SPY（1 笔交易）
+  can_slim: 没有 O'Neil 的 20–25% 止盈；卖出规则（放量跌破 50 日线）只对相对强度 ≥ 80 的股票生效，转弱的持仓不卖；买点是筛选，不是底部突破
+  pead: v3 放进月度重建的排名类，买入比公告晚最多一个月；漂移的主体在公告后几十天内
+  slot_starved: Wilcox、均线金叉、MACD、Wyckoff、形态、Livermore 平均持股贴着上限（18.3–19.9 / 20；Livermore 100 笔）：
+    信号多、持有久、仓位少，结果取决于"有空位时碰巧出信号的是谁"
+  data_proxies: 神奇公式、Graham、Piotroski、趋势价值、Lynch、CAN SLIM 的近似是线上 SEC 数据缺字段造成的；Sharadar 有这些字段
+    （assetsc、liabilitiesc、ppnenet、ebitda、dps、currentratio、epsdil；13F 持仓 2013-06 起），历史可以用原版规则
+
+what_stays_from_v3:
+  window: 2008-06-30 收盘建仓，估值到 2026-10-28；另报 2016-11-01 前后两半；参照 SPY、同一股票池等权（每月调回）
+  data_cost_cash: 同 v3（Sharadar 前 1000 / 前 3000；单边 0.05%，另报 0.20%；1001–3000 名 small_cap_costs_v1；现金按 RF）
+  long_only_no_leverage: 同 v3
+  signals: 同 v3（同一批 scout/playbooks 函数、同样的判断节奏）；下面"data_full"里的打法在历史上下文有完整字段时用原版计算
+  unchanged_playbooks: 下面没有列到的打法沿用 v3 的协议，不重算，只在报告里并列
+
+protocols:
+  turtles:
+    playbooks: [turtle_s1, turtle_s2]
+    unit: >-
+      保留原系统的"每单位风险相同"（股数 ∝ 1 / N）和原系统的总量上限：同向最多 12 个单位、单只最多 4 个单位、
+      高度相关的市场最多 6 个单位（股票按 GICS 行业视为高度相关）。单位风险 r_t 定为让一只中位波动的股票一个单位约占净值 1/12：
+      r_t = 前一天流动股票池 N / 收盘价 的中位数 ÷ 12（每天按前一天的数据算，point in time）；股数 = r_t × 净值 ÷ N。
+      原系统的 1% 是为期货的杠杆和二十多个品种定的；不加杠杆时 12 单位上限装得下，这是把原上限换算到股票上，不是新参数
+    rest: 入场、加仓（每 ½N）、2N 止损、10 / 20 日出场、系统 1 的跳过规则和 55 日保底、挂单成交，同 v3
+    also_reported: v3 的 1% 版本（即 v3 结果）和次日开盘对照
+  elder:
+    playbooks: [elder]
+    size: >-
+      保留 2% 规则作为上限、6% 规则与它的比例（每月亏损达 3 笔最大风险即停）。每笔风险 r_t = min(2%, 前一天流动股票池
+      （收盘 − 两日最低）/ 收盘 的中位数 ÷ 20)，股数 = r_t × 净值 ÷（入场价 − 止损）；6% 规则的界限 = 3 × r_t；单只上限 1/10。
+      目标是典型仓位约 1/20，与其余股票打法的 20 只一致（Scout 的约定，原书没有持股数）；上限 1/10 也是 Scout 的约定（无杠杆）
+    rest: 前一日高点挂买入停损单 5 个交易日、两日低点止损、周线 MACD 柱转降卖出，同 v3
+  insider:
+    playbooks: [insider]
+    event: 一只股票近 90 天公开市场买入的高管 / 董事人数首次达到 ≥ 2 的那天为信号（此前 126 个交易日内没有过信号）
+    hold: >-
+      次日开盘买入，持有 126 个交易日（6 个月）后开盘卖出，或离开流动股票池时卖出。依据：Lakonishok & Lee（2001）、
+      Jeng, Metrick & Zeckhauser（2003）按 6 个月衡量内部人买入后的超额（待核对）
+    size: 按 signal_portfolio
+  breadth_thrust:
+    playbooks: [breadth_thrust]
+    rule: >-
+      信号出现的次日开盘买入 SPY，持有 252 个交易日（Zweig 的说法是之后 6–12 个月偏强，取 12 个月，待核对）；持有期内新的信号把期限
+      从新信号起重算；其余时间现金。信号次数很少，只描述每一次之后的结果，不做 t 检验
+  can_slim:
+    playbooks: [can_slim]
+    entry: >-
+      原有的 C、A、N、L、M 筛选通过，且收盘向上突破平台底部（flat base）：突破前至少 25 个交易日（5 周）的区间，
+      区间最高到最低 ≤ 15%，收盘高于区间最高价且不超过 5%，成交量 ≥ 50 日均量的 1.4 倍（O'Neil：放量至少高于平常 40–50%，
+      买点不追高 5% 以上；待核对平台底部的周数和深度）。次日开盘买入
+    institutions: >-
+      另报带 I 的版本：最近一个季度 13F 持有机构数比上一季增加（Sharadar SF3，2013-06 起；只在它的时间段内报告，和同期参照比）
+    exits: >-
+      ① 买入价下方 8% 每日止损（同 v3）；② 止盈：盘中达到买入价 × 1.20 即按 max(开盘价, 该价位) 全部卖出（O'Neil：多数股票在
+      涨 20–25% 时卖出，取下限）；例外：买入后 15 个交易日内就涨到 +20% 的，至少持有到第 40 个交易日（8 周规则），
+      之后再用止盈和其余卖出规则；③ 放量（≥ 1.5 倍）收盘跌破 50 日均线——对所有持仓生效，不再要求相对强度 ≥ 80
+    size: 同 v3（最多 8 只，每只 1/8）
+    small_cap_version: 是（同 v3）
+  pead:
+    playbooks: [pead]
+    event: >-
+      公告日（8-K 2.02 及财报日历，同 v2）为第 0 天，3 日反应 = 第 0–2 天相对 SPY 的收益（同 v2 的 ear_drift）；第 2 天收盘时
+      和此前 63 个交易日内所有公告的 3 日反应比较（当时已知的分位数），前 10% 为信号
+    hold: 第 3 天开盘买入，持有 60 个交易日后开盘卖出（Bernard & Thomas 1989 按公告后约 60 个交易日衡量漂移，待核对）
+    size: 按 signal_portfolio
+  signal_portfolio:
+    playbooks: [wilcox, golden_cross, macd, wyckoff, chart_patterns, livermore, insider, pead]
+    rule: >-
+      不再限 20 只：每个信号按当时净值的 1/50 买入（Scout 的约定：让仓位数量不成为选股的主因），只在现金不够 1/50 时放弃；
+      卖出和止损按各自规则（同 v3）。报告信号被执行的比例和平均持股，执行比例低于 90% 时在报告里写明
+  trade_level:
+    playbooks: 所有个股打法（价值、成长、技术、事件；不含大盘择时、资产配置）
+    rule: >-
+      组合之外，另报逐笔统计：每个买入信号单独成交（成交方式按该打法的协议），按它的卖出规则和止损出场，扣双边成本；
+      和同一只股票在同样的日子里一直持有相比（avg_edge_vs_hold），也和同期 SPY 相比；按月聚类的 t。这与 Scout 其余规则的口径一致
+      （CLAUDE.md：规则的优势按扣成本后、相对持有同一只股票来判断）
+  data_full:
+    rule: >-
+      历史上下文加入 Sharadar 的完整字段；打法函数在这些字段存在时用原版公式，不存在时（线上）仍用现在的近似版，
+      version 字段写明两种情况。线上的结果不因此改变
+    magic_formula: 资本回报 = EBIT ÷（净营运资本 + 净固定资产），净营运资本 = 流动资产 − 现金 −（流动负债 − 短期借款）（Greenblatt 原书）；
+      盈利收益率同 v3（EBIT / EV）
+    graham: >-
+      加流动比率 ≥ 2；盈利和分红改为 Sharadar 有记录以来的每一年（1999 起，2009 年后满 10 年；20 年分红无法满足，写明）都为正 / 都有；
+      EPS 增长改为 10 年（不足时用全部年份）首尾各 3 年平均的每股收益增长 ≥ 1/3（Graham 原文）
+    piotroski: 加回第 9 项（流动比率改善），满分 9，买入 8–9 分（原论文的高分组）
+    trending_value: 价值综合分用 EBITDA / EV；股东收益率 = 分红 + 回购
+    lynch: 增长率用稀释 EPS 的 3 年年化增长，不用净利润
+    can_slim: A 用年度稀释 EPS 的 3 年年化增长；C 同 v3（当季 EPS 同比）
+  unchanged_with_reason:
+    buffett_quality: 原文的超额很大一部分来自约 1.6 倍杠杆和低 β；用户的规则不加杠杆，所以不改，报告里写明测的是不加杠杆的部分
+    minervini: 原书的止盈和移动止损没有固定数字，不替作者定；沿用 v3，另报逐笔统计
+    oneil_market: 原本是个股的买入开关（已用在 CAN SLIM 的 M），单独择时的结果照旧并列，写明这一点
+    others: 价格排名、基本面排名、其余择时和资产配置、Clenow、Connors、Darvas、Weinstein 沿用 v3（复查认为基本合适或只有小偏差）
+
+verification:
+  rule: >-
+    登记前逐项对照原文：CAN SLIM 的平台底部周数 / 深度、20–25% 止盈和 8 周规则；内部人 6 个月；PEAD 60 天；广度冲刺之后的 12 个月；
+    海龟的 12 / 4 / 6 单位上限。确认不了时用这里写的值（v3 的"确认不了就沿用 v2"正是这几个配置退化的原因，所以不再沿用）
+
+before_the_run:
+  mechanics_check: 只打印交易笔数、平均持股、信号执行比例、净值是否有限且为正，不看收益；发现的问题在跑之前修好并写进运行说明
+  tests: 单元测试覆盖：海龟单位与 12 / 4 / 6 上限、Elder 定仓、内部人和 PEAD 的事件与持有期、广度冲刺的期限重算、
+    CAN SLIM 的止盈 / 8 周规则 / 50 日线卖出、1/50 组合的现金约束、逐笔统计与同股持有的对照、完整字段与近似版的切换
+
+report: >-
+  每个改动的打法：v4 组合（年化、最大回撤、夏普、前后两半、高成本、交易笔数、平均持股、信号执行比例、相对参照每月超额和
+  Newey-West t）、逐笔统计（笔数、扣成本平均收益、相对同股持有、相对 SPY、按月聚类 t），并列 v3 和 v2 同一窗口；
+  CAN SLIM 带 I 的版本只报 2013-09 起并配同期参照。按派别排序，不按收益排名。约 50 个打法同时比较，一个 t 接近 3 是运气也会给的
