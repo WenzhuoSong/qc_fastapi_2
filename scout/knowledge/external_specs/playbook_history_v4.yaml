@@ -1,10 +1,12 @@
-# Draft (not registered) of the playbooks' history v4, written 2026-11-10 after v3's one run and after the review
-# that found some v3 protocols degenerate or incomplete (trade counts, average holdings, rule gaps). Nothing here is
-# run or coded yet; the user confirms or changes it, then it is registered and never edited after the run. Local only
-# (Sharadar files in git-ignored exports/sharadar/, results in exports/playbook_history_v4/).
+# Pre-registration of the playbooks' history v4, written 2026-11-10 after v3's one run and after the review that found
+# some v3 protocols degenerate or incomplete (trade counts, average holdings, rule gaps); confirmed by the user the same
+# day ("确认，先修线上 CAN SLIM，再开始 v4"), then the items to check were checked (section verification, which also
+# records the two corrections it led to) before any code was written. Never edited after the run; a changed design is a
+# new file with a new key. Local only (Sharadar files in git-ignored exports/sharadar/, results in exports/playbook_history_v4/).
 key: playbook_history_v4
-status: draft
+status: registered
 drafted_on: '2026-11-10'
+registered_on: '2026-11-10'
 requested_by: >-
   用户 2026-11-10："独立分析，每一个策略是否用的是最适合的配置来回测的？" → 复查结论（7 个打法配置退化或缺规则，若干打法的数据替代
   在历史里可以去掉）→ "写 v4 草稿"
@@ -72,17 +74,18 @@ protocols:
     institutions: >-
       另报带 I 的版本：最近一个季度 13F 持有机构数比上一季增加（Sharadar SF3，2013-06 起；只在它的时间段内报告，和同期参照比）
     exits: >-
-      ① 买入价下方 8% 每日止损（同 v3）；② 止盈：盘中达到买入价 × 1.20 即按 max(开盘价, 该价位) 全部卖出（O'Neil：多数股票在
-      涨 20–25% 时卖出，取下限）；例外：买入后 15 个交易日内就涨到 +20% 的，至少持有到第 40 个交易日（8 周规则），
-      之后再用止盈和其余卖出规则；③ 放量（≥ 1.5 倍）收盘跌破 50 日均线——对所有持仓生效，不再要求相对强度 ≥ 80
+      ① 买入价下方 8% 每日止损（同 v3）；② 止盈：盘中达到枢轴 × 1.20 即按 max(开盘价, 该价位) 全部卖出（O'Neil：多数股票在
+      涨 20–25% 时卖出，取下限，从理想买点量）；例外：突破后 15 个交易日内最高价就到枢轴 × 1.20 的，持有到突破后第 40 个交易日
+      （8 周规则；期间止盈和 50 日线卖出不用，8% 止损照用），之后不再用止盈；③ 放量（≥ 1.5 倍）收盘跌破 50 日均线——
+      对所有持仓生效（线上函数已于 2026-11-10 修正，不再要求相对强度 ≥ 80）
     size: 同 v3（最多 8 只，每只 1/8）
     small_cap_version: 是（同 v3）
   pead:
     playbooks: [pead]
     event: >-
-      公告日（8-K 2.02 及财报日历，同 v2）为第 0 天，3 日反应 = 第 0–2 天相对 SPY 的收益（同 v2 的 ear_drift）；第 2 天收盘时
-      和此前 63 个交易日内所有公告的 3 日反应比较（当时已知的分位数），前 10% 为信号
-    hold: 第 3 天开盘买入，持有 60 个交易日后开盘卖出（Bernard & Thomas 1989 按公告后约 60 个交易日衡量漂移，待核对）
+      公告日（8-K 2.02 及财报日历，同 v2）为第 0 天，反应 = 第 −1 天收盘到第 +1 天收盘相对 SPY 的收益（同 v2 的 ear_drift，
+      见 verification.pead_window_wording）；第 +1 天收盘时和此前 63 个交易日内（含当天）所有已知的公告反应比较，前 10% 为信号
+    hold: 次日开盘买入，持有 60 个交易日后开盘卖出（Bernard & Thomas 1989 按公告后约 60 个交易日衡量漂移）
     size: 按 signal_portfolio
   signal_portfolio:
     playbooks: [wilcox, golden_cross, macd, wyckoff, chart_patterns, livermore, insider, pead]
@@ -90,11 +93,12 @@ protocols:
       不再限 20 只：每个信号按当时净值的 1/50 买入（Scout 的约定：让仓位数量不成为选股的主因），只在现金不够 1/50 时放弃；
       卖出和止损按各自规则（同 v3）。报告信号被执行的比例和平均持股，执行比例低于 90% 时在报告里写明
   trade_level:
-    playbooks: 所有个股打法（价值、成长、技术、事件；不含大盘择时、资产配置）
+    playbooks: 成长股、技术与趋势、事件与投机中的个股打法（不含价格排名类）
     rule: >-
-      组合之外，另报逐笔统计：每个买入信号单独成交（成交方式按该打法的协议），按它的卖出规则和止损出场，扣双边成本；
-      和同一只股票在同样的日子里一直持有相比（avg_edge_vs_hold），也和同期 SPY 相比；按月聚类的 t。这与 Scout 其余规则的口径一致
-      （CLAUDE.md：规则的优势按扣成本后、相对持有同一只股票来判断）
+      组合之外，另报逐笔统计：同一协议在不受资金和仓位数限制时的每一笔交易（每个信号都成交；单只的加仓上限保留，
+      组合层面的限制——仓位数、总单位、行业单位、Elder 的 6% 规则——不用），按它的卖出规则和止损出场，扣双边成本；
+      和同一只股票"一直持有"的期望相比（这只股票在整个窗口里的平均日对数收益 × 持有天数，同 scout.base_rates 的 hold_ret），
+      和同期 SPY、同期等权股票池相比；按入场月份聚类的 t。只对信号类打法（成长、技术、事件）报告；排名和筛选类本来就买整个名单
   data_full:
     rule: >-
       历史上下文加入 Sharadar 的完整字段；打法函数在这些字段存在时用原版公式，不存在时（线上）仍用现在的近似版，
@@ -118,6 +122,21 @@ verification:
   rule: >-
     登记前逐项对照原文：CAN SLIM 的平台底部周数 / 深度、20–25% 止盈和 8 周规则；内部人 6 个月；PEAD 60 天；广度冲刺之后的 12 个月；
     海龟的 12 / 4 / 6 单位上限。确认不了时用这里写的值（v3 的"确认不了就沿用 v2"正是这几个配置退化的原因，所以不再沿用）
+  checked_2026_11_10:
+    # Original books / papers again not readable; secondary sources agreeing with each other (web search 2026-11-10)
+    flat_base: 至少 5 周、高点到低点 ≤ 10–15%（IBD / MarketSmith / LuxAlgo 一致）；突破放量高于均量 40–50%（TraderLion 引 O'Neil）→ 按草稿
+    profit_rule: >-
+      20–25% 止盈从"理想买点"（枢轴）量，不是从成交价 → 更正：止盈价位 = 枢轴 × 1.20。8 周规则：突破后 3 周内涨到 +20% 的，
+      至少持有 8 周（突破那一周算第 1 周）；8 周后"重新评估而不是自动卖出"（AAII 引 O'Neil）→ 更正：8 周持有结束后这只股票
+      不再用 20% 止盈，只按 8% 止损和放量跌破 50 日线卖出（Scout 对"重新评估"的机械化，原文没有）
+    turtles: 单个市场 4、高度相关 6、低度相关 10、同一方向 12 个单位（Faith《Original Turtle Trading Rules》，多个来源一致）→ 按草稿；
+      低度相关的 10 单位不用（股票没有现成的"低度相关"分组）
+    insider: Jeng, Metrick & Zeckhauser 的组合就是持有 6 个月（与 1934 年法案的短线交易期一致）→ 按草稿
+    pead: Bernard & Thomas（1989）衡量公告后 60 个交易日 → 按草稿
+    breadth_thrust: 常见统计口径是信号后 6 个月和 12 个月 → 按草稿（12 个月）
+  pead_window_wording: >-
+    草稿写的"第 0–2 天"与 v2 的 ear_drift 不符：ear_drift 是公告前一天收盘到公告后一天收盘、相对 SPY（覆盖公告当天和次日）。
+    按 v2 的定义执行：公告后一天收盘时得知，次日开盘买入，持有 60 个交易日
 
 before_the_run:
   mechanics_check: 只打印交易笔数、平均持股、信号执行比例、净值是否有限且为正，不看收益；发现的问题在跑之前修好并写进运行说明
