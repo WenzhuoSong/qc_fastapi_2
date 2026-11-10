@@ -134,6 +134,21 @@ class ValueTests(unittest.TestCase):
         self.assertEqual(int(sc.at["GOOD", "score"]), 8)
         self.assertEqual(int(sc.at["BAD", "score"]), 0)
 
+    def test_can_slim_sells_a_heavy_volume_break_of_the_50_day_line_whatever_its_strength(self):
+        idx = pd.bdate_range("2026-01-01", periods=130)
+        close = pd.DataFrame({"SPY": np.linspace(100, 110, 130), "WEAK": np.full(130, 50.0), "STRONG": np.full(130, 50.0)}, index=idx)
+        frame = lambda **v: pd.DataFrame({t: np.full(130, x) for t, x in v.items()}, index=idx)  # noqa: E731
+        f = {"dist_52w_high": frame(WEAK=-0.3, STRONG=-0.05), "rs_pct": frame(WEAK=0.3, STRONG=0.9),
+             "vol_ratio": frame(WEAK=2.0, STRONG=2.0), "sma50": frame(WEAK=55.0, STRONG=55.0),
+             "vol_63": frame(WEAK=0.3, STRONG=0.3), "beta": frame(WEAK=1.0, STRONG=1.0)}
+        cols = ("ev", "net_income", "operating_income", "revenue", "gross_profit", "operating_cash_flow", "total_assets",
+                "equity", "cash", "long_term_debt", "current_debt", "buybacks")
+        fund = pd.DataFrame({**dict.fromkeys(cols, [np.nan, np.nan]), "mcap": [1e10, 1e10], "eps_q": [1.0, 1.0],
+                             "eps_q_prev_year": [1.0, 1.0]}, index=["WEAK", "STRONG"])
+        v = va.can_slim(_ctx(close, f=f, fund=fund))
+        self.assertEqual(v["WEAK"].action, SELL)                 # RS 30: sold too (before 2026-11-10 only RS ≥ 80 was)
+        self.assertEqual(v["STRONG"].action, SELL)
+
 
 class PageTests(unittest.TestCase):
     def _res(self):

@@ -192,7 +192,8 @@ def can_slim(ctx: Ctx) -> dict[str, Verdict]:
     """O'Neil's letters Scout can compute: C quarterly EPS ≥ +25 % year on year, A three-year EPS growth ≥ 25 % a year,
     N within 15 % of the 52-week high, L relative strength ≥ 80th percentile, M the market in a confirmed uptrend
     (the O'Neil market playbook). I (institutions) and S (supply) are left out. Sell: 7–8 % under a buy is a holding's
-    rule; for the universe, a close below the 50-day average on heavy volume."""
+    rule; for the universe, a close below the 50-day average on heavy volume, whatever the stock's relative strength
+    (until 2026-11-10 only stocks still at RS ≥ 80 got it, so a holding that had weakened was never told to sell)."""
     from scout.playbooks.market import oneil_state
 
     r = ratios(ctx)
@@ -209,8 +210,8 @@ def can_slim(ctx: Ctx) -> dict[str, Verdict]:
             why = f"C 当季 EPS {pct(cq, 0)}、A 3 年净利润年增 {pct(a, 0)}、N 距 52 周高点 {pct(dist[t])}、L 相对强度 {num(rs[t] * 100, 0)}"
             out[t] = Verdict(BUY, why + "；M 大盘确认上升", score=float(rs[t])) if up else \
                 Verdict(HOLD, why + f"；M 大盘不在确认上升（{m['state'] if m else '无数据'}），O'Neil 这时不买")
-        elif c.get(t, np.nan) < s50.get(t, np.nan) and vr.get(t, 0) >= 1.5 and letters["L"]:
-            out[t] = Verdict(SELL, f"强势股放量（{num(vr[t], 1)} 倍）跌破 50 日均线")
+        elif c.get(t, np.nan) < s50.get(t, np.nan) and vr.get(t, 0) >= 1.5:
+            out[t] = Verdict(SELL, f"放量（{num(vr[t], 1)} 倍）跌破 50 日均线")
     return out
 
 
