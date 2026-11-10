@@ -459,7 +459,7 @@ def sim_slots_tape(H, ver, key, s, cost, stop=None, fill="open", cadence="daily"
 
 def holders(path: str = "holdings_ticker") -> dict[str, list[tuple[pd.Timestamp, float]]]:
     """Sharadar SF3: institutions holding each stock per quarter end (from 2013-06)."""
-    from scout.data import sharadar as sr
+    from scout import sharadar_research as sr
 
     d = sr._read(path, ["ticker", "date", "shrholders"])
     d["date"] = pd.to_datetime(d["date"])
@@ -609,7 +609,7 @@ def trade_stats(H, log: list[tuple], pool: np.ndarray, s: int) -> dict | None:
     def clustered(col):
         m = df.groupby("month")[col].mean().dropna()
         t = m.mean() / (m.std(ddof=1) / math.sqrt(len(m))) if len(m) > 2 and m.std(ddof=1) > 0 else float("nan")
-        return {"mean": float(df[col].mean()), "t": float(t), "months": int(len(m))}
+        return {"mean": float(m.mean()), "trade_mean": float(df[col].mean()), "t": float(t), "months": int(len(m))}
 
     return {"n": int(len(df)), "win_rate": float((df["ret"] > 0).mean()), "avg_ret": float(df["ret"].mean()),
             "median_ret": float(df["ret"].median()), "avg_days": float(df["days"].mean()),
@@ -735,8 +735,8 @@ def report_text(res: dict) -> str:
         a, ref, old = r["all"] or {}, r["vs_ref"] or {}, r["v3"] or {}
         oa = old.get("all") or {}
         extra = ""
-        if r.get("signals"):
-            extra += f"；信号 {r['signals']} 个，执行 {_p(r['taken'] / r['signals'], 0)}"
+        if isinstance(r.get("signals"), int) and r["signals"]:
+            extra += f"；信号 {r['signals']} 个，执行 {r['taken'] / r['signals'] * 100:.0f}%"
         if r.get("next_open"):
             extra += f"；次日开盘成交 {_p(r['next_open']['all']['cagr'])}"
         if r.get("with_i"):
@@ -750,7 +750,7 @@ def report_text(res: dict) -> str:
                      f"每月超额 {_p(ref.get('mean'), 2)}（t {ref.get('t', float('nan')):.1f}；v3 t {(old.get('vs_ref') or {}).get('t', float('nan')):.1f}）；"
                      f"交易 {r['trades']} 笔，平均持股 {r.get('avg_positions') or float('nan'):.1f}" + extra)
     if res.get("trade_level"):
-        lines += ["", "【逐笔统计：不受资金和仓位数限制时的每一笔交易，扣双边成本】"]
+        lines += ["", "【逐笔统计：不受资金和仓位数限制时的每一笔交易，扣双边成本；相对值是按买入月份的月均值，t 同口径】"]
         for r in res["trade_level"]:
             if not r.get("n"):
                 lines.append(f"· {r['name']}：没有完成的交易")
