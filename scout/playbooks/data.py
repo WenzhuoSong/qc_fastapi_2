@@ -24,6 +24,9 @@ FLOWS = ("net_income", "operating_income", "revenue", "cost_of_revenue", "gross_
          "eps_diluted", "buybacks", "capex", "rnd")
 STOCKS = ("total_assets", "equity", "cash", "short_term_investments", "long_term_debt", "current_debt",
           "total_liabilities", "inventory")
+# Fields the live SEC data lacks but the Sharadar history has (`full=True`): the playbooks then use the authors' formulas
+FULL_FLOWS = ("ebitda", "dividends")
+FULL_STOCKS = ("current_assets", "current_liabilities", "ppe_net")
 YEAR = 365
 
 
@@ -42,15 +45,18 @@ def _level_at(rows: list[tuple], end: date, tol: int = 45) -> float | None:
 
 
 def fundamentals(rows: list[dict], close: pd.Series, splits: dict[str, list], asof: date,
-                 caps: dict[str, float] | None = None, fin: dict | None = None, tickers: list[str] | None = None) -> pd.DataFrame:
+                 caps: dict[str, float] | None = None, fin: dict | None = None, tickers: list[str] | None = None,
+                 full: bool = False) -> pd.DataFrame:
     """ticker × fields from scout.financials rows (every filed version), as known on `asof`. A backtest passes the
-    versions once (`fin`, as `valuation.versions` builds them) and the day's `tickers`."""
+    versions once (`fin`, as `valuation.versions` builds them) and the day's `tickers`. full (the Sharadar history):
+    also FULL_FLOWS / FULL_STOCKS and ten years of trailing EPS, net income and dividends (Graham's rules)."""
     fin = fin if fin is not None else val.versions(rows)
     caps = caps or {}
     tickers = sorted({t for t, _ in fin}) if tickers is None else tickers
     out = {}
     for t in tickers:
-        get = {m: val.as_of(fin.get((t, m), []), asof) for m in (*FLOWS, *STOCKS, "shares_diluted")}
+        extra = (*FULL_FLOWS, *FULL_STOCKS) if full else ()
+        get = {m: val.as_of(fin.get((t, m), []), asof) for m in (*FLOWS, *STOCKS, "shares_diluted", *extra)}
         quarters = [r for r in get["net_income"] if r[1] == "quarter"] or get["net_income"]
         if not quarters:
             continue
@@ -72,6 +78,15 @@ def fundamentals(rows: list[dict], close: pd.Series, splits: dict[str, list], as
         # trailing net income 0–4 years before the last period (trailing EPS is rarely complete: most filers give no
         # fourth-quarter EPS, so growth uses net income)
         rec["ni_years"] = [_ttm_at(get["net_income"], last_end - timedelta(days=k * YEAR - 30)) for k in range(5)]
+        if full:
+            for m in FULL_FLOWS:
+                rec[m] = _ttm_at(get[m], asof)
+            for m in FULL_STOCKS:
+                rows_m = get[m]
+                rec[m] = rows_m[-1][2] if rows_m and (asof - rows_m[-1][0]).days <= val.FRESH["year"] else None
+                rec[m + "_prev"] = _level_at(rows_m, last_end - timedelta(days=YEAR))
+            back = lambda m, n: [_ttm_at(get[m], last_end - timedelta(days=k * YEAR - 30)) for k in range(n)]  # noqa: E731
+            rec["eps_years"], rec["ni_years10"], rec["div_years"] = back("eps_diluted", 11), back("net_income", 10), back("dividends", 10)
         eq = [r for r in get["eps_diluted"] if r[1] == "quarter"]
         if eq:
             prior = _level_at(eq, eq[-1][0] - timedelta(days=YEAR), tol=20)

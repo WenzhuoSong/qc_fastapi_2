@@ -62,10 +62,13 @@ SECTOR_MAP = {"Technology": "Information Technology", "Healthcare": "Health Care
               "Consumer Cyclical": "Consumer Discretionary", "Consumer Defensive": "Consumer Staples",
               "Basic Materials": "Materials"}
 FLOW_COLS = {"net_income": "netinc", "operating_income": "opinc", "revenue": "revenue", "cost_of_revenue": "cor",
-             "gross_profit": "gp", "operating_cash_flow": "ncfo", "eps_diluted": "epsdil", "capex": "capex", "rnd": "rnd"}
+             "gross_profit": "gp", "operating_cash_flow": "ncfo", "eps_diluted": "epsdil", "capex": "capex", "rnd": "rnd",
+             "ebitda": "ebitda"}
 STOCK_COLS = {"total_assets": "assets", "equity": "equity", "cash": "cashneq", "short_term_investments": "investmentsc",
               "long_term_debt": "debtnc", "current_debt": "debtc", "total_liabilities": "liabilities",
-              "inventory": "inventory", "shares_diluted": "shareswadil"}
+              "inventory": "inventory", "shares_diluted": "shareswadil", "current_assets": "assetsc",
+              "current_liabilities": "liabilitiesc", "ppe_net": "ppnenet"}
+# ebitda, dividends and the three balance-sheet lines above are read only with Hist.full (v4: playbooks.data FULL_*)
 INSIDER_DAYS = 90
 FUND_SCHOOLS = ("价值投资", "成长股")
 
@@ -116,6 +119,7 @@ class Hist:
     rf: np.ndarray
     min_dv: float = 20_000_000.0             # liquid = 20-day dollar volume at least this (live Scout's floor)
     large: dict[int, set[str]] | None = None  # week end → the 1000 largest (set when members reach further)
+    full: bool = False                       # the playbooks see Sharadar's full fields (v4; playbooks.data FULL_*)
 
     @property
     def col(self) -> dict[str, int]:
@@ -127,7 +131,7 @@ class Hist:
 
 
 def _fin_versions(tickers: list[str]) -> dict:
-    cols = sorted({*FLOW_COLS.values(), *STOCK_COLS.values(), "ncfcommon"})
+    cols = sorted({*FLOW_COLS.values(), *STOCK_COLS.values(), "ncfcommon", "ncfdiv"})
     f = sr._read("fundamentals", ["ticker", "dimension", "date", "reportperiod", *cols],
                  filters=[("dimension", "=", "ARQ"), ("ticker", "in", tickers)]).rename(columns={"date": "datekey"})
     f = f.dropna(subset=["datekey", "reportperiod"])
@@ -135,9 +139,10 @@ def _fin_versions(tickers: list[str]) -> dict:
     f = sr.first_filed(f)
     f["buybacks"] = (-f["ncfcommon"]).clip(lower=0)             # net repurchases (Sharadar gives the net equity flow)
     f["capex"] = -f["capex"]                                   # Sharadar's capex is a cash outflow (negative)
+    f["dividends"] = (-f["ncfdiv"]).clip(lower=0)               # dividends paid (an outflow)
     out: dict = {}
     f = f.sort_values("datekey")
-    metrics = {**FLOW_COLS, **STOCK_COLS, "buybacks": "buybacks"}
+    metrics = {**FLOW_COLS, **STOCK_COLS, "buybacks": "buybacks", "dividends": "dividends"}
     for t, g in f.groupby("ticker", sort=False):
         filed, end = list(g["datekey"]), list(g["reportperiod"])
         for m, col in metrics.items():
@@ -288,7 +293,7 @@ def context(H: Hist, panel, i: int, k: int, with_fund: bool = True):
     arrays = rankers.arrays(sliced)
     asof = H.dates[i].date()
     col = H.col
-    fund = fundamentals([], pd.Series(dtype=float), {}, asof, fin=H.fin, tickers=stocks) if with_fund else pd.DataFrame()
+    fund = fundamentals([], pd.Series(dtype=float), {}, asof, fin=H.fin, tickers=stocks, full=H.full) if with_fund else pd.DataFrame()
     if not fund.empty:
         mcap = pd.Series({t: H.caps[i, col[t]] for t in fund.index}, dtype=float)
         debt = pd.to_numeric(fund["long_term_debt"], errors="coerce").fillna(0) + pd.to_numeric(fund["current_debt"], errors="coerce").fillna(0)

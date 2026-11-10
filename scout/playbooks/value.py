@@ -43,10 +43,25 @@ def ratios(ctx: Ctx) -> pd.DataFrame:
     r["roe"] = (ni / equity).where(equity > 0)
     r["de"] = (debt / equity).where(equity > 0)
     r["bb_yield"] = num_("buybacks").abs() / mcap
+    if "current_assets" in f:                                  # the Sharadar history (playbooks.data FULL_*): the authors' fields
+        sti = num_("short_term_investments").fillna(0)
+        nwc = (num_("current_assets") - cash - sti) - (num_("current_liabilities") - num_("current_debt").fillna(0))
+        tangible = nwc + num_("ppe_net")
+        full_roc = (ebit / tangible).where(tangible > 0)          # Greenblatt: EBIT / (net working capital + net fixed assets)
+        r["roc_full"] = full_roc.notna()
+        r["roc"] = full_roc.where(full_roc.notna(), r["roc"])
+        r["ebitda_ev"] = (num_("ebitda") / ev).where(ev > 0)
+        r["sh_yield"] = (num_("buybacks").abs() + num_("dividends").fillna(0)) / mcap
+        r["cr"] = (num_("current_assets") / num_("current_liabilities")).where(num_("current_liabilities") > 0)
+        r["cr_prev"] = (num_("current_assets_prev") / num_("current_liabilities_prev")).where(num_("current_liabilities_prev") > 0)
     years = f["ni_years"] if "ni_years" in f else pd.Series(index=f.index, dtype=object)
     at = lambda k: pd.Series([y[k] if isinstance(y, list) and y[k] is not None else np.nan for y in years], index=f.index)  # noqa: E731
     n0, n3, n4 = at(0), at(3), at(4)
     r["g3"] = ((n0 / n3) ** (1 / 3) - 1).where((n0 > 0) & (n3 > 0))          # net income, not EPS (see data.py)
+    if "eps_years" in f:                                       # the history has complete EPS: growth per share, as the authors
+        eps = lambda k: pd.Series([y[k] if isinstance(y, list) and y[k] is not None else np.nan for y in f["eps_years"]], index=f.index)  # noqa: E731
+        e0, e3 = eps(0), eps(3)
+        r["g3"] = ((e0 / e3) ** (1 / 3) - 1).where((e0 > 0) & (e3 > 0))
     r["g4_total"] = (n0 / n4 - 1).where((n0 > 0) & (n4 > 0))
     r["eps_q_yoy"] = (num_("eps_q") / num_("eps_q_prev_year") - 1).where(num_("eps_q_prev_year") > 0)
     r["sector"] = [ctx.sectors.get(t) for t in r.index]
@@ -77,7 +92,8 @@ def magic_formula(ctx: Ctx) -> dict[str, Verdict]:
 
 
 def piotroski_score(ctx: Ctx) -> pd.DataFrame:
-    """Eight of Piotroski's nine signals (no current ratio in Scout's data) → score 0–8 and the signal list."""
+    """Eight of Piotroski's nine signals (no current ratio in Scout's live data) → score 0–8 and the signal list; with
+    the history's full fields the ninth (current ratio up) too, 0–9."""
     f = ctx.fund
     g = lambda a: pd.to_numeric(f.get(a), errors="coerce")  # noqa: E731
     roa, roa0 = g("net_income") / g("total_assets"), g("net_income_prev") / g("total_assets_prev")
@@ -89,6 +105,10 @@ def piotroski_score(ctx: Ctx) -> pd.DataFrame:
                         "没有增发": g("shares") <= g("shares_prev") * 1.005, "毛利率提高": gm > gm0, "资产周转率提高": turn > turn0})
     known = pd.DataFrame({"ROA 提高": roa0.notna(), "毛利率提高": gm0.notna(), "资产周转率提高": turn0.notna(),
                           "没有增发": g("shares_prev").notna()}).reindex(columns=sig.columns, fill_value=True)
+    if "current_assets" in f:
+        cr = g("current_assets") / g("current_liabilities").where(g("current_liabilities") > 0)
+        cr0 = g("current_assets_prev") / g("current_liabilities_prev").where(g("current_liabilities_prev") > 0)
+        sig["流动比率提高"], known["流动比率提高"] = cr > cr0, cr.notna() & cr0.notna()
     sig = sig.where(known)
     return pd.DataFrame({"score": sig.fillna(False).sum(axis=1), "n": sig.notna().sum(axis=1),
                          "passed": sig.apply(lambda row: [k for k, v in row.items() if v is True], axis=1)})
@@ -100,24 +120,29 @@ def piotroski(ctx: Ctx) -> dict[str, Verdict]:
         return {}
     cheap = r[r["pb"] <= r["pb"].quantile(0.2)]                       # the high book-to-market fifth
     sc = piotroski_score(ctx).reindex(cheap.index)
+    need = 9 if "current_assets" in ctx.fund else 8             # the history's full fields: all nine signals, buy 8–9
     out = {}
     for t, row in sc.iterrows():
-        if row["n"] < 8:
+        if row["n"] < need:
             continue
-        if row["score"] >= 7:
-            out[t] = Verdict(BUY, f"市净率 {num(r.at[t, 'pb'])} 在最便宜的 20%，F 分 {int(row['score'])} / 8：{'、'.join(row['passed'])}",
+        if row["score"] >= need - 1:
+            out[t] = Verdict(BUY, f"市净率 {num(r.at[t, 'pb'])} 在最便宜的 20%，F 分 {int(row['score'])} / {need}：{'、'.join(row['passed'])}",
                              score=float(row["score"]))
         elif row["score"] <= 2:
-            out[t] = Verdict(SELL, f"便宜但 F 分只有 {int(row['score'])} / 8（价值陷阱）")
+            out[t] = Verdict(SELL, f"便宜但 F 分只有 {int(row['score'])} / {need}（价值陷阱）")
     return out
 
 
 def graham(ctx: Ctx) -> dict[str, Verdict]:
     """Graham's defensive criteria that Scout's data covers: market value ≥ $2 B, positive earnings in each of the last
-    five years, net income up at least a third over four years, P/E ≤ 15, P/E × P/B ≤ 22.5, long-term debt ≤ equity."""
+    five years, net income up at least a third over four years, P/E ≤ 15, P/E × P/B ≤ 22.5, long-term debt ≤ equity.
+    With the history's full fields Graham's own: current ratio ≥ 2, earnings and dividends in each of up to ten years
+    (every year Sharadar has, at least five), EPS up a third between three-year averages at both ends of ten years."""
     r = ratios(ctx)
     f = ctx.fund.reindex(r.index)
     out = {}
+    if "eps_years" in f:
+        return _graham_full(r, f)
     for t in r.index:
         years = f.at[t, "ni_years"] if "ni_years" in f else None
         pe, pb, g5, de = r.at[t, "pe"], r.at[t, "pb"], r.at[t, "g4_total"], r.at[t, "de"]
@@ -134,14 +159,50 @@ def graham(ctx: Ctx) -> dict[str, Verdict]:
     return out
 
 
+def _avail(x) -> list[float]:
+    """The leading run of known values (latest year first)."""
+    out = []
+    for y in x if isinstance(x, list) else []:
+        if y is None or not np.isfinite(y):
+            break
+        out.append(float(y))
+    return out
+
+
+def _graham_full(r: pd.DataFrame, f: pd.DataFrame) -> dict[str, Verdict]:
+    out = {}
+    for t in r.index:
+        ni, dv, eps = _avail(f.at[t, "ni_years10"]), _avail(f.at[t, "div_years"]), _avail(f.at[t, "eps_years"])
+        pe, pb, de, cr = r.at[t, "pe"], r.at[t, "pb"], r.at[t, "de"], r.at[t, "cr"]
+        if len(ni) < 5 or len(eps) < 6 or not np.isfinite(pe) or not np.isfinite(pb):
+            continue
+        n = len(ni)
+        start = np.mean(eps[-3:])
+        g = np.mean(eps[:3]) / start - 1 if start > 0 else np.nan
+        checks = {"市值 ≥ 20 亿美元": r.at[t, "mcap"] >= 2e9, "流动比率 ≥ 2": bool(cr >= 2) if np.isfinite(cr) else False,
+                  f"近 {n} 年每年盈利": all(y > 0 for y in ni), f"近 {n} 年每年分红": len(dv) >= n and all(y > 0 for y in dv[:n]),
+                  f"{len(eps) - 1} 年 EPS 增长 ≥ 1/3（首尾 3 年平均）": bool(g >= 1 / 3) if np.isfinite(g) else False,
+                  "市盈率 ≤ 15": pe <= 15, "市盈率 × 市净率 ≤ 22.5": pe * pb <= 22.5,
+                  "长期负债 ≤ 净资产": bool(de <= 1) if np.isfinite(de) else True}
+        if all(checks.values()):
+            out[t] = Verdict(BUY, f"{len(checks)} 条全部满足：市盈率 {num(pe, 1)}、市净率 {num(pb, 1)}、流动比率 {num(cr, 1)}、"
+                                  f"EPS 增长 {pct(g, 0)}", score=float(-pe * pb))
+        elif pe > 40 or pe * pb > 100:
+            out[t] = Verdict(SELL, f"远离 Graham 的价格标准：市盈率 {num(pe, 0)}、市盈率 × 市净率 {num(pe * pb, 0)}")
+    return out
+
+
 def trending_value(ctx: Ctx) -> dict[str, Verdict]:
     """O'Shaughnessy: the cheapest tenth by a value composite (P/E, P/B, P/S, P/CF, EBIT/EV, buyback yield; EBIT in
-    place of EBITDA, buybacks without dividends), then the 25 with the best six-month return."""
+    place of EBITDA, buybacks without dividends; the history's full fields: EBITDA / EV and buybacks + dividends), then
+    the 25 with the best six-month return."""
     r = ratios(ctx)
     if r.empty:
         return {}
+    full = "ebitda_ev" in r
     parts = pd.DataFrame({"pe": ranks(r["pe"], True), "pb": ranks(r["pb"], True), "ps": ranks(r["ps"], True),
-                          "pcf": ranks(r["pcf"], True), "ebit_ev": ranks(r["ebit_ev"]), "bb": ranks(r["bb_yield"])})
+                          "pcf": ranks(r["pcf"], True), "ebit_ev": ranks(r["ebitda_ev" if full else "ebit_ev"]),
+                          "bb": ranks(r["sh_yield" if full else "bb_yield"])})
     comp = parts.mean(axis=1)[parts.notna().sum(axis=1) >= 4]
     cheap = comp[comp >= comp.quantile(0.9)]
     picks = r.loc[cheap.index, "ret_126"].sort_values(ascending=False).iloc[:25]
@@ -175,16 +236,17 @@ def lynch(ctx: Ctx) -> dict[str, Verdict]:
     """Lynch's categories from three-year EPS growth, and his PEG rule: fast growers (20–50 % a year) with P/E ÷ growth
     below 1 and debt / equity below 0.8 are buys; a PEG above 2 (growth priced too high) is where he would sell."""
     r = ratios(ctx).dropna(subset=["pe", "g3"])
+    gl = "EPS " if "eps_years" in ctx.fund else "净利润"
     out = {}
     for t, row in r.iterrows():
         g, pe = row["g3"], row["pe"]
         cat = "快速增长" if 0.2 <= g <= 0.5 else "稳定增长" if 0.1 <= g < 0.2 else "缓慢增长" if 0 <= g < 0.1 else "高速 / 异常" if g > 0.5 else "下滑"
         peg = pe / (g * 100) if g > 0 else np.nan
         if cat == "快速增长" and peg < 1 and (not np.isfinite(row["de"]) or row["de"] < 0.8):
-            out[t] = Verdict(BUY, f"{cat}：3 年净利润年增 {pct(g, 0)}，市盈率 {num(pe, 1)}，PEG {num(peg)}，负债 / 净资产 {num(row['de'])}",
+            out[t] = Verdict(BUY, f"{cat}：3 年{gl}年增 {pct(g, 0)}，市盈率 {num(pe, 1)}，PEG {num(peg)}，负债 / 净资产 {num(row['de'])}",
                              score=float(-peg))
         elif np.isfinite(peg) and peg > 2:
-            out[t] = Verdict(SELL, f"{cat}：3 年净利润年增 {pct(g, 0)}，PEG {num(peg)}")
+            out[t] = Verdict(SELL, f"{cat}：3 年{gl}年增 {pct(g, 0)}，PEG {num(peg)}")
     return out
 
 
@@ -207,7 +269,7 @@ def can_slim(ctx: Ctx) -> dict[str, Verdict]:
         letters = {"C": bool(cq >= 0.25) if np.isfinite(cq) else False, "A": bool(a >= 0.25) if np.isfinite(a) else False,
                    "N": bool(dist.get(t, -1) >= -0.15), "L": bool(rs.get(t, 0) >= 0.8)}
         if all(letters.values()):
-            why = f"C 当季 EPS {pct(cq, 0)}、A 3 年净利润年增 {pct(a, 0)}、N 距 52 周高点 {pct(dist[t])}、L 相对强度 {num(rs[t] * 100, 0)}"
+            why = f"C 当季 EPS {pct(cq, 0)}、A 3 年{'EPS ' if 'eps_years' in ctx.fund else '净利润'}年增 {pct(a, 0)}、N 距 52 周高点 {pct(dist[t])}、L 相对强度 {num(rs[t] * 100, 0)}"
             out[t] = Verdict(BUY, why + "；M 大盘确认上升", score=float(rs[t])) if up else \
                 Verdict(HOLD, why + f"；M 大盘不在确认上升（{m['state'] if m else '无数据'}），O'Neil 这时不买")
         elif c.get(t, np.nan) < s50.get(t, np.nan) and vr.get(t, 0) >= 1.5:
