@@ -148,12 +148,37 @@ def changes(prev: dict | None, row: dict) -> list[dict] | None:
             continue
         was, became = (a["state"], a["dir"]), (b["state"], b["dir"])
         if was != became and "confirmed" in (a["state"], b["state"]):
-            out.append({"h": n, "from": a["label"], "to": b["label"], "entered": b["state"] == "confirmed", "dir": b["dir"]})
+            out.append({"h": n, "from": a["label"], "to": b["label"], "entered": b["state"] == "confirmed", "dir": b["dir"],
+                        "from_dir": a["dir"], "state": b["state"], "z": b.get("z"), "missing": b.get("missing") or [],
+                        "breadth": b.get("breadth")})
     return out
 
 
+def change_reason(ch: dict) -> str | None:
+    """Why the label changed, from the new state's numbers (None on rows stored before 2026-11-13)."""
+    z = ch.get("z")
+    if z is None or "state" not in ch:
+        return None
+    k = f"{abs(z):.1f} 倍平常波动"
+    if ch["state"] == "confirmed":
+        return f"相对 SPY 的强度到 {k}" + ("，过半成分股同向" if ch.get("breadth") is not None else "") + "，相邻周期同向"
+    if ch["state"] == "noise":
+        return f"相对 SPY 的强度降到 {k}，不到 {Z_EMERGE:g} 倍，和平常的随机波动分不开"
+    if ch.get("missing"):
+        return "；".join(ch["missing"])
+    if ch.get("from_dir") and ch.get("dir") and ch["from_dir"] != ch["dir"]:
+        return f"方向反过来了，相对 SPY 的强度 {k}（确认要 {Z_CONFIRM:g} 倍）"
+    return f"相对 SPY 的强度降到 {k}（确认要 {Z_CONFIRM:g} 倍）"
+
+
 def change_text(name: str, ch: dict) -> str:
-    return f"{name}：{SHORT[ch['h']]}由{ch['from']}转为{ch['to']}"
+    """'科技：短期 确认跑输（降级）到 初现跑输，原因：…'; a confirmed direction flip is 反转."""
+    if ch.get("from_dir") and ch.get("dir") and ch["from_dir"] != ch["dir"]:
+        verb = "反转"
+    else:
+        verb = "升级" if ch.get("entered") else "降级"
+    why = change_reason(ch)
+    return f"{name}：{SHORT[ch['h']]} {ch['from']}（{verb}）到 {ch['to']}" + (f"，原因：{why}" if why else "")
 
 
 def new_confirmations(prev: dict | None, row: dict) -> list[dict]:

@@ -223,7 +223,16 @@ class SectorTrendTests(unittest.TestCase):
         now = {"name": "金融", "trend": [c(10, "confirmed", 1), c(20, "confirmed", 1), c(63, "emerging", 1)]}
         ch = sector_trend.changes(prev, now)
         self.assertEqual([x["h"] for x in ch], [10])          # 63 noise → emerging is not reported
-        self.assertEqual(sector_trend.change_text("金融", ch[0]), "金融：短期由初现跑赢转为确认跑赢")
+        self.assertEqual(sector_trend.change_text("金融", ch[0]),
+                         "金融：短期 初现跑赢（升级）到 确认跑赢，原因：相对 SPY 的强度到 2.4 倍平常波动，相邻周期同向")
+        down = sector_trend.changes(now, {"trend": [{**c(10, "emerging", 1), "missing": ["成分股跑赢 SPY 的比例未过半"]},
+                                                    c(20, "noise", 0), c(63, "emerging", 1)]})
+        self.assertEqual([sector_trend.change_text("金融", x) for x in down],
+                         ["金融：短期 确认跑赢（降级）到 初现跑赢，原因：成分股跑赢 SPY 的比例未过半",
+                          "金融：中期 确认跑赢（降级）到 噪音，原因：相对 SPY 的强度降到 0.0 倍平常波动，不到 1 倍，和平常的随机波动分不开"])
+        flip = sector_trend.changes(now, {"trend": [{**c(10, "emerging", -1), "z": -1.5}, c(20, "confirmed", 1), c(63, "emerging", 1)]})
+        self.assertEqual(sector_trend.change_text("金融", flip[0]),
+                         "金融：短期 确认跑赢（反转）到 初现跑输，原因：方向反过来了，相对 SPY 的强度 1.5 倍平常波动（确认要 2 倍）")
         self.assertIsNone(sector_trend.changes({}, now))       # first run: baseline, no changes
         self.assertEqual([x["h"] for x in sector_trend.new_confirmations(prev, now)], [10])
         self.assertEqual([x["h"] for x in sector_trend.new_confirmations(None, now)], [10, 20])
@@ -267,14 +276,14 @@ class SectorTrendRenderTests(unittest.TestCase):
         html = trend_table([self.ROW, {"key": "GLD", "name": "黄金", "kind": "theme"}])
         self.assertIn("<b>确认跑赢</b>", html)
         self.assertIn("初现跑输（震荡）", html)
-        self.assertIn("金融：短期由初现跑赢转为确认跑赢", html)
+        self.assertIn("金融：短期 初现跑赢（升级）到 确认跑赢", html)
         self.assertIn("+2.4σ", html)
         self.assertNotIn("黄金", html)                         # no trend yet
 
     def test_digest_lines(self):
         from scout.digest import trend_lines
 
-        self.assertEqual(trend_lines([self.ROW]), ["金融：短期由初现跑赢转为确认跑赢"])
+        self.assertEqual(trend_lines([self.ROW]), ["金融：短期 初现跑赢（升级）到 确认跑赢"])
         many = [{**self.ROW, "name": f"s{i}"} for i in range(8)]
         self.assertEqual(len(trend_lines(many)), 7)
         self.assertIn("另有 2 项", trend_lines(many)[-1])
