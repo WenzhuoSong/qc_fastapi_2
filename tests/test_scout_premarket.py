@@ -33,7 +33,7 @@ PACK = {
     "earnings_today": [{"key": "et.GOOGL", "代码": "GOOGL", "名称": "Alphabet", "身份": "持仓同板块（MU）", "时间": "盘后", "EPS 预期": "2.30"}],
     "earnings_week": [],
     "economic_today": [{"key": "econ_1", "事件": "非农就业人数", "日期": "2026-10-27", "美东时间": "08:30",
-                        "北京时间": "10-27 20:30", "重要性": "高", "预期": "120K", "前值": "95K", "已公布": "已公布（在本简报之前），结果见宏观新闻"}],
+                        "北京时间": "10-27 20:30", "重要性": "高", "预期": "120K", "前值": "95K", "已公布": "已公布（在本简报之前），数值未取到，结果见宏观新闻"}],
     "economic_week": [],
     "news": [{"key": "news_1", "标题": "Microsoft beats", "来源": "Reuters", "时间（美东）": "10-26 16:30",
               "相关股票": ["MSFT"], "情绪": "positive"}],
@@ -201,10 +201,14 @@ class HoldingTests(unittest.TestCase):
         self.assertTrue(keys[0].startswith("MU：回落止损已触发"))
         self.assertTrue(keys[1].startswith("你的持仓 HUM 今日盘前发布财报：EPS -1.10"))
         self.assertIn("止损在 -12.0%", keys[1])
-        self.assertEqual(keys[2], "今天的高重要性数据：北京时间 20:30 非农就业人数（预期 120K），已公布。已公布的结果已经反映在盘前价格里")
+        self.assertEqual(keys[2], "今天的高重要性数据：北京时间 20:30 非农就业人数（预期 120K），已公布，数值未取到。已公布的结果已经反映在盘前价格里")
         self.assertEqual(keys[3], "PBF 今天发财报，期权定价 ±8.0%，过去最大跌幅 -11.0%，止损在 -12.0%")
         self.assertEqual(keys[4], "标普期货 -2.0%，约 1.9 倍日常波动")
         self.assertEqual(premarket.key_items([], None, [], []), [])
+
+    def test_released_data_with_the_official_value(self):
+        e = {**PACK["economic_today"][0], "实际": "150K", "对比预期": "高于预期"}
+        self.assertEqual(premarket.econ_text(e), "北京时间 20:30 非农就业人数 公布 150K（预期 120K，高于预期，前值 95K）")
 
     def test_near_stop_and_unreported_numbers(self):
         h = {"ticker": "SHOP", "m": {"to_stop": -0.071}, "price": 143.75, "chg": None, "sd": 0.038, "stop": 133.51, "below": False,
@@ -229,7 +233,7 @@ class RenderTests(unittest.TestCase):
         self.assertIn("（日常波动 ±2.1%）", text)
         self.assertIn("📰 🔴 Humana 下调 2027 年展望（利空：展望下调影响盈利预期）", text)
         self.assertIn("标普期货的变化约 0.3 倍", text)
-        self.assertIn("· 20:30 / 08:30 [高] 非农就业人数 预期 120K 前值 95K（已公布）", text)
+        self.assertIn("· 20:30 / 08:30 [高] 非农就业人数 预期 120K 前值 95K（已公布，数值未取到）", text)
         self.assertIn("· 今天待公布财报：GOOGL 盘后（持仓同板块（MU））", text)
         self.assertIn("· MSFT 昨日盘后 EPS 3.10 vs 预期 2.90（+6.9%）；盘前 +3.2%，财报前期权定价 ±5.0%（到 10-31 到期）", text)
         self.assertIn("· NVDA 盘前 102.00（+1.0%）在入场区间内", text)

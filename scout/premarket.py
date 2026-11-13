@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from scout import responses
 from scout import context, db, holding_notes, universe
 from scout.config import get_scout_settings
+from scout.data import bls
 from scout.data.yahoo import latest_quotes
 from scout.market_calendar import (is_us_equity_trading_day, previous_us_equity_trading_day,
                                    us_equity_market_status)
@@ -348,6 +349,16 @@ async def implied_move(ticker: str, report_day: date, hour: str, prev: date) -> 
     return holding_notes.options_move(snap.get("payload"), report_day + timedelta(days=1) if hour == "amc" else report_day)
 
 
+def econ_text(e: dict) -> str:
+    """One data release: the official value against the forecast once out, else the forecast."""
+    head = f"北京时间 {e['北京时间'][-5:]} {e['事件']}"
+    if e.get("实际"):
+        vs = "，".join(x for x in (f"预期 {e['预期']}" if e.get("预期") else None, e.get("对比预期"),
+                                  f"前值 {e['前值']}" if e.get("前值") else None) if x)
+        return f"{head} 公布 {e['实际']}" + (f"（{vs}）" if vs else "")
+    return head + (f"（预期 {e['预期']}）" if e.get("预期") else "") + ("，已公布，数值未取到" if e.get("已公布") else "")
+
+
 def key_items(hs: list[dict], es: dict | None, econ_today: list[dict], related: list[dict]) -> list[str]:
     """At most KEY_MAX lines, the most consequential first: a sell due at the open, a holding below its stop, a
     holding that reported, today's high-importance data, a holding reporting today, stops within two daily sigmas,
@@ -387,9 +398,7 @@ def key_items(hs: list[dict], es: dict | None, econ_today: list[dict], related: 
         out.append((5, f"{'、'.join(near)} 离止损的距离不到 {NEAR_STOP_SIGMAS:g} 倍日常波动，平常的波动就可能碰到（止损按收盘判断）"))
     high = [e for e in econ_today if e["重要性"] == "高"]
     if high:
-        text = "今天的高重要性数据：" + "；".join(
-            f"北京时间 {e['北京时间'][-5:]} {e['事件']}" + (f"（预期 {e['预期']}）" if e.get("预期") else "") + ("，已公布" if e.get("已公布") else "")
-            for e in high)
+        text = "今天的高重要性数据：" + "；".join(econ_text(e) for e in high)
         if any(e.get("已公布") for e in high):
             text += "。已公布的结果已经反映在盘前价格里"
         out.append((3, text))
@@ -587,12 +596,24 @@ async def build_pack(session: date, now: datetime | None = None) -> dict:
     econ = await context.economic_calendar()
     released = now.strftime("%H:%M")
 
+    def is_out(e: dict) -> bool:
+        return e["date"] == session.isoformat() and e["time_et"] < released and now.date() == session
+
+    out_bls = sorted({bls.RELEASES[e["title"]][0] for e in econ if is_out(e) and e["title"] in bls.RELEASES})
+    official = await bls.monthly(out_bls, session.year - 2, session.year) if out_bls else {}
+
     def econ_row(key: str, e: dict) -> dict:
-        return {"key": key, "事件": e["title_zh"], "日期": e["date"], "美东时间": e["time_et"], "北京时间": e["time_bj"],
-                "重要性": e["impact"], **({"预期": e["forecast"]} if e["forecast"] else {}),
-                **({"前值": e["previous"]} if e["previous"] else {}),
-                **({"已公布": "已公布（在本简报之前），结果见宏观新闻"} if e["date"] == session.isoformat() and e["time_et"] < released
-                   and now.date() == session else {})}
+        row = {"key": key, "事件": e["title_zh"], "日期": e["date"], "美东时间": e["time_et"], "北京时间": e["time_bj"],
+               "重要性": e["impact"], **({"预期": e["forecast"]} if e["forecast"] else {}),
+               **({"前值": e["previous"]} if e["previous"] else {})}
+        if is_out(e):
+            value = bls.actual(e["title"], official, session)
+            if value:
+                row.update({"实际": value, "已公布": "已公布（在本简报之前），实际值来自 BLS 官方数据"},
+                           **({"对比预期": bls.versus(value, e["forecast"])} if bls.versus(value, e["forecast"]) else {}))
+            else:
+                row["已公布"] = "已公布（在本简报之前），数值未取到，结果见宏观新闻"
+        return row
 
     econ_today = [econ_row(f"econ_{i + 1}", e) for i, e in enumerate(e for e in econ if e["date"] == session.isoformat())]
     econ_later = [e for e in econ if e["date"] > session.isoformat() and e["impact"] == "高"]
@@ -658,7 +679,7 @@ PROMPT = """你是一位专业的股票分析师，在美股开盘前给自己�
   客户记录的买入理由、自己的财报（已公布的结果或即将公布的前瞻）、相关公司的财报、上一收盘以来的直接新闻（英文）。
 - overnight：股指期货、VIX、利率、美元、原油、黄金、比特币相对上一收盘（"说明"表示今天尚未交易）。
 - earnings_reported / earnings_today / earnings_week：已公布、今天待公布、本周后续的财报；身份里有"持仓同板块（X）"或"持仓产业链（X 的…）"的会影响持仓 X。
-- economic_today / economic_week / calendar / prediction：今天和本周的数据、事件、预测市场价格。
+- economic_today / economic_week / calendar / prediction：今天和本周的数据、事件、预测市场价格。已公布的数据有"实际"（BLS 官方数值）和"对比预期"时照这两项写，不要自己判断高于或低于预期；没有"实际"的只说已公布、数值未取到。
 - opportunities（Scout 规则给出、还没触发的买点）、watchlist_moves（自选股里盘前涨跌超过 2 倍日常波动的）、news / macro_news。
 
 要写的：
@@ -828,7 +849,9 @@ def render_text(pack: dict, brief: dict, notes: dict) -> str:
         lines.append(brief["overnight"])
     lines += ["", "三、今天的日程（北京时间 / 美东时间）"]
     lines += [f"· {e['北京时间'][-5:]} / {e['美东时间']} [{e['重要性']}] {e['事件']}" + (f" 预期 {e['预期']}" if e.get("预期") else "")
-              + (f" 前值 {e['前值']}" if e.get("前值") else "") + ("（已公布）" if e.get("已公布") else "")
+              + (f" 前值 {e['前值']}" if e.get("前值") else "")
+              + (f" 公布 {e['实际']}" + (f"（{e['对比预期']}）" if e.get("对比预期") else "") if e.get("实际")
+                 else "（已公布，数值未取到）" if e.get("已公布") else "")
               for e in pack["economic_today"]] or ["· 今天没有重要经济数据"]
 
     def tag(e: dict) -> str:
