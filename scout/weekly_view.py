@@ -353,7 +353,7 @@ def render(r: dict) -> str:
         lines.append("看跌的理由：")
         lines += [f"· {a['claim']}（{src(a['fact_ids'])}）→ {a['check']}" for a in m["bear"]]
         lines.append("Scout 的数据怎么读：")
-        lines += [f"· {x['what']}：{x['value']}。{x['usually']}；对你：{x['for_you']}" for x in m["explained"]]
+        lines += [f"· {x['what']}：{x['value']}。{x['usually']}；对你：{x['for_you']}" for x in map(viewdesk.reading, m["explained"])]
         lines += [f"{ICON[m['stance']]} 未来 20 个交易日 SPY：{m['stance']}（把握{m['confidence']}）——{m['confidence_reason']}",
                   f"什么情况说明错了：{m['wrong_if']}", f"未来两周：{m['ahead']}", f"对你的组合：{m['for_you']}"]
         heat = {s["ETF"]: s.get("热度") for s in (r.get("pack") or {}).get("sectors", [])}

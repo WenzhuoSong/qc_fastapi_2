@@ -62,6 +62,14 @@ class Explained(BaseModel):
     for_you: str = Field(description="对持有或考虑买入的人意味着什么，一句")
 
 
+def reading(x: dict) -> dict:
+    """An explained data point with the model's closing punctuation trimmed, so the joins read "名称：数值。含义；对你：…"
+    instead of "…。：…。。…。；"."""
+    trim = lambda t: str(t or "").strip().rstrip("。.；;，,：: ")  # noqa: E731
+    return {**x, "what": trim(x.get("what")), "value": trim(x.get("value")), "usually": trim(x.get("usually")),
+            "for_you": str(x.get("for_you") or "").strip()}
+
+
 class View(BaseModel):
     summary: str = Field(description="一句话结论：各方怎么看、Scout 数据更支持哪边")
     stance: Literal["看多", "中性", "看空"] = Field(description="未来 horizon 个交易日相对 SPY：跑赢=看多，跑输=看空，说不清=中性")
@@ -276,7 +284,7 @@ def render_text(rec: dict) -> str:
     for a in v["bear"]:
         lines.append(f"· {a['claim']}（{a['source_kind']}·{sources_text(rec, a)}）→ {a['check']}：{a['check_note']}")
     lines.append("关键数据怎么读：")
-    for x in v["explained"]:
+    for x in map(reading, v["explained"]):
         lines.append(f"· {x['what']}：{x['value']}。{x['usually']}；对你：{x['for_you']}")
     lines += [f"什么时候成立：{v['holds_when']}", f"什么情况说明错了：{v['wrong_if']}", f"接下来看：{v['settle']}",
               f"把握：{v['confidence']}——{v['confidence_reason']}",

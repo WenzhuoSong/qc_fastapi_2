@@ -1525,6 +1525,8 @@ def weekly_market_html(rep: dict | None) -> str:
     """The latest weekly market report: market, sector lines, the deeper sector / stock views below it."""
     if not rep or not rep.get("market"):
         return ""
+    from scout.viewdesk import reading
+
     m, facts = rep["market"], rep.get("facts") or {}
     icon = {"看涨": "🟢", "中性": "⚪", "看跌": "🔴"}
 
@@ -1540,7 +1542,7 @@ def weekly_market_html(rep: dict | None) -> str:
     drivers = "".join(f"<li><b>{e(d['driver'])}</b>：{e(d['explanation'])}"
                       + (f" <span class='small muted'>（{e(src(d['fact_ids']))}）</span>" if d["fact_ids"] else "") + "</li>" for d in m["drivers"])
     expl = "".join(f"<li><b>{e(x['what'])}</b>：{e(x['value'])}。{e(x['usually'])}<br><span class='small'>对你：{e(x['for_you'])}</span></li>"
-                   for x in m["explained"])
+                   for x in map(reading, m["explained"]))
     return (f"<div class='card' style='margin-bottom:12px'><h3>📊 本周市场观点 · {e(rep.get('asof'))}</h3><p>{e(m['week'])}</p>"
             f"<dl class='analysis'><dt>本周主导因素</dt><dd><ul class='tight'>{drivers}</ul></dd>"
             f"<dt>看涨的理由</dt><dd><ul class='tight'>{args(m['bull'])}</ul></dd><dt>看跌的理由</dt><dd><ul class='tight'>{args(m['bear'])}</ul></dd>"
@@ -1555,7 +1557,7 @@ def views_page(recs: list[dict], scored: dict[str, list[dict]], weekly: dict | N
     icon = {"看多": "🟢", "中性": "⚪", "看空": "🔴"}
     check_cls = {"Scout 数据一致": "up", "Scout 数据矛盾": "down"}
     cards = []
-    from scout.viewdesk import sources_text
+    from scout.viewdesk import reading, sources_text
 
     for r in recs:
         v = r["view"]
@@ -1568,7 +1570,7 @@ def views_page(recs: list[dict], scored: dict[str, list[dict]], weekly: dict | N
                            f"<br><span class='small {check_cls.get(a['check'], 'muted')}'>{e(a['check'])}</span>"
                            f"<span class='small'>：{e(a['check_note'])}</span></li>" for a in xs)
         expl = "".join(f"<li><b>{e(x['what'])}</b>：{e(x['value'])}。{e(x['usually'])}<br><span class='small'>对你：{e(x['for_you'])}</span></li>"
-                       for x in v["explained"])
+                       for x in map(reading, v["explained"]))
         hist = scored.get(r["ticker"]) or []
         hist_html = "".join(f"<li>{e(h['asof'])} {e(h['stance'])}：20 日相对 SPY {signed(h['x20'])}"
                             + (f"，{'对' if h['hit20'] else '错'}" if h["hit20"] is not None else "，未到期") + "</li>" for h in hist)

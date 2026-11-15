@@ -23,6 +23,14 @@ def view(**over):
     return vd.View(**{**base, **over})
 
 
+class ReadingTests(unittest.TestCase):
+    def test_closing_punctuation_is_trimmed_before_the_joins(self):
+        x = vd.reading({"what": "大盘 ETF 近 20 个交易日的价格变化，不含分红。", "value": "-1.2%", "usually": "单周上涨不等于趋势已经修复。",
+                        "for_you": "核心仓面对的是短期回调。"})
+        line = f"· {x['what']}：{x['value']}。{x['usually']}；对你：{x['for_you']}"
+        self.assertEqual(line, "· 大盘 ETF 近 20 个交易日的价格变化，不含分红：-1.2%。单周上涨不等于趋势已经修复；对你：核心仓面对的是短期回调。")
+
+
 class ViewValidationTests(unittest.TestCase):
     def test_clean_view_passes(self):
         self.assertEqual(vd.validate(view(), PACK), [])
