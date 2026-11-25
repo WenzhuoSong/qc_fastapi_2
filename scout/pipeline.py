@@ -584,6 +584,16 @@ async def render_weekly_short() -> str:
         lines.append("<b>【本周故事线】</b>")
         lines += [f"· {r['asof']:%m-%d} 周{wd[r['asof'].weekday()]}：{esc(r['payload']['read']['headline'])}"
                   f"（{esc(r['payload']['read']['story_status'])}）" for r in reads]
+    from scout import market_memory
+
+    try:
+        threads = await market_memory.theme_lines(today)
+    except Exception as exc:
+        logger.warning("theme lines failed: %s", exc)
+        threads = []
+    if threads:
+        lines.append("<b>【进行中的主线】</b>")
+        lines += [f"· {esc(x)}" for x in threads]
     wv = await weekly_view.latest()
     m = (wv or {}).get("market")
     if m and str(wv.get("asof", "")) >= str(today - timedelta(days=3)):

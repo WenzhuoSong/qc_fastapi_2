@@ -26,10 +26,10 @@ def pack(**over):
 
 def read(**over):
     base = dict(headline="标普 500 当日 -1.8%，大型科技股拖累", what_happened="SPY 当日 -1.8%，约 -2.4 倍日常波动；上涨股票只有 21%。",
-                drivers=[mr.Driver(title="大公司拖累", explanation="最大 10 家合计贡献 -1.10 个百分点，占 61%", evidence=["contrib"], strength="强")],
+                drivers=[mr.Driver(title="大公司拖累", explanation="最大 10 家合计贡献 -1.10 个百分点，占 61%", evidence=["contrib"], strength="强", theme="大公司拖累")],
                 media_vs_data="新闻说股市下滑，数据支持。", story_status="无前一天", story="没有昨天的解读。",
                 for_you="持仓照计划持有。", would_change="若普通股票表现更差，就不只是大公司的问题。",
-                mood="个股期权看跌 / 看涨比 0.71，正常范围。")
+                mood="个股期权看跌 / 看涨比 0.71，正常范围。", history="这是新主线。")
     base.update(over)
     return mr.Read(**base)
 
@@ -72,15 +72,20 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(mr.validate(read(), pack()), [])
 
     def test_strong_needs_strong_evidence(self):
-        r = read(drivers=[mr.Driver(title="债市", explanation="TLT 当日 +0.2%", evidence=["move.TLT"], strength="强")])
+        r = read(drivers=[mr.Driver(title="债市", explanation="TLT 当日 +0.2%", evidence=["move.TLT"], strength="强", theme="大公司拖累")])
         self.assertTrue(any("标为「强」" in x for x in mr.validate(r, pack())))
 
     def test_numbers_keys_forecasts_and_story(self):
         r = read(headline="标普 500 当日 -2.7%，将继续下跌",
-                 drivers=[mr.Driver(title="x", explanation="y", evidence=["news.9"], strength="弱")], story_status="延续")
+                 drivers=[mr.Driver(title="x", explanation="y", evidence=["news.9"], strength="弱", theme="大公司拖累")], story_status="延续")
         issues = mr.validate(r, pack())
         for part in ("2.7", "news.9", "将继续", "无前一天"):
             self.assertTrue(any(part in x for x in issues), part)
+
+    def test_every_driver_names_a_theme(self):
+        r = read(drivers=[mr.Driver(title="大公司拖累", explanation="最大 10 家合计贡献 -1.10 个百分点", evidence=["contrib"], strength="强",
+                                    theme=" ")])
+        self.assertTrue(any("主线" in x for x in mr.validate(r, pack())))
 
     def test_fallback_is_valid(self):
         p = pack()
@@ -89,7 +94,7 @@ class ValidationTests(unittest.TestCase):
 
 class TextTests(unittest.TestCase):
     def test_short_lines_escape_and_cap_drivers(self):
-        rec = {"read": read(drivers=[mr.Driver(title=f"<d{i}>", explanation="e", evidence=["contrib"], strength="中")
+        rec = {"read": read(drivers=[mr.Driver(title=f"<d{i}>", explanation="e", evidence=["contrib"], strength="中", theme="大公司拖累")
                                      for i in range(4)]).model_dump()}
         lines = mr.short_lines(rec)
         self.assertTrue(lines[0].startswith("<b>【市场解读】</b>"))

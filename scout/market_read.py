@@ -55,6 +55,7 @@ class Driver(BaseModel):
     evidence: list[str] = Field(description="引用的证据 key（证据包里每条都有 key）")
     strength: Literal["强", "中", "弱"] = Field(description="证据强度：强 = 有超出日常波动的读数、贡献占比大或数据明显偏离预期；"
                                                         "中 = 数据支持但不突出；弱 = 只有新闻标题或间接证据")
+    theme: str = Field(description="所属主线：沿用 memory.themes 里的标题（一字不改），或新起一个 ≤ 12 字的标题（如「AI 芯片抛售」「利率上行压力」）")
 
 
 class Read(BaseModel):
@@ -64,6 +65,8 @@ class Read(BaseModel):
     media_vs_data: str = Field(description="1–2 句：新闻怎么解释今天，Scout 的数据是否支持；没有相关新闻就直说")
     story_status: Literal["延续", "被推翻", "新出现", "无前一天"] = Field(description="和昨天的市场解读相比")
     story: str = Field(description="1 句：昨天的主要解释今天是延续、被推翻，还是出现了新的故事；为什么")
+    history: str = Field(description="1–2 句：把今天放进最近几周看——属于哪条主线、是第几天、开始以来相关资产涨跌多少、是加强、减弱、"
+                                     "淡出后再次出现，还是新主线；只引用 memory 里的事实")
     for_you: str = Field(description="1–2 句：对用户的持仓意味着什么（β、所在板块、今天的盈亏），以及计划现在要求什么")
     mood: str = Field(description="1–2 句：市场情绪和仓位处在历史的什么位置（只引用 sentiment 的读数），不据此推断后市")
     would_change: str = Field(description="1 句：什么样的数据出现，会说明今天的解释不对")
@@ -79,7 +82,9 @@ PROMPT = """你是一位美股策略分析师，收盘后给一位个人投资�
 - news：市场新闻标题（未经核实），causes：大涨大跌日联网核实过的原因；holdings：用户的持仓；filter：大盘过滤；
 - sentiment：情绪与仓位读数（看跌 / 看涨比、AAII 散户调查、VIX 及期限结构、新高新低、站上 50 日线比例），每项有历史位置和读数
   （偏恐慌 / 偏乐观 / 正常范围）；Scout 检验过这类读数对下周涨跌没有预测力，只用来描述情绪；
-- yesterday：昨天的市场解读（没有就是 null）。
+- yesterday：昨天的市场解读（没有就是 null）；
+- memory：近期日记 recent（最近 10 个交易日的标题和推动因素）、主线 themes（每条主线的开始日期、作为推动因素的天数、
+  状态、开始以来锚定资产的涨跌、最近几次的说法）、周度回顾 weeks（最近 4 周的市场概述）。
 
 工作方法：
 1. 先描述今天真正异常的是什么（看日常波动倍数），普通的波动不要说成大事。
@@ -89,7 +94,9 @@ PROMPT = """你是一位美股策略分析师，收盘后给一位个人投资�
 3. 对照新闻：新闻标题的说法有没有数据支持；只有标题、没有数据支持的，强度最多为「弱」，并写明「据报道」。
 4. 和昨天的解读对照：昨天的主要解释今天是延续还是被推翻。
 5. 对用户：持仓今天怎样、跟大盘的关系（β），计划要求什么（没有要做的就说照计划持有）。
-6. 情绪：用 sentiment 的读数说现在大家是紧张还是乐观、极端与否；读数之间矛盾就直说。不要写「恐慌往往意味着见底」之类的推断。
+6. 历史：每个推动因素归到一条主线——和 memory.themes 里某条说的是同一件事就沿用它的标题（一字不改），否则新起一个；
+   在 history 里说今天在这些主线里的位置（第几天、开始以来涨跌、加强还是减弱、是否淡出后再现）。只用 memory 里的事实，不要回忆证据包以外的历史。
+7. 情绪：用 sentiment 的读数说现在大家是紧张还是乐观、极端与否；读数之间矛盾就直说。不要写「恐慌往往意味着见底」之类的推断。
 
 硬性规则：
 - 数字只能原样引用证据包里的数值，不要自己计算；涨跌数字自带正负号，不要写「跌幅为 -1.2%」。
@@ -201,6 +208,7 @@ async def build_pack(p, asof: date, sector_rows: list[dict], g: dict | None, mfi
     abroad = await gm.closes(asof - timedelta(days=150))
     for sym, name, region, meaning in gm.ALL:
         c = abroad.get(sym)
+        c = c[c.index <= asof] if c is not None else None          # a rerun of an earlier day: abroad may be a day ahead
         if c is not None and len(c) and c.index[-1] == asof and (m := sigma_move(c, asof)):
             moves.append(move_item(f"global.{sym.strip('^').replace('=', '').replace('.', '')}", f"{name}（{region}）", meaning, m))
     for a, b, name, meaning in (("RSP", "SPY", "等权相对市值加权", "正 = 普通股票比大公司强，上涨面广；负 = 少数大公司主导"),
@@ -277,6 +285,20 @@ async def build_pack(p, asof: date, sector_rows: list[dict], g: dict | None, mfi
                          "当日": _pct(f.get("ret_1d")), "β": None if f.get("beta") is None else f"{f['beta']:.2f}",
                          "板块": t.get("sector"), "计划": step or "照计划持有"})
 
+    from scout import market_memory
+
+    series: dict[str, pd.Series] = {c: close[c] for c in close.columns}
+    series.update({sym: bars["close"] for sym, bars in live.items() if bars is not None and len(bars)})
+    series.update(abroad)
+    memory = {}
+    for part, get in (("recent", lambda: market_memory.recent(asof)), ("themes", lambda: market_memory.themes(asof, series)),
+                      ("weeks", lambda: market_memory.weekly(asof))):
+        try:                           # each layer on its own: the read goes on without the ones that fail
+            memory[part] = await get()
+        except Exception as exc:
+            logger.warning("market memory %s failed: %s", part, exc)
+            memory[part] = []
+
     from scout import sentiment
 
     try:
@@ -293,7 +315,7 @@ async def build_pack(p, asof: date, sector_rows: list[dict], g: dict | None, mfi
 
     return {"data_date": asof.isoformat(), "moves": moves, "breadth": breadth, "contributions": contrib and
             {k: v for k, v in contrib.items() if not k.startswith("_")}, "sectors": sectors, "macro_data": macro_data, "odds": odds,
-            "earnings": earn, "news": news, "causes": causes, "holdings": holdings, "sentiment": mood,
+            "earnings": earn, "news": news, "causes": causes, "holdings": holdings, "sentiment": mood, "memory": memory,
             "filter": {"key": "filter", "大盘过滤": market_filter.text(mfilter)} if mfilter else None, "yesterday": yesterday,
             "_strong": sorted(set(unusual) | set(surprises) | ({"contrib"} if contrib and contrib["_strong"] else set())
                               | ({"contrib"} if contrib and (contrib["_top10_share"] or 0) >= 0.5 else set()))}
@@ -319,7 +341,7 @@ def keys(pack: dict) -> set[str]:
 
 def validate(r: Read, pack: dict) -> list[str]:
     issues = []
-    texts = [r.headline, r.what_happened, r.media_vs_data, r.story, r.for_you, r.would_change, r.mood] + \
+    texts = [r.headline, r.what_happened, r.media_vs_data, r.story, r.for_you, r.would_change, r.mood, r.history] + \
             [d.title + "。" + d.explanation for d in r.drivers]
     body = "\n".join(texts)
     allowed = allowed_numbers({k: v for k, v in pack.items() if not k.startswith("_")})
@@ -336,6 +358,8 @@ def validate(r: Read, pack: dict) -> list[str]:
             issues.append(f"「{d.title}」标为「强」，但引用的证据里没有超出日常波动的读数、集中的贡献或偏离预期的数据")
         if not d.evidence:
             issues.append(f"「{d.title}」没有引用证据")
+        if not d.theme.strip() or len(d.theme.strip()) > 16:
+            issues.append(f"「{d.title}」的主线标题要有，且不超过 16 字")
     if not 1 <= len(r.drivers) <= 4:
         issues.append("推动因素要 1–4 个")
     for w in FORECAST + ACTIONS:
@@ -355,17 +379,17 @@ def fallback(pack: dict) -> Read:
     spy = next((m for m in pack["moves"] if m["key"] == "move.SPY"), {})
     odd = [m for m in pack["moves"] if m.get("超出日常波动")]
     drivers = [Driver(title=m["名称"][:16], explanation=f"{m['名称']}当日 {m['当日']}，约 {m['日常波动倍数']} 倍日常波动",
-                      evidence=[m["key"]], strength="强") for m in odd[:3]]
+                      evidence=[m["key"]], strength="强", theme="（规则整理）") for m in odd[:3]]
     c = pack.get("contributions")
     if c and c.get("最大 10 家占指数涨跌"):
-        drivers.append(Driver(title="大公司贡献", explanation=f"最大 10 家合计贡献 {c['最大 10 家合计贡献']}", evidence=["contrib"], strength="中"))
+        drivers.append(Driver(title="大公司贡献", explanation=f"最大 10 家合计贡献 {c['最大 10 家合计贡献']}", evidence=["contrib"], strength="中", theme="（规则整理）"))
     if not drivers:
-        drivers = [Driver(title="普通波动", explanation="没有读数超出日常波动", evidence=["move.SPY"], strength="弱")]
+        drivers = [Driver(title="普通波动", explanation="没有读数超出日常波动", evidence=["move.SPY"], strength="弱", theme="（规则整理）")]
     return Read(headline=f"标普 500 当日 {spy.get('当日', '—')}" + ("，有读数超出日常波动" if odd else "，在日常波动之内"),
                 what_happened="、".join(f"{m['名称']} {m['当日']}" for m in pack["moves"][:4]),
                 drivers=drivers[:4], media_vs_data="（AI 解读未通过校验，没有对照新闻）",
                 story_status="无前一天" if pack.get("yesterday") is None else "新出现", story="（按规则整理，没有对照昨天）",
-                for_you="持仓照计划管理", would_change="—",
+                for_you="持仓照计划管理", would_change="—", history="（按规则整理，没有对照历史）",
                 mood="；".join(f"{x['名称']} {x['数值']}，{x['读数']}" for x in pack.get("sentiment") or []) or "没有情绪读数")
 
 
@@ -402,6 +426,13 @@ async def generate(p, asof: date, sector_rows: list[dict], g: dict | None, mfilt
     pack = await build_pack(p, asof, sector_rows, g, mfilter)
     read, source, tries = await write(pack)
     rec = {"source": source, "read": read.model_dump(), "pack": pack, "validation": tries}
+    if source == "llm":                # the rule-based read names no themes
+        from scout import market_memory
+
+        try:
+            rec["themes"] = await market_memory.update([d.model_dump() for d in read.drivers], asof)
+        except Exception as exc:
+            logger.warning("market themes update failed: %s", exc)
     content = render_text(read, asof, source)
     await db.execute("INSERT INTO scout.briefs (kind, asof, content, payload) VALUES ('market_read', :d, :c, CAST(:p AS JSONB))",
                      {"d": asof, "c": content, "p": db.jsonb(rec)})
@@ -420,7 +451,8 @@ NOTE = "事后解释，不是预测；数字由 Python 计算，新闻标题未�
 
 def render_text(r: Read, asof: date, source: str) -> str:
     lines = [f"【市场解读 · {asof}】{r.headline}", r.what_happened, "主要推动："]
-    lines += [f"· {d.title}（证据{d.strength}）：{d.explanation}" for d in r.drivers]
+    lines += [f"· {d.title}（证据{d.strength}，主线：{d.theme}）：{d.explanation}" for d in r.drivers]
+    lines.append(f"放进最近几周看：{r.history}")
     lines += [f"新闻与数据：{r.media_vs_data}", f"故事线（{r.story_status}）：{r.story}", f"对你：{r.for_you}",
               f"情绪：{r.mood}", f"什么会说明这个解释不对：{r.would_change}", f"（{NOTE}" + ("；AI 解读未通过校验，按规则整理" if source != "llm" else "") + "）"]
     return "\n".join(lines)
@@ -435,7 +467,7 @@ def short_lines(rec: dict | None) -> list[str]:
     r = rec["read"]
     lines = ["<b>【市场解读】</b>" + esc(r["headline"])]
     lines += [f"• {esc(d['title'])}（证据{d['strength']}）：{esc(d['explanation'])}" for d in r["drivers"][:3]]
-    lines.append(f"故事线（{r['story_status']}）：{esc(r['story'])}")
+    lines.append(f"历史：{esc(r['history'])}" if r.get("history") else f"故事线（{r['story_status']}）：{esc(r['story'])}")
     if r.get("mood"):
         lines.append(f"情绪：{esc(r['mood'])}")
     lines.append(f"对你：{esc(r['for_you'])}")
