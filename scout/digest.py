@@ -236,7 +236,8 @@ def trend_lines(rows: list[dict]) -> list[str]:
     return out[:TREND_MAX] + ([f"另有 {len(out) - TREND_MAX} 项见 Dashboard「市场全景」"] if len(out) > TREND_MAX else [])
 
 
-def render_short(asof: date, market: dict, mfilter: dict | None, g: dict, satellite: dict | None) -> str:
+def render_short(asof: date, market: dict, mfilter: dict | None, g: dict, satellite: dict | None,
+                 read: dict | None = None) -> str:
     """What Telegram gets after the close (user's request 2026-11-25): the key items, one line per holding, the market
     in two lines. The full digest is stored as the eod brief (/digest, Dashboard)."""
     from scout import holding_notes, market_filter
@@ -251,15 +252,18 @@ def render_short(asof: date, market: dict, mfilter: dict | None, g: dict, satell
         pnl = [h["pnl"] for h in held if h["pnl"] is not None]
         if pnl:
             lines.append(f"合计盈亏 {sum(pnl):+,.0f}（含已实现）")
-    lines += ["<b>【市场】</b>", f"SPY 当日 {pct(market.get('spy_ret_1d'), 1, True)}，20 日 {pct(market.get('spy_ret_20d'), 1, True)} | "
-              f"QQQ 20 日 {pct(market.get('qqq_ret_20d'), 1, True)} | IWM 20 日 {pct(market.get('iwm_ret_20d'), 1, True)}"]
+    from scout import market_read
+
+    lines += market_read.short_lines(read) or [
+        "<b>【市场】</b>", f"SPY 当日 {pct(market.get('spy_ret_1d'), 1, True)}，20 日 {pct(market.get('spy_ret_20d'), 1, True)} | "
+        f"QQQ 20 日 {pct(market.get('qqq_ret_20d'), 1, True)} | IWM 20 日 {pct(market.get('iwm_ret_20d'), 1, True)}"]
     if mfilter:
         lines.append(("🛑 " if mfilter["off"] else "🟢 ") + esc(market_filter.text(mfilter)))
     return "\n".join(lines)
 
 
 def render(asof: date, market: dict, sector_rows: list[dict], focus: dict | None, mfilter: dict | None,
-           g: dict, satellite: dict | None, scan_lines: list[str]) -> str:
+           g: dict, satellite: dict | None, scan_lines: list[str], read: dict | None = None) -> str:
     from scout import holding_notes, market_filter
     from scout.propagation import PUSH_CONFIDENCE, REL_ZH
 
@@ -286,7 +290,10 @@ def render(asof: date, market: dict, sector_rows: list[dict], focus: dict | None
     if missing:
         lines.append(f"（{'、'.join(missing)} 没有记录买入理由，新闻没法对照你的判断；买入时把理由一起发给 Scout 就会记下）")
 
-    lines += ["\n<b>二、市场</b>", esc(opportunities.state_text(market, detail=True)),
+    lines.append("\n<b>二、市场</b>")
+    if read:
+        lines += [esc(x) for x in read.get("content", "").split("\n")] if read.get("content") else []
+    lines += [esc(opportunities.state_text(market, detail=True)),
               f"SPY 当日 {pct(market.get('spy_ret_1d'), 1, True)}，20 日 {pct(market.get('spy_ret_20d'), 1, True)} | "
               f"QQQ 20 日 {pct(market.get('qqq_ret_20d'), 1, True)} | IWM 20 日 {pct(market.get('iwm_ret_20d'), 1, True)} | "
               f"SMH 20 日 {pct(market.get('smh_ret_20d'), 1, True)}"]

@@ -417,8 +417,17 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
             logger.warning("prediction markets failed: %s", exc)
         user = await portfolio.get_settings()
         g = await digest.enrich(g, p, asof, sector_rows, user.get("account_size"))
-        brief = digest.render(asof, market, sector_rows, focus, mfilter, g, portfolio.satellite(user), scan)
-        short = digest.render_short(asof, market, mfilter, g, portfolio.satellite(user))
+        read = None
+        try:                           # why the market moved today (its summary replaces the digest's market lines)
+            from scout import market_read
+
+            read = await market_read.generate(p, asof, sector_rows, g, mfilter)
+            summary["market_read"] = read["source"]
+        except Exception as exc:
+            logger.warning("market read failed: %s", exc)
+            summary["market_read"] = f"failed: {type(exc).__name__}"
+        brief = digest.render(asof, market, sector_rows, focus, mfilter, g, portfolio.satellite(user), scan, read=read)
+        short = digest.render_short(asof, market, mfilter, g, portfolio.satellite(user), read=read)
     except Exception as exc:           # the digest must not cost the session its brief
         logger.warning("digest failed: %s", exc)
         brief = "\n\n".join([render_eod_brief(asof, market, sector_rows, focus), *deferred, "\n".join(scan)])

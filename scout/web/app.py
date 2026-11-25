@@ -544,7 +544,20 @@ async def market_page(view: str = "sectors", norms: int = 21, _: str = Depends(r
     names = {"SPY": "S&P 500", **{r["key"]: r["name"] for r in rows}}
     norms_html = (f"<div class='card' id='norms'><h3>历史常态 <span class='small muted'>未来一段时间通常会怎样 · 不是预测 · {e(norms_asof)}</span></h3>"
                   f"{views.norms_card(norms_rows, names, norms if norms in nm.HORIZONS else nm.DEFAULT_H)}</div>")
-    body = (f"<h2>市场全景</h2><div class='duo'>{focus_html}{rrg_html}</div>{norms_html}{trend_html}{table_html}"
+    from scout import market_read
+
+    rd = await market_read.latest()
+    read_html = ""
+    if rd:
+        r = rd["read"]
+        drivers = "".join(f"<li><b>{e(d['title'])}</b>（证据{e(d['strength'])}）：{e(d['explanation'])}</li>" for d in r["drivers"])
+        read_html = (f"<div class='card' style='margin-bottom:12px'><h3>市场解读 <span class='small muted'>{e(rd['asof'])}"
+                     f"{'' if rd['source'] == 'llm' else ' · 未通过校验，按规则整理'}</span></h3>"
+                     f"<div class='headline'>{e(r['headline'])}</div><p>{e(r['what_happened'])}</p><ol>{drivers}</ol>"
+                     f"<p class='small'>新闻与数据：{e(r['media_vs_data'])}</p><p class='small'>故事线（{e(r['story_status'])}）：{e(r['story'])}</p>"
+                     f"<p class='small'>对你：{e(r['for_you'])}</p><p class='small'>什么会说明这个解释不对：{e(r['would_change'])}</p>"
+                     f"<p class='small muted'>{e(market_read.NOTE)}</p></div>")
+    body = (f"<h2>市场全景</h2>{read_html}<div class='duo'>{focus_html}{rrg_html}</div>{norms_html}{trend_html}{table_html}"
             f"<h2>板块详情</h2><div class='grid'>{''.join(cards)}</div>"
             f"<h2>全市场新闻</h2><div class='card'><ul class='tight'>{mnews or '<li class=muted>暂无</li>'}</ul></div>")
     return layout("市场全景", "market", body)

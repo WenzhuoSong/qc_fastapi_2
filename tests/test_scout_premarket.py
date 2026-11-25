@@ -246,6 +246,14 @@ class RenderTests(unittest.TestCase):
         self.assertIn("】标普期货 +0.3%", text)
         self.assertIn("📰 🔴 Humana cuts 2027 outlook", text)
 
+    def test_short_version_for_telegram(self):
+        text = premarket.render_short(PACK, {"headline": "期货小涨", "overnight": "", "watch": []})
+        self.assertTrue(text.startswith("【盘前 · 2026-10-27 周二】期货小涨（完整版发 /premarket）"))
+        self.assertIn("1. 你的持仓 HUM 今日盘前发布财报", text)
+        self.assertIn("今天：20:30 非农就业人数 预期 120K；财报：GOOGL 盘后", text)
+        self.assertIn("隔夜财报：", text)
+        self.assertNotIn("一、我的持仓", text)
+
     def test_card_renders(self):
         from scout.web.views import premarket_card
 

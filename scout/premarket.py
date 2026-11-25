@@ -889,6 +889,29 @@ def render_text(pack: dict, brief: dict, notes: dict) -> str:
     return "\n".join(lines)
 
 
+def render_short(pack: dict, brief: dict) -> str:
+    """What Telegram gets before the open (user's request 2026-11-25): the headline, the key items, overnight, today's
+    schedule (data, earnings, 高 events with their previews kept on the web, prediction markets), the reports that came
+    in. The full brief is stored (/premarket)."""
+    lines = [f"【盘前 · {pack['session']} {pack['weekday']}】{brief['headline']}（完整版发 /premarket）"]
+    if pack.get("key_items"):
+        lines += ["开盘前最重要的："] + [f"{i}. {x}" for i, x in enumerate(pack["key_items"], 1)]
+    lines.append(f"隔夜：{overnight_line(pack)}" + (f"。{brief['overnight']}" if brief.get("overnight") else ""))
+    sched = [f"{e['北京时间'][-5:]} {e['事件']}" + (f" 预期 {e['预期']}" if e.get("预期") else "")
+             + (f" 公布 {e['实际']}" + (f"（{e['对比预期']}）" if e.get("对比预期") else "") if e.get("实际") else "")
+             for e in pack["economic_today"]]
+    if pack["earnings_today"]:
+        sched.append("财报：" + "、".join(f"{e['代码']} {e['时间']}" for e in pack["earnings_today"]))
+    sched += [f"{e['日期'][5:]} [高] {e['标题']}" for e in pack.get("calendar", [])]
+    sched += [f"预测市场 {x['事件']}：" + "；".join(f"{o['结果']} {o['现在']}" for o in x["各结果概率"][:2]) for x in pack.get("prediction", [])[:2]]
+    lines.append("今天：" + ("；".join(sched) if sched else "没有重要数据和事件"))
+    if pack["earnings_reported"]:
+        rows = pack["earnings_reported"]
+        lines.append("隔夜财报：" + "；".join(earn_summary(e) for e in rows[:3]) + (f"；另有 {len(rows) - 3} 家" if len(rows) > 3 else ""))
+    lines.append("（期货和盘前价格不代表开盘价；非投资建议）")
+    return "\n".join(lines)
+
+
 async def generate(session: date) -> dict:
     pack = await build_pack(session)
     res = await write(pack)
@@ -959,11 +982,11 @@ async def run(push: bool = True, force: bool = False) -> dict:
             summary["todo"] = await todo.send(session)
         except Exception as exc:
             summary["todo"] = f"failed: {type(exc).__name__}"
-        content = render_text(record["pack"], record["brief"], record["notes"])
+        content = render_short(record["pack"], record["brief"])
         await telegram.send(telegram.esc(content) + SOURCE_NOTE.get(record["source"], ""))
         summary["pushed"] = True
     try:
-        summary["previews"] = await event_calendar.send_previews(session, push=push)
+        summary["previews"] = await event_calendar.send_previews(session, push=False)   # on the web; the schedule names them
     except Exception as exc:
         summary["previews"] = f"failed: {type(exc).__name__}"
     return summary
