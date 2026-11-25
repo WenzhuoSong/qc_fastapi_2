@@ -1,6 +1,7 @@
 """End-of-day and weekly pipelines."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, datetime, timedelta
 
@@ -33,6 +34,52 @@ async def prepare(full_backfill: bool = False, replace: bool = True) -> dict:
     else:
         out["bars"] = await bars.refresh(provider, tickers, settings.scout_history_years)
     return out
+
+
+PRICE_SAMPLE = 30                  # most traded stocks checked before the scan, plus SPY and the holdings
+PRICE_BAD_SHARE = 0.2              # this share of the sample off Finnhub by > 0.5 %: the vendor's closes are not final yet
+PRICE_RETRIES = 3
+PRICE_WAIT_S = 300
+
+
+async def price_sample() -> list[str]:
+    rows = await db.fetch_all(
+        "SELECT ticker FROM scout.trades WHERE closed_on IS NULL UNION SELECT 'SPY' UNION SELECT ticker FROM ("
+        " SELECT f.ticker FROM scout.features_daily f JOIN scout.instruments i USING (ticker)"
+        " WHERE f.date = (SELECT max(date) FROM scout.features_daily) AND i.kind = 'stock'"
+        " ORDER BY (f.payload->>'dollar_vol20')::float DESC NULLS LAST LIMIT :n) top", {"n": PRICE_SAMPLE})
+    return sorted(r["ticker"] for r in rows)
+
+
+def closes_unsettled(checked: int, off: list) -> bool:
+    return len(off) >= 3 and len(off) >= PRICE_BAD_SHARE * checked
+
+
+async def settle_closes(wait_s: float = PRICE_WAIT_S) -> dict:
+    """Right after the bell Yahoo sometimes serves closes that are not final (2026-11-18: 84 of 129 stocks off by up to
+    4 %, corrected the next day). Before anything is computed, a sample is checked against Finnhub; while a fifth or
+    more is off, wait and fetch the bars again (at most PRICE_RETRIES times), then go on either way."""
+    from scout import research_data
+
+    tickers = await price_sample()
+    tries = []
+    for attempt in range(PRICE_RETRIES + 1):
+        checked, off = await research_data.price_offsets(tickers)
+        tries.append({"checked": checked, "off": len(off)})
+        if not closes_unsettled(checked, off) or attempt == PRICE_RETRIES:
+            break
+        logger.warning("closes not settled: %d of %d off Finnhub; refetching in %ds", len(off), checked, wait_s)
+        await asyncio.sleep(wait_s)
+        await prepare()
+    return {"tries": tries, "settled": not closes_unsettled(checked, off), "checked": checked,
+            "off": [o["ticker"] for o in off][:20]}
+
+
+def unsettled_text(check: dict) -> str | None:
+    if check.get("settled", True):
+        return None
+    return (f"⚠️ <b>收盘价核对</b>：抽查 {check['checked']} 只，{len(check['off'])} 只的 Yahoo 收盘价与 Finnhub 相差超过 0.5%，"
+            f"重新拉取 {PRICE_RETRIES} 次仍未更正；今天的扫描和汇总可能用了未定稿的价格，下一次拉取时日线会更正")
 
 
 async def load_panel(lookback_days: int | None = PANEL_LOOKBACK_DAYS) -> FeaturePanel:
@@ -166,6 +213,13 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
     deferred: list[str] = []           # pushes folded into the digest
     managed: list[dict] = []
     prop_signals: list[dict] = []
+    try:                               # closes checked against Finnhub before anything is computed from them
+        summary["price_check"] = await settle_closes()
+        if text := unsettled_text(summary["price_check"]):
+            deferred.append(text)
+    except Exception as exc:
+        logger.warning("price check failed: %s", exc)
+        summary["price_check"] = f"failed: {type(exc).__name__}"
     p = await load_panel()
     asof: date = p.dates[-1]
     summary["asof"] = asof.isoformat()

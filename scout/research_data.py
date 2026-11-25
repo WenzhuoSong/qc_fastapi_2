@@ -127,6 +127,14 @@ async def macro() -> int:
 
 async def price_crosscheck(tickers: list[str], asof: date) -> dict:
     """Yahoo daily close (stored bars) against Finnhub's quote for the same session."""
+    checked, off = await price_offsets(tickers)
+    for o in off:
+        await _quality(asof, "price_mismatch", o["ticker"], o)
+    return {"checked": checked, "mismatched": len(off)}
+
+
+async def price_offsets(tickers: list[str]) -> tuple[int, list[dict]]:
+    """(stocks compared, those whose latest stored close is more than PRICE_TOLERANCE off Finnhub's for that session)."""
     bars = {r["ticker"]: r for r in await db.fetch_all(
         "SELECT DISTINCT ON (ticker) ticker, date, close FROM scout.bars_daily WHERE ticker = ANY(:t) ORDER BY ticker, date DESC",
         {"t": tickers})}
@@ -145,9 +153,7 @@ async def price_crosscheck(tickers: list[str], asof: date) -> dict:
         diff = b["close"] / ref - 1
         if abs(diff) > PRICE_TOLERANCE:
             off.append({"ticker": t, "date": str(b["date"]), "yahoo": round(b["close"], 4), "finnhub": ref, "diff": round(diff, 5)})
-    for o in off:
-        await _quality(asof, "price_mismatch", o["ticker"], o)
-    return {"checked": checked, "mismatched": len(off)}
+    return checked, off
 
 
 async def run_daily(limit: int | None = None) -> dict:
