@@ -33,7 +33,7 @@ HELP_TEXT = (
     "/sectors — 板块热度、轮动与市场关注点\n"
     "/premarket — 今天的盘前简报\n"
     "/todo — 今日待办（要卖的、要发财报的、超出上限的、待决定的候选）\n"
-    "/digest — 最近一次收盘汇总的完整版\n"
+    "/digest — 最近一次收盘汇总的完整版\n"    "/weekly — 最近一次周报的完整版（含个股和板块观点）\n"
     "/trades — 我的持仓、止损和卖出信号\n"
     "记录交易：直接说「买了 PBF 300 股 75.76，理由……，跌破 71.9 说明错了」或「卖了 CART 全部 56.81」，"
     "Scout 解析并检查后让你确认（也可用 /buy …）\n"
@@ -425,6 +425,8 @@ async def dispatch(text: str) -> str:
         return ""
     if cmd == "/digest":
         return await digest_text()
+    if cmd == "/weekly":
+        return await weekly_text()
     if cmd == "/sell":
         return await sell_cmd(args)
     return HELP_TEXT
@@ -516,6 +518,16 @@ async def digest_text() -> str:
     """The latest after-close digest in full (Telegram gets the short version)."""
     row = await db.fetch_one("SELECT content FROM scout.briefs WHERE kind = 'eod' ORDER BY id DESC LIMIT 1")
     return row["content"] if row else "还没有收盘汇总。"
+
+
+async def weekly_text() -> str:
+    """The full weekly report and market view (Telegram gets the short version)."""
+    rows = await db.fetch_all("SELECT DISTINCT ON (kind) kind, content FROM scout.briefs WHERE kind IN ('weekly_view', 'weekly') "
+                              "ORDER BY kind, id DESC")
+    by = {r["kind"]: r["content"] for r in rows}
+    if not by:
+        return "还没有周报。"
+    return "\n\n".join(x for x in (esc(by["weekly_view"]) if by.get("weekly_view") else None, by.get("weekly")) if x)
 
 
 async def premarket_text() -> str:

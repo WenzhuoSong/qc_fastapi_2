@@ -34,6 +34,7 @@ SYSTEM_PROMPT = f"""你是 Scout，一位美股研究助理，服务于一位有
 - 问到某只股票：get_snapshot（技术与涨跌拆分）、get_price_map（支撑阻力、买点、风险档位）、get_ai_insight（最近一次 AI 解读）、
   get_fundamentals（财报、估值、预期、持股、期权）、get_events（异动及原因）、get_news、get_earnings，按问题选。
 - 问到某个方法有没有用、某条规则是否通过：get_knowledge；问到前向验证、检验结果、研究进度：get_research。问到 Scout 过去判断准不准：get_ledger。
+- 问到「今天要做什么」「有什么要处理」：get_todo（按用户自己的计划需要他处理的事）。
 - 问到今天 / 最近市场为什么涨跌、发生了什么：先用 get_market_read（收盘后的市场解读和证据），再按需补充。
 - 问到大盘、板块轮动、哪个行业强弱：get_market_overview、get_sectors；问到 Scout 的行业观点：get_outlook。
   板块"趋势"按 get_sectors 的趋势确认状态回答，并说明周期（短期 10 日 / 中期 20 日 / 较长 63 日）：确认只说明走势不像偶然，不说会延续。
@@ -479,6 +480,18 @@ async def get_briefs(kind: str) -> dict:
         return {"note": f"还没有{BRIEFS.get(kind, kind)}"}
     return {"简报": BRIEFS.get(kind, kind), "数据日期": str(row["asof"]), "生成时间": str(row["created_at"])[:16],
             "全文": (row["content"] or "")[:8000]}
+
+
+@tool("get_todo", "今日待办：按用户自己的计划现在需要他处理的事（要卖的持仓、即将发财报的持仓、卫星仓超限、大盘过滤避险、待决定的候选）；"
+                  "问「今天要做什么」「有什么要处理」时用", pages=("/",))
+async def get_todo() -> dict:
+    from scout import todo
+    from scout.market_calendar import us_equity_market_status
+
+    today = date.fromisoformat(us_equity_market_status().market_date)
+    rows = await todo.items(today)
+    return {"日期": str(today), "待办": [x["text"] for x in rows] or ["没有需要处理的事"],
+            "说明": "这些都是用户自己计划的要求；在 Telegram 的今日待办里点按钮处理"}
 
 
 @tool("get_market_read", "今天（最近一个收盘）的市场解读：发生了什么、主要推动因素（各带证据强度）、新闻和数据是否一致、和昨天的故事线相比、"

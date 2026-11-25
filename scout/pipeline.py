@@ -549,7 +549,7 @@ async def run_weekly(push: bool = True) -> dict:
     try:                               # the weekly market report: market → sectors → stocks, facts store + Scout data, ledger-scored
         from scout import weekly_view
 
-        summary["views"] = await weekly_view.run(push=push)
+        summary["views"] = await weekly_view.run(push=False)        # in the weekly push below; the full text on the web
     except Exception as exc:
         logger.warning("views desk failed: %s", exc)
         summary["views"] = f"failed: {type(exc).__name__}"
@@ -565,8 +565,51 @@ async def run_weekly(push: bool = True) -> dict:
         "INSERT INTO scout.briefs (kind, asof, content) VALUES ('weekly', :d, :c)", {"d": date.today(), "c": report}
     )
     if push:
-        await telegram.send(report)
+        await telegram.send(await render_weekly_short())
     return summary
+
+
+async def render_weekly_short() -> str:
+    """The one weekly push (user's request 2026-11-25): the week's story line from the daily market reads, the market
+    view in four lines, sectors in one, the outlook in one, the user's candidate decisions, the calibration. The full
+    report, the 14 views, the playbooks and the scoreboard stay on the web and behind /weekly."""
+    from scout import market_read, outlook, todo, weekly_view
+
+    esc, today = telegram.esc, date.today()
+    lines = [f"🗓 <b>Scout 周报 {today}</b>（完整版发 /weekly）"]
+    reads = await db.fetch_all("SELECT DISTINCT ON (asof) asof, payload FROM scout.briefs WHERE kind = 'market_read' AND asof > :d "
+                               "ORDER BY asof, id DESC", {"d": today - timedelta(days=7)})
+    if reads:
+        wd = "一二三四五六日"
+        lines.append("<b>【本周故事线】</b>")
+        lines += [f"· {r['asof']:%m-%d} 周{wd[r['asof'].weekday()]}：{esc(r['payload']['read']['headline'])}"
+                  f"（{esc(r['payload']['read']['story_status'])}）" for r in reads]
+    wv = await weekly_view.latest()
+    m = (wv or {}).get("market")
+    if m and str(wv.get("asof", "")) >= str(today - timedelta(days=3)):
+        lines += ["<b>【市场】</b>", esc(m["week"]),
+                  f"{weekly_view.ICON[m['stance']]} 未来 20 个交易日 SPY：{esc(m['stance'])}（把握{esc(m['confidence'])}，记入判断台账）",
+                  f"未来两周：{esc(m['ahead'])}", f"对你的组合：{esc(m['for_you'])}"]
+        heat = {x["ETF"]: x.get("热度") for x in (wv.get("pack") or {}).get("sectors", [])}
+        hot = [x["etf"] for x in m["sectors"] if heat.get(x["etf"]) == "热"]
+        cold = [x["etf"] for x in m["sectors"] if heat.get(x["etf"]) == "冷"]
+        if hot or cold:
+            lines.append(f"板块：热 {'、'.join(hot) or '无'}；冷 {'、'.join(cold) or '无'}")
+    ol = await outlook.latest()
+    if ol and ol["asof"] >= str(today - timedelta(days=7)):
+        theses = ((ol.get("outlook") or {}).get("theses")) or []
+        lines.append("行业前景：" + ("；".join(f"{t['target']} {t['stance']}（{t['horizon']} 日）：{t['title']}" for t in theses)
+                                if theses else "本周没有新判断"))
+    picks = todo.stats_line(await todo.decision_stats(20))
+    if picks:
+        lines.append("<b>【你的候选决定】</b>\n" + esc(picks))
+    cal = [r for r in await ledger.calibration(20) if r["enough"] and r["kind"] in ("insight", "view", "sector_heat", "candidate")]
+    if cal:
+        lines.append("<b>【判断校准】</b>20 日命中率：" + esc("；".join(
+            f"{ledger.KIND_ZH[r['kind']]}·{ledger.STANCE_ZH[r['stance']]} {r['hit_rate'] * 100:.0f}%（{r['n']}）"
+            for r in sorted(cal, key=lambda r: -r["n"])[:4])))
+    lines.append(f"（{market_read.NOTE}；14 篇个股和板块观点、打法简报、规则记分板在网页上）")
+    return "\n".join(lines)
 
 
 async def render_weekly_report() -> str:

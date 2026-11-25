@@ -17,6 +17,8 @@ def pack(**over):
          "contributions": {"key": "contrib", "最大 10 家合计贡献": "-1.10 个百分点", "最大 10 家占指数涨跌": "61%"},
          "sectors": {"key": "sectors", "领先": [], "落后": []}, "macro_data": [], "odds": [], "earnings": [], "news": [
              {"key": "news.1", "标题": "Stocks slide"}], "causes": [], "holdings": [], "filter": None, "yesterday": None,
+         "sentiment": [{"key": "snt.pc", "名称": "个股期权看跌 / 看涨比（10 日平均）", "数值": "0.71（2026-11-24）",
+                        "历史位置": "高于 2019 年以来 55% 的时间", "读数": "正常范围", "含义": ""}],
          "_strong": ["contrib", "move.SPY"]}
     p.update(over)
     return p
@@ -26,7 +28,8 @@ def read(**over):
     base = dict(headline="标普 500 当日 -1.8%，大型科技股拖累", what_happened="SPY 当日 -1.8%，约 -2.4 倍日常波动；上涨股票只有 21%。",
                 drivers=[mr.Driver(title="大公司拖累", explanation="最大 10 家合计贡献 -1.10 个百分点，占 61%", evidence=["contrib"], strength="强")],
                 media_vs_data="新闻说股市下滑，数据支持。", story_status="无前一天", story="没有昨天的解读。",
-                for_you="持仓照计划持有。", would_change="若普通股票表现更差，就不只是大公司的问题。")
+                for_you="持仓照计划持有。", would_change="若普通股票表现更差，就不只是大公司的问题。",
+                mood="个股期权看跌 / 看涨比 0.71，正常范围。")
     base.update(over)
     return mr.Read(**base)
 

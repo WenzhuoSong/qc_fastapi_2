@@ -45,7 +45,7 @@ ETFS = (("SPY", "标普 500", "大盘"), ("QQQ", "纳指 100", "科技成长"), 
 LIVE = (("^TNX", "10 年期美债收益率", "长期利率；单位是百分点"), ("^VIX", "VIX", "标普期权隐含的未来 30 天波动；越高越紧张"),
         ("^VIX3M", "VIX 三个月", "高于 VIX 为常态；低于 VIX 表示短期恐慌更重"))
 FORECAST = ("将上涨", "将下跌", "会上涨", "会下跌", "有望", "将延续", "会延续", "将继续", "会继续", "将持续", "会持续", "必将", "必然", "一定会",
-            "预计将", "看涨", "看跌", "见底", "见顶")
+            "预计将", "看涨后市", "看跌后市", "见底", "见顶", "反向指标", "逆向信号", "往往意味着")
 ACTIONS = ("建议买入", "建议卖出", "应该买", "应该卖", "可以买入", "可以卖出", "加仓", "减仓", "抄底", "止盈")
 
 
@@ -65,6 +65,7 @@ class Read(BaseModel):
     story_status: Literal["延续", "被推翻", "新出现", "无前一天"] = Field(description="和昨天的市场解读相比")
     story: str = Field(description="1 句：昨天的主要解释今天是延续、被推翻，还是出现了新的故事；为什么")
     for_you: str = Field(description="1–2 句：对用户的持仓意味着什么（β、所在板块、今天的盈亏），以及计划现在要求什么")
+    mood: str = Field(description="1–2 句：市场情绪和仓位处在历史的什么位置（只引用 sentiment 的读数），不据此推断后市")
     would_change: str = Field(description="1 句：什么样的数据出现，会说明今天的解释不对")
 
 
@@ -75,6 +76,8 @@ PROMPT = """你是一位美股策略分析师，收盘后给一位个人投资�
 - sectors：当日领先和落后的行业，近 20 日相对 SPY，趋势确认变化；macro_data：今天公布的宏观数据实际值和预期；
 - odds：预测市场对宏观话题的概率和变化（市场价格，不是事实）；earnings：刚公布财报的大公司和股价反应；
 - news：市场新闻标题（未经核实），causes：大涨大跌日联网核实过的原因；holdings：用户的持仓；filter：大盘过滤；
+- sentiment：情绪与仓位读数（看跌 / 看涨比、AAII 散户调查、VIX 及期限结构、新高新低、站上 50 日线比例），每项有历史位置和读数
+  （偏恐慌 / 偏乐观 / 正常范围）；Scout 检验过这类读数对下周涨跌没有预测力，只用来描述情绪；
 - yesterday：昨天的市场解读（没有就是 null）。
 
 工作方法：
@@ -84,6 +87,7 @@ PROMPT = """你是一位美股策略分析师，收盘后给一位个人投资�
 3. 对照新闻：新闻标题的说法有没有数据支持；只有标题、没有数据支持的，强度最多为「弱」，并写明「据报道」。
 4. 和昨天的解读对照：昨天的主要解释今天是延续还是被推翻。
 5. 对用户：持仓今天怎样、跟大盘的关系（β），计划要求什么（没有要做的就说照计划持有）。
+6. 情绪：用 sentiment 的读数说现在大家是紧张还是乐观、极端与否；读数之间矛盾就直说。不要写「恐慌往往意味着见底」之类的推断。
 
 硬性规则：
 - 数字只能原样引用证据包里的数值，不要自己计算；涨跌数字自带正负号，不要写「跌幅为 -1.2%」。
@@ -264,6 +268,14 @@ async def build_pack(p, asof: date, sector_rows: list[dict], g: dict | None, mfi
                          "当日": _pct(f.get("ret_1d")), "β": None if f.get("beta") is None else f"{f['beta']:.2f}",
                          "板块": t.get("sector"), "计划": step or "照计划持有"})
 
+    from scout import sentiment
+
+    try:
+        mood = await sentiment.readings(asof)
+    except Exception as exc:
+        logger.warning("sentiment readings failed: %s", exc)
+        mood = []
+
     prev = await db.fetch_one("SELECT asof, payload FROM scout.briefs WHERE kind = 'market_read' AND asof < :d ORDER BY asof DESC, id DESC LIMIT 1",
                               {"d": asof})
     yesterday = None
@@ -272,7 +284,7 @@ async def build_pack(p, asof: date, sector_rows: list[dict], g: dict | None, mfi
 
     return {"data_date": asof.isoformat(), "moves": moves, "breadth": breadth, "contributions": contrib and
             {k: v for k, v in contrib.items() if not k.startswith("_")}, "sectors": sectors, "macro_data": macro_data, "odds": odds,
-            "earnings": earn, "news": news, "causes": causes, "holdings": holdings,
+            "earnings": earn, "news": news, "causes": causes, "holdings": holdings, "sentiment": mood,
             "filter": {"key": "filter", "大盘过滤": market_filter.text(mfilter)} if mfilter else None, "yesterday": yesterday,
             "_strong": sorted(set(unusual) | set(surprises) | ({"contrib"} if contrib and contrib["_strong"] else set())
                               | ({"contrib"} if contrib and (contrib["_top10_share"] or 0) >= 0.5 else set()))}
@@ -298,7 +310,7 @@ def keys(pack: dict) -> set[str]:
 
 def validate(r: Read, pack: dict) -> list[str]:
     issues = []
-    texts = [r.headline, r.what_happened, r.media_vs_data, r.story, r.for_you, r.would_change] + \
+    texts = [r.headline, r.what_happened, r.media_vs_data, r.story, r.for_you, r.would_change, r.mood] + \
             [d.title + "。" + d.explanation for d in r.drivers]
     body = "\n".join(texts)
     allowed = allowed_numbers({k: v for k, v in pack.items() if not k.startswith("_")})
@@ -344,7 +356,8 @@ def fallback(pack: dict) -> Read:
                 what_happened="、".join(f"{m['名称']} {m['当日']}" for m in pack["moves"][:4]),
                 drivers=drivers[:4], media_vs_data="（AI 解读未通过校验，没有对照新闻）",
                 story_status="无前一天" if pack.get("yesterday") is None else "新出现", story="（按规则整理，没有对照昨天）",
-                for_you="持仓照计划管理", would_change="—")
+                for_you="持仓照计划管理", would_change="—",
+                mood="；".join(f"{x['名称']} {x['数值']}，{x['读数']}" for x in pack.get("sentiment") or []) or "没有情绪读数")
 
 
 async def write(pack: dict) -> tuple[Read, str, list]:
@@ -400,7 +413,7 @@ def render_text(r: Read, asof: date, source: str) -> str:
     lines = [f"【市场解读 · {asof}】{r.headline}", r.what_happened, "主要推动："]
     lines += [f"· {d.title}（证据{d.strength}）：{d.explanation}" for d in r.drivers]
     lines += [f"新闻与数据：{r.media_vs_data}", f"故事线（{r.story_status}）：{r.story}", f"对你：{r.for_you}",
-              f"什么会说明这个解释不对：{r.would_change}", f"（{NOTE}" + ("；AI 解读未通过校验，按规则整理" if source != "llm" else "") + "）"]
+              f"情绪：{r.mood}", f"什么会说明这个解释不对：{r.would_change}", f"（{NOTE}" + ("；AI 解读未通过校验，按规则整理" if source != "llm" else "") + "）"]
     return "\n".join(lines)
 
 
@@ -414,5 +427,7 @@ def short_lines(rec: dict | None) -> list[str]:
     lines = ["<b>【市场解读】</b>" + esc(r["headline"])]
     lines += [f"• {esc(d['title'])}（证据{d['strength']}）：{esc(d['explanation'])}" for d in r["drivers"][:3]]
     lines.append(f"故事线（{r['story_status']}）：{esc(r['story'])}")
+    if r.get("mood"):
+        lines.append(f"情绪：{esc(r['mood'])}")
     lines.append(f"对你：{esc(r['for_you'])}")
     return lines

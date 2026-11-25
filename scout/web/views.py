@@ -56,10 +56,34 @@ ul.rrgread{list-style:none;padding:0;margin:6px 0}ul.rrgread li{padding:2px 0}
 """
 
 
+# Navigation (user's request 2026-11-25: fewer entries): the daily pages up front, the research pages behind 研究
+RESEARCH = (("机会与策略", (("/screens", "screens", "策略筛选", "各规则、打法和基本面角度今天选中了谁，以及每个的检验状态"),
+                           ("/ideas", "ideas", "机会看板", "规则机会卡的状态（多数规则检验未通过，只作记录）"),
+                           ("/scoreboard", "scoreboard", "记分板", "每条规则的回放和实盘记录"),
+                           ("/watchlist", "watchlist", "自选股", "关注的股票"))),
+            ("观点与日程", (("/views", "views", "多来源观点", "每周的市场观点和个股、板块观点，论点逐条核对"),
+                           ("/outlook", "outlook", "行业前景", "每周的行业判断（前向验证中）"),
+                           ("/calendar", "calendar", "事件日历", "宏观数据、美联储、财报、事件前瞻和复盘"))),
+            ("记录与知识", (("/ledger", "ledger", "判断台账", "Scout 和你的每个判断，按 5 / 20 / 60 日打分"),
+                           ("/knowledge", "knowledge", "知识库", "检验过的结论，包括失败的"))))
+RESEARCH_KEYS = {k for _, pages in RESEARCH for _, k, _, _ in pages}
+
+
+def research_hub() -> str:
+    groups = "".join(f"<div class='card'><h3>{e(g)}</h3><ul>" + "".join(f"<li><a href='{h}'><b>{e(t)}</b></a>：{e(d)}</li>" for h, _, t, d in pages)
+                     + "</ul></div>" for g, pages in RESEARCH)
+    return f"<h2>研究</h2><p class='small muted'>日常只需要看「今天」「市场」「我的交易」；这里是做研究、查记录时用的页面。</p>{groups}"
+
+
 def layout(title: str, active: str, body: str, head: str = "") -> str:
-    nav = [("/", "today", "今日"), ("/market", "market", "市场全景"), ("/ideas", "ideas", "机会看板"), ("/screens", "screens", "策略筛选"), ("/scoreboard", "scoreboard", "记分板"),
-           ("/watchlist", "watchlist", "Watchlist"), ("/trades", "trades", "我的交易"), ("/calendar", "calendar", "事件日历"), ("/views", "views", "多来源观点"), ("/outlook", "outlook", "行业前景"), ("/ledger", "ledger", "判断台账"), ("/knowledge", "knowledge", "知识库"), ("/chat", "chat", "问答"), ("/data", "data", "数据")]
-    links = "".join(f'<a href="{h}" class="{"on" if k == active else ""}">{t}</a>' for h, k, t in nav)
+    nav = [("/", "today", "今天"), ("/market", "market", "市场"), ("/trades", "trades", "我的交易"), ("/research", "research", "研究"),
+           ("/chat", "chat", "问答"), ("/data", "data", "数据")]
+    current = "research" if active in RESEARCH_KEYS else active
+    links = "".join(f'<a href="{h}" class="{"on" if k == current else ""}">{t}</a>' for h, k, t in nav)
+    if current == "research" and active != "research":
+        bold = "font-weight:600"
+        sub = " · ".join(f'<a href="{h}" style="{bold if k == active else ""}">{e(t)}</a>' for _, pages in RESEARCH for h, k, t, _ in pages)
+        body = f"<div class='small' style='margin-bottom:8px'>{sub}</div>" + body
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title)} · Scout</title>
 <style>{CSS}</style>{head}</head><body><header><b>Scout</b>{links}
@@ -69,6 +93,29 @@ def layout(title: str, active: str, body: str, head: str = "") -> str:
 
 def e(x: Any) -> str:
     return escape("" if x is None else str(x))
+
+
+def todo_card(rows: list[dict], today: date) -> str:
+    if not rows:
+        return f"<div class='card' style='margin-bottom:12px'><h3>今日待办 {e(today)}</h3><p class='small'>没有需要你处理的事。</p></div>"
+    items = "".join(f"<li>{e(x['text'])}</li>" for x in rows)
+    return (f"<div class='card' style='margin-bottom:12px'><h3>今日待办 {e(today)}</h3><ol>{items}</ol>"
+            "<p class='small muted'>在 Telegram 里点按钮处理（发 /todo 可随时调出）。</p></div>")
+
+
+def market_read_card(rd: dict | None) -> str:
+    if not rd:
+        return ""
+    from scout import market_read
+
+    r = rd["read"]
+    drivers = "".join(f"<li><b>{e(d['title'])}</b>（证据{e(d['strength'])}）：{e(d['explanation'])}</li>" for d in r["drivers"])
+    return (f"<div class='card' style='margin-bottom:12px'><h3>市场解读 <span class='small muted'>{e(rd['asof'])}"
+            f"{'' if rd['source'] == 'llm' else ' · 未通过校验，按规则整理'}</span></h3>"
+            f"<div class='headline'>{e(r['headline'])}</div><p>{e(r['what_happened'])}</p><ol>{drivers}</ol>"
+            f"<p class='small'>新闻与数据：{e(r['media_vs_data'])}</p><p class='small'>故事线（{e(r['story_status'])}）：{e(r['story'])}</p>"
+            f"<p class='small'>情绪：{e(r.get('mood') or '—')}</p><p class='small'>对你：{e(r['for_you'])}</p>"
+            f"<p class='small'>什么会说明这个解释不对：{e(r['would_change'])}</p><p class='small muted'>{e(market_read.NOTE)}</p></div>")
 
 
 def signed(x: float | None, digits: int = 1) -> str:

@@ -98,6 +98,11 @@ async def telegram_webhook(
 
 # ─────────────────────────── dashboard ───────────────────────────
 
+@app.get("/research", response_class=HTMLResponse)
+async def research_hub(_: str = Depends(require_auth)) -> str:
+    return layout("研究", "research", views.research_hub())
+
+
 @app.get("/", response_class=HTMLResponse)
 async def today(_: str = Depends(require_auth)) -> str:
     brief = await db.fetch_one("SELECT asof, content, payload FROM scout.briefs WHERE kind = 'eod' ORDER BY asof DESC, id DESC LIMIT 1")
@@ -132,7 +137,11 @@ async def today(_: str = Depends(require_auth)) -> str:
     live = [o for o in active if views.is_live(o["primary_detector"]) and o["primary_detector"] not in quiet]
     demoted = [o for o in active if o not in live]
     held = await portfolio.trades(open_only=True)
-    body = views.premarket_card(pre, current) + head
+    from scout import market_read, todo
+
+    today_ = date.fromisoformat(us_equity_market_status().market_date)
+    body = views.todo_card(await todo.items(today_), today_) + views.market_read_card(await market_read.latest())
+    body += views.premarket_card(pre, current) + head
     if held:
         body += "<h2>我的持仓</h2>" + views.trades_table(held, closable=False)
     warn = portfolio.concentration(
@@ -546,17 +555,7 @@ async def market_page(view: str = "sectors", norms: int = 21, _: str = Depends(r
                   f"{views.norms_card(norms_rows, names, norms if norms in nm.HORIZONS else nm.DEFAULT_H)}</div>")
     from scout import market_read
 
-    rd = await market_read.latest()
-    read_html = ""
-    if rd:
-        r = rd["read"]
-        drivers = "".join(f"<li><b>{e(d['title'])}</b>（证据{e(d['strength'])}）：{e(d['explanation'])}</li>" for d in r["drivers"])
-        read_html = (f"<div class='card' style='margin-bottom:12px'><h3>市场解读 <span class='small muted'>{e(rd['asof'])}"
-                     f"{'' if rd['source'] == 'llm' else ' · 未通过校验，按规则整理'}</span></h3>"
-                     f"<div class='headline'>{e(r['headline'])}</div><p>{e(r['what_happened'])}</p><ol>{drivers}</ol>"
-                     f"<p class='small'>新闻与数据：{e(r['media_vs_data'])}</p><p class='small'>故事线（{e(r['story_status'])}）：{e(r['story'])}</p>"
-                     f"<p class='small'>对你：{e(r['for_you'])}</p><p class='small'>什么会说明这个解释不对：{e(r['would_change'])}</p>"
-                     f"<p class='small muted'>{e(market_read.NOTE)}</p></div>")
+    read_html = views.market_read_card(await market_read.latest())
     body = (f"<h2>市场全景</h2>{read_html}<div class='duo'>{focus_html}{rrg_html}</div>{norms_html}{trend_html}{table_html}"
             f"<h2>板块详情</h2><div class='grid'>{''.join(cards)}</div>"
             f"<h2>全市场新闻</h2><div class='card'><ul class='tight'>{mnews or '<li class=muted>暂无</li>'}</ul></div>")

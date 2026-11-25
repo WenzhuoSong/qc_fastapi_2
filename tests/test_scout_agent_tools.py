@@ -6,7 +6,7 @@ from pathlib import Path
 from scout import agent
 
 APP = Path(__file__).resolve().parents[1] / "scout" / "web" / "app.py"
-NOT_DATA = {"/chat"}            # the chat itself
+NOT_DATA = {"/chat", "/research"}   # the chat itself; the research hub only links to other pages
 
 
 def dashboard_pages() -> set[str]:

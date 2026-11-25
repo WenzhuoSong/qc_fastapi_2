@@ -185,6 +185,12 @@ async def run_daily(limit: int | None = None) -> dict:
     except Exception as exc:
         summary["macro_rows"] = f"failed: {type(exc).__name__}"
         await _quality(asof, "fred_failed", None, {"error": repr(exc)[:300]})
+    try:                                # put/call ratios and the AAII survey for the market read (scout/sentiment.py)
+        from scout import sentiment
+
+        summary["sentiment"] = await sentiment.refresh(asof)
+    except Exception as exc:
+        summary["sentiment"] = f"failed: {type(exc).__name__}"
     summary["price_check"] = await price_crosscheck(pool, asof)
     summary["price_levels"] = await price_levels(pool)
     summary["storage"] = await storage_check(asof)
