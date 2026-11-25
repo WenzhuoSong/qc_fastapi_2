@@ -71,7 +71,8 @@ class Read(BaseModel):
 
 PROMPT = """你是一位美股策略分析师，收盘后给一位个人投资者写今天的市场解读。证据包全部由 Python 计算：
 - moves：指数、风格、利率、美元、原油、黄金、比特币、信用、VIX 的当日 / 5 日 / 20 日变化，「日常波动倍数」= 当日变化除以过去 63 日的日波动，
-  abs ≥ 2 标为「超出日常波动」；
+  abs ≥ 2 标为「超出日常波动」；key 以 global. 开头的是同一天的海外市场：亚洲在美股开盘前已收盘（可能是美股当天波动的源头），
+  欧洲和美股上午重叠；还有美元兑日元、美元兑人民币、铜；
 - breadth：上涨股票比例、站上 50 日线比例；contributions：按估算市值权重，个股对标普 500 当日涨跌的贡献（百分点）和占比；
 - sectors：当日领先和落后的行业，近 20 日相对 SPY，趋势确认变化；macro_data：今天公布的宏观数据实际值和预期；
 - odds：预测市场对宏观话题的概率和变化（市场价格，不是事实）；earnings：刚公布财报的大公司和股价反应；
@@ -83,6 +84,7 @@ PROMPT = """你是一位美股策略分析师，收盘后给一位个人投资�
 工作方法：
 1. 先描述今天真正异常的是什么（看日常波动倍数），普通的波动不要说成大事。
 2. 找推动因素：贡献集中在哪几家公司？风格（大小盘、成长价值、等权市值）怎么分化？利率、美元、原油、波动同时怎么动？有没有宏观数据或财报？
+   海外是否先动了（亚洲收盘、日元、人民币、铜）？只有海外读数异常且方向一致时，才把它写成源头。
    把能互相印证的读数放在同一个推动因素里。每个因素标证据强度，引用 key。
 3. 对照新闻：新闻标题的说法有没有数据支持；只有标题、没有数据支持的，强度最多为「弱」，并写明「据报道」。
 4. 和昨天的解读对照：昨天的主要解释今天是延续还是被推翻。
@@ -194,6 +196,13 @@ async def build_pack(p, asof: date, sector_rows: list[dict], g: dict | None, mfi
             level = sym == "^TNX"
             if m := sigma_move(bars["close"], asof, level=level):
                 moves.append(move_item(f"move.{sym.strip('^')}", name, meaning, m, level=level))
+    from scout import global_markets as gm
+
+    abroad = await gm.closes(asof - timedelta(days=150))
+    for sym, name, region, meaning in gm.ALL:
+        c = abroad.get(sym)
+        if c is not None and len(c) and c.index[-1] == asof and (m := sigma_move(c, asof)):
+            moves.append(move_item(f"global.{sym.strip('^').replace('=', '').replace('.', '')}", f"{name}（{region}）", meaning, m))
     for a, b, name, meaning in (("RSP", "SPY", "等权相对市值加权", "正 = 普通股票比大公司强，上涨面广；负 = 少数大公司主导"),
                                 ("IWM", "SPY", "小盘相对大盘", "正 = 小盘更强，通常风险偏好高或利率预期下行"),
                                 ("QQQ", "RSP", "科技成长相对普通股票", "正 = 科技成长更强")):

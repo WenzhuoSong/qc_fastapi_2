@@ -88,6 +88,21 @@ def _pct(x: float | None, digits: int = 1) -> str:
     return "—" if x is None else f"{x * 100:+.{digits}f}%"
 
 
+async def global_rows(session: date) -> list[dict]:
+    """Asia's closes and Europe's morning for today's local session (scout/global_markets.py), as overnight rows."""
+    from scout import global_markets as gm
+
+    out = []
+    series = await gm.closes(session - timedelta(days=20))
+    for sym, name, region, _ in gm.ALL:
+        c = series.get(sym)
+        if c is None or len(c) < 2 or c.index[-1] != session:
+            continue
+        when = "收盘" if region == "亚洲" else "盘中" if region == "欧洲" else "最新"
+        out.append({"key": f"q.{sym}", "名称": f"{name}（{when}）", "最新": f"{c.iloc[-1]:.2f}", "较前收": _pct(c.iloc[-1] / c.iloc[-2] - 1, 2)})
+    return out
+
+
 def quote_row(sym: str, name: str, q: dict | None) -> dict:
     if not q:
         return {"key": f"q.{sym}", "名称": name, "最新": "无数据"}
@@ -545,6 +560,7 @@ async def build_pack(session: date, now: datetime | None = None) -> dict:
     overnight = [quote_row(s, n, quotes.get(s)) for s, n in OVERNIGHT]
     if es and es["sigmas"] is not None:
         overnight[0]["相对日常波动"] = f"约 {es['sigmas']:.1f} 倍（SPY 日常波动 ±{spy_sd * 100:.1f}%）"
+    overnight += await global_rows(session)
 
     # holdings: attention first (a step due, below the stop, earnings), then by value
     news = await _direct_news(sorted(held_set | set(watch)), since)
@@ -677,14 +693,15 @@ PROMPT = """你是一位专业的股票分析师，在美股开盘前给自己�
 - key_items：Python 按轻重排好的今天最重要的事（已经会原样放在简报开头，你不必重复，但 headline 要和它一致）。
 - positions：客户的持仓，按盘前价算的盈亏和离止损的距离、盘前涨跌按 β 拆出的大盘部分、日常波动、系统按客户计划给出的提示、
   客户记录的买入理由、自己的财报（已公布的结果或即将公布的前瞻）、相关公司的财报、上一收盘以来的直接新闻（英文）。
-- overnight：股指期货、VIX、利率、美元、原油、黄金、比特币相对上一收盘（"说明"表示今天尚未交易）。
+- overnight：股指期货、VIX、利率、美元、原油、黄金、比特币相对上一收盘（"说明"表示今天尚未交易）；
+  还有今天亚洲（已收盘）和欧洲（盘中）的大盘指数、美元兑日元、美元兑人民币、铜。
 - earnings_reported / earnings_today / earnings_week：已公布、今天待公布、本周后续的财报；身份里有"持仓同板块（X）"或"持仓产业链（X 的…）"的会影响持仓 X。
 - economic_today / economic_week / calendar / prediction：今天和本周的数据、事件、预测市场价格。已公布的数据有"实际"（BLS 官方数值）和"对比预期"时照这两项写，不要自己判断高于或低于预期；没有"实际"的只说已公布、数值未取到。
 - opportunities（Scout 规则给出、还没触发的买点）、watchlist_moves（自选股里盘前涨跌超过 2 倍日常波动的）、news / macro_news。
 
 要写的：
 1. headline：一句话（不超过 40 字），今天开盘前最该知道的局面。
-2. overnight：1–2 句，隔夜市场说明了什么（风险偏好、利率和美元是否一致、宏观新闻的主线）；引用宏观新闻时只写标题说了的。
+2. overnight：1–2 句，隔夜市场说明了什么（亚洲和欧洲怎么走、风险偏好、利率和美元是否一致、宏观新闻的主线）；引用宏观新闻时只写标题说了的。
 3. holdings：对 positions 里的每只持仓：
    - status：一句白话（不超过 90 个字），今天开盘前这只持仓最值得知道的一点（例如按计划要卖、离止损多近、财报结果和盘前反应、
      盘前涨跌主要是大盘还是它自己）。像对客户说话，最多 2–3 个关键数字。
