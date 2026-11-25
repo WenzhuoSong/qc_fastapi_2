@@ -603,6 +603,15 @@ async def render_weekly_short() -> str:
     picks = todo.stats_line(await todo.decision_stats(20))
     if picks:
         lines.append("<b>【你的候选决定】</b>\n" + esc(picks))
+    from scout import behavior
+
+    try:
+        record = await behavior.lines_for("week", today)
+    except Exception as exc:
+        logger.warning("execution record failed: %s", exc)
+        record = []
+    if record:
+        lines.append("<b>【你的执行】</b>\n" + "\n".join(esc(x.removeprefix("你的记录：")) for x in record))
     cal = [r for r in await ledger.calibration(20) if r["enough"] and r["kind"] in ("insight", "view", "sector_heat", "candidate")]
     if cal:
         lines.append("<b>【判断校准】</b>20 日命中率：" + esc("；".join(

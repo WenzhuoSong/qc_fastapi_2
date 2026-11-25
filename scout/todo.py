@@ -76,6 +76,17 @@ async def items(today: date) -> list[dict]:
         key = f"sell:{t['id']}:{since}"
         out.append((0, {"key": key, "text": f"{t['ticker']}：{step[2:].strip()}{waited}",
                         "buttons": [(f"✅ 已卖出 {t['ticker']}", f"sd:{t['id']}"), ("⏸ 明天再提醒", f"tz:{key}")]}))
+    if out:                            # a stop to act on: the user's own record of stop signals beside it
+        from scout import behavior
+
+        try:
+            record = await behavior.lines_for("sell_due", today)
+        except Exception as exc:
+            logger.warning("execution record failed: %s", exc)
+            record = []
+        if record:
+            for _, x in out:
+                x["text"] += "。" + record[0]
     tickers = sorted({t["ticker"] for t in held})
     if tickers:
         for r in await db.fetch_all(

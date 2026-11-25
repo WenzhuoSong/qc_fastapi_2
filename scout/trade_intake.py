@@ -158,7 +158,19 @@ async def buy_checks(p: dict, day: date) -> list[str]:
     same = [x["ticker"] for x in held if inst.get("industry") and x.get("industry") == inst["industry"]]
     if same:
         lines.append(f"⚠️ 同一细分行业已有持仓：{'、'.join(same)}（走势高度相关，接近同一笔仓位）")
+    lines += await _record("buy", day)
     return lines
+
+
+async def _record(kind: str, day: date) -> list[str]:
+    """The user's own execution record (scout/behavior.py); a failure never blocks the check."""
+    from scout import behavior
+
+    try:
+        return await behavior.lines_for(kind, day)
+    except Exception:
+        logger.exception("execution record failed")
+        return []
 
 
 async def core_buy_checks(t: str, price: float, shares: float) -> list[str]:
@@ -223,6 +235,7 @@ async def sell_checks(p: dict, day: date) -> list[str]:
         lines.append("按计划：回落止损已触发，这次卖出符合计划")
     else:
         lines.append("按计划：止损没有触发，计划要求继续持有；这次卖出会记为「提前离场」")
+        lines += await _record("early_sell", day)
     n = m["remaining"] if p.get("all_shares") else p["shares"]
     lines.append(f"这次卖出 {n:g} 股 @ {p['price']:.2f}，相对成本 {p['price'] / t['entry_price'] - 1:+.1%}")
     return lines
