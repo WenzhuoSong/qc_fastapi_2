@@ -560,9 +560,14 @@ def holding_lines(h: dict) -> list[str]:
     return lines
 
 
-def render(out: dict, now: datetime) -> str | None:
+PUSHED = ("holdings",)              # user's request 2026-11-25: only the holdings' stops, big moves and news are pushed;
+                                    # the market block, buy zones and other names' news are still claimed and stored
+
+
+def render(out: dict, now: datetime, parts: tuple[str, ...] = PUSHED) -> str | None:
     from scout.telegram import esc
 
+    out = {k: v for k, v in out.items() if k in parts}
     if not (out.get("market") or out.get("holdings") or out.get("buys") or out.get("other_news")):
         return None
     lines = [f"⏱ <b>盘中提醒</b> {now.astimezone(ET):%H:%M} 美东"]
@@ -601,7 +606,7 @@ async def run(push: bool = True, force: bool = False) -> dict:
 
         pm = await prediction.run(today, "intraday")
         summary["prediction"] = {"refreshed": pm.get("refreshed"), "moves": len(pm.get("moves") or [])}
-        if pm.get("moves"):
+        if pm.get("moves") and "prediction" in PUSHED:
             from scout.telegram import esc
 
             extra = "\n".join(esc(prediction.move_line(m)) for m in pm["moves"])

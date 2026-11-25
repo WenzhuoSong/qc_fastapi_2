@@ -167,7 +167,8 @@ class RenderTests(unittest.TestCase):
                "buys": [{"kind": "opp_zone", "ticker": "CRWD", "payload": {"rule": "突破回踩", "text": "进入入场区间 234.83–245.30",
                                                                            "price": 240.0, "time_et": "11-05 10:00", "size": "建议 20 股"}}],
                "other_news": [{"ticker": "MRVL", "tag": "自选", "headline": "Marvell <buys> Lumentum", "source": "Yahoo", "flags": ["并购/出售"]}]}
-        text = intraday.render(out, datetime(2026, 11, 5, 20, 47, tzinfo=ZoneInfo("UTC")))
+        text = intraday.render(out, datetime(2026, 11, 5, 20, 47, tzinfo=ZoneInfo("UTC")),
+                               parts=("market", "holdings", "buys", "other_news"))
         self.assertTrue(text.startswith("⏱ <b>盘中提醒</b> 15:47 美东"))
         self.assertLess(text.index("【大盘】"), text.index("【我的持仓】"))
         self.assertLess(text.index("【我的持仓】"), text.index("【机会与自选】"))
@@ -177,6 +178,15 @@ class RenderTests(unittest.TestCase):
                      "主要是整个行业在动", "📰 美光冻结台湾工厂（Yahoo）", "👉 止损按收盘判断", "🟦 <b>CRWD</b> 突破回踩",
                      "📐 建议 20 股", "<b>MRVL</b> [自选] ⚡并购/出售 Marvell &lt;buys&gt; Lumentum"):
             self.assertIn(part, text)
+
+    def test_only_the_holdings_are_pushed(self):
+        out = {"market": MARKET, "holdings": [HOLD], "buys": [],
+               "other_news": [{"ticker": "MRVL", "tag": "自选", "headline": "x", "source": "Yahoo", "flags": []}]}
+        text = intraday.render(out, datetime(2026, 11, 5, 20, 47, tzinfo=ZoneInfo("UTC")))
+        self.assertIn("【我的持仓】", text)
+        self.assertNotIn("【大盘】", text)
+        self.assertNotIn("MRVL", text)
+        self.assertIsNone(intraday.render({"market": MARKET, "holdings": [], "buys": [], "other_news": []}, datetime.now(ET)))
 
     def test_nothing_to_say(self):
         self.assertIsNone(intraday.render({"market": None, "holdings": [], "buys": [], "other_news": []}, datetime.now(ET)))

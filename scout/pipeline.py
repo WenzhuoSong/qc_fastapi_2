@@ -398,6 +398,7 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         scan.append(f"今天有 {len(muted)} 张规则机会卡只记录、不推送：这些规则没有通过公平基准检验"
                     "（见 Dashboard「知识库」），仍在机会看板和判断台账里跟踪。")
     g: dict = {}
+    short = None                       # what Telegram gets; the full digest is the stored brief
     try:
         from scout import digest
 
@@ -417,6 +418,7 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
         user = await portfolio.get_settings()
         g = await digest.enrich(g, p, asof, sector_rows, user.get("account_size"))
         brief = digest.render(asof, market, sector_rows, focus, mfilter, g, portfolio.satellite(user), scan)
+        short = digest.render_short(asof, market, mfilter, g, portfolio.satellite(user))
     except Exception as exc:           # the digest must not cost the session its brief
         logger.warning("digest failed: %s", exc)
         brief = "\n\n".join([render_eod_brief(asof, market, sector_rows, focus), *deferred, "\n".join(scan)])
@@ -427,7 +429,13 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
                                         "notes": g.get("notes"), "steps": g.get("steps")})},
     )
     if push:
-        await telegram.send(brief)
+        from scout import todo
+
+        try:                           # the to-do list first: what needs the user's hand
+            summary["todo"] = await todo.send(session)
+        except Exception as exc:
+            logger.warning("to-do list failed: %s", exc)
+        await telegram.send(short or brief)
         pushed = 0
         for o in cards:
             if o["primary_detector"] in quiet:
@@ -439,6 +447,13 @@ async def run_eod(push: bool = True, force: bool = False) -> dict:
                 if await telegram.push_card(o):
                     pushed += 1
         summary["pushed"] = pushed
+    try:                               # up to three candidates for the user to decide on (scored in the ledger)
+        from scout import todo
+
+        summary["candidates_sent"] = await todo.send_candidates(asof, push=push)
+    except Exception as exc:
+        logger.warning("candidates failed: %s", exc)
+        summary["candidates_sent"] = f"failed: {type(exc).__name__}"
     summary["held_back"] = [o["id"] for o in muted]
     return summary
 
@@ -580,6 +595,11 @@ async def render_weekly_report() -> str:
             return f"{name}·{ledger.STANCE_ZH[r['stance']]} {r['hit_rate'] * 100:.0f}%（{r['n']}）"
         lines.append("\n<b>判断校准（20 日命中率）</b>\n最准：" + telegram.esc("；".join(label(r) for r in best))
                      + "\n最弱：" + telegram.esc("；".join(label(r) for r in worst)))
+    from scout import todo
+
+    picks = todo.stats_line(await todo.decision_stats(20))
+    if picks:
+        lines.append("\n<b>你的候选决定</b>\n" + telegram.esc(picks))
     rated = await db.fetch_one("SELECT count(*) AS n FROM scout.judgments WHERE human_rating IS NOT NULL "
                                "AND made_at >= date_trunc('month', now())")
     lines.append(f"本月人工抽检 {rated['n']}/10（Dashboard「判断台账」）")

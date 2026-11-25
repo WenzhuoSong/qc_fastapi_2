@@ -236,6 +236,28 @@ def trend_lines(rows: list[dict]) -> list[str]:
     return out[:TREND_MAX] + ([f"另有 {len(out) - TREND_MAX} 项见 Dashboard「市场全景」"] if len(out) > TREND_MAX else [])
 
 
+def render_short(asof: date, market: dict, mfilter: dict | None, g: dict, satellite: dict | None) -> str:
+    """What Telegram gets after the close (user's request 2026-11-25): the key items, one line per holding, the market
+    in two lines. The full digest is stored as the eod brief (/digest, Dashboard)."""
+    from scout import holding_notes, market_filter
+
+    held = holding_items(g, asof)
+    lines = [f"📋 <b>Scout 收盘汇总 {asof}</b>（简版；完整版发 /digest）", "<b>【今天最重要的】</b>"]
+    keys = holding_notes.key_items(g, held, g.get("market_day"), mfilter, satellite, asof)
+    lines += [f"{i}. {esc(x)}" for i, x in enumerate(keys, 1)] or ["没有需要你处理的事：持仓都在计划内。"]
+    if held:
+        lines.append("<b>【持仓】</b>")
+        lines += [("⚠️ " if h["attention"] else "• ") + h["head"] for h in held]
+        pnl = [h["pnl"] for h in held if h["pnl"] is not None]
+        if pnl:
+            lines.append(f"合计盈亏 {sum(pnl):+,.0f}（含已实现）")
+    lines += ["<b>【市场】</b>", f"SPY 当日 {pct(market.get('spy_ret_1d'), 1, True)}，20 日 {pct(market.get('spy_ret_20d'), 1, True)} | "
+              f"QQQ 20 日 {pct(market.get('qqq_ret_20d'), 1, True)} | IWM 20 日 {pct(market.get('iwm_ret_20d'), 1, True)}"]
+    if mfilter:
+        lines.append(("🛑 " if mfilter["off"] else "🟢 ") + esc(market_filter.text(mfilter)))
+    return "\n".join(lines)
+
+
 def render(asof: date, market: dict, sector_rows: list[dict], focus: dict | None, mfilter: dict | None,
            g: dict, satellite: dict | None, scan_lines: list[str]) -> str:
     from scout import holding_notes, market_filter

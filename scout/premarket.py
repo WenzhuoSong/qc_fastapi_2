@@ -953,8 +953,12 @@ async def run(push: bool = True, force: bool = False) -> dict:
     summary.update(source=record["source"], holdings=len(record["pack"]["positions"]), key_items=len(record["pack"]["key_items"]),
                    economic=len(record["pack"]["economic_today"]), earnings=len(record["pack"]["earnings_reported"]))
     if push:
-        from scout import telegram
+        from scout import telegram, todo
 
+        try:                            # before the open: the sells due at the open come first
+            summary["todo"] = await todo.send(session)
+        except Exception as exc:
+            summary["todo"] = f"failed: {type(exc).__name__}"
         content = render_text(record["pack"], record["brief"], record["notes"])
         await telegram.send(telegram.esc(content) + SOURCE_NOTE.get(record["source"], ""))
         summary["pushed"] = True

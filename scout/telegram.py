@@ -32,6 +32,8 @@ HELP_TEXT = (
     "/stats — 规则记分板\n"
     "/sectors — 板块热度、轮动与市场关注点\n"
     "/premarket — 今天的盘前简报\n"
+    "/todo — 今日待办（要卖的、要发财报的、超出上限的、待决定的候选）\n"
+    "/digest — 最近一次收盘汇总的完整版\n"
     "/trades — 我的持仓、止损和卖出信号\n"
     "记录交易：直接说「买了 PBF 300 股 75.76，理由……，跌破 71.9 说明错了」或「卖了 CART 全部 56.81」，"
     "Scout 解析并检查后让你确认（也可用 /buy …）\n"
@@ -345,6 +347,28 @@ def friendly_error(exc: Exception) -> str:
 
 async def _handle_callback(cq: dict) -> None:
     data = cq.get("data") or ""
+    kind, _, rest = data.partition(":")
+    if kind in ("sd", "tz", "td2", "cd"):              # today's to-do list and the candidate cards
+        from scout import todo
+
+        try:
+            if kind == "sd" and rest.isdigit():
+                await _api("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "生成卖出记录…"})
+                reply, markup = await todo.sell_draft(int(rest))
+                await send(reply, reply_markup=markup)
+            elif kind == "tz":
+                await _api("answerCallbackQuery", {"callback_query_id": cq["id"], "text": await todo.snooze(rest)})
+            elif kind == "td2":
+                await todo.set_state(rest, "done")
+                await _api("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "已处理"})
+            elif kind == "cd":
+                decision, _, jid = rest.partition(":")
+                reply = await todo.decide(int(jid), decision) if jid.isdigit() else "找不到这个候选。"
+                await _api("answerCallbackQuery", {"callback_query_id": cq["id"], "text": reply[:190]})
+        except Exception as exc:
+            logger.exception("to-do callback %s failed", data)
+            await send(friendly_error(exc))
+        return
     parts = data.split(":", 2)
     if len(parts) == 3 and parts[0] == "td" and parts[1] in ("ok", "no") and parts[2].isdigit():
         from scout import trade_intake
@@ -394,6 +418,13 @@ async def dispatch(text: str) -> str:
         return await premarket_text()
     if cmd in ("/trades", "/positions"):
         return await trades_text()
+    if cmd == "/todo":
+        from scout import todo
+
+        await todo.send()
+        return ""
+    if cmd == "/digest":
+        return await digest_text()
     if cmd == "/sell":
         return await sell_cmd(args)
     return HELP_TEXT
@@ -479,6 +510,12 @@ async def sell_cmd(args: list[str]) -> str:
     step = next_step(t2, m)
     return (f"✅ 已记录：{esc(ticker)} 卖出 {res['shares']:g} 股 @ {price:.2f}，剩余 {m['remaining']:g} 股，"
             f"已实现 {m['realized']:+,.0f}。止损 {t2['stop']:.2f}" + (f"\n{esc(step)}" if step else ""))
+
+
+async def digest_text() -> str:
+    """The latest after-close digest in full (Telegram gets the short version)."""
+    row = await db.fetch_one("SELECT content FROM scout.briefs WHERE kind = 'eod' ORDER BY id DESC LIMIT 1")
+    return row["content"] if row else "还没有收盘汇总。"
 
 
 async def premarket_text() -> str:
