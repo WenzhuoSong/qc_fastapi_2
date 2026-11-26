@@ -79,7 +79,7 @@ PROMPT = """你是一位美股策略分析师，收盘后给一位个人投资�
 - breadth：上涨股票比例、站上 50 日线比例；contributions：按估算市值权重，个股对标普 500 当日涨跌的贡献（百分点）和占比；
 - sectors：当日领先和落后的行业，近 20 日相对 SPY，趋势确认变化；macro_data：今天公布的宏观数据实际值和预期；
 - odds：预测市场对宏观话题的概率和变化（市场价格，不是事实）；earnings：刚公布财报的大公司和股价反应；
-- news：市场新闻标题（未经核实），causes：大涨大跌日联网核实过的原因；holdings：用户的持仓；filter：大盘过滤；
+- news：市场新闻标题（未经核实），causes：大涨大跌日联网核实过的原因；holdings：用户的持仓（每只的当日涨跌、当日盈亏、占持仓市值，hold.total 是合计）；filter：大盘过滤；
 - sentiment：情绪与仓位读数（看跌 / 看涨比、AAII 散户调查、VIX 及期限结构、新高新低、站上 50 日线比例），每项有历史位置和读数
   （偏恐慌 / 偏乐观 / 正常范围）；Scout 检验过这类读数对下周涨跌没有预测力，只用来描述情绪；
 - yesterday：昨天的市场解读（没有就是 null）；
@@ -93,7 +93,7 @@ PROMPT = """你是一位美股策略分析师，收盘后给一位个人投资�
    把能互相印证的读数放在同一个推动因素里。每个因素标证据强度，引用 key。
 3. 对照新闻：新闻标题的说法有没有数据支持；只有标题、没有数据支持的，强度最多为「弱」，并写明「据报道」。
 4. 和昨天的解读对照：昨天的主要解释今天是延续还是被推翻。
-5. 对用户：持仓今天怎样、跟大盘的关系（β），计划要求什么（没有要做的就说照计划持有）。
+5. 对用户：持仓今天合计盈亏多少、哪几只贡献最大、跟大盘的关系（β），计划要求什么（没有要做的就说照计划持有）。
 6. 历史：每个推动因素归到一条主线——和 memory.themes 里某条说的是同一件事就沿用它的标题（一字不改），否则新起一个；
    在 history 里说今天在这些主线里的位置（第几天、开始以来涨跌、加强还是减弱、是否淡出后再现）。只用 memory 里的事实，不要回忆证据包以外的历史。
 7. 情绪：用 sentiment 的读数说现在大家是紧张还是乐观、极端与否；读数之间矛盾就直说。不要写「恐慌往往意味着见底」之类的推断。
@@ -101,6 +101,7 @@ PROMPT = """你是一位美股策略分析师，收盘后给一位个人投资�
 硬性规则：
 - 数字只能原样引用证据包里的数值，不要自己计算；涨跌数字自带正负号，不要写「跌幅为 -1.2%」。
 - evidence 只能填证据包里出现的 key。
+- 正文用中文说法，不写证据包的字段名或 key（memory、holdings、move.SPY 之类）；key 只放在 evidence 里。
 - 这是事后解释，不是预测：不写「将 / 会 / 有望」上涨下跌、延续、见底见顶；不给买卖建议。
 - 解释不了就说解释不了，不要编故事；中文、专业、简洁。"""
 
@@ -277,13 +278,29 @@ async def build_pack(p, asof: date, sector_rows: list[dict], g: dict | None, mfi
     from scout import levels, portfolio
     from scout.telegram import next_step
 
-    holdings = []
+    holdings, values, days = [], {}, {}
     for t in (g or {}).get("held_rows") or []:
         f = (g.get("feats") or {}).get(t["ticker"], {})
-        step = next_step(t, portfolio.metrics(t))
+        m = portfolio.metrics(t)
+        step = next_step(t, m)
+        if m.get("price") and m.get("remaining"):
+            values[t["ticker"]] = m["price"] * m["remaining"]
+            r = f.get("ret_1d")
+            if r is not None and pd.notna(r):
+                days[t["ticker"]] = values[t["ticker"]] * r / (1 + r)
         holdings.append({"key": f"hold.{t['ticker']}", "代码": t["ticker"], "核心仓": levels.is_core(t["ticker"]),
                          "当日": _pct(f.get("ret_1d")), "β": None if f.get("beta") is None else f"{f['beta']:.2f}",
                          "板块": t.get("sector"), "计划": step or "照计划持有"})
+    total = sum(values.values())
+    for h in holdings:
+        tk = h["代码"]
+        if total and tk in values:
+            h["占持仓市值"] = f"{values[tk] / total * 100:.0f}%"
+        if tk in days:
+            h["当日盈亏"] = f"{days[tk]:+.0f} 美元"
+    if total and days:
+        holdings.append({"key": "hold.total", "持仓当日盈亏合计": f"{sum(days.values()):+.0f} 美元",
+                         "占持仓市值": f"{sum(days.values()) / total * 100:+.2f}%", "持仓市值": f"{total:.0f} 美元"})
 
     from scout import market_memory
 
@@ -339,6 +356,13 @@ def keys(pack: dict) -> set[str]:
 
 # ── validation ──
 
+def internal_names(pack: dict) -> set[str]:
+    """Lower-case field names and key prefixes of the pack (tickers are upper case, so they never match)."""
+    names = {k for k in pack if not k.startswith("_")} | set((pack.get("memory") or {}).keys())
+    names |= {k.split(".")[0] for k in keys(pack)}
+    return names | {"memory", "recent", "themes", "weeks", "pack", "key", "evidence", "story_status", "data_date"}
+
+
 def validate(r: Read, pack: dict) -> list[str]:
     issues = []
     texts = [r.headline, r.what_happened, r.media_vs_data, r.story, r.for_you, r.would_change, r.mood, r.history] + \
@@ -369,6 +393,9 @@ def validate(r: Read, pack: dict) -> list[str]:
         issues.append("没有昨天的解读，story_status 应为「无前一天」")
     if pack.get("yesterday") is not None and r.story_status == "无前一天":
         issues.append("有昨天的解读，story_status 不能是「无前一天」")
+    named = sorted({w for w in re.findall(r"[a-z_]{3,}", body) if w in internal_names(pack)})
+    if named:
+        issues.append(f"正文里出现了证据包的字段名「{'、'.join(named)}」：用中文说法（如「近期记录」「持仓」），key 只放在 evidence 里")
     if re.search(r"(?:跌幅|下跌|回落)(?:为|了|约)?\s*-\d", body):
         issues.append("双重否定：涨跌数字自带正负号")
     return issues

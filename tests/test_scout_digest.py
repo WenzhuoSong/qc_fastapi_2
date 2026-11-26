@@ -45,6 +45,12 @@ class DigestTests(unittest.TestCase):
         self.assertTrue(mu["attention"])
         self.assertIn("不到 2 倍日常波动", "\n".join(mu["lines"]))
 
+    def test_a_broken_stop_is_not_also_called_near(self):
+        g = gathered()
+        g["held_rows"][0]["stop"] = 121                  # the close (120) is below the stop
+        text = "\n".join(next(i for i in digest.holding_items(g, ASOF) if i["ticker"] == "MU")["lines"])
+        self.assertNotIn("不到 2 倍日常波动", text)
+
     def test_watchlist_shows_only_names_that_changed(self):
         self.assertEqual([w["ticker"] for w in digest.watch_items(gathered(), ASOF)], ["NVDA"])
 

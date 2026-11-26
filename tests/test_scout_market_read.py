@@ -87,6 +87,12 @@ class ValidationTests(unittest.TestCase):
                                     theme=" ")])
         self.assertTrue(any("主线" in x for x in mr.validate(r, pack())))
 
+    def test_field_names_stay_out_of_the_prose(self):
+        r = read(history="memory 没有主线起始日期，move.SPY 当日 -1.8%")
+        issues = mr.validate(r, pack())
+        self.assertTrue(any("memory" in x and "move" in x for x in issues), issues)
+        self.assertEqual(mr.validate(read(what_happened="SPY 当日 -1.8%，VIX 偏高"), pack()), [])
+
     def test_fallback_is_valid(self):
         p = pack()
         self.assertEqual(mr.validate(mr.fallback(p), p), [])

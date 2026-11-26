@@ -111,7 +111,8 @@ def holding_items(g: dict, asof: date) -> list[dict]:
         note = (g.get("notes") or {}).get(tk)
         lines, attention = [], False
         if "pnl" in m:
-            stop = f" · 止损 {t['stop']:.2f}（{pct(m['to_stop'], 1, True)}）" if "to_stop" in m else ""
+            below = m.get("to_stop", -1) >= 0          # the close is at or below the stop: the sell line says it
+            stop = f" · 止损 {t['stop']:.2f}（{'已跌破' if below else pct(m['to_stop'], 1, True)}）" if "to_stop" in m else ""
             head = (f"<b>{esc(tk)}</b> {m['price']:.2f} · 持仓 {pct(m['pnl_pct'], 1, True)}（{m['pnl']:+,.0f}）{stop}")
         else:
             head = f"<b>{esc(tk)}</b> · 无行情"
@@ -130,7 +131,7 @@ def holding_items(g: dict, asof: date) -> list[dict]:
             lines.append(f"📊 {esc(nl)}")
         step = next_step(t, m) if "pnl" in m else ""
         sigma = (f.get("vol_63") or 0) / 252 ** 0.5
-        if "to_stop" in m and sigma and -m["to_stop"] < NEAR_STOP_SIGMAS * sigma:
+        if "to_stop" in m and m["to_stop"] < 0 and sigma and -m["to_stop"] < NEAR_STOP_SIGMAS * sigma:
             attention = True
             lines.append(f"⚠️ 距止损 {pct(m['to_stop'], 1, True)}，不到 {NEAR_STOP_SIGMAS:g} 倍日常波动（日波动约 {pct(sigma, 1)}）")
         if step.startswith("⚠️"):
